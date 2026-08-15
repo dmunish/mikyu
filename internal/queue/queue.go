@@ -72,6 +72,7 @@ func (q *Queue) Pop() (Message, error) {
 	}
 
 	msg := q.messages[0]
+	q.messages[0] = Message{}
 	q.messages = q.messages[1:]
 	return msg, nil
 }
