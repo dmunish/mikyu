@@ -2,7 +2,6 @@ package queue
 
 import (
 	"errors"
-	"fmt"
 	"sync"
 
 	"github.com/gofrs/uuid/v5"
@@ -24,6 +23,12 @@ type Manager struct {
 	queues map[string]*Queue
 }
 
+var (
+	ErrQueueExists   = errors.New("Queue with this name already exists.")
+	ErrQueueNotFound = errors.New("Queue not found.")
+	ErrQueueEmpty    = errors.New("Queue is empty.")
+)
+
 func NewManager() *Manager {
 	return &Manager{queues: make(map[string]*Queue)}
 }
@@ -33,7 +38,7 @@ func (m *Manager) NewQueue(name string) (*Queue, error) {
 	defer m.mu.Unlock()
 
 	if _, ok := m.queues[name]; ok {
-		return nil, fmt.Errorf("Queue with name \"%s\" already exists.", name)
+		return nil, ErrQueueExists
 	}
 
 	q := &Queue{name: name, messages: make([]Message, 0)}
@@ -47,7 +52,7 @@ func (m *Manager) GetQueue(name string) (*Queue, error) {
 
 	q, ok := m.queues[name]
 	if !ok {
-		return nil, errors.New("Queue not found.")
+		return nil, ErrQueueNotFound
 	}
 	return q, nil
 }
@@ -68,7 +73,7 @@ func (q *Queue) Peek() (Message, error) {
 	defer q.mu.Unlock()
 
 	if len(q.messages) == 0 {
-		return Message{}, errors.New("Queue is empty.")
+		return Message{}, ErrQueueEmpty
 	}
 	return q.messages[0], nil
 }
@@ -78,7 +83,7 @@ func (q *Queue) Pop() (Message, error) {
 	defer q.mu.Unlock()
 
 	if len(q.messages) == 0 {
-		return Message{}, errors.New("Queue is empty.")
+		return Message{}, ErrQueueEmpty
 	}
 
 	msg := q.messages[0]
