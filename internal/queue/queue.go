@@ -15,6 +15,7 @@ type Message struct {
 
 type Queue struct {
 	name     string
+	mu       sync.Mutex
 	messages []Message
 }
 
@@ -53,13 +54,19 @@ func (m *Manager) GetQueue(name string) (*Queue, error) {
 
 func (q *Queue) Push(payload string) (string, error) {
 	id, _ := uuid.NewV7()
-
 	msg := Message{ID: id.String(), Payload: payload}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
 	q.messages = append(q.messages, msg)
 	return id.String(), nil
 }
 
 func (q *Queue) Peek() (Message, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
 	if len(q.messages) == 0 {
 		return Message{}, errors.New("Queue is empty")
 	}
@@ -67,6 +74,9 @@ func (q *Queue) Peek() (Message, error) {
 }
 
 func (q *Queue) Pop() (Message, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
 	if len(q.messages) == 0 {
 		return Message{}, errors.New("Queue is empty")
 	}
