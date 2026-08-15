@@ -47,7 +47,7 @@ func (m *Manager) GetQueue(name string) (*Queue, error) {
 
 	q, ok := m.queues[name]
 	if !ok {
-		return nil, errors.New("Queue not found")
+		return nil, errors.New("Queue not found.")
 	}
 	return q, nil
 }
@@ -68,7 +68,7 @@ func (q *Queue) Peek() (Message, error) {
 	defer q.mu.Unlock()
 
 	if len(q.messages) == 0 {
-		return Message{}, errors.New("Queue is empty")
+		return Message{}, errors.New("Queue is empty.")
 	}
 	return q.messages[0], nil
 }
@@ -78,7 +78,7 @@ func (q *Queue) Pop() (Message, error) {
 	defer q.mu.Unlock()
 
 	if len(q.messages) == 0 {
-		return Message{}, errors.New("Queue is empty")
+		return Message{}, errors.New("Queue is empty.")
 	}
 
 	msg := q.messages[0]
