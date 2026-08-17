@@ -19,7 +19,7 @@ type Queue struct {
 }
 
 type Manager struct {
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	queues map[string]*Queue
 }
 
@@ -47,8 +47,8 @@ func (m *Manager) NewQueue(name string) (*Queue, error) {
 }
 
 func (m *Manager) GetQueue(name string) (*Queue, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	q, ok := m.queues[name]
 	if !ok {
