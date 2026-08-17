@@ -14,8 +14,7 @@ type Message struct {
 
 type Queue struct {
 	name     string
-	mu       sync.Mutex
-	messages []Message
+	messages chan Message
 }
 
 type Manager struct {
@@ -27,13 +26,14 @@ var (
 	ErrQueueExists   = errors.New("Queue with this name already exists.")
 	ErrQueueNotFound = errors.New("Queue not found.")
 	ErrQueueEmpty    = errors.New("Queue is empty.")
+	ErrQueueClosed   = errors.New("Queue is closed.")
 )
 
 func NewManager() *Manager {
 	return &Manager{queues: make(map[string]*Queue)}
 }
 
-func (m *Manager) NewQueue(name string) (*Queue, error) {
+func (m *Manager) NewQueue(name string, cap int) (*Queue, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -41,7 +41,7 @@ func (m *Manager) NewQueue(name string) (*Queue, error) {
 		return nil, ErrQueueExists
 	}
 
-	q := &Queue{name: name, messages: make([]Message, 0)}
+	q := &Queue{name: name, messages: make(chan Message, cap)}
 	m.queues[name] = q
 	return q, nil
 }
@@ -59,35 +59,18 @@ func (m *Manager) GetQueue(name string) (*Queue, error) {
 
 func (q *Queue) Push(payload string) (string, error) {
 	id, _ := uuid.NewV7()
-	msg := Message{ID: id.String(), Payload: payload}
 
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	q.messages = append(q.messages, msg)
+	q.messages <- Message{ID: id.String(), Payload: payload}
 	return id.String(), nil
 }
 
-func (q *Queue) Peek() (Message, error) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	if len(q.messages) == 0 {
-		return Message{}, ErrQueueEmpty
-	}
-	return q.messages[0], nil
-}
-
 func (q *Queue) Pop() (Message, error) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
 	if len(q.messages) == 0 {
 		return Message{}, ErrQueueEmpty
 	}
-
-	msg := q.messages[0]
-	q.messages[0] = Message{}
-	q.messages = q.messages[1:]
+	msg, ok := <-q.messages
+	if !ok {
+		return Message{}, ErrQueueClosed
+	}
 	return msg, nil
 }
