@@ -18,7 +18,6 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /queues", s.createQueue)
 	mux.HandleFunc("POST /queues/{name}/messages", s.push)
-	mux.HandleFunc("POST /queues/{name}/peek", s.peek)
 	mux.HandleFunc("POST /queues/{name}/pop", s.pop)
 	return mux
 }

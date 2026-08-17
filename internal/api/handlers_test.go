@@ -83,13 +83,9 @@ func TestPush(t *testing.T) {
 	})
 }
 
-func TestPeekAndPop(t *testing.T) {
+func TestPop(t *testing.T) {
 	t.Run("unknown queue returns 404", func(t *testing.T) {
-		rec := request(Mikyu(), http.MethodPost, "/queues/nope/peek", "")
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("peek status = %d, want %d", rec.Code, http.StatusNotFound)
-		}
-		rec = request(Mikyu(), http.MethodPost, "/queues/nope/pop", "")
+		rec := request(Mikyu(), http.MethodPost, "/queues/nope/pop", "")
 		if rec.Code != http.StatusNotFound {
 			t.Fatalf("pop status = %d, want %d", rec.Code, http.StatusNotFound)
 		}
@@ -108,14 +104,9 @@ func TestPeekAndPop(t *testing.T) {
 		srv := Mikyu()
 		request(srv, http.MethodPost, "/queues?name=orders", "")
 		request(srv, http.MethodPost, "/queues/orders/messages", `{"payload":"hi"}`)
-
-		rec := request(srv, http.MethodPost, "/queues/orders/peek", "")
+		rec := request(srv, http.MethodPost, "/queues/orders/pop", "")
 		if rec.Code != http.StatusOK {
-			t.Fatalf("peek status = %d, want %d (fix handler to StatusOK)", rec.Code, http.StatusOK)
-		}
-		rec = request(srv, http.MethodPost, "/queues/orders/pop", "")
-		if rec.Code != http.StatusOK {
-			t.Fatalf("pop status = %d, want %d (fix handler to StatusOK)", rec.Code, http.StatusOK)
+			t.Fatalf("pop status = %d, want %d", rec.Code, http.StatusOK)
 		}
 	})
 }

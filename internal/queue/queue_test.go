@@ -8,7 +8,7 @@ import (
 func TestManager_NewQueue(t *testing.T) {
 	t.Run("creates a queue", func(t *testing.T) {
 		m := NewManager()
-		q, err := m.NewQueue("orders")
+		q, err := m.NewQueue("orders", 1024)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -19,10 +19,10 @@ func TestManager_NewQueue(t *testing.T) {
 
 	t.Run("duplicate name returns ErrQueueExists", func(t *testing.T) {
 		m := NewManager()
-		if _, err := m.NewQueue("dup"); err != nil {
+		if _, err := m.NewQueue("dup", 1024); err != nil {
 			t.Fatalf("first create failed: %v", err)
 		}
-		_, err := m.NewQueue("dup")
+		_, err := m.NewQueue("dup", 1024)
 		if !errors.Is(err, ErrQueueExists) {
 			t.Fatalf("expected ErrQueueExists, got %v", err)
 		}
@@ -32,7 +32,7 @@ func TestManager_NewQueue(t *testing.T) {
 func TestManager_GetQueue(t *testing.T) {
 	t.Run("returns existing queue", func(t *testing.T) {
 		m := NewManager()
-		_, _ = m.NewQueue("orders")
+		_, _ = m.NewQueue("orders", 1024)
 		if _, err := m.GetQueue("orders"); err != nil {
 			t.Fatalf("expected found, got %v", err)
 		}
@@ -46,22 +46,14 @@ func TestManager_GetQueue(t *testing.T) {
 	})
 }
 
-func TestQueue_PushPeekPop(t *testing.T) {
+func TestQueue_PushPop(t *testing.T) {
 	t.Run("preserves FIFO order", func(t *testing.T) {
-		q, _ := NewManager().NewQueue("q")
+		q, _ := NewManager().NewQueue("q", 1024)
 
 		id1, _ := q.Push("first")
 		id2, _ := q.Push("second")
 		if id1 == "" || id2 == "" {
 			t.Fatal("expected non-empty message IDs")
-		}
-
-		peeked, err := q.Peek()
-		if err != nil {
-			t.Fatalf("peek error: %v", err)
-		}
-		if peeked.Payload != "first" {
-			t.Fatalf("peek = %q, want first", peeked.Payload)
 		}
 
 		popped, _ := q.Pop()
@@ -75,7 +67,7 @@ func TestQueue_PushPeekPop(t *testing.T) {
 	})
 
 	t.Run("pop on empty returns ErrQueueEmpty", func(t *testing.T) {
-		empty, _ := NewManager().NewQueue("empty")
+		empty, _ := NewManager().NewQueue("empty", 1024)
 		if _, err := empty.Pop(); !errors.Is(err, ErrQueueEmpty) {
 			t.Fatalf("expected ErrQueueEmpty, got %v", err)
 		}

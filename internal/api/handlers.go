@@ -14,7 +14,7 @@ func (s *Server) createQueue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	if _, err := s.mgr.NewQueue(name); err != nil {
+	if _, err := s.mgr.NewQueue(name, 100000); err != nil {
 		if errors.Is(err, queue.ErrQueueExists) {
 			writeError(w, http.StatusConflict, err.Error())
 			return
@@ -45,21 +45,6 @@ func (s *Server) push(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"id": id})
-}
-
-func (s *Server) peek(w http.ResponseWriter, r *http.Request) {
-	q, err := s.mgr.GetQueue(r.PathValue("name"))
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
-		return
-	}
-
-	msg, err := q.Peek()
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, msg)
 }
 
 func (s *Server) pop(w http.ResponseWriter, r *http.Request) {
