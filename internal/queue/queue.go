@@ -9,7 +9,7 @@ import (
 
 type Message struct {
 	ID      string
-	Payload string
+	Payload []byte
 }
 
 type Queue struct {
@@ -57,7 +57,7 @@ func (m *Manager) GetQueue(name string) (*Queue, error) {
 	return q, nil
 }
 
-func (q *Queue) Push(payload string) (string, error) {
+func (q *Queue) Push(payload []byte) (string, error) {
 	id, _ := uuid.NewV7()
 
 	q.messages <- Message{ID: id.String(), Payload: payload}
