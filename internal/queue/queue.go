@@ -59,8 +59,9 @@ func (m *Manager) GetQueue(name string) (*Queue, error) {
 
 func (q *Queue) Push(payload []byte) (string, error) {
 	id, _ := uuid.NewV7()
+	msg := Message{ID: id.String(), Payload: payload}
 
-	q.messages <- Message{ID: id.String(), Payload: payload}
+	q.messages <- msg
 	return id.String(), nil
 }
 
@@ -68,6 +69,7 @@ func (q *Queue) Pop() (Message, error) {
 	if len(q.messages) == 0 {
 		return Message{}, ErrQueueEmpty
 	}
+
 	msg, ok := <-q.messages
 	if !ok {
 		return Message{}, ErrQueueClosed
