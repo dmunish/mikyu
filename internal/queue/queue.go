@@ -23,17 +23,17 @@ type Manager struct {
 }
 
 var (
-	ErrQueueExists   = errors.New("Queue with this name already exists.")
-	ErrQueueNotFound = errors.New("Queue not found.")
-	ErrQueueEmpty    = errors.New("Queue is empty.")
-	ErrQueueClosed   = errors.New("Queue is closed.")
+	ErrQueueExists   = errors.New("queue with this name already exists")
+	ErrQueueNotFound = errors.New("queue not found")
+	ErrQueueEmpty    = errors.New("queue is empty")
+	ErrQueueClosed   = errors.New("queue is closed")
 )
 
 func NewManager() *Manager {
 	return &Manager{queues: make(map[string]*Queue)}
 }
 
-func (m *Manager) NewQueue(name string, cap int) (*Queue, error) {
+func (m *Manager) NewQueue(name string, capacity int) (*Queue, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -41,7 +41,7 @@ func (m *Manager) NewQueue(name string, cap int) (*Queue, error) {
 		return nil, ErrQueueExists
 	}
 
-	q := &Queue{name: name, messages: make(chan Message, cap)}
+	q := &Queue{name: name, messages: make(chan Message, capacity)}
 	m.queues[name] = q
 	return q, nil
 }
@@ -58,21 +58,23 @@ func (m *Manager) GetQueue(name string) (*Queue, error) {
 }
 
 func (q *Queue) Push(payload []byte) (string, error) {
-	id, _ := uuid.NewV7()
-	msg := Message{ID: id.String(), Payload: payload}
+	id, err := uuid.NewV7()
+	if err != nil {
+		return "", err
+	}
 
-	q.messages <- msg
+	q.messages <- Message{ID: id.String(), Payload: payload}
 	return id.String(), nil
 }
 
 func (q *Queue) Pop() (Message, error) {
-	if len(q.messages) == 0 {
+	select {
+	case msg, ok := <-q.messages:
+		if !ok {
+			return Message{}, ErrQueueClosed
+		}
+		return msg, nil
+	default:
 		return Message{}, ErrQueueEmpty
 	}
-
-	msg, ok := <-q.messages
-	if !ok {
-		return Message{}, ErrQueueClosed
-	}
-	return msg, nil
 }
