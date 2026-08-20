@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 )
@@ -50,19 +51,29 @@ func TestQueue_PushPop(t *testing.T) {
 	t.Run("preserves FIFO order", func(t *testing.T) {
 		q, _ := NewManager().NewQueue("q", 1024)
 
-		id1, _ := q.Push("first")
-		id2, _ := q.Push("second")
+		payload1 := []byte{0x00, 0x01, 0x02, 0xFF, 0xFE}
+		payload2 := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+
+		id1, _ := q.Push(payload1)
+		id2, _ := q.Push(payload2)
 		if id1 == "" || id2 == "" {
 			t.Fatal("expected non-empty message IDs")
 		}
 
-		popped, _ := q.Pop()
-		if popped.Payload != "first" {
-			t.Fatalf("pop = %q, want first", popped.Payload)
+		popped1, err := q.Pop()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
-		popped, _ = q.Pop()
-		if popped.Payload != "second" {
-			t.Fatalf("second pop = %q, want second", popped.Payload)
+		if !bytes.Equal(popped1.Payload, payload1) {
+			t.Fatalf("pop 1 = %v, want %v", popped1.Payload, payload1)
+		}
+
+		popped2, err := q.Pop()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !bytes.Equal(popped2.Payload, payload2) {
+			t.Fatalf("pop 2 = %v, want %v", popped2.Payload, payload2)
 		}
 	})
 
