@@ -11,7 +11,8 @@ import (
 const (
 	OpCreateQueue byte = 0x01
 	OpProduce     byte = 0x02
-	OpConsume     byte = 0x03
+	OpRead        byte = 0x03
+	OpTail        byte = 0x04
 	OpError       byte = 0xFF
 )
 
