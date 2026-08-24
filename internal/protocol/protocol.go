@@ -10,11 +10,17 @@ import (
 const (
 	OpCreateQueue byte = 0x01
 	OpProduce     byte = 0x02
-	OpConsume     byte = 0x03
+	OpRead        byte = 0x03
+	OpTail        byte = 0x04
 	OpError       byte = 0xFF
 )
 
-var ErrTruncatedBody = errors.New("truncated frame body")
+const (
+	ErrCodeUnknown        byte = 0x00
+	ErrCodeQueueExists    byte = 0x01
+	ErrCodeQueueNotFound  byte = 0x02
+	ErrCodeOffsetNotFound byte = 0x03
+)
 
 /*
 Wire format:
@@ -56,48 +62,17 @@ func WriteFrame(w io.Writer, op byte, payload []byte) error {
 	return err
 }
 
-// Reader decodes values out of a frame payload in order.
-type Reader struct {
-	b []byte
-	i int
+// One-byte error code followed by a human-readable message.
+func EncodeError(code byte, msg string) []byte {
+	b := make([]byte, 1+len(msg))
+	b[0] = code
+	copy(b[1:], msg)
+	return b
 }
 
-func NewReader(b []byte) *Reader { return &Reader{b: b} }
-
-func (r *Reader) ReadU32() (uint32, error) {
-	if r.i+4 > len(r.b) {
-		return 0, ErrTruncatedBody
+func DecodeError(body []byte) (code byte, msg string) {
+	if len(body) == 0 {
+		return ErrCodeUnknown, ""
 	}
-	v := binary.BigEndian.Uint32(r.b[r.i : r.i+4])
-	r.i += 4
-	return v, nil
+	return body[0], string(body[1:])
 }
-
-func (r *Reader) ReadBytes() ([]byte, error) {
-	n, err := r.ReadU32()
-	if err != nil {
-		return nil, err
-	}
-	if r.i+int(n) > len(r.b) {
-		return nil, ErrTruncatedBody
-	}
-	b := r.b[r.i : r.i+int(n)]
-	r.i += int(n)
-	return b, nil
-}
-
-// Buffer encodes values into a frame payload in order.
-type Buffer struct{ b []byte }
-
-func (buf *Buffer) WriteU32(v uint32) {
-	var tmp [4]byte
-	binary.BigEndian.PutUint32(tmp[:], v)
-	buf.b = append(buf.b, tmp[:]...)
-}
-
-func (buf *Buffer) WriteBytes(data []byte) {
-	buf.WriteU32(uint32(len(data)))
-	buf.b = append(buf.b, data...)
-}
-
-func (buf *Buffer) Bytes() []byte { return buf.b }
