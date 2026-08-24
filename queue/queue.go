@@ -38,7 +38,7 @@ type Manager struct {
 }
 
 // Opens/creates WAL directory and rebuilds any found queues
-func NewManager(dir string) (*Manager, error) {
+func Open(dir string) (*Manager, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create wal dir: %w", err)
 	}

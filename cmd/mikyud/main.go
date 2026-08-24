@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	mgr, err := queue.NewManager("data")
+	mgr, err := queue.Open("data")
 	if err != nil {
 		log.Fatal(err)
 	}
