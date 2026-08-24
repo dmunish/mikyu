@@ -49,14 +49,25 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 }
 
 // Returns the message at offset without consuming or advancing anything
-func (q *Queue) Read(offset uint64) (Message, error) {
+func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
+	if err := ctx.Err(); err != nil {
+		return Message{}, err
+	}
 	q.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		q.mu.Unlock()
+		return Message{}, err
+	}
 	if offset >= uint64(len(q.index)) {
 		q.mu.Unlock()
 		return Message{}, ErrOffsetNotFound
 	}
 	entry := q.index[offset]
 	q.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return Message{}, err
+	}
 
 	rec := make([]byte, entry.len)
 	if _, err := q.file.ReadAt(rec, entry.pos); err != nil {
