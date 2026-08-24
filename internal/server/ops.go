@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 
 	"github.com/dmunish/mikyu/internal/protocol"
@@ -24,7 +25,7 @@ func (s *Server) createQueue(body []byte) (byte, []byte) {
 	return protocol.OpCreateQueue, nil
 }
 
-func (s *Server) produce(body []byte) (byte, []byte) {
+func (s *Server) produce(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
 	name, err := r.ReadBytes()
 	if err != nil {
@@ -40,7 +41,7 @@ func (s *Server) produce(body []byte) (byte, []byte) {
 		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
 	}
 
-	offset, err := q.Produce(payload)
+	offset, err := q.Produce(ctx, payload)
 	if err != nil {
 		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "push failed")
 	}

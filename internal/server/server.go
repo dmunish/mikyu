@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 
@@ -37,24 +38,26 @@ func (s *Server) serve(conn net.Conn) {
 	defer conn.Close()
 	r := bufio.NewReader(conn)
 
+	ctx := context.Background()
+
 	for {
 		op, body, err := protocol.ReadFrame(r)
 		if err != nil {
 			return
 		}
-		respOp, respBody := s.dispatch(op, body)
+		respOp, respBody := s.dispatch(ctx, op, body)
 		if err := protocol.WriteFrame(conn, respOp, respBody); err != nil {
 			return
 		}
 	}
 }
 
-func (s *Server) dispatch(op byte, body []byte) (byte, []byte) {
+func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (byte, []byte) {
 	switch op {
 	case protocol.OpCreateQueue:
 		return s.createQueue(body)
 	case protocol.OpProduce:
-		return s.produce(body)
+		return s.produce(ctx, body)
 	case protocol.OpRead:
 		return s.read(body)
 	case protocol.OpTail:

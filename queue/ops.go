@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"io"
 
 	"github.com/gofrs/uuid/v5"
@@ -13,7 +14,11 @@ type Message struct {
 }
 
 // Produce appends payload to the log and returns the offset it was written at.
-func (q *Queue) Produce(payload []byte) (uint64, error) {
+func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
 	id, err := uuid.NewV7()
 	if err != nil {
 		return 0, err
@@ -22,6 +27,10 @@ func (q *Queue) Produce(payload []byte) (uint64, error) {
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 
 	pos, err := q.file.Seek(0, io.SeekEnd)
 	if err != nil {

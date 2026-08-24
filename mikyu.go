@@ -2,9 +2,11 @@ package mikyu
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/dmunish/mikyu/internal/protocol"
 	"github.com/dmunish/mikyu/queue"
@@ -35,20 +37,20 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
-func (c *Client) CreateQueue(name string) error {
+func (c *Client) CreateQueue(ctx context.Context, name string) error {
 	var body protocol.Buffer
 	body.WriteBytes([]byte(name))
 
-	_, err := c.exchange(protocol.OpCreateQueue, body.Bytes())
+	_, err := c.exchange(ctx, protocol.OpCreateQueue, body.Bytes())
 	return err
 }
 
-func (c *Client) Produce(queue string, payload []byte) (uint64, error) {
+func (c *Client) Produce(ctx context.Context, queue string, payload []byte) (uint64, error) {
 	var body protocol.Buffer
 	body.WriteBytes([]byte(queue))
 	body.WriteBytes(payload)
 
-	resp, err := c.exchange(protocol.OpProduce, body.Bytes())
+	resp, err := c.exchange(ctx, protocol.OpProduce, body.Bytes())
 	if err != nil {
 		return 0, err
 	}
@@ -60,12 +62,12 @@ func (c *Client) Produce(queue string, payload []byte) (uint64, error) {
 	return offset, nil
 }
 
-func (c *Client) Read(queue string, offset uint64) (Message, error) {
+func (c *Client) Read(ctx context.Context, queue string, offset uint64) (Message, error) {
 	var body protocol.Buffer
 	body.WriteBytes([]byte(queue))
 	body.WriteU64(offset)
 
-	resp, err := c.exchange(protocol.OpRead, body.Bytes())
+	resp, err := c.exchange(ctx, protocol.OpRead, body.Bytes())
 	if err != nil {
 		return Message{}, err
 	}
@@ -87,11 +89,11 @@ func (c *Client) Read(queue string, offset uint64) (Message, error) {
 	return Message{Offset: respOffset, ID: string(id), Payload: payload}, nil
 }
 
-func (c *Client) Tail(queue string) (uint64, error) {
+func (c *Client) LastOffset(ctx context.Context, queue string) (uint64, error) {
 	var body protocol.Buffer
 	body.WriteBytes([]byte(queue))
 
-	resp, err := c.exchange(protocol.OpTail, body.Bytes())
+	resp, err := c.exchange(ctx, protocol.OpTail, body.Bytes())
 	if err != nil {
 		return 0, err
 	}
@@ -103,13 +105,30 @@ func (c *Client) Tail(queue string) (uint64, error) {
 	return offset, nil
 }
 
-func (c *Client) exchange(op byte, body []byte) ([]byte, error) {
+func (c *Client) exchange(ctx context.Context, op byte, body []byte) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		c.conn.SetDeadline(deadline)
+	} else {
+		c.conn.SetDeadline(time.Time{})
+	}
+	defer c.conn.SetDeadline(time.Time{})
+
 	if err := protocol.WriteFrame(c.conn, op, body); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("write failed: %w", err)
 	}
 
 	respOp, respBody, err := protocol.ReadFrame(c.r)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("read failed: %w", err)
 	}
 
