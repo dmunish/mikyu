@@ -7,19 +7,16 @@ import (
 	"net"
 
 	"github.com/dmunish/mikyu/internal/protocol"
+	"github.com/dmunish/mikyu/queue"
 )
 
 var (
-	ErrQueueExists    = errors.New("queue with this name already exists")
-	ErrQueueNotFound  = errors.New("queue not found")
-	ErrOffsetNotFound = errors.New("offset not found")
+	ErrQueueExists    = queue.ErrQueueExists
+	ErrQueueNotFound  = queue.ErrQueueNotFound
+	ErrOffsetNotFound = queue.ErrOffsetNotFound
 )
 
-type Message struct {
-	Offset  uint64
-	ID      string
-	Payload []byte
-}
+type Message = queue.Message
 
 type Client struct {
 	conn net.Conn

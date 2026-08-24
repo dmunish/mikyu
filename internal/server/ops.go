@@ -4,7 +4,7 @@ import (
 	"errors"
 
 	"github.com/dmunish/mikyu/internal/protocol"
-	"github.com/dmunish/mikyu/internal/queue"
+	"github.com/dmunish/mikyu/queue"
 )
 
 func (s *Server) createQueue(body []byte) (byte, []byte) {

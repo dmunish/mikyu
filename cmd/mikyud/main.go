@@ -3,8 +3,8 @@ package main
 import (
 	"log"
 
-	"github.com/dmunish/mikyu/internal/queue"
 	"github.com/dmunish/mikyu/internal/server"
+	"github.com/dmunish/mikyu/queue"
 )
 
 func main() {

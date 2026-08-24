@@ -6,7 +6,7 @@ import (
 	"net"
 
 	"github.com/dmunish/mikyu/internal/protocol"
-	"github.com/dmunish/mikyu/internal/queue"
+	"github.com/dmunish/mikyu/queue"
 )
 
 type Server struct {
