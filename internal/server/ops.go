@@ -14,7 +14,7 @@ func (s *Server) createQueue(body []byte) (byte, []byte) {
 		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid queue name")
 	}
 
-	if _, err := s.mgr.NewQueue(string(name)); err != nil {
+	if _, err := s.mgr.CreateQueue(string(name)); err != nil {
 		if errors.Is(err, queue.ErrQueueExists) {
 			return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueExists, err.Error())
 		}
@@ -35,12 +35,12 @@ func (s *Server) produce(body []byte) (byte, []byte) {
 		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid message payload")
 	}
 
-	q, err := s.mgr.GetQueue(string(name))
+	q, err := s.mgr.Queue(string(name))
 	if err != nil {
 		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
 	}
 
-	offset, err := q.Push(payload)
+	offset, err := q.Produce(payload)
 	if err != nil {
 		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "push failed")
 	}
@@ -61,7 +61,7 @@ func (s *Server) read(body []byte) (byte, []byte) {
 		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid offset")
 	}
 
-	q, err := s.mgr.GetQueue(string(name))
+	q, err := s.mgr.Queue(string(name))
 	if err != nil {
 		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
 	}
@@ -88,12 +88,12 @@ func (s *Server) tail(body []byte) (byte, []byte) {
 		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid queue name")
 	}
 
-	q, err := s.mgr.GetQueue(string(name))
+	q, err := s.mgr.Queue(string(name))
 	if err != nil {
 		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
 	}
 
 	var resp protocol.Buffer
-	resp.WriteU64(q.Tail())
+	resp.WriteU64(q.LastOffset())
 	return protocol.OpTail, resp.Bytes()
 }

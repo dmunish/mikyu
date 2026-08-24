@@ -65,7 +65,7 @@ func NewManager(dir string) (*Manager, error) {
 	return m, nil
 }
 
-func (m *Manager) NewQueue(name string) (*Queue, error) {
+func (m *Manager) CreateQueue(name string) (*Queue, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -84,7 +84,7 @@ func (m *Manager) NewQueue(name string) (*Queue, error) {
 	return q, nil
 }
 
-func (m *Manager) GetQueue(name string) (*Queue, error) {
+func (m *Manager) Queue(name string) (*Queue, error) {
 	m.mu.RLock()
 	defer m.mu.Unlock()
 

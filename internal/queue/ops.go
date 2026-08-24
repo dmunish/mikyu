@@ -12,8 +12,8 @@ type Message struct {
 	Payload []byte
 }
 
-// Push appends payload to the log and returns the offset it was written at.
-func (q *Queue) Push(payload []byte) (uint64, error) {
+// Produce appends payload to the log and returns the offset it was written at.
+func (q *Queue) Produce(payload []byte) (uint64, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return 0, err
@@ -62,7 +62,7 @@ func (q *Queue) Read(offset uint64) (Message, error) {
 	return Message{Offset: offset, ID: id, Payload: payload}, nil
 }
 
-func (q *Queue) Tail() uint64 {
+func (q *Queue) LastOffset() uint64 {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return uint64(len(q.index))
