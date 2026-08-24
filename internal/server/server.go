@@ -59,7 +59,7 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (byte, []by
 	case protocol.OpProduce:
 		return s.produce(ctx, body)
 	case protocol.OpRead:
-		return s.read(body)
+		return s.read(ctx, body)
 	case protocol.OpTail:
 		return s.tail(body)
 	default:

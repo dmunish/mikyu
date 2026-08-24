@@ -51,7 +51,7 @@ func (s *Server) produce(ctx context.Context, body []byte) (byte, []byte) {
 	return protocol.OpProduce, resp.Bytes()
 }
 
-func (s *Server) read(body []byte) (byte, []byte) {
+func (s *Server) read(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
 	name, err := r.ReadBytes()
 	if err != nil {
@@ -67,7 +67,7 @@ func (s *Server) read(body []byte) (byte, []byte) {
 		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
 	}
 
-	msg, err := q.Read(offset)
+	msg, err := q.Read(ctx, offset)
 	if err != nil {
 		if errors.Is(err, queue.ErrOffsetNotFound) {
 			return protocol.OpError, protocol.EncodeError(protocol.ErrCodeOffsetNotFound, err.Error())
