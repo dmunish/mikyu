@@ -95,6 +95,20 @@ func (m *Manager) Queue(name string) (*Queue, error) {
 	return q, nil
 }
 
+// Close flushes and closes every queue's WAL file.
+func (m *Manager) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var firstErr error
+	for _, q := range m.queues {
+		if err := q.file.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func openQueue(dir, name string) (*Queue, error) {
 	path := filepath.Join(dir, name+".wal")
 	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
