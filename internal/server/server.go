@@ -24,7 +24,11 @@ func (s *Server) Start(addr string) error {
 		return err
 	}
 	defer ln.Close()
+	return s.Serve(ln)
+}
 
+// Serve accepts connections on ln until it is closed.
+func (s *Server) Serve(ln net.Listener) error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
