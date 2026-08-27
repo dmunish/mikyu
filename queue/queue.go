@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 var (
@@ -22,6 +23,21 @@ type Queue struct {
 	mu    sync.Mutex
 	pos   int64        // Next write byte offset in file
 	index []indexEntry // In-memory offset lookup table
+}
+
+type Config struct {
+	BatchSize int           // Max size of fsync batch
+	Interval  time.Duration // Max time to wait before triggering an fsync
+}
+
+func (c Config) withDefaults() Config {
+	if c.BatchSize <= 0 {
+		c.BatchSize = 256
+	}
+	if c.Interval <= 0 {
+		c.Interval = 10 * time.Millisecond
+	}
+	return c
 }
 
 func newQueue(name string, f *os.File, cfg Config) *Queue {

@@ -7,21 +7,6 @@ import (
 	"time"
 )
 
-type Config struct {
-	BatchSize int           // Max size of fsync batch
-	Interval  time.Duration // Max time to wait before triggering an fsync
-}
-
-func (c Config) withDefaults() Config {
-	if c.BatchSize <= 0 {
-		c.BatchSize = 256
-	}
-	if c.Interval <= 0 {
-		c.Interval = 10 * time.Millisecond
-	}
-	return c
-}
-
 type pendingEntry struct {
 	pos int64
 	len int64
