@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"os"
 	"sync"
 	"time"
@@ -94,15 +95,37 @@ func (w *wal) push(rec []byte, pos int64) (seq int64, wake bool, err error) {
 	return seq, wake, nil
 }
 
-// wait blocks until seq is durable on disk or a fatal flush error occurs.
-func (w *wal) wait(seq int64) error {
+// wait blocks until seq is durable on disk, ctx is cancelled, or a fatal error occurs.
+func (w *wal) wait(ctx context.Context, seq int64) error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	for w.published <= seq && w.err == nil {
-		w.cond.Wait()
+	if w.published > seq || w.err != nil {
+		err := w.err
+		w.mu.Unlock()
+		return err
 	}
-	return w.err
+	w.mu.Unlock()
+
+	ticker := time.NewTicker(1 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			w.mu.Lock()
+			published := w.published
+			walErr := w.err
+			w.mu.Unlock()
+
+			if walErr != nil {
+				return walErr
+			}
+			if published > seq {
+				return nil
+			}
+		}
+	}
 }
 
 func (w *wal) flush() {

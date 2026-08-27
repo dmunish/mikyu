@@ -43,7 +43,7 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 	}
 
 	// Wait until durable on disk
-	if err := q.w.wait(seq); err != nil {
+	if err := q.w.wait(ctx, seq); err != nil {
 		return 0, err
 	}
 
