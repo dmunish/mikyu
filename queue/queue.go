@@ -26,24 +26,33 @@ type indexEntry struct {
 type Queue struct {
 	name string
 	file *os.File
+	w    *wal
 
 	mu    sync.Mutex
-	index []indexEntry
+	pos   int64        // next write position in the file
+	index []indexEntry // in-memory index of durable messages
 }
 
 type Manager struct {
 	mu     sync.RWMutex
 	dir    string
+	cfg    Config
 	queues map[string]*Queue
 }
 
 // Opens/creates WAL directory and rebuilds any found queues
 func Open(dir string) (*Manager, error) {
+
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create wal dir: %w", err)
 	}
 
-	m := &Manager{dir: dir, queues: make(map[string]*Queue)}
+	cfg := Config{}
+	m := &Manager{
+		dir:    dir,
+		cfg:    cfg,
+		queues: make(map[string]*Queue),
+	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -55,7 +64,7 @@ func Open(dir string) (*Manager, error) {
 			continue
 		}
 		name := strings.TrimSuffix(e.Name(), ".wal")
-		q, err := openQueue(dir, name)
+		q, err := openQueue(dir, name, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("restore queue %q: %w", name, err)
 		}
@@ -79,7 +88,7 @@ func (m *Manager) CreateQueue(name string) (*Queue, error) {
 		return nil, fmt.Errorf("create wal file: %w", err)
 	}
 
-	q := &Queue{name: name, file: f}
+	q := newQueue(name, f, m.cfg)
 	m.queues[name] = q
 	return q, nil
 }
@@ -102,22 +111,43 @@ func (m *Manager) Close() error {
 
 	var firstErr error
 	for _, q := range m.queues {
-		if err := q.file.Close(); err != nil && firstErr == nil {
+		if err := q.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
 }
 
-func openQueue(dir, name string) (*Queue, error) {
+func (q *Queue) Close() error {
+	flushErr := q.w.stop()
+	closeErr := q.file.Close()
+
+	if flushErr != nil {
+		return flushErr
+	}
+	return closeErr
+}
+
+func newQueue(name string, f *os.File, cfg Config) *Queue {
+	q := &Queue{
+		name: name,
+		file: f,
+		w:    newWAL(f, cfg),
+	}
+	q.w.start()
+	return q
+}
+
+func openQueue(dir, name string, cfg Config) (*Queue, error) {
 	path := filepath.Join(dir, name+".wal")
 	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, err
 	}
 
-	q := &Queue{name: name, file: f}
+	q := newQueue(name, f, cfg)
 	if err := q.rebuildIndex(); err != nil {
+		f.Close()
 		return nil, err
 	}
 	return q, nil
@@ -125,6 +155,9 @@ func openQueue(dir, name string) (*Queue, error) {
 
 // rebuilds the offset index in-memory, discarding truncated records
 func (q *Queue) rebuildIndex() error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
 	var pos int64
 	for {
 		var lenBuf [4]byte
@@ -159,5 +192,6 @@ func (q *Queue) rebuildIndex() error {
 		pos += total
 	}
 
+	q.pos = pos
 	return q.file.Truncate(pos)
 }

@@ -2,7 +2,6 @@ package queue
 
 import (
 	"context"
-	"io"
 
 	"github.com/gofrs/uuid/v5"
 )
@@ -26,25 +25,34 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 	rec := encodeRecord(id.String(), payload)
 
 	q.mu.Lock()
-	defer q.mu.Unlock()
+	pos := q.pos
+	q.pos += int64(len(rec))
+	q.mu.Unlock()
 
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-
-	pos, err := q.file.Seek(0, io.SeekEnd)
+	// Stage payload in flusher
+	seq, full, err := q.w.push(rec, pos)
 	if err != nil {
 		return 0, err
 	}
-	if _, err := q.file.Write(rec); err != nil {
-		return 0, err
+
+	if full {
+		select {
+		case q.w.wake <- struct{}{}:
+		default:
+		}
 	}
-	if err := q.file.Sync(); err != nil {
+
+	// Wait until flushed
+	if err := q.w.wait(seq); err != nil {
 		return 0, err
 	}
 
-	offset := uint64(len(q.index))
+	// Record in-memory index for local reads
+	offset := uint64(seq)
+	q.mu.Lock()
 	q.index = append(q.index, indexEntry{pos: pos, len: int64(len(rec))})
+	q.mu.Unlock()
+
 	return offset, nil
 }
 
