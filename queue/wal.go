@@ -7,8 +7,8 @@ import (
 )
 
 type Config struct {
-	BatchSize int
-	Interval  time.Duration
+	BatchSize int           // Max size of fsync batch
+	Interval  time.Duration // Max time to wait before triggering an fsync
 }
 
 func (c Config) withDefaults() Config {
@@ -16,7 +16,7 @@ func (c Config) withDefaults() Config {
 		c.BatchSize = 256
 	}
 	if c.Interval <= 0 {
-		c.Interval = 100 * time.Millisecond
+		c.Interval = 10 * time.Millisecond
 	}
 	return c
 }
@@ -32,9 +32,9 @@ type wal struct {
 
 	mu        sync.Mutex
 	cond      *sync.Cond
-	buf       []byte         // Staged bytes
-	pending   []pendingEntry // Staged index metadata
-	published int64          // Count of flushed records on disk
+	buf       []byte         // Staged bytes awaiting flush
+	pending   []pendingEntry // Staged index metadata awaiting flush
+	published int64          // Count of durable records on disk
 	err       error          // Sticky error state
 
 	wake     chan struct{}
@@ -43,15 +43,15 @@ type wal struct {
 }
 
 func newWAL(f *os.File, cfg Config) *wal {
-	fl := &wal{
+	w := &wal{
 		file:     f,
 		cfg:      cfg.withDefaults(),
 		wake:     make(chan struct{}, 1),
 		shutdown: make(chan struct{}),
 		done:     make(chan struct{}),
 	}
-	fl.cond = sync.NewCond(&fl.mu)
-	return fl
+	w.cond = sync.NewCond(&w.mu)
+	return w
 }
 
 func (w *wal) start() {
@@ -75,8 +75,9 @@ func (w *wal) syncLoop() {
 	}
 }
 
-// push stages a record and returns its assignable sequence number
-func (w *wal) push(rec []byte, pos int64) (seq int64, full bool, err error) {
+// push stages a record and signals if the flusher should wake immediately.
+// Triggers on len(pending) == 1 (idle transition) or len(pending) >= BatchSize (capacity cap).
+func (w *wal) push(rec []byte, pos int64) (seq int64, wake bool, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -87,12 +88,13 @@ func (w *wal) push(rec []byte, pos int64) (seq int64, full bool, err error) {
 	seq = w.published + int64(len(w.pending))
 	w.buf = append(w.buf, rec...)
 	w.pending = append(w.pending, pendingEntry{pos: pos, len: int64(len(rec))})
-	full = len(w.pending) >= w.cfg.BatchSize
 
-	return seq, full, nil
+	wake = len(w.pending) == 1 || len(w.pending) >= w.cfg.BatchSize
+
+	return seq, wake, nil
 }
 
-// wait blocks until seq is durable on disk or a fatal flush error occurs
+// wait blocks until seq is durable on disk or a fatal flush error occurs.
 func (w *wal) wait(seq int64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -110,14 +112,14 @@ func (w *wal) flush() {
 		return
 	}
 
-	// Swap out buffers to keep locks fast
+	// Swap buffers to keep mutex holding duration minimal
 	data := w.buf
 	entries := w.pending
 	w.buf = nil
 	w.pending = nil
 	w.mu.Unlock()
 
-	// Perform disk I/O without holding the mutex
+	// Perform disk I/O without holding the lock
 	var writeErr error
 	if _, err := w.file.WriteAt(data, entries[0].pos); err != nil {
 		writeErr = err

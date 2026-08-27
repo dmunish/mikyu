@@ -30,19 +30,19 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 	q.mu.Unlock()
 
 	// Stage payload in flusher
-	seq, full, err := q.w.push(rec, pos)
+	seq, wake, err := q.w.push(rec, pos)
 	if err != nil {
 		return 0, err
 	}
 
-	if full {
+	if wake {
 		select {
 		case q.w.wake <- struct{}{}:
 		default:
 		}
 	}
 
-	// Wait until flushed
+	// Wait until durable on disk
 	if err := q.w.wait(seq); err != nil {
 		return 0, err
 	}
@@ -56,16 +56,13 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 	return offset, nil
 }
 
-// Returns the message at offset without consuming or advancing anything
+// Read returns the message at offset without consuming or advancing state.
 func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 	if err := ctx.Err(); err != nil {
 		return Message{}, err
 	}
+
 	q.mu.Lock()
-	if err := ctx.Err(); err != nil {
-		q.mu.Unlock()
-		return Message{}, err
-	}
 	if offset >= uint64(len(q.index)) {
 		q.mu.Unlock()
 		return Message{}, ErrOffsetNotFound

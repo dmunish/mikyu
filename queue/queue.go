@@ -19,8 +19,8 @@ var (
 )
 
 type indexEntry struct {
-	pos int64 // where the length field of the record is in the file
-	len int64 // size of the actual record
+	pos int64 // File byte offset of record start (length prefix)
+	len int64 // Total length of length prefix + encoded body
 }
 
 type Queue struct {
@@ -29,8 +29,8 @@ type Queue struct {
 	w    *wal
 
 	mu    sync.Mutex
-	pos   int64        // next write position in the file
-	index []indexEntry // in-memory index of durable messages
+	pos   int64        // Next write byte offset in file
+	index []indexEntry // In-memory offset lookup table
 }
 
 type Manager struct {
@@ -40,9 +40,8 @@ type Manager struct {
 	queues map[string]*Queue
 }
 
-// Opens/creates WAL directory and rebuilds any found queues
+// Open initializes or loads a WAL directory and restores existing queue indices.
 func Open(dir string) (*Manager, error) {
-
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create wal dir: %w", err)
 	}
@@ -153,7 +152,7 @@ func openQueue(dir, name string, cfg Config) (*Queue, error) {
 	return q, nil
 }
 
-// rebuilds the offset index in-memory, discarding truncated records
+// rebuildIndex scans the WAL file, rebuilds the index, and truncates torn writes.
 func (q *Queue) rebuildIndex() error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -185,7 +184,7 @@ func (q *Queue) rebuildIndex() error {
 		}
 
 		if _, _, err := decodeRecord(body); err != nil {
-			break // checksum mismatch
+			break // checksum mismatch / torn write
 		}
 
 		q.index = append(q.index, indexEntry{pos: pos, len: total})
