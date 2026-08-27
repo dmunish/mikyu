@@ -50,7 +50,10 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 	// Record in-memory index for local reads
 	offset := uint64(seq)
 	q.mu.Lock()
-	q.index = append(q.index, indexEntry{pos: pos, len: int64(len(rec))})
+	for len(q.index) <= int(seq) {
+		q.index = append(q.index, indexEntry{})
+	}
+	q.index[seq] = indexEntry{pos: pos, len: int64(len(rec))}
 	q.mu.Unlock()
 
 	return offset, nil
