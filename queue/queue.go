@@ -17,6 +17,7 @@ var (
 
 type Queue struct {
 	name string
+	cfg  Config
 	file *os.File
 	w    *wal
 
@@ -41,6 +42,7 @@ func (c Config) withDefaults() Config {
 }
 
 func newQueue(name string, f *os.File, cfg Config) *Queue {
+	cfg = cfg.withDefaults()
 	q := &Queue{
 		name: name,
 		file: f,

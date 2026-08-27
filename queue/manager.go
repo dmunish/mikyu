@@ -11,7 +11,6 @@ import (
 type Manager struct {
 	mu     sync.RWMutex
 	dir    string
-	cfg    Config
 	queues map[string]*Queue
 }
 
@@ -21,10 +20,8 @@ func Open(dir string) (*Manager, error) {
 		return nil, fmt.Errorf("create wal dir: %w", err)
 	}
 
-	cfg := Config{}
 	m := &Manager{
 		dir:    dir,
-		cfg:    cfg,
 		queues: make(map[string]*Queue),
 	}
 
@@ -38,7 +35,7 @@ func Open(dir string) (*Manager, error) {
 			continue
 		}
 		name := strings.TrimSuffix(e.Name(), ".wal")
-		q, err := openQueue(dir, name, cfg)
+		q, err := openQueue(dir, name, Config{})
 		if err != nil {
 			return nil, fmt.Errorf("restore queue %q: %w", name, err)
 		}
@@ -48,7 +45,12 @@ func Open(dir string) (*Manager, error) {
 	return m, nil
 }
 
-func (m *Manager) CreateQueue(name string) (*Queue, error) {
+func (m *Manager) CreateQueue(name string, opts ...Config) (*Queue, error) {
+	var cfg Config
+	if len(opts) > 0 {
+		cfg = opts[0]
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -62,7 +64,7 @@ func (m *Manager) CreateQueue(name string) (*Queue, error) {
 		return nil, fmt.Errorf("create wal file: %w", err)
 	}
 
-	q := newQueue(name, f, m.cfg)
+	q := newQueue(name, f, cfg)
 	m.queues[name] = q
 	return q, nil
 }
