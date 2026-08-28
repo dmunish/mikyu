@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/edsrzf/mmap-go"
 )
 
 type rawIndexEntry struct {
@@ -19,6 +21,7 @@ type segment struct {
 	idxFile   *os.File
 	pos       int64
 	createdAt time.Time
+	mmapData  mmap.MMap
 }
 
 func openSegment(dir string, baseOff uint64) (*segment, error) {
@@ -47,6 +50,19 @@ func openSegment(dir string, baseOff uint64) (*segment, error) {
 		idxFile:   idxFile,
 		createdAt: createdAt,
 	}, nil
+}
+
+// Map the segment when rolled or opened as read-only
+func (s *segment) enableMMap() error {
+	if s.mmapData != nil {
+		return nil
+	}
+	m, err := mmap.Map(s.logFile, mmap.RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	s.mmapData = m
+	return nil
 }
 
 func (s *segment) writeIndex(pos, len int64) error {
@@ -135,8 +151,18 @@ func (s *segment) rebuild() ([]rawIndexEntry, error) {
 }
 
 func (s *segment) Close() error {
+	var mmapErr error
+	if s.mmapData != nil {
+		mmapErr = s.mmapData.Unmap()
+		s.mmapData = nil // Prevent double-unmapping
+	}
+
 	err1 := s.logFile.Close()
 	err2 := s.idxFile.Close()
+
+	if mmapErr != nil {
+		return mmapErr
+	}
 	if err1 != nil {
 		return err1
 	}

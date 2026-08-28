@@ -63,7 +63,7 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 	for len(q.index) <= int(offset) {
 		q.index = append(q.index, indexEntry{})
 	}
-	q.index[offset] = indexEntry{file: q.active.logFile, pos: pos, len: recLen}
+	q.index[offset] = indexEntry{seg: q.active, pos: pos, len: recLen}
 	q.mu.Unlock()
 
 	return offset, nil
@@ -86,9 +86,16 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 		return Message{}, err
 	}
 
-	rec := make([]byte, entry.len)
-	if _, err := entry.file.ReadAt(rec, entry.pos); err != nil {
-		return Message{}, err
+	var rec []byte
+	if entry.seg != nil && entry.seg.mmapData != nil {
+		// Fast path: Zero-copy slice directly into the mmapped OS page cache
+		rec = entry.seg.mmapData[entry.pos : entry.pos+entry.len]
+	} else {
+		// Fallback path: Traditional ReadAt for the active, unmapped segment
+		rec = make([]byte, entry.len)
+		if _, err := entry.seg.logFile.ReadAt(rec, entry.pos); err != nil {
+			return Message{}, err
+		}
 	}
 
 	id, payload, err := decodeRecord(rec[4:])

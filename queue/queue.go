@@ -19,9 +19,9 @@ var (
 )
 
 type indexEntry struct {
-	file *os.File
-	pos  int64
-	len  int64
+	seg *segment
+	pos int64
+	len int64
 }
 
 type Queue struct {
@@ -97,7 +97,7 @@ func (q *Queue) loadSegments() error {
 		bases = []uint64{0}
 	}
 
-	for _, base := range bases {
+	for i, base := range bases {
 		seg, err := openSegment(q.dir, base)
 		if err != nil {
 			return err
@@ -107,8 +107,17 @@ func (q *Queue) loadSegments() error {
 			seg.Close()
 			return err
 		}
+
+		// Enable mmap for all historical segments; keep active unmapped for writing
+		if i < len(bases)-1 {
+			if err := seg.enableMMap(); err != nil {
+				seg.Close()
+				return err
+			}
+		}
+
 		for _, e := range rawEntries {
-			q.index = append(q.index, indexEntry{file: seg.logFile, pos: e.pos, len: e.len})
+			q.index = append(q.index, indexEntry{seg: seg, pos: e.pos, len: e.len})
 		}
 		q.segments = append(q.segments, seg)
 		q.active = seg
@@ -122,6 +131,11 @@ func (q *Queue) loadSegments() error {
 func (q *Queue) roll() error {
 	if err := q.w.stop(); err != nil {
 		return err
+	}
+
+	// Mmap the newly sealed segment before rolling away from it
+	if q.active != nil {
+		_ = q.active.enableMMap()
 	}
 
 	nextOff := uint64(len(q.index))
