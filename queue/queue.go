@@ -123,7 +123,7 @@ func (q *Queue) loadSegments() error {
 		q.active = seg
 	}
 
-	q.w = newWAL(q.active.logFile, q.cfg)
+	q.w = newWAL(q.active.logFile, q.cfg, int64(len(q.index)))
 	q.w.start()
 	return nil
 }
@@ -150,7 +150,7 @@ func (q *Queue) roll() error {
 
 	q.active = seg
 	q.segments = append(q.segments, seg)
-	q.w = newWAL(seg.logFile, q.cfg)
+	q.w = newWAL(seg.logFile, q.cfg, int64(len(q.index)))
 	q.w.start()
 	return nil
 }

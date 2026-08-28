@@ -31,11 +31,12 @@ type wal struct {
 	done     chan struct{}
 }
 
-func newWAL(f *os.File, cfg Config) *wal {
+func newWAL(f *os.File, cfg Config, startOffset int64) *wal {
 	initCap := cfg.BatchSize * 1024 // ~256 KiB
 	w := &wal{
 		file:         f,
 		cfg:          cfg.withDefaults(),
+		published:    startOffset,
 		buf:          make([]byte, 0, initCap),
 		flushBuf:     make([]byte, 0, initCap),
 		pending:      make([]pendingEntry, 0, cfg.BatchSize),
