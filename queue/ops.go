@@ -38,9 +38,9 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 
 	pos := q.active.pos
 	q.active.pos += recLen
-	q.mu.Unlock()
 
 	seq, wake, err := q.w.push(rec, pos)
+	q.mu.Unlock()
 	if err != nil {
 		return 0, err
 	}
