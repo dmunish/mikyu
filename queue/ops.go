@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"time"
 
 	"github.com/gofrs/uuid/v5"
 )
@@ -12,10 +13,12 @@ type Message struct {
 	Payload []byte
 }
 
-// Produce appends payload to the log and returns the offset it was written at.
 func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
+	}
+	if int64(len(payload)) > q.cfg.MaxMessageBytes {
+		return 0, ErrMessageTooLarge
 	}
 
 	id, err := uuid.NewV7()
@@ -23,13 +26,20 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 		return 0, err
 	}
 	rec := encodeRecord(id.String(), payload)
+	recLen := int64(len(rec))
 
 	q.mu.Lock()
-	pos := q.pos
-	q.pos += int64(len(rec))
+	if q.active.pos+recLen > q.cfg.MaxSegmentBytes || time.Since(q.active.createdAt) > q.cfg.MaxSegmentAge {
+		if err := q.roll(); err != nil {
+			q.mu.Unlock()
+			return 0, err
+		}
+	}
+
+	pos := q.active.pos
+	q.active.pos += recLen
 	q.mu.Unlock()
 
-	// Stage payload in flusher
 	seq, wake, err := q.w.push(rec, pos)
 	if err != nil {
 		return 0, err
@@ -42,24 +52,23 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 		}
 	}
 
-	// Wait until durable on disk
 	if err := q.w.wait(seq); err != nil {
 		return 0, err
 	}
 
-	// Record in-memory index for local reads
 	offset := uint64(seq)
+
 	q.mu.Lock()
-	for len(q.index) <= int(seq) {
+	_ = q.active.writeIndex(pos, recLen)
+	for len(q.index) <= int(offset) {
 		q.index = append(q.index, indexEntry{})
 	}
-	q.index[seq] = indexEntry{pos: pos, len: int64(len(rec))}
+	q.index[offset] = indexEntry{file: q.active.logFile, pos: pos, len: recLen}
 	q.mu.Unlock()
 
 	return offset, nil
 }
 
-// Read returns the message at offset without consuming or advancing state.
 func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 	if err := ctx.Err(); err != nil {
 		return Message{}, err
@@ -78,7 +87,7 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 	}
 
 	rec := make([]byte, entry.len)
-	if _, err := q.file.ReadAt(rec, entry.pos); err != nil {
+	if _, err := entry.file.ReadAt(rec, entry.pos); err != nil {
 		return Message{}, err
 	}
 

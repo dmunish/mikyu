@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 )
 
@@ -14,7 +13,6 @@ type Manager struct {
 	queues map[string]*Queue
 }
 
-// Open initializes a directory and loads any existing queues.
 func Open(dir string) (*Manager, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create wal dir: %w", err)
@@ -31,10 +29,10 @@ func Open(dir string) (*Manager, error) {
 	}
 
 	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".wal" {
+		if !e.IsDir() {
 			continue
 		}
-		name := strings.TrimSuffix(e.Name(), ".wal")
+		name := e.Name()
 		q, err := openQueue(dir, name, Config{})
 		if err != nil {
 			return nil, fmt.Errorf("restore queue %q: %w", name, err)
@@ -58,13 +56,16 @@ func (m *Manager) CreateQueue(name string, opts ...Config) (*Queue, error) {
 		return nil, ErrQueueExists
 	}
 
-	path := filepath.Join(m.dir, name+".wal")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("create wal file: %w", err)
+	queueDir := filepath.Join(m.dir, name)
+	if _, err := os.Stat(queueDir); err == nil {
+		return nil, ErrQueueExists
 	}
 
-	q := newQueue(name, f, cfg)
+	q, err := openQueue(m.dir, name, cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	m.queues[name] = q
 	return q, nil
 }

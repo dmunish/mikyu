@@ -7,7 +7,7 @@ import (
 )
 
 type pendingEntry struct {
-	pos int64
+	pos int64 //per-segment pointer
 	len int64
 }
 
@@ -61,7 +61,6 @@ func (w *wal) syncLoop() {
 }
 
 // push stages a record and signals if the flusher should wake immediately.
-// Triggers on len(pending) == 1 (idle transition) or len(pending) >= BatchSize (capacity cap).
 func (w *wal) push(rec []byte, pos int64) (seq int64, wake bool, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

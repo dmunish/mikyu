@@ -212,7 +212,7 @@ func TestWALReplay_TruncatesTornWriteTail(t *testing.T) {
 
 	// Simulate a crash mid-write: append a length prefix claiming more bytes
 	// than actually follow, plus a stray trailing byte with no complete header.
-	walPath := filepath.Join(dir, "torn.wal")
+	walPath := filepath.Join(dir, "torn", "00000000000000000000.log")
 	f, err := os.OpenFile(walPath, os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		t.Fatalf("open wal for corruption: %v", err)
