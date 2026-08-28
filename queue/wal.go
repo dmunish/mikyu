@@ -15,16 +15,12 @@ type wal struct {
 	cfg  Config
 	file *os.File
 
-	mu   sync.Mutex
-	cond *sync.Cond
-
-	buf          []byte         // Active staging buffer
-	flushBuf     []byte         // Swap buffer used during disk write
-	pending      []pendingEntry // Active index entries
-	flushPending []pendingEntry // Swap index entries
-
-	published int64 // Count of durable records on disk
-	err       error // Sticky error state
+	mu        sync.Mutex
+	cond      *sync.Cond
+	buf       []byte         // Staged bytes awaiting flush
+	pending   []pendingEntry // Staged index metadata awaiting flush
+	published int64          // Count of durable records on disk
+	err       error          // Sticky error state
 
 	wake     chan struct{}
 	shutdown chan struct{}
@@ -34,16 +30,14 @@ type wal struct {
 func newWAL(f *os.File, cfg Config, startOffset int64) *wal {
 	initCap := cfg.BatchSize * 1024 // ~256 KiB
 	w := &wal{
-		file:         f,
-		cfg:          cfg.withDefaults(),
-		published:    startOffset,
-		buf:          make([]byte, 0, initCap),
-		flushBuf:     make([]byte, 0, initCap),
-		pending:      make([]pendingEntry, 0, cfg.BatchSize),
-		flushPending: make([]pendingEntry, 0, cfg.BatchSize),
-		wake:         make(chan struct{}, 1),
-		shutdown:     make(chan struct{}),
-		done:         make(chan struct{}),
+		file:      f,
+		cfg:       cfg.withDefaults(),
+		published: startOffset,
+		buf:       make([]byte, 0, initCap),
+		pending:   make([]pendingEntry, 0, cfg.BatchSize),
+		wake:      make(chan struct{}, 1),
+		shutdown:  make(chan struct{}),
+		done:      make(chan struct{}),
 	}
 	w.cond = sync.NewCond(&w.mu)
 	return w
@@ -106,12 +100,11 @@ func (w *wal) flush() {
 		return
 	}
 
-	// Swap active buffers with flush buffers (reserving capacity, resetting length to 0)
-	w.buf, w.flushBuf = w.flushBuf[:0], w.buf
-	w.pending, w.flushPending = w.flushPending[:0], w.pending
-
-	data := w.flushBuf
-	entries := w.flushPending
+	// Swap buffers to keep mutex holding duration minimal
+	data := w.buf
+	entries := w.pending
+	w.buf = nil
+	w.pending = nil
 	w.mu.Unlock()
 
 	// Perform disk I/O without holding the lock
