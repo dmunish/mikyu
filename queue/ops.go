@@ -3,8 +3,7 @@ package queue
 import (
 	"context"
 	"time"
-
-	"github.com/gofrs/uuid/v5"
+	"uuid"
 )
 
 type Message struct {
@@ -21,10 +20,7 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 		return 0, ErrMessageTooLarge
 	}
 
-	id, err := uuid.NewV7()
-	if err != nil {
-		return 0, err
-	}
+	id := uuid.NewV7()
 	rec := encodeRecord(id.String(), payload)
 	recLen := int64(len(rec))
 
