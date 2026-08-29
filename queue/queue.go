@@ -33,15 +33,14 @@ type Queue struct {
 	index    []indexEntry
 	w        *wal
 	mu       sync.Mutex
-	offsets  *OffsetStore
 }
 
 type Config struct {
-	BatchSize       int
-	Interval        time.Duration
-	MaxSegmentBytes int64
-	MaxMessageBytes int64
-	MaxSegmentAge   time.Duration
+	BatchSize       int           // Max size of fsync batch
+	Interval        time.Duration // Max time to wait before triggering an fsync
+	MaxSegmentBytes int64         // Max size of a segment file
+	MaxMessageBytes int64         // Max size of a single message payload
+	MaxSegmentAge   time.Duration // Max age of a segment before rolling
 }
 
 func (c Config) withDefaults() Config {
@@ -52,10 +51,10 @@ func (c Config) withDefaults() Config {
 		c.Interval = 10 * time.Millisecond
 	}
 	if c.MaxSegmentBytes <= 0 {
-		c.MaxSegmentBytes = 64 * 1024 * 1024
+		c.MaxSegmentBytes = 64 * 1024 * 1024 // 64 MiB
 	}
 	if c.MaxMessageBytes <= 0 {
-		c.MaxMessageBytes = 1 * 1024 * 1024
+		c.MaxMessageBytes = 1 * 1024 * 1024 // 1 MiB
 	}
 	if c.MaxSegmentAge <= 0 {
 		c.MaxSegmentAge = 1 * time.Hour
@@ -70,14 +69,8 @@ func openQueue(parentDir, name string, cfg Config) (*Queue, error) {
 		return nil, err
 	}
 
-	offsets, err := OpenOffsetStore(dir)
-	if err != nil {
-		return nil, fmt.Errorf("open offset store: %w", err)
-	}
-
-	q := &Queue{name: name, dir: dir, cfg: cfg, offsets: offsets}
+	q := &Queue{name: name, dir: dir, cfg: cfg}
 	if err := q.loadSegments(); err != nil {
-		_ = offsets.Close()
 		return nil, err
 	}
 	return q, nil
@@ -115,6 +108,7 @@ func (q *Queue) loadSegments() error {
 			return err
 		}
 
+		// Enable mmap for all historical segments; keep active unmapped for writing
 		if i < len(bases)-1 {
 			if err := seg.enableMMap(); err != nil {
 				seg.Close()
@@ -139,6 +133,7 @@ func (q *Queue) roll() error {
 		return err
 	}
 
+	// Mmap the newly sealed segment before rolling away from it
 	if q.active != nil {
 		_ = q.active.enableMMap()
 	}
@@ -160,17 +155,6 @@ func (q *Queue) roll() error {
 	return nil
 }
 
-// CommitOffset records a consumer group's progress. Monotonic; stale commits
-// (offset <= previously stored) are silently ignored.
-func (q *Queue) CommitOffset(_ /*ctx*/, group string, offset uint64) error {
-	return q.offsets.Commit(group, offset)
-}
-
-// FetchOffset returns the last committed offset for a group, or 0 if none.
-func (q *Queue) FetchOffset(_ /*ctx*/, group string) (uint64, error) {
-	return q.offsets.Fetch(group), nil
-}
-
 func (q *Queue) Close() error {
 	flushErr := q.w.stop()
 	var closeErr error
@@ -178,9 +162,6 @@ func (q *Queue) Close() error {
 		if err := seg.Close(); err != nil && closeErr == nil {
 			closeErr = err
 		}
-	}
-	if err := q.offsets.Close(); err != nil && closeErr == nil {
-		closeErr = err
 	}
 	if flushErr != nil {
 		return flushErr

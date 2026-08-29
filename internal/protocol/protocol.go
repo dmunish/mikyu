@@ -8,13 +8,11 @@ import (
 )
 
 const (
-	OpCreateQueue  byte = 0x01
-	OpProduce      byte = 0x02
-	OpRead         byte = 0x03
-	OpTail         byte = 0x04
-	OpCommitOffset byte = 0x05
-	OpFetchOffset  byte = 0x06
-	OpError        byte = 0xFF
+	OpCreateQueue byte = 0x01
+	OpProduce     byte = 0x02
+	OpRead        byte = 0x03
+	OpTail        byte = 0x04
+	OpError       byte = 0xFF
 )
 
 const (
@@ -22,7 +20,6 @@ const (
 	ErrCodeQueueExists    byte = 0x01
 	ErrCodeQueueNotFound  byte = 0x02
 	ErrCodeOffsetNotFound byte = 0x03
-	ErrCodeInvalidRequest byte = 0x04
 )
 
 /*
