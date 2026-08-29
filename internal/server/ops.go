@@ -76,9 +76,10 @@ func (s *Server) read(ctx context.Context, body []byte) (byte, []byte) {
 	}
 
 	var resp protocol.Buffer
-	resp.WriteBytes([]byte(msg.ID))
-	resp.WriteBytes(msg.Payload)
 	resp.WriteU64(msg.Offset)
+	resp.WriteBytes([]byte(msg.ID))
+	resp.WriteU64(uint64(msg.Timestamp.UnixNano()))
+	resp.WriteBytes(msg.Payload)
 	return protocol.OpRead, resp.Bytes()
 }
 

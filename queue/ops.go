@@ -7,9 +7,10 @@ import (
 )
 
 type Message struct {
-	Offset  uint64
-	ID      string
-	Payload []byte
+	Offset    uint64
+	Timestamp time.Time
+	ID        string
+	Payload   []byte
 }
 
 func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
@@ -20,8 +21,9 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 		return 0, ErrMessageTooLarge
 	}
 
+	ts := time.Now()
 	id := uuid.NewV7()
-	rec := encodeRecord(id.String(), payload)
+	rec := encodeRecord(id.String(), ts, payload)
 	recLen := int64(len(rec))
 
 	q.mu.Lock()
@@ -94,12 +96,12 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 		}
 	}
 
-	id, payload, err := decodeRecord(rec[4:])
+	id, ts, payload, err := decodeRecord(rec[4:])
 	if err != nil {
 		return Message{}, err
 	}
 
-	return Message{Offset: offset, ID: id, Payload: payload}, nil
+	return Message{Offset: offset, ID: id, Timestamp: ts, Payload: payload}, nil
 }
 
 func (q *Queue) LastOffset() uint64 {

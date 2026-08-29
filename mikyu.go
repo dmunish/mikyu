@@ -73,20 +73,24 @@ func (c *Client) Read(ctx context.Context, queue string, offset uint64) (Message
 	}
 
 	r := protocol.NewReader(resp)
+	respOffset, err := r.ReadU64()
+	if err != nil {
+		return Message{}, fmt.Errorf("invalid response offset: %w", err)
+	}
 	id, err := r.ReadBytes()
 	if err != nil {
 		return Message{}, fmt.Errorf("invalid response ID: %w", err)
+	}
+	tsNano, err := r.ReadU64()
+	if err != nil {
+		return Message{}, fmt.Errorf("invalid response timestamp: %w", err)
 	}
 	payload, err := r.ReadBytes()
 	if err != nil {
 		return Message{}, fmt.Errorf("invalid response payload: %w", err)
 	}
-	respOffset, err := r.ReadU64()
-	if err != nil {
-		return Message{}, fmt.Errorf("invalid response offset: %w", err)
-	}
 
-	return Message{Offset: respOffset, ID: string(id), Payload: payload}, nil
+	return Message{Offset: respOffset, Timestamp: time.Unix(0, int64(tsNano)), ID: string(id), Payload: payload}, nil
 }
 
 func (c *Client) LastOffset(ctx context.Context, queue string) (uint64, error) {

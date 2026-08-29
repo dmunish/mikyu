@@ -135,7 +135,7 @@ func (s *segment) rebuild() ([]rawIndexEntry, error) {
 			break // torn write tail
 		}
 
-		if _, _, err := decodeRecord(body); err != nil {
+		if _, _, _, err := decodeRecord(body); err != nil {
 			break // checksum mismatch
 		}
 
