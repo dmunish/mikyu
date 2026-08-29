@@ -4,7 +4,7 @@ This file is the single source of truth for new agents. It consolidates the
 repository structure, what each file does, and the contracts you must respect
 when editing. Do **not** go re-exploring the repo from scratch — read this
 first. The narrative/roadmap context lives in `.notes/plan.md`; this file is the
-structural map.
+structural map. 
 
 Module path: `github.com/dmunish/mikyu`
 Go version: `1.27.0`
@@ -15,6 +15,14 @@ Build/test:
 - `go build ./...` — clean (verified).
 - `go vet ./...` — clean (verified).
 - `go test ./...` — TDD throughout; white-box (`package queue`) + black-box (`package queue_test` / `package mikyu_test`).
+
+## Tool Use Rules
+- When reading `SKILL.md` files or workspace context files, NEVER rely on partial/truncated initial views (lines 1–100).
+- If a file exceeds the default tool view limit, issue sequential tool calls until the entire file content is loaded into memory before taking action.
+
+# Go Language Updates
+`.github/modern-go` contains new features of Go from release 1.23, 
+up to the most recent 1.27. Read that at the start every time to get a fresher.
 
 ## Architectural invariants (load-bearing — do not break)
 
