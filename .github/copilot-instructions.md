@@ -17,7 +17,7 @@ Build/test:
 - `go test ./...` — TDD throughout; white-box (`package queue`) + black-box (`package queue_test` / `package mikyu_test`).
 
 ## Tool Use Rules
-- When reading `SKILL.md` files or workspace context files, NEVER rely on partial/truncated initial views (lines 1–100).
+- When reading `SKILL.md` files or workspace context files, NEVER rely on partial/truncated initial views (lines 1–100). Use large ranges (1-500) by default.
 - If a file exceeds the default tool view limit, issue sequential tool calls until the entire file content is loaded into memory before taking action.
 
 # Go Language Updates
