@@ -2,6 +2,7 @@ package queue
 
 import (
 	"testing"
+	"time"
 )
 
 func TestSegment_RecoverAndRebuild(t *testing.T) {
@@ -14,8 +15,8 @@ func TestSegment_RecoverAndRebuild(t *testing.T) {
 	}
 	defer s.Close()
 
-	rec1 := encodeRecord("id1", []byte("payload1"))
-	rec2 := encodeRecord("id2", []byte("payload2"))
+	rec1 := encodeRecord("id1", time.Now(), []byte("payload1"))
+	rec2 := encodeRecord("id2", time.Now(), []byte("payload2"))
 
 	if _, err := s.logFile.WriteAt(rec1, 0); err != nil {
 		t.Fatalf("write rec1: %v", err)

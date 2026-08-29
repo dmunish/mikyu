@@ -124,6 +124,9 @@ func TestProduceAndRead(t *testing.T) {
 		if msg.ID == "" {
 			t.Errorf("Read(%d) returned empty ID", i)
 		}
+		if msg.Timestamp.IsZero() {
+			t.Errorf("Read(%d) returned zero Timestamp", i)
+		}
 		if !bytes.Equal(msg.Payload, want) {
 			t.Errorf("Read(%d) payload = %q, want %q", i, msg.Payload, want)
 		}

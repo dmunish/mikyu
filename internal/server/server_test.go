@@ -115,9 +115,10 @@ func TestDispatch_CreateQueueProduceAndReadTail(t *testing.T) {
 		t.Fatalf("Read returned error frame: %q", string(body))
 	}
 	r := protocol.NewReader(body)
-	id, _ := r.ReadBytes()
-	payload, _ := r.ReadBytes()
 	msgOffset, _ := r.ReadU64()
+	id, _ := r.ReadBytes()
+	_, _ = r.ReadU64()
+	payload, _ := r.ReadBytes()
 	if len(id) == 0 || string(payload) != "hello" || msgOffset != 0 {
 		t.Errorf("Read = id:%q payload:%q offset:%d, want non-empty id, %q, 0", id, payload, msgOffset, "hello")
 	}

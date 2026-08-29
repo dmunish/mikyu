@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestRecordRoundTrip(t *testing.T) {
@@ -24,8 +25,8 @@ func TestRecordRoundTrip(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			rec := encodeRecord(tt.id, tt.payload)
-			gotID, gotPayload, err := decodeRecord(rec[4:]) // skip length prefix
+			rec := encodeRecord(tt.id, time.Now(), tt.payload)
+			gotID, _, gotPayload, err := decodeRecord(rec[4:]) // skip length prefix
 			if err != nil {
 				t.Fatalf("decodeRecord: %v", err)
 			}
@@ -42,10 +43,10 @@ func TestRecordRoundTrip(t *testing.T) {
 func TestDecodeRecordCorruptChecksum(t *testing.T) {
 	t.Parallel()
 
-	rec := encodeRecord("id", []byte("payload"))
+	rec := encodeRecord("id", time.Now(), []byte("payload"))
 	rec[4+6] ^= 0xFF // flip bits in the body, past the checksum field
 
-	if _, _, err := decodeRecord(rec[4:]); !errors.Is(err, ErrCorruptRecord) {
+	if _, _, _, err := decodeRecord(rec[4:]); !errors.Is(err, ErrCorruptRecord) {
 		t.Errorf("err = %v, want %v", err, ErrCorruptRecord)
 	}
 }
@@ -68,7 +69,7 @@ func TestDecodeRecordTruncated(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if _, _, err := decodeRecord(tt.buf); !errors.Is(err, ErrCorruptRecord) {
+			if _, _, _, err := decodeRecord(tt.buf); !errors.Is(err, ErrCorruptRecord) {
 				t.Errorf("err = %v, want %v", err, ErrCorruptRecord)
 			}
 		})
