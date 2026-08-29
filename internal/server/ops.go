@@ -99,3 +99,52 @@ func (s *Server) tail(body []byte) (byte, []byte) {
 	resp.WriteU64(q.LastOffset())
 	return protocol.OpTail, resp.Bytes()
 }
+
+func (s *Server) commitOffset(ctx context.Context, body []byte) (byte, []byte) {
+	r := protocol.NewReader(body)
+	name, err := r.ReadBytes()
+	if err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid queue name")
+	}
+	group, err := r.ReadBytes()
+	if err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid group name")
+	}
+	offset, err := r.ReadU64()
+	if err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid offset")
+	}
+
+	q, err := s.mgr.Queue(string(name))
+	if err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
+	}
+	if err := q.CommitOffset(ctx, string(group), offset); err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, err.Error())
+	}
+	return protocol.OpCommitOffset, nil
+}
+
+func (s *Server) fetchOffset(ctx context.Context, body []byte) (byte, []byte) {
+	r := protocol.NewReader(body)
+	name, err := r.ReadBytes()
+	if err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid queue name")
+	}
+	group, err := r.ReadBytes()
+	if err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid group name")
+	}
+
+	q, err := s.mgr.Queue(string(name))
+	if err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
+	}
+	offset, err := q.FetchOffset(ctx, string(group))
+	if err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, err.Error())
+	}
+	var resp protocol.Buffer
+	resp.WriteU64(offset)
+	return protocol.OpFetchOffset, resp.Bytes()
+}

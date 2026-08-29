@@ -32,6 +32,7 @@ type Queue struct {
 	segments []*segment
 	index    []indexEntry
 	w        *wal
+	offsets  *OffsetStore
 	mu       sync.Mutex
 }
 
@@ -125,6 +126,12 @@ func (q *Queue) loadSegments() error {
 
 	q.w = newWAL(q.active.logFile, q.cfg, int64(len(q.index)))
 	q.w.start()
+
+	offsets, err := OpenOffsetStore(q.dir)
+	if err != nil {
+		return err
+	}
+	q.offsets = offsets
 	return nil
 }
 
@@ -158,6 +165,11 @@ func (q *Queue) roll() error {
 func (q *Queue) Close() error {
 	flushErr := q.w.stop()
 	var closeErr error
+	if q.offsets != nil {
+		if err := q.offsets.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
 	for _, seg := range q.segments {
 		if err := seg.Close(); err != nil && closeErr == nil {
 			closeErr = err

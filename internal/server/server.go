@@ -66,6 +66,10 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (byte, []by
 		return s.read(ctx, body)
 	case protocol.OpTail:
 		return s.tail(body)
+	case protocol.OpCommitOffset:
+		return s.commitOffset(ctx, body)
+	case protocol.OpFetchOffset:
+		return s.fetchOffset(ctx, body)
 	default:
 		return protocol.OpError, protocol.EncodeError(
 			protocol.ErrCodeUnknown, fmt.Sprintf("unknown opcode 0x%02x", op))

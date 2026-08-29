@@ -109,6 +109,32 @@ func (c *Client) LastOffset(ctx context.Context, queue string) (uint64, error) {
 	return offset, nil
 }
 
+func (c *Client) CommitOffset(ctx context.Context, queue, group string, offset uint64) error {
+	var body protocol.Buffer
+	body.WriteBytes([]byte(queue))
+	body.WriteBytes([]byte(group))
+	body.WriteU64(offset)
+
+	_, err := c.exchange(ctx, protocol.OpCommitOffset, body.Bytes())
+	return err
+}
+
+func (c *Client) FetchOffset(ctx context.Context, queue, group string) (uint64, error) {
+	var body protocol.Buffer
+	body.WriteBytes([]byte(queue))
+	body.WriteBytes([]byte(group))
+
+	resp, err := c.exchange(ctx, protocol.OpFetchOffset, body.Bytes())
+	if err != nil {
+		return 0, err
+	}
+	offset, err := protocol.NewReader(resp).ReadU64()
+	if err != nil {
+		return 0, fmt.Errorf("invalid response offset: %w", err)
+	}
+	return offset, nil
+}
+
 func (c *Client) exchange(ctx context.Context, op byte, body []byte) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

@@ -109,3 +109,44 @@ func (q *Queue) LastOffset() uint64 {
 	defer q.mu.Unlock()
 	return uint64(len(q.index))
 }
+
+func (q *Queue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error) {
+	offsets := make([]uint64, 0, len(payloads))
+	for _, p := range payloads {
+		off, err := q.Produce(ctx, p)
+		if err != nil {
+			return offsets, err
+		}
+		offsets = append(offsets, off)
+	}
+	return offsets, nil
+}
+
+func (q *Queue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([]Message, error) {
+	if count <= 0 {
+		return nil, nil
+	}
+	out := make([]Message, 0, count)
+	for i := range count {
+		msg, err := q.Read(ctx, startOffset+uint64(i))
+		if err != nil {
+			return out, err
+		}
+		out = append(out, msg)
+	}
+	return out, nil
+}
+
+func (q *Queue) CommitOffset(_ context.Context, group string, offset uint64) error {
+	if q.offsets == nil {
+		return ErrQueueNotFound
+	}
+	return q.offsets.Commit(group, offset)
+}
+
+func (q *Queue) FetchOffset(_ context.Context, group string) (uint64, error) {
+	if q.offsets == nil {
+		return 0, ErrQueueNotFound
+	}
+	return q.offsets.Fetch(group), nil
+}
