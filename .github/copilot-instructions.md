@@ -58,6 +58,9 @@ Mirrors the server wire protocol as a client. Deliberate API bridge across the
 - `(*Client) Read(ctx, queue string, offset uint64) (Message, error)` —
   sends `OpRead`, reconstructs a `Message`.
 - `(*Client) LastOffset(ctx, queue string) (uint64, error)` — sends `OpTail`.
+- `(*Client) Queue(name string) Engine` — returns a `remoteEngine` bound to the named queue, implementing the unified `Engine` interface.
+- `(*Client) CommitOffset(ctx, queue, group string, offset uint64) error` — sends `OpCommitOffset`.
+- `(*Client) FetchOffset(ctx, queue, group string) (uint64, error)` — sends `OpFetchOffset`.
 - `(*Client) exchange(ctx, op byte, body []byte) ([]byte, error)` — frames a
   request, applies `ctx` deadline to the socket, reads the response frame.
   Returns `ctx.Err()` if the context fired; maps `OpError` via `decodeError`.
@@ -210,3 +213,33 @@ task is explicitly the dashboard.
   `newWAL` seeds `published` from `len(index)`; keep that invariant if you touch replay.
 - **`go.mod` only lists `mmap-go` + indirect `golang.org/x/sys`**; `uuid` resolves
   via stdlib. If you add a dep, run `go mod tidy`.
+
+### `engine.go` — `package mikyu` (Engine interface + adapters + SDK extensions)
+- `Engine` interface: `Produce`, `ProduceBatch`, `Read`, `ReadBatch`, `LastOffset`, `CommitOffset`, `FetchOffset` — unified contract for embedded (`queue.Queue`) and remote (`Client`).
+- `LastOffsetAdapter`: embeds `*queue.Queue`, overrides `LastOffset(ctx)` to add context awareness.
+- `remoteEngine`: binds `Client` + queue name; implements `Engine` over TCP.
+- `Client.Queue(name) Engine`: returns `remoteEngine` bound to named queue.
+- `Stream` / `Tail`: `iter.Seq2[Message, error]` iterators with active `ctx.Err()` cancellation.
+- `ConsumerGroup`: `JoinGroup`, `Mark`, `Commit`, `FetchOffset`, `Close` (actor goroutine + synchronous final commit).
+- `Codec[T]` / `Typed[T]`: generic wrapper; value receiver (`Typed[T]`); `NewTyped`.
+- `Message` alias (`queue.Message`) exported.
+- `Engine` interface (`engine.go`): `Produce`, `ProduceBatch`, `Read`, `ReadBatch`, `LastOffset`, `CommitOffset`, `FetchOffset` — unified contract for embedded (`queue.Queue` via `LastOffsetAdapter`) and remote (`Client` via `remoteEngine`).
+- `LastOffsetAdapter`: embeds `*queue.Queue`, overrides `LastOffset(ctx)` to add context awareness.
+- `remoteEngine`: binds `Client` + queue name; implements `Engine` over TCP.
+
+### `queue/offets.go` — manager-level offset persistence (`package queue`)
+- `OffsetStore`: single `manager-offsets.dat` file for all queues (not 1 per queue).
+- `OpenManagerOffsetStore`, `Commit(queueName, group, offset)`, `Fetch(queueName, group)`, `Close`.
+- `bufio.Writer` + `Flush()` before `Sync()` (Batch 4 performance fix).
+
+### `queue/offsets_test.go` — white-box tests (`package queue`)
+- `TestOffsetStore_CommitAndFetch`: verifies manager-level store writes and reads.
+
+### `engine_test.go` — SDK contract tests (`package mikyu`)
+- `TestEngineContract`: compile-time assertion `var _ Engine = LastOffsetAdapter{}`.
+
+### New modules added (post-Phase-6):
+- `engine.go`: `Engine`, adapters, `ConsumerGroup`, `Typed[T]`, iterators.
+- `queue/offets.go`: manager-level `OffsetStore` (replaces deleted per-queue `offsets.go`).
+- `queue/offsets_test.go`: manager store tests.
+- `engine_test.go`: SDK contract verification.
