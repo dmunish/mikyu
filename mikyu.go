@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dmunish/mikyu/internal/protocol"
@@ -21,20 +23,94 @@ var (
 type Message = queue.Message
 
 type Client struct {
+	addr     string
+	pool     chan *clientConn
+	maxConns int
+	mu       sync.Mutex
+	closed   atomic.Bool
+}
+
+type clientConn struct {
 	conn net.Conn
 	r    *bufio.Reader
 }
 
-func Dial(addr string) (*Client, error) {
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		return nil, err
+func Dial(addr string, opts ...DialOption) (*Client, error) {
+	cfg := dialConfig{addr: addr, maxConns: 10}
+	for _, o := range opts {
+		o.apply(&cfg)
 	}
-	return &Client{conn: conn, r: bufio.NewReader(conn)}, nil
+	pool := make(chan *clientConn, cfg.maxConns)
+	return &Client{addr: addr, pool: pool, maxConns: cfg.maxConns}, nil
+}
+
+type dialConfig struct {
+	addr     string
+	maxConns int
+}
+
+type DialOption interface {
+	apply(*dialConfig)
+}
+
+type maxConnsOption int
+
+func (m maxConnsOption) apply(c *dialConfig) { c.maxConns = int(m) }
+
+func WithMaxConns(n int) DialOption { return maxConnsOption(n) }
+
+func (c *Client) acquire(ctx context.Context) (*clientConn, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case ch := <-c.pool:
+		return ch, nil
+	default:
+		conn, err := net.Dial("tcp", c.addr)
+		if err != nil {
+			return nil, err
+		}
+		return &clientConn{conn: conn, r: bufio.NewReader(conn)}, nil
+	}
+}
+
+func (c *Client) release(ch *clientConn) {
+	if ch == nil {
+		return
+	}
+	c.mu.Lock()
+	closed := c.closed.Load()
+	c.mu.Unlock()
+	if closed {
+		ch.conn.Close()
+		return
+	}
+	select {
+	case c.pool <- ch:
+	default:
+		ch.conn.Close()
+	}
 }
 
 func (c *Client) Close() error {
-	return c.conn.Close()
+	c.mu.Lock()
+	if c.closed.Load() {
+		c.mu.Unlock()
+		return nil
+	}
+	c.closed.Store(true)
+	c.mu.Unlock()
+
+	for {
+		select {
+		case ch := <-c.pool:
+			if ch != nil && ch.conn != nil {
+				ch.conn.Close()
+			}
+		default:
+			return nil
+		}
+	}
 }
 
 func (c *Client) CreateQueue(ctx context.Context, name string) error {
@@ -136,25 +212,31 @@ func (c *Client) FetchOffset(ctx context.Context, queue, group string) (uint64, 
 }
 
 func (c *Client) exchange(ctx context.Context, op byte, body []byte) ([]byte, error) {
+	ch, err := c.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer c.release(ch)
+
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
 	if deadline, ok := ctx.Deadline(); ok {
-		c.conn.SetDeadline(deadline)
+		ch.conn.SetDeadline(deadline)
 	} else {
-		c.conn.SetDeadline(time.Time{})
+		ch.conn.SetDeadline(time.Time{})
 	}
-	defer c.conn.SetDeadline(time.Time{})
+	defer ch.conn.SetDeadline(time.Time{})
 
-	if err := protocol.WriteFrame(c.conn, op, body); err != nil {
+	if err := protocol.WriteFrame(ch.conn, op, body); err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		return nil, fmt.Errorf("write failed: %w", err)
 	}
 
-	respOp, respBody, err := protocol.ReadFrame(c.r)
+	respOp, respBody, err := protocol.ReadFrame(ch.r)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
