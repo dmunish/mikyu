@@ -34,8 +34,9 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 		}
 	}
 
-	pos := q.active.pos
-	q.active.pos += recLen
+	seg := q.active
+	pos := seg.pos
+	seg.pos += recLen
 
 	seq, wake, err := q.w.push(rec, pos)
 	q.mu.Unlock()
@@ -57,11 +58,11 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 	offset := uint64(seq)
 
 	q.mu.Lock()
-	_ = q.active.writeIndex(pos, recLen)
+	_ = seg.writeIndex(pos, recLen)
 	for len(q.index) <= int(offset) {
 		q.index = append(q.index, indexEntry{})
 	}
-	q.index[offset] = indexEntry{seg: q.active, pos: pos, len: recLen}
+	q.index[offset] = indexEntry{seg: seg, pos: pos, len: recLen}
 	q.mu.Unlock()
 
 	return offset, nil
