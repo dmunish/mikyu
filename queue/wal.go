@@ -19,6 +19,7 @@ type wal struct {
 	cond      *sync.Cond
 	buf       []byte         // Staged bytes awaiting flush
 	pending   []pendingEntry // Staged index metadata awaiting flush
+	pushed    int64          // Total count of records staged/pushed
 	published int64          // Count of durable records on disk
 	err       error          // Sticky error state
 
@@ -33,6 +34,7 @@ func newWAL(f *os.File, cfg Config, startOffset int64) *wal {
 		file:      f,
 		cfg:       cfg.withDefaults(),
 		published: startOffset,
+		pushed:    startOffset,
 		buf:       make([]byte, 0, initCap),
 		pending:   make([]pendingEntry, 0, cfg.BatchSize),
 		wake:      make(chan struct{}, 1),
@@ -73,7 +75,8 @@ func (w *wal) push(rec []byte, pos int64) (seq int64, wake bool, err error) {
 		return 0, false, w.err
 	}
 
-	seq = w.published + int64(len(w.pending))
+	seq = w.pushed
+	w.pushed++
 	w.buf = append(w.buf, rec...)
 	w.pending = append(w.pending, pendingEntry{pos: pos, len: int64(len(rec))})
 
