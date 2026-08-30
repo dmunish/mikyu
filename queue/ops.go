@@ -137,16 +137,22 @@ func (q *Queue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([
 	return out, nil
 }
 
-func (q *Queue) CommitOffset(_ context.Context, group string, offset uint64) error {
+func (q *Queue) CommitOffset(ctx context.Context, group string, offset uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if q.offsets == nil {
 		return ErrQueueNotFound
 	}
-	return q.offsets.Commit(group, offset)
+	return q.offsets.Commit(q.name, group, offset)
 }
 
-func (q *Queue) FetchOffset(_ context.Context, group string) (uint64, error) {
+func (q *Queue) FetchOffset(ctx context.Context, group string) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	if q.offsets == nil {
 		return 0, ErrQueueNotFound
 	}
-	return q.offsets.Fetch(group), nil
+	return q.offsets.Fetch(q.name, group), nil
 }

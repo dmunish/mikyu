@@ -5,6 +5,7 @@ import (
 	"errors"
 	"iter"
 	"sync"
+	"time"
 
 	"github.com/dmunish/mikyu/queue"
 )
@@ -159,12 +160,39 @@ type ConsumerGroup struct {
 	group  string
 
 	mu        sync.Mutex
-	highWater uint64 // next offset to read
+	highWater uint64
 	dirty     bool
+
+	commitCh chan uint64 // actor goroutine serializes commits
+	done     chan struct{}
 }
 
 func (c *Client) JoinGroup(queue, group string) *ConsumerGroup {
-	return &ConsumerGroup{client: c, queue: queue, group: group}
+	cg := &ConsumerGroup{
+		client:    c,
+		queue:     queue,
+		group:     group,
+		commitCh:  make(chan uint64, 1),
+		done:      make(chan struct{}),
+		highWater: 0,
+	}
+	go cg.commitActor()
+	return cg
+}
+
+// commitActor serializes all durable commits via a single goroutine,
+// eliminating the race between state read and network write.
+func (cg *ConsumerGroup) commitActor() {
+	for {
+		select {
+		case off := <-cg.commitCh:
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = cg.client.CommitOffset(ctx, cg.queue, cg.group, off)
+			cancel()
+		case <-cg.done:
+			return
+		}
+	}
 }
 
 // Mark records progress locally. Out-of-order marks are tolerated by keeping
@@ -184,7 +212,24 @@ func (cg *ConsumerGroup) Commit(ctx context.Context) error {
 	off := cg.highWater
 	cg.dirty = false
 	cg.mu.Unlock()
-	return cg.client.CommitOffset(ctx, cg.queue, cg.group, off)
+
+	select {
+	case cg.commitCh <- off:
+	case <-cg.done:
+		return errors.New("consumer group closed")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return nil
+}
+
+// Close performs a final synchronous commit and stops the actor goroutine.
+func (cg *ConsumerGroup) Close() error {
+	close(cg.done)
+	cg.mu.Lock()
+	off := cg.highWater
+	cg.mu.Unlock()
+	return cg.client.CommitOffset(context.Background(), cg.queue, cg.group, off)
 }
 
 // FetchOffset loads the server-side persisted offset (the next to read).
@@ -209,7 +254,7 @@ func NewTyped[T any](engine Engine, codec Codec[T]) *Typed[T] {
 	return &Typed[T]{engine: engine, codec: codec}
 }
 
-func (t *Typed[T]) Produce(ctx context.Context, v T) (uint64, error) {
+func (t Typed[T]) Produce(ctx context.Context, v T) (uint64, error) {
 	payload, err := t.codec.Marshal(v)
 	if err != nil {
 		return 0, err
@@ -217,7 +262,7 @@ func (t *Typed[T]) Produce(ctx context.Context, v T) (uint64, error) {
 	return t.engine.Produce(ctx, payload)
 }
 
-func (t *Typed[T]) Read(ctx context.Context, offset uint64) (T, error) {
+func (t Typed[T]) Read(ctx context.Context, offset uint64) (T, error) {
 	var zero T
 	msg, err := t.engine.Read(ctx, offset)
 	if err != nil {

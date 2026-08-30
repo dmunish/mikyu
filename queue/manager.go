@@ -8,9 +8,10 @@ import (
 )
 
 type Manager struct {
-	mu     sync.RWMutex
-	dir    string
-	queues map[string]*Queue
+	mu      sync.RWMutex
+	dir     string
+	queues  map[string]*Queue
+	offsets *OffsetStore
 }
 
 func Open(dir string) (*Manager, error) {
@@ -19,9 +20,16 @@ func Open(dir string) (*Manager, error) {
 	}
 
 	m := &Manager{
-		dir:    dir,
-		queues: make(map[string]*Queue),
+		dir:     dir,
+		queues:  make(map[string]*Queue),
+		offsets: nil,
 	}
+
+	offsets, err := OpenManagerOffsetStore(dir)
+	if err != nil {
+		return nil, fmt.Errorf("open manager offset store: %w", err)
+	}
+	m.offsets = offsets
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -33,7 +41,7 @@ func Open(dir string) (*Manager, error) {
 			continue
 		}
 		name := e.Name()
-		q, err := openQueue(dir, name, Config{})
+		q, err := openQueue(dir, name, Config{}, m.offsets)
 		if err != nil {
 			return nil, fmt.Errorf("restore queue %q: %w", name, err)
 		}
@@ -61,7 +69,7 @@ func (m *Manager) CreateQueue(name string, opts ...Config) (*Queue, error) {
 		return nil, ErrQueueExists
 	}
 
-	q, err := openQueue(m.dir, name, cfg)
+	q, err := openQueue(m.dir, name, cfg, m.offsets)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +96,11 @@ func (m *Manager) Close() error {
 	var firstErr error
 	for _, q := range m.queues {
 		if err := q.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if m.offsets != nil {
+		if err := m.offsets.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
