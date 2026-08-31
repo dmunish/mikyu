@@ -62,8 +62,12 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (byte, []by
 		return s.createQueue(body)
 	case protocol.OpProduce:
 		return s.produce(ctx, body)
+	case protocol.OpProduceBatch:
+		return s.produceBatch(ctx, body)
 	case protocol.OpRead:
 		return s.read(ctx, body)
+	case protocol.OpReadBatch:
+		return s.readBatch(ctx, body)
 	case protocol.OpTail:
 		return s.tail(body)
 	case protocol.OpCommitOffset:

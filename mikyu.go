@@ -138,6 +138,37 @@ func (c *Client) Produce(ctx context.Context, queue string, payload []byte) (uin
 	return offset, nil
 }
 
+// mikyu.go
+func (c *Client) ProduceBatch(ctx context.Context, queue string, payloads [][]byte) ([]uint64, error) {
+	var body protocol.Buffer
+	body.WriteBytes([]byte(queue))
+	body.WriteU32(uint32(len(payloads)))
+	for _, p := range payloads {
+		body.WriteBytes(p)
+	}
+
+	resp, err := c.exchange(ctx, protocol.OpProduceBatch, body.Bytes())
+	if err != nil {
+		return nil, err
+	}
+
+	r := protocol.NewReader(resp)
+	count, err := r.ReadU32()
+	if err != nil {
+		return nil, err
+	}
+
+	offsets := make([]uint64, count)
+	for i := range count {
+		off, err := r.ReadU64()
+		if err != nil {
+			return nil, err
+		}
+		offsets[i] = off
+	}
+	return offsets, nil
+}
+
 func (c *Client) Read(ctx context.Context, queue string, offset uint64) (Message, error) {
 	var body protocol.Buffer
 	body.WriteBytes([]byte(queue))
@@ -167,6 +198,55 @@ func (c *Client) Read(ctx context.Context, queue string, offset uint64) (Message
 	}
 
 	return Message{Offset: respOffset, Timestamp: time.Unix(0, int64(tsNano)), ID: string(id), Payload: payload}, nil
+}
+
+func (c *Client) ReadBatch(ctx context.Context, queue string, startOffset uint64, count int) ([]Message, error) {
+	if count <= 0 {
+		return nil, nil
+	}
+
+	var body protocol.Buffer
+	body.WriteBytes([]byte(queue))
+	body.WriteU64(startOffset)
+	body.WriteU32(uint32(count))
+
+	resp, err := c.exchange(ctx, protocol.OpReadBatch, body.Bytes())
+	if err != nil {
+		return nil, err
+	}
+
+	r := protocol.NewReader(resp)
+	respCount, err := r.ReadU32()
+	if err != nil {
+		return nil, fmt.Errorf("invalid response count: %w", err)
+	}
+
+	msgs := make([]Message, respCount)
+	for i := range respCount {
+		respOffset, err := r.ReadU64()
+		if err != nil {
+			return nil, fmt.Errorf("invalid response offset: %w", err)
+		}
+		id, err := r.ReadBytes()
+		if err != nil {
+			return nil, fmt.Errorf("invalid response ID: %w", err)
+		}
+		tsNano, err := r.ReadU64()
+		if err != nil {
+			return nil, fmt.Errorf("invalid response timestamp: %w", err)
+		}
+		payload, err := r.ReadBytes()
+		if err != nil {
+			return nil, fmt.Errorf("invalid response payload: %w", err)
+		}
+		msgs[i] = Message{
+			Offset:    respOffset,
+			ID:        string(id),
+			Timestamp: time.Unix(0, int64(tsNano)),
+			Payload:   payload,
+		}
+	}
+	return msgs, nil
 }
 
 func (c *Client) LastOffset(ctx context.Context, queue string) (uint64, error) {

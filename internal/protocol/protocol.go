@@ -15,6 +15,8 @@ const (
 	OpTail         byte = 0x04
 	OpCommitOffset byte = 0x05
 	OpFetchOffset  byte = 0x06
+	OpProduceBatch byte = 0x07
+	OpReadBatch    byte = 0x08
 	OpError        byte = 0xFF
 )
 

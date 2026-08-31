@@ -51,15 +51,7 @@ func (e *remoteEngine) Produce(ctx context.Context, payload []byte) (uint64, err
 }
 
 func (e *remoteEngine) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error) {
-	offsets := make([]uint64, 0, len(payloads))
-	for _, p := range payloads {
-		off, err := e.c.Produce(ctx, e.q, p)
-		if err != nil {
-			return offsets, err
-		}
-		offsets = append(offsets, off)
-	}
-	return offsets, nil
+	return e.c.ProduceBatch(ctx, e.q, payloads)
 }
 
 func (e *remoteEngine) Read(ctx context.Context, offset uint64) (Message, error) {
@@ -67,18 +59,7 @@ func (e *remoteEngine) Read(ctx context.Context, offset uint64) (Message, error)
 }
 
 func (e *remoteEngine) ReadBatch(ctx context.Context, startOffset uint64, count int) ([]Message, error) {
-	if count <= 0 {
-		return nil, nil
-	}
-	out := make([]Message, 0, count)
-	for i := range count {
-		msg, err := e.c.Read(ctx, e.q, startOffset+uint64(i))
-		if err != nil {
-			return out, err
-		}
-		out = append(out, msg)
-	}
-	return out, nil
+	return e.c.ReadBatch(ctx, e.q, startOffset, count)
 }
 
 func (e *remoteEngine) LastOffset(ctx context.Context) (uint64, error) {

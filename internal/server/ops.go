@@ -51,6 +51,44 @@ func (s *Server) produce(ctx context.Context, body []byte) (byte, []byte) {
 	return protocol.OpProduce, resp.Bytes()
 }
 
+func (s *Server) produceBatch(ctx context.Context, body []byte) (byte, []byte) {
+	r := protocol.NewReader(body)
+	name, err := r.ReadBytes()
+	if err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid queue name")
+	}
+	count, err := r.ReadU32()
+	if err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid payload count")
+	}
+
+	payloads := make([][]byte, count)
+	for i := range count {
+		p, err := r.ReadBytes()
+		if err != nil {
+			return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid message in batch")
+		}
+		payloads[i] = p
+	}
+
+	q, err := s.mgr.Queue(string(name))
+	if err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
+	}
+
+	offsets, err := q.ProduceBatch(ctx, payloads)
+	if err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "batch produce failed")
+	}
+
+	var resp protocol.Buffer
+	resp.WriteU32(uint32(len(offsets)))
+	for _, off := range offsets {
+		resp.WriteU64(off)
+	}
+	return protocol.OpProduceBatch, resp.Bytes()
+}
+
 func (s *Server) read(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
 	name, err := r.ReadBytes()
@@ -81,6 +119,45 @@ func (s *Server) read(ctx context.Context, body []byte) (byte, []byte) {
 	resp.WriteU64(uint64(msg.Timestamp.UnixNano()))
 	resp.WriteBytes(msg.Payload)
 	return protocol.OpRead, resp.Bytes()
+}
+
+func (s *Server) readBatch(ctx context.Context, body []byte) (byte, []byte) {
+	r := protocol.NewReader(body)
+	name, err := r.ReadBytes()
+	if err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid queue name")
+	}
+	startOffset, err := r.ReadU64()
+	if err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid start offset")
+	}
+	count, err := r.ReadU32()
+	if err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid count")
+	}
+
+	q, err := s.mgr.Queue(string(name))
+	if err != nil {
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
+	}
+
+	messages, err := q.ReadBatch(ctx, startOffset, int(count))
+	if err != nil {
+		if errors.Is(err, queue.ErrOffsetNotFound) {
+			return protocol.OpError, protocol.EncodeError(protocol.ErrCodeOffsetNotFound, err.Error())
+		}
+		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, err.Error())
+	}
+
+	var resp protocol.Buffer
+	resp.WriteU32(uint32(len(messages)))
+	for _, msg := range messages {
+		resp.WriteU64(msg.Offset)
+		resp.WriteBytes([]byte(msg.ID))
+		resp.WriteU64(uint64(msg.Timestamp.UnixNano()))
+		resp.WriteBytes(msg.Payload)
+	}
+	return protocol.OpReadBatch, resp.Bytes()
 }
 
 func (s *Server) tail(body []byte) (byte, []byte) {
