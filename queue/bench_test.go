@@ -1,3 +1,5 @@
+// queue/bench_test.go
+
 package queue_test
 
 import (
@@ -34,6 +36,7 @@ func benchQueueFilled(b *testing.B, n int) *queue.Queue {
 		batch[i] = payload
 	}
 
+	// Pre-fill using atomic ProduceBatch (takes milliseconds instead of minutes)
 	for i := 0; i < n; i += batchSize {
 		if _, err := q.ProduceBatch(ctx, batch); err != nil {
 			b.Fatal(err)
@@ -109,7 +112,7 @@ func BenchmarkConsumeRandom(b *testing.B) {
 	const n = 50_000
 	q := benchQueueFilled(b, n)
 
-	// Pre-generate offset lookup array to remove RNG execution from hot loop
+	// Pre-calculate lookup array to eliminate RNG overhead from timer
 	offsets := make([]uint64, 10_000)
 	for i := range offsets {
 		offsets[i] = uint64(rand.IntN(n))
