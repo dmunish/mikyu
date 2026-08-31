@@ -1,37 +1,56 @@
 package queue
 
 import (
+	"bytes"
 	"encoding/binary"
 	"hash/crc32"
+	"sync"
 	"time"
 )
 
-func encodeRecord(id string, ts time.Time, payload []byte) []byte {
-	idBytes := []byte(id)
-	body := make([]byte, 4, 4+8+2+len(idBytes)+len(payload))
+var encPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
 
-	var idLen [2]byte
-	binary.BigEndian.PutUint16(idLen[:], uint16(len(idBytes)))
+func encodeRecord(id string, ts time.Time, payload []byte) []byte {
+	buf := encPool.Get().(*bytes.Buffer)
+	buf.Reset()
+
+	idBytes := []byte(id)
+	idLen := uint16(len(idBytes))
+
+	// Record Body layout: [4B CRC32][2B ID Len][N-B ID][8B TS Nano][M-B Payload]
+	bodyLen := uint32(4 + 2 + len(idBytes) + 8 + len(payload))
+	totalLen := 4 + bodyLen
+
+	var hdr [10]byte
+	binary.BigEndian.PutUint32(hdr[0:4], bodyLen) // framing length prefix
+	// hdr[4:8] reserved for CRC32
+	binary.BigEndian.PutUint16(hdr[8:10], idLen)
+
+	buf.Write(hdr[:])
+	buf.Write(idBytes)
 
 	var tsNano [8]byte
 	binary.BigEndian.PutUint64(tsNano[:], uint64(ts.UnixNano()))
+	buf.Write(tsNano[:])
+	buf.Write(payload)
 
-	body = append(body, idLen[:]...)
-	body = append(body, idBytes...)
-	body = append(body, tsNano[:]...)
-	body = append(body, payload...)
+	b := buf.Bytes()
+	// Checksum is calculated over body bytes after CRC field: idLen (2B) + id + TS (8B) + Payload
+	sum := crc32.ChecksumIEEE(b[8:])
+	binary.BigEndian.PutUint32(b[4:8], sum)
 
-	sum := crc32.ChecksumIEEE(body[4:])
-	binary.BigEndian.PutUint32(body[0:4], sum)
-
-	rec := make([]byte, 4+len(body))
-	binary.BigEndian.PutUint32(rec[0:4], uint32(len(body)))
-	copy(rec[4:], body)
+	// Copy to an owned return slice so buffer can safely return to pool
+	rec := make([]byte, totalLen)
+	copy(rec, b)
+	encPool.Put(buf)
 	return rec
 }
 
 func decodeRecord(buf []byte) (id string, ts time.Time, payload []byte, err error) {
-	if len(buf) < 6 {
+	// buf is the record body: [4B CRC32][2B ID Len][ID][8B TS Nano][Payload]
+	if len(buf) < 14 { // 4B CRC + 2B ID Len + 8B TS
 		return "", time.Time{}, nil, ErrCorruptRecord
 	}
 	sum := binary.BigEndian.Uint32(buf[0:4])
@@ -47,5 +66,6 @@ func decodeRecord(buf []byte) (id string, ts time.Time, payload []byte, err erro
 	tsStart := idEnd
 	tsEnd := tsStart + 8
 	tsNano := binary.BigEndian.Uint64(buf[tsStart:tsEnd])
+
 	return string(buf[idStart:idEnd]), time.Unix(0, int64(tsNano)), buf[tsEnd:], nil
 }

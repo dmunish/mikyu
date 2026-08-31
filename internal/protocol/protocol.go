@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"sync"
 )
 
 const (
@@ -23,6 +24,13 @@ const (
 	ErrCodeQueueNotFound  byte = 0x02
 	ErrCodeOffsetNotFound byte = 0x03
 )
+
+var framePool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 32*1024)
+		return &b
+	},
+}
 
 /*
 Wire format:
@@ -54,13 +62,22 @@ func ReadFrame(r *bufio.Reader) (op byte, payload []byte, err error) {
 
 func WriteFrame(w io.Writer, op byte, payload []byte) error {
 	total := uint32(1 + len(payload))
-	buf := make([]byte, 4+total)
+
+	bufPtr := framePool.Get().(*[]byte)
+	buf := *bufPtr
+
+	if uint32(len(buf)) < 4+total {
+		buf = make([]byte, 4+total)
+	}
 
 	binary.BigEndian.PutUint32(buf[0:4], total)
 	buf[4] = op
 	copy(buf[5:], payload)
 
-	_, err := w.Write(buf)
+	_, err := w.Write(buf[:4+total])
+	if uint32(len(*bufPtr)) >= 4+total {
+		framePool.Put(bufPtr)
+	}
 	return err
 }
 
