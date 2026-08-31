@@ -19,21 +19,23 @@ var (
 )
 
 type indexEntry struct {
-	seg *segment
-	pos int64
-	len int64
+	offset uint64
+	seg    *segment
+	pos    int64
+	len    int64
 }
 
 type Queue struct {
-	name     string
-	dir      string
-	cfg      Config
-	active   *segment
-	segments []*segment
-	index    []indexEntry
-	w        *wal
-	offsets  *OffsetStore // manager-level store (shared across queues)
-	mu       sync.Mutex
+	name        string
+	dir         string
+	cfg         Config
+	active      *segment
+	segments    []*segment
+	sparseIndex []indexEntry // Recorded every 64 messages & on segment boundary
+	nextOffset  uint64       // Logical sequence counter
+	w           *wal
+	offsets     *OffsetStore
+	mu          sync.Mutex
 }
 
 type Config struct {
@@ -98,6 +100,8 @@ func (q *Queue) loadSegments() error {
 		bases = []uint64{0}
 	}
 
+	var globalOffset uint64 = 0
+
 	for i, base := range bases {
 		seg, err := openSegment(q.dir, base)
 		if err != nil {
@@ -109,7 +113,7 @@ func (q *Queue) loadSegments() error {
 			return err
 		}
 
-		// Enable mmap for all historical segments; keep active unmapped for writing
+		// Enable mmap for historical segments; keep active segment unmapped for writing
 		if i < len(bases)-1 {
 			if err := seg.enableMMap(); err != nil {
 				seg.Close()
@@ -117,14 +121,24 @@ func (q *Queue) loadSegments() error {
 			}
 		}
 
-		for _, e := range rawEntries {
-			q.index = append(q.index, indexEntry{seg: seg, pos: e.pos, len: e.len})
+		for j, e := range rawEntries {
+			off := globalOffset
+			if off%64 == 0 || j == 0 {
+				q.sparseIndex = append(q.sparseIndex, indexEntry{
+					offset: off,
+					seg:    seg,
+					pos:    e.pos,
+					len:    e.len,
+				})
+			}
+			globalOffset++
 		}
 		q.segments = append(q.segments, seg)
 		q.active = seg
 	}
 
-	q.w = newWAL(q.active.logFile, q.cfg, int64(len(q.index)))
+	q.nextOffset = globalOffset
+	q.w = newWAL(q.active.logFile, q.cfg, int64(q.nextOffset))
 	q.w.start()
 	return nil
 }
@@ -134,12 +148,11 @@ func (q *Queue) roll() error {
 		return err
 	}
 
-	// Mmap the newly sealed segment before rolling away from it
 	if q.active != nil {
 		_ = q.active.enableMMap()
 	}
 
-	nextOff := uint64(len(q.index))
+	nextOff := q.nextOffset
 	seg, err := openSegment(q.dir, nextOff)
 	if err != nil {
 		return err
@@ -151,7 +164,7 @@ func (q *Queue) roll() error {
 
 	q.active = seg
 	q.segments = append(q.segments, seg)
-	q.w = newWAL(seg.logFile, q.cfg, int64(len(q.index)))
+	q.w = newWAL(seg.logFile, q.cfg, int64(q.nextOffset))
 	q.w.start()
 	return nil
 }

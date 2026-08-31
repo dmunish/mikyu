@@ -1,8 +1,12 @@
 package queue
 
 import (
+	"cmp"
 	"context"
+	"encoding/binary"
+	"slices"
 	"time"
+
 	"uuid"
 )
 
@@ -38,6 +42,9 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 	pos := seg.pos
 	seg.pos += recLen
 
+	offset := q.nextOffset
+	q.nextOffset++
+
 	seq, wake, err := q.w.push(rec, pos)
 	q.mu.Unlock()
 	if err != nil {
@@ -55,14 +62,16 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 		return 0, err
 	}
 
-	offset := uint64(seq)
-
 	q.mu.Lock()
 	_ = seg.writeIndex(pos, recLen)
-	for len(q.index) <= int(offset) {
-		q.index = append(q.index, indexEntry{})
+	if offset%64 == 0 || len(q.sparseIndex) == 0 || q.sparseIndex[len(q.sparseIndex)-1].seg != seg {
+		q.sparseIndex = append(q.sparseIndex, indexEntry{
+			offset: offset,
+			seg:    seg,
+			pos:    pos,
+			len:    recLen,
+		})
 	}
-	q.index[offset] = indexEntry{seg: seg, pos: pos, len: recLen}
 	q.mu.Unlock()
 
 	return offset, nil
@@ -74,25 +83,55 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 	}
 
 	q.mu.Lock()
-	if offset >= uint64(len(q.index)) {
+	if offset >= q.nextOffset {
 		q.mu.Unlock()
 		return Message{}, ErrOffsetNotFound
 	}
-	entry := q.index[offset]
+
+	// Binary search sparse index for closest entry <= target offset
+	idx, found := slices.BinarySearchFunc(q.sparseIndex, offset, func(e indexEntry, target uint64) int {
+		return cmp.Compare(e.offset, target)
+	})
+	if !found {
+		idx--
+	}
+	baseEntry := q.sparseIndex[idx]
 	q.mu.Unlock()
 
-	if err := ctx.Err(); err != nil {
-		return Message{}, err
+	pos := baseEntry.pos
+
+	// Skip intermediate records up to target offset by reading only 4-byte length prefixes
+	for currentOff := baseEntry.offset; currentOff < offset; currentOff++ {
+		var lenBuf [4]byte
+		if baseEntry.seg != nil && baseEntry.seg.mmapData != nil {
+			copy(lenBuf[:], baseEntry.seg.mmapData[pos:pos+4])
+		} else {
+			if _, err := baseEntry.seg.logFile.ReadAt(lenBuf[:], pos); err != nil {
+				return Message{}, err
+			}
+		}
+		bodyLen := int64(binary.BigEndian.Uint32(lenBuf[:]))
+		pos += 4 + bodyLen
 	}
 
-	var rec []byte
-	if entry.seg != nil && entry.seg.mmapData != nil {
-		// Fast path: Zero-copy slice directly into the mmapped OS page cache
-		rec = entry.seg.mmapData[entry.pos : entry.pos+entry.len]
+	// Pos now points directly to the record at target offset
+	var lenBuf [4]byte
+	if baseEntry.seg != nil && baseEntry.seg.mmapData != nil {
+		copy(lenBuf[:], baseEntry.seg.mmapData[pos:pos+4])
 	} else {
-		// Fallback path: Traditional ReadAt for the active, unmapped segment
-		rec = make([]byte, entry.len)
-		if _, err := entry.seg.logFile.ReadAt(rec, entry.pos); err != nil {
+		if _, err := baseEntry.seg.logFile.ReadAt(lenBuf[:], pos); err != nil {
+			return Message{}, err
+		}
+	}
+	bodyLen := int64(binary.BigEndian.Uint32(lenBuf[:]))
+	totalLen := 4 + bodyLen
+
+	var rec []byte
+	if baseEntry.seg != nil && baseEntry.seg.mmapData != nil {
+		rec = baseEntry.seg.mmapData[pos : pos+totalLen]
+	} else {
+		rec = make([]byte, totalLen)
+		if _, err := baseEntry.seg.logFile.ReadAt(rec, pos); err != nil {
 			return Message{}, err
 		}
 	}
@@ -102,13 +141,18 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 		return Message{}, err
 	}
 
-	return Message{Offset: offset, ID: id, Timestamp: ts, Payload: payload}, nil
+	return Message{
+		Offset:    offset,
+		ID:        id,
+		Timestamp: ts,
+		Payload:   payload,
+	}, nil
 }
 
 func (q *Queue) LastOffset() uint64 {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return uint64(len(q.index))
+	return q.nextOffset
 }
 
 func (q *Queue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error) {
@@ -122,6 +166,7 @@ func (q *Queue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, 
 	recs := make([][]byte, len(payloads))
 	positions := make([]int64, len(payloads))
 	recLens := make([]int64, len(payloads))
+	segments := make([]*segment, len(payloads))
 	ts := time.Now()
 
 	q.mu.Lock()
@@ -144,11 +189,14 @@ func (q *Queue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, 
 		positions[i] = q.active.pos
 		recLens[i] = recLen
 		recs[i] = rec
+		segments[i] = q.active
 		q.active.pos += recLen
 	}
 
+	startOffset := q.nextOffset
+	q.nextOffset += uint64(len(payloads))
+
 	seq, wake, err := q.w.pushBatch(recs, positions)
-	seg := q.active
 	q.mu.Unlock()
 
 	if err != nil {
@@ -169,10 +217,18 @@ func (q *Queue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, 
 	offsets := make([]uint64, len(payloads))
 	q.mu.Lock()
 	for i, recLen := range recLens {
+		off := startOffset + uint64(i)
 		pos := positions[i]
+		seg := segments[i]
 		_ = seg.writeIndex(pos, recLen)
-		off := uint64(len(q.index))
-		q.index = append(q.index, indexEntry{seg: seg, pos: pos, len: recLen})
+		if off%64 == 0 || len(q.sparseIndex) == 0 || q.sparseIndex[len(q.sparseIndex)-1].seg != seg {
+			q.sparseIndex = append(q.sparseIndex, indexEntry{
+				offset: off,
+				seg:    seg,
+				pos:    pos,
+				len:    recLen,
+			})
+		}
 		offsets[i] = off
 	}
 	q.mu.Unlock()
