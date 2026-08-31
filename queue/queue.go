@@ -19,31 +19,29 @@ var (
 )
 
 type indexEntry struct {
-	offset uint64
-	seg    *segment
-	pos    int64
-	len    int64
+	seg *segment
+	pos int64
+	len int64
 }
 
 type Queue struct {
-	name        string
-	dir         string
-	cfg         Config
-	active      *segment
-	segments    []*segment
-	sparseIndex []indexEntry // Recorded every 64 messages & on segment boundary
-	nextOffset  uint64       // Logical sequence counter
-	w           *wal
-	offsets     *OffsetStore
-	mu          sync.Mutex
+	name     string
+	dir      string
+	cfg      Config
+	active   *segment
+	segments []*segment
+	index    []indexEntry // Dense O(1) in-memory offset index
+	w        *wal
+	offsets  *OffsetStore
+	mu       sync.Mutex
 }
 
 type Config struct {
-	BatchSize       int           // Max size of fsync batch
-	Interval        time.Duration // Max time to wait before triggering an fsync
-	MaxSegmentBytes int64         // Max size of a segment file
-	MaxMessageBytes int64         // Max size of a single message payload
-	MaxSegmentAge   time.Duration // Max age of a segment before rolling
+	BatchSize       int
+	Interval        time.Duration
+	MaxSegmentBytes int64
+	MaxMessageBytes int64
+	MaxSegmentAge   time.Duration
 }
 
 func (c Config) withDefaults() Config {
@@ -54,10 +52,10 @@ func (c Config) withDefaults() Config {
 		c.Interval = 10 * time.Millisecond
 	}
 	if c.MaxSegmentBytes <= 0 {
-		c.MaxSegmentBytes = 64 * 1024 * 1024 // 64 MiB
+		c.MaxSegmentBytes = 64 * 1024 * 1024
 	}
 	if c.MaxMessageBytes <= 0 {
-		c.MaxMessageBytes = 1 * 1024 * 1024 // 1 MiB
+		c.MaxMessageBytes = 1 * 1024 * 1024
 	}
 	if c.MaxSegmentAge <= 0 {
 		c.MaxSegmentAge = 1 * time.Hour
@@ -100,8 +98,6 @@ func (q *Queue) loadSegments() error {
 		bases = []uint64{0}
 	}
 
-	var globalOffset uint64 = 0
-
 	for i, base := range bases {
 		seg, err := openSegment(q.dir, base)
 		if err != nil {
@@ -113,7 +109,6 @@ func (q *Queue) loadSegments() error {
 			return err
 		}
 
-		// Enable mmap for historical segments; keep active segment unmapped for writing
 		if i < len(bases)-1 {
 			if err := seg.enableMMap(); err != nil {
 				seg.Close()
@@ -121,24 +116,14 @@ func (q *Queue) loadSegments() error {
 			}
 		}
 
-		for j, e := range rawEntries {
-			off := globalOffset
-			if off%64 == 0 || j == 0 {
-				q.sparseIndex = append(q.sparseIndex, indexEntry{
-					offset: off,
-					seg:    seg,
-					pos:    e.pos,
-					len:    e.len,
-				})
-			}
-			globalOffset++
+		for _, e := range rawEntries {
+			q.index = append(q.index, indexEntry{seg: seg, pos: e.pos, len: e.len})
 		}
 		q.segments = append(q.segments, seg)
 		q.active = seg
 	}
 
-	q.nextOffset = globalOffset
-	q.w = newWAL(q.active.logFile, q.cfg, int64(q.nextOffset))
+	q.w = newWAL(q.active.logFile, q.cfg, int64(len(q.index)))
 	q.w.start()
 	return nil
 }
@@ -152,7 +137,7 @@ func (q *Queue) roll() error {
 		_ = q.active.enableMMap()
 	}
 
-	nextOff := q.nextOffset
+	nextOff := uint64(len(q.index))
 	seg, err := openSegment(q.dir, nextOff)
 	if err != nil {
 		return err
@@ -164,7 +149,7 @@ func (q *Queue) roll() error {
 
 	q.active = seg
 	q.segments = append(q.segments, seg)
-	q.w = newWAL(seg.logFile, q.cfg, int64(q.nextOffset))
+	q.w = newWAL(seg.logFile, q.cfg, int64(len(q.index)))
 	q.w.start()
 	return nil
 }
