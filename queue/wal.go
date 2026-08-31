@@ -66,6 +66,27 @@ func (w *wal) syncLoop() {
 	}
 }
 
+// pushBatch stages multiple records in a single atomic lock acquisition.
+func (w *wal) pushBatch(recs [][]byte, positions []int64) (seq int64, wake bool, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.err != nil {
+		return 0, false, w.err
+	}
+
+	seq = w.pushed + int64(len(recs)) - 1
+	w.pushed += int64(len(recs))
+
+	for i, rec := range recs {
+		w.buf = append(w.buf, rec...)
+		w.pending = append(w.pending, pendingEntry{pos: positions[i], len: int64(len(rec))})
+	}
+
+	wake = len(w.pending) >= w.cfg.BatchSize || len(recs) >= w.cfg.BatchSize
+	return seq, wake, nil
+}
+
 // push stages a record and signals if the flusher should wake immediately.
 func (w *wal) push(rec []byte, pos int64) (seq int64, wake bool, err error) {
 	w.mu.Lock()

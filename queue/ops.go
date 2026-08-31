@@ -112,14 +112,71 @@ func (q *Queue) LastOffset() uint64 {
 }
 
 func (q *Queue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error) {
-	offsets := make([]uint64, 0, len(payloads))
-	for _, p := range payloads {
-		off, err := q.Produce(ctx, p)
-		if err != nil {
-			return offsets, err
-		}
-		offsets = append(offsets, off)
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
+	if len(payloads) == 0 {
+		return nil, nil
+	}
+
+	recs := make([][]byte, len(payloads))
+	positions := make([]int64, len(payloads))
+	recLens := make([]int64, len(payloads))
+	ts := time.Now()
+
+	q.mu.Lock()
+	for i, p := range payloads {
+		if int64(len(p)) > q.cfg.MaxMessageBytes {
+			q.mu.Unlock()
+			return nil, ErrMessageTooLarge
+		}
+		id := uuid.NewV7()
+		rec := encodeRecord(id.String(), ts, p)
+		recLen := int64(len(rec))
+
+		if q.active.pos+recLen > q.cfg.MaxSegmentBytes || time.Since(q.active.createdAt) > q.cfg.MaxSegmentAge {
+			if err := q.roll(); err != nil {
+				q.mu.Unlock()
+				return nil, err
+			}
+		}
+
+		positions[i] = q.active.pos
+		recLens[i] = recLen
+		recs[i] = rec
+		q.active.pos += recLen
+	}
+
+	seq, wake, err := q.w.pushBatch(recs, positions)
+	seg := q.active
+	q.mu.Unlock()
+
+	if err != nil {
+		return nil, err
+	}
+
+	if wake {
+		select {
+		case q.w.wake <- struct{}{}:
+		default:
+		}
+	}
+
+	if err := q.w.wait(seq); err != nil {
+		return nil, err
+	}
+
+	offsets := make([]uint64, len(payloads))
+	q.mu.Lock()
+	for i, recLen := range recLens {
+		pos := positions[i]
+		_ = seg.writeIndex(pos, recLen)
+		off := uint64(len(q.index))
+		q.index = append(q.index, indexEntry{seg: seg, pos: pos, len: recLen})
+		offsets[i] = off
+	}
+	q.mu.Unlock()
+
 	return offsets, nil
 }
 
