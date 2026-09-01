@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/dmunish/mikyu"
 )
@@ -59,6 +60,12 @@ func RunCLI(target string, args []string) {
 			log.Fatal("Usage: mikyu delete <queue_name>")
 		}
 		name := args[1]
+		if ok, err := confirmCLI(fmt.Sprintf("Are you sure you want to delete queue %q?", name), args[1:]); err != nil {
+			log.Fatalf("Confirmation error: %v", err)
+		} else if !ok {
+			fmt.Println("Cancelled.")
+			return
+		}
 		if err := client.DeleteQueue(ctx, name); err != nil {
 			log.Fatalf("Error deleting queue %q: %v", name, err)
 		}
@@ -135,6 +142,12 @@ func RunCLI(target string, args []string) {
 		fmt.Printf("Active Queues: %d\nTotal Storage: %d Bytes\n", st.ActiveQueues, st.TotalBytes)
 
 	case "shutdown":
+		if ok, err := confirmCLI("Are you sure you want to shut down the daemon?", args[1:]); err != nil {
+			log.Fatalf("Confirmation error: %v", err)
+		} else if !ok {
+			fmt.Println("Cancelled.")
+			return
+		}
 		if err := sendShutdownSignal(target); err != nil {
 			log.Fatalf("Failed to stop daemon: %v", err)
 		}
@@ -144,4 +157,28 @@ func RunCLI(target string, args []string) {
 		printUsage()
 		os.Exit(1)
 	}
+}
+
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+func confirmCLI(prompt string, args []string) (bool, error) {
+	for _, a := range args {
+		if a == "-y" || a == "--yes" || a == "-f" || a == "--force" {
+			return true, nil
+		}
+	}
+	if isTerminal(os.Stdin) {
+		fmt.Printf("%s [y/N]: ", prompt)
+		var answer string
+		fmt.Scanln(&answer)
+		answer = strings.ToLower(strings.TrimSpace(answer))
+		return answer == "y" || answer == "yes", nil
+	}
+	return false, fmt.Errorf("confirmation required but stdin is not a TTY; use -y/--yes to proceed")
 }

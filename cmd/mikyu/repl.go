@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/dmunish/mikyu"
 	"github.com/dmunish/mikyu/internal/protocol"
@@ -33,6 +34,7 @@ var (
 			Foreground(lipgloss.Color("240"))
 )
 
+// RunREPL starts the interactive REPL shell.
 func RunREPL(target string) {
 	if err := EnsureDaemonRunning(target); err != nil {
 		fmt.Println(errStyle.Render(fmt.Sprintf("Error initializing daemon: %v", err)))
@@ -46,7 +48,6 @@ func RunREPL(target string) {
 	}
 	defer client.Close()
 
-	// Clear screen and render welcome banner
 	fmt.Print("\x1b[2J\x1b[H")
 	PrintREPLBanner(target)
 
@@ -105,7 +106,7 @@ func RunREPL(target string) {
 				fmt.Println(errStyle.Render("Error: " + err.Error()))
 				continue
 			}
-			fmt.Println(infoStyle.Render(fmt.Sprintf("✓ Queue %q created.", name)))
+			fmt.Println(infoStyle.Render(fmt.Sprintf("%s Queue %q created.", successBullet(), name)))
 
 		case "delete":
 			if len(args) < 2 {
@@ -113,11 +114,15 @@ func RunREPL(target string) {
 				continue
 			}
 			name := args[1]
+			if !confirm(fmt.Sprintf("Are you sure you want to delete queue %q?", name)) {
+				fmt.Println("Cancelled.")
+				continue
+			}
 			if err := client.DeleteQueue(ctx, name); err != nil {
 				fmt.Println(errStyle.Render("Error: " + err.Error()))
 				continue
 			}
-			fmt.Println(infoStyle.Render(fmt.Sprintf("✓ Queue %q deleted.", name)))
+			fmt.Println(infoStyle.Render(fmt.Sprintf("%s Queue %q deleted.", successBullet(), name)))
 
 		case "produce":
 			if len(args) < 3 {
@@ -140,7 +145,7 @@ func RunREPL(target string) {
 				fmt.Println(errStyle.Render("Error: " + err.Error()))
 				continue
 			}
-			fmt.Println(infoStyle.Render(fmt.Sprintf("✓ Produced %d bytes to %q at offset %d", len(payload), name, off)))
+			fmt.Println(infoStyle.Render(fmt.Sprintf("+ Produced %d bytes to %q at offset %d", len(payload), name, off)))
 
 		case "read":
 			if len(args) < 3 {
@@ -200,6 +205,10 @@ func RunREPL(target string) {
 			fmt.Printf("Active Queues: %d | Total Storage: %d Bytes\n", st.ActiveQueues, st.TotalBytes)
 
 		case "shutdown":
+			if !confirm("Are you sure you want to shut down the daemon?") {
+				fmt.Println("Cancelled.")
+				continue
+			}
 			fmt.Println(infoStyle.Render("Sending shutdown command to daemon..."))
 			_ = sendShutdownSignal(target)
 			fmt.Println("Daemon stopped. Exiting shell.")
@@ -211,6 +220,7 @@ func RunREPL(target string) {
 	}
 }
 
+// parseREPLArgs splits a REPL line into args, respecting double quotes.
 func parseREPLArgs(line string) []string {
 	var args []string
 	var current strings.Builder
@@ -241,6 +251,7 @@ func parseREPLArgs(line string) []string {
 	return args
 }
 
+// resolvePayload reads raw bytes from input string, @file, or stdin.
 func resolvePayload(input string) ([]byte, error) {
 	if input == "-" {
 		return io.ReadAll(os.Stdin)
@@ -251,6 +262,62 @@ func resolvePayload(input string) ([]byte, error) {
 	return []byte(input), nil
 }
 
+// confirm shows a themed Yes/No confirmation prompt, returns true if Yes.
+func confirm(prompt string) bool {
+	var confirm bool
+
+	// Colored arrow + plain text title
+	arrow := lipgloss.NewStyle().Foreground(lipgloss.Color("#EE427D")).Render(">")
+	fullTitle := arrow + " " + prompt
+
+	theme := huh.ThemeFunc(func(isDark bool) *huh.Styles {
+		s := huh.ThemeCharm(isDark)
+
+		// Remove the left border/line and any padding
+		s.Focused.Base = lipgloss.NewStyle().Padding(0).Margin(0)
+		s.Blurred.Base = lipgloss.NewStyle().Padding(0).Margin(0)
+
+		// Title text: light grey like the normal REPL output
+		s.Focused.Title = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Padding(0).Margin(0)
+		s.Blurred.Title = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Padding(0).Margin(0)
+
+		// Buttons: active = EE427D text, inactive = grey
+		s.Focused.FocusedButton = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#EE427D")).
+			Bold(true).
+			Padding(0, 1)
+		s.Focused.BlurredButton = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245")).
+			Padding(0, 1)
+
+		return s
+	})
+
+	err := huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title(fullTitle).
+				Affirmative("Yes").
+				Negative("No").
+				Value(&confirm).
+				Inline(true).
+				WithButtonAlignment(lipgloss.Left),
+		).WithShowHelp(false),
+	).WithTheme(theme).Run()
+
+	if err != nil {
+		return false
+	}
+	return confirm
+}
+
+func successBullet() string {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#EE427D")).
+		Render("●")
+}
+
+// sendShutdownSignal sends OpShutdown frame to the daemon.
 func sendShutdownSignal(target string) error {
 	network, addr, err := protocol.ParseTarget(target)
 	if err != nil {
@@ -264,6 +331,7 @@ func sendShutdownSignal(target string) error {
 	return protocol.WriteFrame(conn, protocol.OpShutdown, nil)
 }
 
+// printREPLHelp prints the available REPL commands.
 func printREPLHelp() {
 	fmt.Print(`Available Commands:
   list                 List all active queues
