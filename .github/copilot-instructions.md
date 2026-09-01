@@ -1,245 +1,580 @@
-# mikyu
+# Mikyu Technical Specification & Codebase Architecture
 
-This file is the single source of truth for new agents. It consolidates the
-repository structure, what each file does, and the contracts you must respect
-when editing. Do **not** go re-exploring the repo from scratch — read this
-first. The narrative/roadmap context lives in `.notes/plan.md`; this file is the
-structural map. 
+## 1. Project Overview
 
-Module path: `github.com/dmunish/mikyu`
-Go version: `1.27.0`
-Runtime deps: `github.com/edsrzf/mmap-go` (segment mmap), `golang.org/x/sys` (indirect).
-`uuid` is used via the standard library.
+**mikyu** is a high-performance, log-structured message queue built from scratch in Go. It provides a unified API surface operating either as an in-process embedded log engine or as a standalone network/IPC daemon.
 
-Build/test:
-- `go build ./...` — clean (verified).
-- `go vet ./...` — clean (verified).
-- `go test ./...` — TDD throughout; white-box (`package queue`) + black-box (`package queue_test` / `package mikyu_test`).
+### Core Architectural Guarantees & Technical Principles
 
-## Tool Use Rules
-- When reading `SKILL.md` files or workspace context files, NEVER rely on partial/truncated initial views (lines 1–100). Use large ranges (1-500) by default.
-- If a file exceeds the default tool view limit, issue sequential tool calls until the entire file content is loaded into memory before taking action.
+* **Durable-Before-Ack Semantics:** Every `Produce()` or `ProduceBatch()` invocation blocks until the payload byte slice and index metadata are durably synced to disk via the Write-Ahead Log (`wal`) flusher.
 
-# Go Language Updates
-`.github/modern-go` contains new features of Go from release 1.23, 
-up to the most recent 1.27. Read that at the start every time to get a fresher.
+* **Zero-Copy Reads:** Closed historical log segments are memory-mapped (`mmap`) into the process address space. Read requests on historical offsets return direct sub-slices of mapped memory buffers without heap allocations or system call overhead.
 
-## Architectural invariants (load-bearing — do not break)
+* **Dynamic Dual-Threshold WAL Flushing:** The WAL flusher triggers a disk `Sync()` when either pending record count reaches `BatchSize` or elapsed time exceeds `Interval`, balancing single-thread latency with high-concurrency parallel throughput.
 
-1. **Embeddable-first.** The core engine in `queue/` has zero network code.
-   The TCP layer (`internal/server`) and client SDK (`mikyu.go`) sit *across*
-   the boundary and are optional. Anything embedders need must live in `queue/`.
-2. **Durable-before-ack.** `Queue.Produce` blocks until the record is `fsync`ed
-   to disk. This is the documented crash-semantics contract — do not change it
-   to fire-and-forget without an explicit, deliberate decision.
-3. **Three independent axes** (never conflate):
-   - reading: destructive vs. non-destructive (`Read` is non-destructive here)
-   - offset tracking: logical stream position (client-facing)
-   - deletion: retention policy (not yet implemented — Phase 6+)
-4. **Offset vs. index terminology:** "offset" = logical stream position
-   (client-facing, Kafka/Pugs convention); "index" = internal `indexEntry`
-   (offset → byte position + length) lookup structure. Never conflate.
-5. **No premature abstraction.** Concrete-first for early phases; justify any
-   new interface by the problem in front of you, not "it might be useful."
+* **Raw 16-Byte UUID v7 Encoding:** Messages are encoded using raw 16-byte Go 1.27 standard library `uuid.UUID` arrays (`uuid.NewV7()`), avoiding string formatting allocations and reducing log file overhead by 20 bytes per record.
 
-## Package / file map
+* **Go Range-Over-Func Integration:** Streaming and live tailing are exposed using native `iter.Seq2[Message, error]` iterators.
 
-### root — `package mikyu` (public TCP client SDK)
-`github.com/dmunish/mikyu/mikyu.go`
-Mirrors the server wire protocol as a client. Deliberate API bridge across the
-`internal/` boundary, not redundant code.
+* **Declarative Configuration & Auto-Bootstrapping:** The daemon parses `mikyu.yaml` via `goccy/go-yaml`, auto-bootstraps commented default configuration files when missing, and reconciles declared queues on launch.
 
-- `type Client struct { conn net.Conn; r *bufio.Reader }` — one TCP connection.
-- `Dial(addr string) (*Client, error)` — opens a TCP connection to a `mikyud` server.
-- `(*Client) Close() error` — closes the connection.
-- `(*Client) CreateQueue(ctx, name string) error` — sends `OpCreateQueue`.
-- `(*Client) Produce(ctx, queue string, payload []byte) (uint64, error)` —
-  sends `OpProduce`, returns the assigned offset.
-- `(*Client) Read(ctx, queue string, offset uint64) (Message, error)` —
-  sends `OpRead`, reconstructs a `Message`.
-- `(*Client) LastOffset(ctx, queue string) (uint64, error)` — sends `OpTail`.
-- `(*Client) Queue(name string) Engine` — returns a `remoteEngine` bound to the named queue, implementing the unified `Engine` interface.
-- `(*Client) CommitOffset(ctx, queue, group string, offset uint64) error` — sends `OpCommitOffset`.
-- `(*Client) FetchOffset(ctx, queue, group string) (uint64, error)` — sends `OpFetchOffset`.
-- `(*Client) exchange(ctx, op byte, body []byte) ([]byte, error)` — frames a
-  request, applies `ctx` deadline to the socket, reads the response frame.
-  Returns `ctx.Err()` if the context fired; maps `OpError` via `decodeError`.
-- `decodeError(body []byte) error` — translates protocol error codes to the
-  exported `ErrQueueExists` / `ErrQueueNotFound` / `ErrOffsetNotFound`.
-- Exported aliases: `ErrQueueExists`, `ErrQueueNotFound`, `ErrOffsetNotFound`
-  (re-exported from `queue`), `type Message = queue.Message` (alias).
+* **Unified Single-Binary Execution:** A single `mikyu` executable acts as a background server daemon, stateless CLI operator, interactive REPL shell with Lipgloss styling, and visual TUI dashboard.
 
-### `queue/` — `package queue` (core engine, embeddable)
-The real heart of mikyu. Log-structured: WAL + bounded segments + mmap reads.
+* **Non-Blocking Background Auto-Spawning:** Executing `mikyu` directly (or double-clicking the binary) probes the local IPC socket, auto-spawns a detached background daemon if offline, and immediately attaches an interactive REPL prompt.
 
-**`queue/manager.go`** — multi-queue registry and lifecycle.
-- `type Manager struct { mu sync.RWMutex; dir string; queues map[string]*Queue }`
-- `Open(dir string) (*Manager, error)` — creates the data dir if needed and
-  restores every subdirectory as a `Queue` (replay on open).
-- `(*Manager) CreateQueue(name string, opts ...Config) (*Queue, error)` —
-  takes `mu.Lock()`; rejects duplicates with `ErrQueueExists`.
-- `(*Manager) Queue(name string) (*Queue, error)` — takes `mu.RLock()` /
-  `RUnlock()` (matched — verified, the historical Phase-1 bug is fixed).
-- `(*Manager) Close() error` — closes every queue, returns first error.
+---
 
-**`queue/queue.go`** — per-queue state, segment loading/rotation, lifecycle.
-- `type Queue struct { name, dir string; cfg Config; active *segment; segments []*segment; index []indexEntry; w *wal; mu sync.Mutex }`
-- `type Config struct { BatchSize int; Interval time.Duration; MaxSegmentBytes int64; MaxMessageBytes int64; MaxSegmentAge time.Duration }`
-  — all tunables, applied per-queue at creation time.
-- `Config.withDefaults() Config` — fills zero values (BatchSize 256,
-  Interval 10ms, MaxSegmentBytes 64MiB, MaxMessageBytes 1MiB, MaxSegmentAge 1h).
-- `type indexEntry struct { seg *segment; pos, len int64 }` — offset→byte mapping.
-- `openQueue(parentDir, name string, cfg Config) (*Queue, error)` — creates the
-  queue dir, loads segments.
-- `(*Queue) loadSegments() error` — sorts `*.log` bases, `openSegment` + `recover`
-  each, `enableMMap` for historical (non-active) segments, rebuilds `index`.
-- `(*Queue) roll() error` — stops the WAL, `enableMMap`s the sealed segment,
-  opens a new segment at `len(index)` base offset, restarts the WAL.
-- `(*Queue) Close() error` — stops WAL, closes all segments; WAL error wins.
+## 2. Repository Tree
 
-**`queue/ops.go`** — the message API.
-- `type Message struct { Offset uint64; Timestamp time.Time; ID string; Payload []byte }`
-- `(*Queue) Produce(ctx, payload []byte) (uint64, error)` — rejects
-  `> MaxMessageBytes` with `ErrMessageTooLarge`; **pre-check-before-write** rolls
-  if `active.pos + recLen > MaxSegmentBytes` OR age `> MaxSegmentAge`; pushes to
-  WAL, blocks on `w.wait(seq)`, then appends to `index`. Returns the assigned offset.
-- `(*Queue) Read(ctx, offset uint64) (Message, error)` — `ErrOffsetNotFound` if
-  out of range; **zero-copy** slices `mmapData` for rolled segments, falls back
-  to `ReadAt` for the active segment; `decodeRecord` the body.
-- `(*Queue) LastOffset() uint64` — `len(index)` under `mu`.
+```text
+github.com/dmunish/mikyu/
+├── go.mod
+├── go.sum
+├── README.md
+│
+├── mikyu.go            # Top-level interfaces: Client, Queue, Group, Message
+├── options.go          # Functional options for Client and Queue configuration
+├── typed.go            # Generic Typed[T] wrapper & Codec[T] interface
+├── embedded.go         # In-process embedded driver implementing Client/Queue/Group
+├── remote.go           # Network/IPC connection-pooled driver
+│
+├── internal/
+│   ├── config/         # Declarative YAML & env configuration manager
+│   │   └── config.go       # Auto-bootstrapping, goccy/go-yaml parsing, env overrides
+│   │
+│   ├── engine/         # Storage engine core (WAL, segments, index, offsets)
+│   │   ├── manager.go      # Multi-queue manager & lifecycle state
+│   │   ├── queue.go        # Per-queue append log, read paths, and rolling logic
+│   │   ├── wal.go          # Async/sync batch WAL flusher with sync.Cond
+│   │   ├── segment.go      # Active file I/O & read-only mmap segment handling
+│   │   ├── index.go        # In-memory index entry structures
+│   │   ├── offsets.go      # Single-file manager-level consumer offset store
+│   │   └── encode.go       # CRC32 record encoding, decoding, and raw UUID v7 handling
+│   │
+│   ├── protocol/       # Binary wire format parser & opcode definitions
+│   │   ├── opcodes.go      # Wire opcodes (including OpShutdown), error codes, target parsing
+│   │   ├── frames.go       # Length-prefixed binary frame reader and pooled writer
+│   │   └── bytes.go        # Bounds-checked binary Reader & Buffer helpers
+│   │
+│   ├── server/         # Protocol frame dispatcher & TCP server
+│   │   ├── server.go       # Listener loop, worker routines, and graceful Stop()
+│   │   └── handlers.go     # Mapping wire OpCodes -> internal/engine calls
+│   │
+│   └── ipc/            # Specialized local IPC listeners
+│       └── ipc.go          # Unix Domain Socket and Windows Named Pipe helpers
+│
+└── cmd/
+    └── mikyu/          # Unified single-binary entrypoint
+        ├── main.go         # Subcommand router (daemon, shell, tui, CLI)
+        ├── daemon.go       # Socket prober & background process spawner
+        ├── detach_unix.go  # POSIX process detachment (//go:build !windows)
+        ├── detach_windows.go# Windows process detachment (//go:build windows)
+        ├── vt_other.go     # Virtual terminal setup (//go:build !windows)
+        ├── vt_windows.go   # Windows ANSI escape sequence enabling (//go:build windows)
+        ├── repl.go         # Interactive REPL session shell & command loop
+        ├── banner.go       # Lipgloss-styled ASCII banner & command table
+        └── cli.go          # Stateless one-shot CLI handler (@file, stdin support)
+```
 
-**`queue/encode.go`** — on-disk record framing.
-- `encodeRecord(id string, ts time.Time, payload []byte) []byte` — layout:
-  `uint32 totalLen | uint32 crc32(body) | uint16 idLen | id | uint64 tsNano | payload`.
-  CRC covers everything after the length prefix.
-- `decodeRecord(buf []byte) (id string, ts time.Time, payload []byte, err error)` —
-  verifies CRC, validates bounds; returns `ErrCorruptRecord` on mismatch/truncation.
+---
 
-**`queue/segment.go`** — segment files (`.log` + `.idx`).
-- `type segment struct { baseOff uint64; logFile, idxFile *os.File; pos int64; createdAt time.Time; mmapData mmap.MMap }`
-- `openSegment(dir string, baseOff uint64) (*segment, error)` — opens
-  `%020d.log` / `%020d.idx` (RDWR, create).
-- `(*segment) enableMMap() error` — read-only mmap of the log file (fast-path reads).
-- `(*segment) writeIndex(pos, len int64) error` — appends a 16-byte (pos,len) entry.
-- `(*segment) recover() ([]rawIndexEntry, error)` — **fast path**: if `.idx` is
-  consistent with `.log` size, load it directly; **fallback**: `rebuild()` scans
-  the log, verifying each CRC, truncating any torn-write tail.
-- `(*segment) rebuild() ([]rawIndexEntry, error)` — rescans log, rewrites `.idx`,
-  truncates the file at the last good record.
-- `(*segment) Close() error` — unmaps (guards double-unmap), closes both files.
+## 3. Module Structure & Component Interaction
 
-**`queue/wal.go`** — batched, durable fsync writer.
-- `type wal struct { cfg Config; file *os.File; mu sync.Mutex; cond *sync.Cond; buf []byte; pending []pendingEntry; published int64; err error; wake, shutdown, done chan }`
-- `type pendingEntry struct { pos, len int64 }` — per-segment write pointer.
-- `newWAL(f *os.File, cfg Config, startOffset int64) *wal` — seeds `published`
-  from replayed offset so sequence numbers are contiguous across restarts.
-- `(*wal) start()` — launches `syncLoop` goroutine.
-- `(*wal) syncLoop()` — **dynamic dual-threshold**: wakes on ticker (`Interval`)
-  OR `wake` channel (when a record is staged and nothing is pending, or batch
-  full); flushes; on `shutdown` flushes and returns.
-- `(*wal) push(rec []byte, pos int64) (seq int64, wake bool, err error)` — stages
-  bytes + index metadata; returns the durable-sequence to wait on; `wake` true
-  when this is the first staged record or batch size reached.
-- `(*wal) wait(seq int64) error` — blocks on `cond` until `published > seq` or
-  sticky `err` set. This is what makes `Produce` durable-before-ack.
-- `(*wal) flush()` — swaps buffers (minimal lock hold), `WriteAt` + `Sync` off-lock,
-  then advances `published` and broadcasts.
-- `(*wal) stop() error` — signals shutdown, waits for `done`, returns sticky err.
+```text
+                                  ┌───────────────────────────────────┐
+                                  │        github.com/dmunish/mikyu   │
+                                  │     (Public API Contracts & SDK)  │
+                                  └─────────────────┬─────────────────┘
+                                                    │
+                            ┌───────────────────────┴───────────────────────┐
+                            ▼                                               ▼
+               [Embedded Execution Path]                       [Remote Connection Path]
+                  embeddedClient struct                           remoteClient struct
+                            │                                               │
+                            │ (Direct in-process call)                      │ (Binary frame exchange)
+                            ▼                                               ▼
+                 ┌─────────────────────┐                         ┌─────────────────────┐
+                 │   internal/engine   │                         │  internal/protocol  │
+                 │ (Storage Engine)    │                         └──────────┬──────────┘
+                 └─────────────────────┘                                    │
+                            ▲                                               ▼
+                            │                                    ┌─────────────────────┐
+                            │ (Server Dispatch)                  │   internal/server   │
+                            └────────────────────────────────────┤   internal/ipc      │
+                                                                 └─────────────────────┘
+                                                                            ▲
+                                                                            │ (IPC / TCP)
+                                                                 ┌──────────┴──────────┐
+                                                                 │      cmd/mikyu      │
+                                                                 │  (Unified Executable)│
+                                                                 └─────────────────────┘
+```
 
-**`queue/` errors:** `ErrQueueExists`, `ErrQueueNotFound`, `ErrOffsetNotFound`,
-`ErrCorruptRecord`, `ErrMessageTooLarge`.
+1. **`[github.com/dmunish/mikyu](https://github.com/dmunish/mikyu)`**: Root package exposing unified `Client`, `Queue`, and `Group` interfaces instantiated via `mikyu.Open()` (embedded) or `mikyu.Dial()` (remote TCP/IPC socket).
 
-### `internal/protocol/` — `package protocol` (wire format)
-Shared by server and client. Keep it dependency-free and stable.
+2. **`internal/config`**: Reads and writes `mikyu.yaml` via `goccy/go-yaml`, handles resolution hierarchies, applies environment variable overrides, and converts settings to engine configurations.
 
-**`internal/protocol/protocol.go`**
-- Frame: `uint32 length | uint8 opcode | payload`. Opcodes: `OpCreateQueue 0x01`,
-  `OpProduce 0x02`, `OpRead 0x03`, `OpTail 0x04`, `OpError 0xFF`. Error codes:
-  `ErrCodeUnknown/QueueExists(0x01)/QueueNotFound(0x02)/OffsetNotFound(0x03)`.
-- `ReadFrame(r *bufio.Reader) (op byte, payload []byte, err error)`
-- `WriteFrame(w io.Writer, op byte, payload []byte) error`
-- `EncodeError(code byte, msg string) []byte` / `DecodeError(body []byte) (code byte, msg string)`
+3. **`internal/engine`**: Storage engine handling WAL flushing, zero-copy `mmap` slices, segment rolling, index recovery, and single-file offset persistence.
 
-**`internal/protocol/bytes.go`** — typed reader/writer for payloads.
-- `type Reader struct { b []byte; i int }` — `NewReader`, `ReadU32`, `ReadU64`,
-  `ReadBytes` (length-prefixed); returns `ErrTruncatedBody` on underflow.
-- `type Buffer struct { b []byte }` — `WriteU32`, `WriteU64`, `WriteBytes`
-  (length-prefixed), `Bytes`.
+4. **`internal/protocol`**: Defines 5-byte length-prefixed frame layout (`[4B Length][1B Opcode][Payload]`) and protocol opcodes including `OpShutdown`.
 
-### `internal/server/` — `package server` (TCP dispatch)
-**`internal/server/server.go`**
-- `type Server struct { mgr *queue.Manager }`
-- `New(mgr *queue.Manager) *Server`
-- `(*Server) Start(addr string) error` — listen + `Serve`.
-- `(*Server) Serve(ln net.Listener) error` — accept loop, one goroutine per conn.
-- `(*Server) serve(conn net.Conn)` — frame read → `dispatch` → frame write loop.
-- `(*Server) dispatch(ctx, op, body) (byte, []byte)` — routes opcodes to ops.
+5. **`internal/server` & `internal/ipc`**: Binds network/IPC listeners and dispatches binary wire frames to the underlying engine manager.
 
-**`internal/server/ops.go`** — per-op handlers.
-- `createQueue(body)` — `mgr.CreateQueue`, maps `ErrQueueExists`.
-- `produce(ctx, body)` — looks up queue, `Produce`, returns offset.
-- `read(ctx, body)` — looks up queue, `Read`, serializes `Message` (offset, id, tsNano, payload).
-- `tail(body)` — returns `LastOffset`.
+6. **`cmd/mikyu`**: Single binary combining server daemon, detached auto-spawner, Lipgloss REPL prompt, and stateless CLI handler.
 
-### `cmd/mikyud/` — `package main` (server binary)
-`cmd/mikyud/main.go` — entrypoint. `queue.Open("data")`, `server.New(mgr)`,
-listens on `:7420`, handles SIGINT/SIGTERM for graceful shutdown, closes the
-manager on exit. Flags noted in `plan.md` (`-port`/`-data`) are the intended
-shape; current code uses hardcoded `:7420` / `"data"`.
+---
 
-### `dashboard/` — Modern Svelte5 app (scaffold for now)
-Svelte 5 + Vite + TypeScript, Bun package manager. `src/App.svelte`, `src/lib/Counter.svelte`,
-`src/main.ts`, `src/app.css`. Intended to consume a future SSE metrics API
-(Phase 4/5). Treat as a separate frontend project; leave it alone unless the
-task is explicitly the dashboard.
+## 4. File-by-File Technical Specification
 
-### Tests (what each validates)
-- `queue/queue_test.go` (`package queue_test`): manager create/get, disk restore,
-  produce+read, WAL replay preserves messages, torn-write tail truncation.
-- `queue/bench_test.go`: `BenchmarkProduceSerial/Parallel`, `BenchmarkConsumeSequential/Random`.
-- `queue/encode_test.go`: record round-trip (incl. empty/edge cases), corrupt-CRC, truncated.
-- `queue/segment_test.go`: `TestSegment_RecoverAndRebuild`.
-- `internal/protocol/protocol_test.go`: buffer/reader round-trip, truncation, frame round-trip, length prefix, error codec.
-- `internal/server/server_test.go`: dispatch happy-path + error codes + duplicate create (uses in-memory `net.Pipe`).
-- `mikyu_test.go` (`package mikyu_test`): full client↔server E2E over a real
-  ephemeral port — lifecycle, error mapping, context deadline, multi-queue isolation.
+### Root Package (`package mikyu`)
 
-## Things to know before editing
-- **Windows caveat:** open files are locked; tests must `Close()` WALs before
-  `t.TempDir()` cleanup (already handled in helpers).
-- **mmap:** only historical/rolled segments are mmapped; the active segment is
-  written via `ReadAt`/write path. Don't mmap the active segment.
-- **Sequence numbers** in the WAL are contiguous across restarts because
-  `newWAL` seeds `published` from `len(index)`; keep that invariant if you touch replay.
-- **`go.mod` only lists `mmap-go` + indirect `golang.org/x/sys`**; `uuid` resolves
-  via stdlib. If you add a dep, run `go mod tidy`.
+#### `mikyu.go`
 
-### `engine.go` — `package mikyu` (Engine interface + adapters + SDK extensions)
-- `Engine` interface: `Produce`, `ProduceBatch`, `Read`, `ReadBatch`, `LastOffset`, `CommitOffset`, `FetchOffset` — unified contract for embedded (`queue.Queue`) and remote (`Client`).
-- `LastOffsetAdapter`: embeds `*queue.Queue`, overrides `LastOffset(ctx)` to add context awareness.
-- `remoteEngine`: binds `Client` + queue name; implements `Engine` over TCP.
-- `Client.Queue(name) Engine`: returns `remoteEngine` bound to named queue.
-- `Stream` / `Tail`: `iter.Seq2[Message, error]` iterators with active `ctx.Err()` cancellation.
-- `ConsumerGroup`: `JoinGroup`, `Mark`, `Commit`, `FetchOffset`, `Close` (actor goroutine + synchronous final commit).
-- `Codec[T]` / `Typed[T]`: generic wrapper; value receiver (`Typed[T]`); `NewTyped`.
-- `Message` alias (`queue.Message`) exported.
-- `Engine` interface (`engine.go`): `Produce`, `ProduceBatch`, `Read`, `ReadBatch`, `LastOffset`, `CommitOffset`, `FetchOffset` — unified contract for embedded (`queue.Queue` via `LastOffsetAdapter`) and remote (`Client` via `remoteEngine`).
-- `LastOffsetAdapter`: embeds `*queue.Queue`, overrides `LastOffset(ctx)` to add context awareness.
-- `remoteEngine`: binds `Client` + queue name; implements `Engine` over TCP.
+Defines public domain models and core SDK interface contracts.
 
-### `queue/offets.go` — manager-level offset persistence (`package queue`)
-- `OffsetStore`: single `manager-offsets.dat` file for all queues (not 1 per queue).
-- `OpenManagerOffsetStore`, `Commit(queueName, group, offset)`, `Fetch(queueName, group)`, `Close`.
-- `bufio.Writer` + `Flush()` before `Sync()` (Batch 4 performance fix).
+```go
+type Message struct {
+	Offset    uint64
+	ID        string
+	Timestamp time.Time
+	Payload   []byte
+}
 
-### `queue/offsets_test.go` — white-box tests (`package queue`)
-- `TestOffsetStore_CommitAndFetch`: verifies manager-level store writes and reads.
+type SystemStats struct {
+	ActiveQueues int
+	TotalBytes   int64
+	Queues       map[string]QueueStats
+}
 
-### `engine_test.go` — SDK contract tests (`package mikyu`)
-- `TestEngineContract`: compile-time assertion `var _ Engine = LastOffsetAdapter{}`.
+type QueueStats struct {
+	MessageCount uint64
+	SegmentCount int
+	SizeBytes    int64
+	LastOffset   uint64
+}
 
-### New modules added (post-Phase-6):
-- `engine.go`: `Engine`, adapters, `ConsumerGroup`, `Typed[T]`, iterators.
-- `queue/offets.go`: manager-level `OffsetStore` (replaces deleted per-queue `offsets.go`).
-- `queue/offsets_test.go`: manager store tests.
-- `engine_test.go`: SDK contract verification.
+type Client interface {
+	io.Closer
+	CreateQueue(ctx context.Context, name string, opts ...QueueOption) (Queue, error)
+	Queue(name string) (Queue, error)
+	ListQueues(ctx context.Context) ([]string, error)
+	DeleteQueue(ctx context.Context, name string) error
+	Stats(ctx context.Context) (SystemStats, error)
+}
+
+type Queue interface {
+	Name() string
+	Produce(ctx context.Context, payload []byte) (uint64, error)
+	ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
+	Read(ctx context.Context, offset uint64) (Message, error)
+	ReadBatch(ctx context.Context, startOffset uint64, count int) ([]Message, error)
+	LastOffset(ctx context.Context) (uint64, error)
+	Stream(ctx context.Context, startOffset uint64) iter.Seq2[Message, error]
+	Tail(ctx context.Context, startOffset uint64) iter.Seq2[Message, error]
+	Group(name string) Group
+}
+
+type Group interface {
+	io.Closer
+	Name() string
+	Mark(offset uint64)
+	Commit(ctx context.Context) error
+	FetchOffset(ctx context.Context) (uint64, error)
+}
+```
+
+#### `options.go`
+
+Configures client connection pools and queue properties via functional options.
+
+```go
+type ClientConfig struct {
+	BatchSize              int
+	Interval               time.Duration
+	MaxConns               int
+	DefaultMaxSegmentBytes int64
+	DefaultMaxMessageBytes int64
+	DefaultMaxSegmentAge   time.Duration
+}
+
+type QueueConfig struct {
+	MaxSegmentBytes int64
+	MaxMessageBytes int64
+	MaxSegmentAge   time.Duration
+}
+
+func DefaultClientConfig() ClientConfig
+func WithBatchSize(n int) ClientOption
+func WithFlushInterval(d time.Duration) ClientOption
+func WithMaxConns(n int) ClientOption
+func WithMaxSegmentBytes(bytes int64) QueueOption
+func WithMaxMessageBytes(bytes int64) QueueOption
+func WithMaxSegmentAge(age time.Duration) QueueOption
+```
+
+#### `typed.go`
+
+Provides generic type marshaling wrappers over raw byte queues.
+
+```go
+type Codec[T any] struct {
+	Marshal   func(T) ([]byte, error)
+	Unmarshal func([]byte, *T) error
+}
+
+type Typed[T any] struct { /* private fields */ }
+
+func NewTyped[T any](q Queue, codec Codec[T]) *Typed[T]
+func (t *Typed[T]) Produce(ctx context.Context, val T) (uint64, error)
+func (t *Typed[T]) Read(ctx context.Context, offset uint64) (T, error)
+```
+
+#### `embedded.go`
+
+Implements `Client`, `Queue`, and `Group` by wrapping `internal/engine` directly.
+
+```go
+func Open(dir string, opts ...ClientOption) (Client, error)
+```
+
+#### `remote.go`
+
+Implements `Client`, `Queue`, and `Group` over pooled TCP/IPC socket connections.
+
+```go
+func Dial(target string, opts ...ClientOption) (Client, error)
+```
+
+---
+
+### Internal Declarative Config Module (`package config`)
+
+#### `internal/config/config.go`
+
+Handles `mikyu.yaml` unmarshaling using `goccy/go-yaml`, directory resolution hierarchies, auto-bootstrapping, and environment variable overrides.
+
+```go
+type Config struct {
+	Server ServerConfig  `yaml:"server"`
+	Engine EngineConfig  `yaml:"engine"`
+	Queues []QueueConfig `yaml:"queues"`
+}
+
+type ServerConfig struct {
+	Target  string `yaml:"target"`
+	DataDir string `yaml:"data_dir"`
+}
+
+type EngineConfig struct {
+	BatchSize       int           `yaml:"batch_size"`
+	FlushInterval   time.Duration `yaml:"flush_interval"`
+	MaxSegmentBytes int64         `yaml:"max_segment_bytes"`
+	MaxMessageBytes int64         `yaml:"max_message_bytes"`
+	MaxSegmentAge   time.Duration `yaml:"max_segment_age"`
+}
+
+type QueueConfig struct {
+	Name            string        `yaml:"name"`
+	BatchSize       int           `yaml:"batch_size,omitempty"`
+	FlushInterval   time.Duration `yaml:"flush_interval,omitempty"`
+	MaxSegmentBytes int64         `yaml:"max_segment_bytes,omitempty"`
+	MaxMessageBytes int64         `yaml:"max_message_bytes,omitempty"`
+	MaxSegmentAge   time.Duration `yaml:"max_segment_age,omitempty"`
+}
+
+func DefaultConfig() Config
+func Load(flagPath string) (*Config, string, error)
+func ToEngineConfig(e EngineConfig) engine.Config
+func ToQueueEngineConfig(defaults EngineConfig, q QueueConfig) engine.Config
+```
+
+---
+
+### Internal Storage Engine (`package engine`)
+
+#### `offsets.go`
+
+Persists consumer group high-water marks across all queues into a single binary file (`manager-offsets.dat`).
+
+```go
+type OffsetStore struct {
+	mu      sync.RWMutex
+	file    *os.File
+	w       *bufio.Writer
+	offsets map[string]uint64
+}
+
+func openOffsetStore(dir string) (*OffsetStore, error)
+func (s *OffsetStore) Commit(queueName, group string, offset uint64) error
+func (s *OffsetStore) Fetch(queueName, group string) uint64
+func (s *OffsetStore) Close() error
+```
+
+#### `segment.go`
+
+Manages append-only active log files and closed read-only `mmap` regions.
+
+```go
+type segment struct {
+	baseOff   uint64
+	logFile   *os.File
+	idxFile   *os.File
+	pos       int64
+	createdAt time.Time
+	mmapData  mmap.MMap
+}
+
+func openSegment(dir string, baseOff uint64) (*segment, error)
+func (s *segment) enableMMap() error
+func (s *segment) writeIndex(pos, len int64) error
+func (s *segment) recover() ([]rawIndexEntry, error)
+func (s *segment) rebuild() ([]rawIndexEntry, error)
+func (s *segment) Close() error
+```
+
+#### `wal.go`
+
+Executes write-ahead log flushing with dynamic dual-threshold batching.
+
+```go
+type wal struct {
+	cfg       Config
+	file      *os.File
+	mu        sync.Mutex
+	cond      *sync.Cond
+	buf       []byte
+	pending   []pendingEntry
+	pushed    int64
+	published int64
+	err       error
+	wake      chan struct{}
+	shutdown  chan struct{}
+	done      chan struct{}
+}
+
+func newWAL(f *os.File, cfg Config, startOffset int64) *wal
+func (w *wal) start()
+func (w *wal) push(rec []byte, pos int64) (seq int64, wake bool, err error)
+func (w *wal) pushBatch(recs [][]byte, positions []int64) (seq int64, wake bool, err error)
+func (w *wal) wait(seq int64) error
+func (w *wal) flush()
+func (w *wal) stop() error
+```
+
+#### `encode.go`
+
+Encodes/decodes records using raw 16-byte `uuid.UUID` values and calculates IEEE CRC32 checksums.
+
+* **Binary Record Format:**
+`[4B Length][4B CRC32 Checksum][2B ID Len (16)][16B Raw UUID v7][8B Timestamp Nano][M-B Payload]`
+
+```go
+func encodeRecord(id uuid.UUID, ts time.Time, payload []byte) []byte
+func decodeRecord(buf []byte) (id string, ts time.Time, payload []byte, err error)
+```
+
+#### `queue.go`
+
+Implements per-queue record appends, offset indexing, zero-copy reads, and segment rolling.
+
+```go
+type Queue struct {
+	name     string
+	dir      string
+	cfg      Config
+	active   *segment
+	segments []*segment
+	index    []indexEntry
+	w        *wal
+	offsets  *OffsetStore
+	mu       sync.Mutex
+}
+
+func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, error)
+func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error)
+func (q *Queue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
+func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error)
+func (q *Queue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([]Message, error)
+func (q *Queue) LastOffset() uint64
+func (q *Queue) CommitOffset(ctx context.Context, group string, offset uint64) error
+func (q *Queue) FetchOffset(ctx context.Context, group string) (uint64, error)
+func (q *Queue) Close() error
+```
+
+#### `manager.go`
+
+Handles multi-queue engine state, queue deletion, and system storage metrics.
+
+```go
+type Manager struct {
+	mu      sync.RWMutex
+	dir     string
+	cfg     Config
+	queues  map[string]*Queue
+	offsets *OffsetStore
+}
+
+func OpenManager(dir string, cfg Config) (*Manager, error)
+func (m *Manager) CreateQueue(name string, opts ...Config) (*Queue, error)
+func (m *Manager) GetQueue(name string) (*Queue, error)
+func (m *Manager) ListQueues() []string
+func (m *Manager) DeleteQueue(name string) error
+func (m *Manager) Stats() EngineStats
+func (m *Manager) Close() error
+```
+
+---
+
+### Internal Protocol Module (`package protocol`)
+
+#### `opcodes.go`
+
+Defines wire opcodes, error formats, and target URI parsing.
+
+* **Opcodes:** `OpCreateQueue` (`0x01`), `OpProduce` (`0x02`), `OpRead` (`0x03`), `OpTail` (`0x04`), `OpCommitOffset` (`0x05`), `OpFetchOffset` (`0x06`), `OpProduceBatch` (`0x07`), `OpReadBatch` (`0x08`), `OpListQueues` (`0x09`), `OpDeleteQueue` (`0x0A`), `OpStats` (`0x0B`), `OpShutdown` (`0x0C`), `OpError` (`0xFF`).
+
+```go
+func EncodeError(code byte, msg string) []byte
+func DecodeError(body []byte) (code byte, msg string)
+func ParseTarget(target string) (network string, addr string, err error)
+```
+
+#### `frames.go`
+
+Manages 5-byte length-prefixed frame encoding/decoding with zero-allocation `sync.Pool` buffers.
+
+```go
+func ReadFrame(r *bufio.Reader) (op byte, payload []byte, err error)
+func WriteFrame(w io.Writer, op byte, payload []byte) error
+```
+
+#### `bytes.go`
+
+Provides bounds-checked binary reader and writer buffer abstractions.
+
+```go
+type Reader struct { /* private fields */ }
+func NewReader(b []byte) *Reader
+func (r *Reader) ReadU32() (uint32, error)
+func (r *Reader) ReadU64() (uint64, error)
+func (r *Reader) ReadBytes() ([]byte, error)
+
+type Buffer struct { /* private fields */ }
+func (buf *Buffer) WriteU32(v uint32)
+func (buf *Buffer) WriteU64(v uint64)
+func (buf *Buffer) WriteBytes(data []byte)
+func (buf *Buffer) Bytes() []byte
+```
+
+---
+
+### Internal Server & IPC Modules (`package server` / `package ipc`)
+
+#### `internal/server/server.go`
+
+Accepts connections and handles graceful shutdown when receiving `OpShutdown` or signal events.
+
+```go
+type Server struct {
+	mgr      *engine.Manager
+	listener net.Listener
+	mu       sync.Mutex
+	stopCh   chan struct{}
+}
+
+func New(mgr *engine.Manager) *Server
+func (s *Server) ListenAndServe(target string) error
+func (s *Server) Serve(ln net.Listener) error
+func (s *Server) Stop()
+```
+
+#### `internal/server/handlers.go`
+
+Dispatches binary frames to storage engine calls and triggers `OpShutdown` stops.
+
+```go
+func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (byte, []byte, bool)
+```
+
+#### `internal/ipc/ipc.go`
+
+Manages Unix Domain Socket and Windows Named Pipe listeners with stale socket unlinking.
+
+```go
+type Listener struct {
+	net.Listener
+	network string
+	path    string
+}
+
+func Listen(target string) (net.Listener, error)
+func (l *Listener) Close() error
+```
+
+---
+
+### Executable Application (`cmd/mikyu`)
+
+#### `cmd/mikyu/main.go`
+
+Unified subcommand router and entrypoint for bare execution, server daemon, REPL, TUI, and CLI commands.
+
+```go
+func main()
+func runDaemonServer(configPath string)
+func printUsage()
+```
+
+#### `cmd/mikyu/daemon.go`
+
+Probes socket readiness and auto-spawns background daemon instances.
+
+```go
+func IsDaemonAlive(target string) bool
+func EnsureDaemonRunning(target string) error
+```
+
+#### `cmd/mikyu/detach_unix.go` & `detach_windows.go`
+
+Platform-specific process detachment using Go build tags (`//go:build !windows` vs `//go:build windows`).
+
+```go
+func setDetachedProcessAttr(cmd *exec.Cmd)
+```
+
+#### `cmd/mikyu/vt_other.go` & `vt_windows.go`
+
+Platform-specific Virtual Terminal (ANSI) enabling for colored output.
+
+```go
+// vt_other.go: empty init()
+// vt_windows.go: enables ENABLE_VIRTUAL_TERMINAL_PROCESSING on stdout/stderr
+func init()
+```
+
+#### `cmd/mikyu/banner.go`
+
+Renders the Lipgloss-styled ASCII banner, command reference table, and connection status.
+
+```go
+func PrintREPLBanner(target string)
+```
+
+#### `cmd/mikyu/repl.go`
+
+Interactive REPL prompt session handling command evaluation with `scanner.Err()` checks.
+
+```go
+func RunREPL(target string)
+func parseREPLArgs(line string) []string
+func sendShutdownSignal(target string) error
+```
+
+#### `cmd/mikyu/cli.go`
+
+One-shot stateless CLI subcommand executor supporting raw payloads, `@file_path` file reading, and `-` stdin streaming.
+
+```go
+func RunCLI(target string, args []string)
+func resolvePayload(input string) ([]byte, error)
+```

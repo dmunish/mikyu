@@ -5,43 +5,80 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 
+	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/protocol"
-	"github.com/dmunish/mikyu/queue"
 )
 
+// Server accepts client connections and dispatches wire protocol frames to internal/engine.
 type Server struct {
-	mgr *queue.Manager
+	mgr      *engine.Manager
+	listener net.Listener
+	mu       sync.Mutex
+	stopCh   chan struct{}
 }
 
-func New(mgr *queue.Manager) *Server {
-	return &Server{mgr: mgr}
+// New creates a new Server instance backed by the provided Manager.
+func New(mgr *engine.Manager) *Server {
+	return &Server{
+		mgr:    mgr,
+		stopCh: make(chan struct{}),
+	}
 }
 
-func (s *Server) Start(addr string) error {
-	ln, err := net.Listen("tcp", addr)
+// ListenAndServe binds to target (e.g. "tcp://:7420", "unix:///tmp/mikyu.sock") and serves incoming requests.
+func (s *Server) ListenAndServe(target string) error {
+	network, addr, err := protocol.ParseTarget(target)
 	if err != nil {
 		return err
 	}
+
+	ln, err := net.Listen(network, addr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s (%s): %w", network, addr, err)
+	}
+
+	s.mu.Lock()
+	s.listener = ln
+	s.mu.Unlock()
+
 	defer ln.Close()
 	return s.Serve(ln)
 }
 
-// Serve accepts connections on ln until it is closed.
+// Serve accepts client connections on ln until closed.
 func (s *Server) Serve(ln net.Listener) error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			return err
+			select {
+			case <-s.stopCh:
+				return nil // Graceful server stop
+			default:
+				return err
+			}
 		}
-		go s.serve(conn)
+		go s.serveConn(conn)
 	}
 }
 
-func (s *Server) serve(conn net.Conn) {
+func (s *Server) Stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	select {
+	case <-s.stopCh:
+	default:
+		close(s.stopCh)
+		if s.listener != nil {
+			_ = s.listener.Close()
+		}
+	}
+}
+
+func (s *Server) serveConn(conn net.Conn) {
 	defer conn.Close()
 	r := bufio.NewReader(conn)
-
 	ctx := context.Background()
 
 	for {
@@ -49,33 +86,18 @@ func (s *Server) serve(conn net.Conn) {
 		if err != nil {
 			return
 		}
-		respOp, respBody := s.dispatch(ctx, op, body)
+
+		respOp, respBody, shouldShutdown := s.dispatch(ctx, op, body)
 		if err := protocol.WriteFrame(conn, respOp, respBody); err != nil {
 			return
 		}
-	}
-}
 
-func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (byte, []byte) {
-	switch op {
-	case protocol.OpCreateQueue:
-		return s.createQueue(body)
-	case protocol.OpProduce:
-		return s.produce(ctx, body)
-	case protocol.OpProduceBatch:
-		return s.produceBatch(ctx, body)
-	case protocol.OpRead:
-		return s.read(ctx, body)
-	case protocol.OpReadBatch:
-		return s.readBatch(ctx, body)
-	case protocol.OpTail:
-		return s.tail(body)
-	case protocol.OpCommitOffset:
-		return s.commitOffset(ctx, body)
-	case protocol.OpFetchOffset:
-		return s.fetchOffset(ctx, body)
-	default:
-		return protocol.OpError, protocol.EncodeError(
-			protocol.ErrCodeUnknown, fmt.Sprintf("unknown opcode 0x%02x", op))
+		if shouldShutdown {
+			go func() {
+				_ = s.mgr.Close()
+				s.Stop()
+			}()
+			return
+		}
 	}
 }

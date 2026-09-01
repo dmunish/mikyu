@@ -5,12 +5,13 @@ import (
 	"errors"
 )
 
+var ErrTruncatedBody = errors.New("truncated frame body")
+
+// Reader provides bounds-checked sequential decoding of binary frame payloads.
 type Reader struct {
 	b []byte
 	i int
 }
-
-var ErrTruncatedBody = errors.New("truncated frame body")
 
 func NewReader(b []byte) *Reader { return &Reader{b: b} }
 
@@ -45,6 +46,7 @@ func (r *Reader) ReadBytes() ([]byte, error) {
 	return b, nil
 }
 
+// Buffer provides zero-allocation builder helpers for constructing protocol payload bytes.
 type Buffer struct{ b []byte }
 
 func (buf *Buffer) WriteU32(v uint32) {
