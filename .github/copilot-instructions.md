@@ -11,6 +11,8 @@
 * **Dynamic Dual-Threshold WAL Flushing:** The WAL flusher triggers a disk `Sync()` when either pending record count reaches `BatchSize` or elapsed time exceeds `Interval`, balancing single-thread latency with high-concurrency parallel throughput.
 * **Raw 16-Byte UUID v7 Encoding:** Messages are encoded using raw 16-byte Go 1.27 standard library `uuid.UUID` arrays (`uuid.NewV7()`), avoiding string formatting allocations and reducing log file overhead by 20 bytes per record.
 * **Go Range-Over-Func Integration:** Streaming and live tailing are exposed using native `iter.Seq2[Message, error]` iterators.
+* **Transparent Kernel Directory Encryption:** OS-level directory encryption policies (`fscrypt` ioctl on Linux, NTFS EFS on Windows) are auto-bootstrapped on queue directories, maintaining zero-copy `mmap` performance while encrypting storage at rest.
+* **TLS 1.3 Transport Encryption:** Network communication over TCP enforces TLS 1.3 with optional auto-generated self-signed certificates for zero-config local security, while local IPC bypasses TLS overhead.
 * **Declarative Configuration & Auto-Bootstrapping:** The daemon parses `mikyu.yaml` via `goccy/go-yaml`, auto-bootstraps commented default configuration files when missing, and reconciles declared queues on launch.
 * **Unified Single-Binary Execution:** A single `mikyu` executable acts as a background server daemon, stateless CLI operator, interactive REPL shell with Lipgloss styling, and visual TUI dashboard.
 * **Non-Blocking Background Auto-Spawning:** Executing `mikyu` directly (or double-clicking the binary) probes the local IPC socket, auto-spawns a detached background daemon if offline, and immediately attaches an interactive REPL prompt.
@@ -54,9 +56,10 @@ github.com/dmunish/mikyu/
 │   │
 │   ├── server/         # Protocol frame dispatcher & TCP server
 │   │   ├── server.go       # Listener loop, worker routines, and graceful Stop()
-│   │   └── handlers.go     # Mapping wire OpCodes -> internal/engine calls
+│   │   ├── handlers.go     # Mapping wire OpCodes -> internal/engine calls
+│   │   └── tls.go          # TLS 1.3 config helper & self-signed cert auto-generation
 │   │
-│   └── ipc/            # Specialized local IPC listeners
+│   └── ipc/            # Specialized local IPC listeners and dialers
 │       └── ipc.go          # Unix Domain Socket and Windows Named Pipe helpers
 │
 └── cmd/
@@ -100,7 +103,7 @@ github.com/dmunish/mikyu/
                             └────────────────────────────────────┤   internal/ipc      │
                                                                  └─────────────────────┘
                                                                             ▲
-                                                                            │ (IPC / TCP)
+                                                                            │ (IPC / TLS TCP)
                                                                  ┌──────────┴──────────┐
                                                                  │      cmd/mikyu      │
                                                                  │  (Unified Executable)│
@@ -112,7 +115,7 @@ github.com/dmunish/mikyu/
 2. **`internal/config`**: Reads and writes `mikyu.yaml` via `goccy/go-yaml`, handles resolution hierarchies, applies environment variable overrides, and converts settings to engine configurations.
 3. **`internal/engine`**: Storage engine handling WAL flushing, zero-copy `mmap` slices, segment rolling, index recovery, transparent directory encryption, and single-file offset persistence.
 4. **`internal/protocol`**: Defines 5-byte length-prefixed frame layout (`[4B Length][1B Opcode][Payload]`) and protocol opcodes including `OpShutdown`.
-5. **`internal/server` & `internal/ipc**`: Binds network/IPC listeners and dispatches binary wire frames to the underlying engine manager.
+5. **`internal/server` & `internal/ipc**`: Binds network/IPC listeners (wrapping TCP with TLS 1.3 when configured) and dispatches binary wire frames to the underlying engine manager.
 6. **`cmd/mikyu`**: Single binary combining server daemon, detached auto-spawner, Lipgloss REPL prompt, and stateless CLI handler.
 
 ---
@@ -190,6 +193,7 @@ type ClientConfig struct {
 	DefaultMaxMessageBytes int64
 	DefaultMaxSegmentAge   time.Duration
 	Encrypted              bool
+	TLSConfig              *tls.Config
 }
 
 type QueueConfig struct {
@@ -204,6 +208,7 @@ func WithBatchSize(n int) ClientOption
 func WithFlushInterval(d time.Duration) ClientOption
 func WithMaxConns(n int) ClientOption
 func WithClientDirectoryEncryption(enabled bool) ClientOption
+func WithClientTLS(tlsConfig *tls.Config) ClientOption
 func WithMaxSegmentBytes(bytes int64) QueueOption
 func WithMaxMessageBytes(bytes int64) QueueOption
 func WithMaxSegmentAge(age time.Duration) QueueOption
@@ -263,8 +268,11 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Target  string `yaml:"target"`
-	DataDir string `yaml:"data_dir"`
+	Target      string `yaml:"target"`
+	DataDir     string `yaml:"data_dir"`
+	TLSEnabled  bool   `yaml:"tls_enabled"`
+	TLSCertFile string `yaml:"tls_cert_file"`
+	TLSKeyFile  string `yaml:"tls_key_file"`
 }
 
 type EngineConfig struct {
@@ -509,16 +517,27 @@ Accepts connections and handles graceful shutdown when receiving `OpShutdown` or
 
 ```go
 type Server struct {
-	mgr      *engine.Manager
-	listener net.Listener
-	mu       sync.Mutex
-	stopCh   chan struct{}
+	mgr       *engine.Manager
+	listener  net.Listener
+	tlsConfig *tls.Config
+	mu        sync.Mutex
+	stopCh    chan struct{}
 }
 
-func New(mgr *engine.Manager) *Server
+func New(mgr *engine.Manager, opts ...ServerOption) *Server
+func WithTLS(tlsConfig *tls.Config) ServerOption
 func (s *Server) ListenAndServe(target string) error
 func (s *Server) Serve(ln net.Listener) error
 func (s *Server) Stop()
+
+```
+
+#### `internal/server/tls.go`
+
+Generates TLS 1.3 server configurations with auto-generated self-signed certificate fallback for local development.
+
+```go
+func DefaultTLSConfig(certFile, keyFile string) (*tls.Config, error)
 
 ```
 
@@ -533,7 +552,7 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (byte, []by
 
 #### `internal/ipc/ipc.go`
 
-Manages Unix Domain Socket and Windows Named Pipe listeners with stale socket unlinking.
+Manages Unix Domain Socket and Windows Named Pipe listeners and dialers with stale socket unlinking.
 
 ```go
 type Listener struct {
@@ -543,6 +562,8 @@ type Listener struct {
 }
 
 func Listen(target string) (net.Listener, error)
+func Dial(target string) (net.Conn, error)
+func DialContext(ctx context.Context, target string) (net.Conn, error)
 func (l *Listener) Close() error
 
 ```
