@@ -63,7 +63,7 @@ type Queue struct {
 	index    []indexEntry
 	w        *wal
 	offsets  *OffsetStore
-	mu       sync.Mutex
+	mu       sync.RWMutex
 }
 
 func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, error) {
@@ -299,13 +299,13 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 		return Message{}, err
 	}
 
-	q.mu.Lock()
+	q.mu.RLock()
 	if offset >= uint64(len(q.index)) {
-		q.mu.Unlock()
+		q.mu.RUnlock()
 		return Message{}, ErrOffsetNotFound
 	}
 	entry := q.index[offset]
-	q.mu.Unlock()
+	q.mu.RUnlock()
 
 	var rec []byte
 	if entry.seg != nil && entry.seg.mmapData != nil {
@@ -348,8 +348,8 @@ func (q *Queue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([
 }
 
 func (q *Queue) LastOffset() uint64 {
-	q.mu.Lock()
-	defer q.mu.Unlock()
+	q.mu.RLock()
+	defer q.mu.RUnlock()
 	return uint64(len(q.index))
 }
 
