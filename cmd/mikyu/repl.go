@@ -16,10 +16,21 @@ import (
 )
 
 var (
-	promptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
-	infoStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("86"))
-	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
-	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	accentColor = lipgloss.Color("#FFB200")
+
+	promptStyle = lipgloss.NewStyle().
+			Foreground(accentColor).
+			Bold(true)
+
+	infoStyle = lipgloss.NewStyle().
+			Foreground(accentColor)
+
+	errStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196")).
+			Bold(true)
+
+	dimStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240"))
 )
 
 func RunREPL(target string) {

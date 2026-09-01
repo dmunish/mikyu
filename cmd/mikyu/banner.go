@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"image/color"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -16,11 +17,16 @@ const mikyuASCII = `
 ╚═╝     ╚═╝╚═╝╚═╝  ╚═╝   ╚═╝    ╚═════╝
 `
 
-var (
-	logoStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("205")) // Vibrant pink/magenta accent
+var logoGradient = []color.Color{
+	lipgloss.Color("#FFB200"),
+	lipgloss.Color("#FF8300"),
+	lipgloss.Color("#EE427D"),
+	lipgloss.Color("#DC00F9"),
+	lipgloss.Color("#A100FF"),
+	lipgloss.Color("#6F1FEF"),
+}
 
+var (
 	taglineStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("243")). // Subtle gray
 			MarginBottom(1)
@@ -29,7 +35,7 @@ var (
 			Foreground(lipgloss.Color("240"))
 
 	cmdNameStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("255")).
+			Foreground(lipgloss.Color("255")). // White
 			Bold(true)
 
 	cmdArgStyle = lipgloss.NewStyle().
@@ -39,15 +45,14 @@ var (
 			Foreground(lipgloss.Color("243"))
 
 	tryLabelStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("255")).
+			Foreground(lipgloss.Color("255")). // White
 			Bold(true)
 
 	tryCmdStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("86")) // Cyan accent
+			Foreground(accentColor)
 
 	statusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241")).
-			MarginTop(1)
+			Foreground(lipgloss.Color("241"))
 
 	statusTargetStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("248")).
@@ -57,10 +62,25 @@ var (
 func PrintREPLBanner(target string) {
 	var b strings.Builder
 
-	// 1. Logo & Tagline
-	logo := logoStyle.Render(strings.TrimSpace(mikyuASCII))
+	// 1. Logo & Tagline — per-line fire gradient
+	lines := strings.Split(strings.TrimSpace(mikyuASCII), "\n")
+	var logoLines []string
+	for i, line := range lines {
+		colorIdx := i
+		if colorIdx >= len(logoGradient) {
+			colorIdx = len(logoGradient) - 1
+		}
+		logoLines = append(logoLines,
+			lipgloss.NewStyle().
+				Foreground(logoGradient[colorIdx]).
+				Bold(true).
+				Render(line))
+	}
+	logo := strings.Join(logoLines, "\n")
 	tagline := taglineStyle.Render("High-performance, low-footprint log-based message queue")
-	header := lipgloss.JoinVertical(lipgloss.Left, logo, tagline)
+
+	header := lipgloss.NewStyle().MarginTop(1).MarginLeft(2).
+		Render(lipgloss.JoinVertical(lipgloss.Left, logo, tagline))
 
 	b.WriteString(header)
 	b.WriteString("\n\n")
@@ -89,7 +109,7 @@ func PrintREPLBanner(target string) {
 
 	b.WriteString("\n")
 
-	// 3. Quickstart Hint
+	// 3. Quickstart Hint — yellow accent for the example command
 	tryLabel := tryLabelStyle.Render("try: ")
 	tryCmd := tryCmdStyle.Render("produce events \"hello world\"")
 	b.WriteString(fmt.Sprintf("  %s%s\n\n", tryLabel, tryCmd))
