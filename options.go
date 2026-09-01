@@ -1,6 +1,9 @@
 package mikyu
 
-import "time"
+import (
+	"crypto/tls"
+	"time"
+)
 
 type ClientConfig struct {
 	BatchSize int
@@ -12,6 +15,7 @@ type ClientConfig struct {
 	DefaultMaxMessageBytes int64
 	DefaultMaxSegmentAge   time.Duration
 	Encrypted              bool
+	TLSConfig              *tls.Config
 }
 
 func DefaultClientConfig() ClientConfig {
@@ -55,6 +59,12 @@ func WithMaxConns(n int) ClientOption {
 func WithClientDirectoryEncryption(enabled bool) ClientOption {
 	return func(c *ClientConfig) {
 		c.Encrypted = enabled
+	}
+}
+
+func WithClientTLS(tlsConfig *tls.Config) ClientOption {
+	return func(c *ClientConfig) {
+		c.TLSConfig = tlsConfig
 	}
 }
 

@@ -3,20 +3,25 @@ package mikyu
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"iter"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/ipc"
 	"github.com/dmunish/mikyu/internal/protocol"
 )
 
 type remoteClient struct {
+	target   string
 	network  string
 	addr     string
+	cfg      ClientConfig
 	pool     chan *clientConn
 	maxConns int
 	mu       sync.Mutex
@@ -43,8 +48,10 @@ func Dial(target string, opts ...ClientOption) (Client, error) {
 
 	pool := make(chan *clientConn, cfg.MaxConns)
 	return &remoteClient{
+		target:   target,
 		network:  network,
 		addr:     addr,
+		cfg:      cfg,
 		pool:     pool,
 		maxConns: cfg.MaxConns,
 	}, nil
@@ -57,13 +64,36 @@ func (c *remoteClient) acquire(ctx context.Context) (*clientConn, error) {
 	case ch := <-c.pool:
 		return ch, nil
 	default:
-		var d net.Dialer
-		conn, err := d.DialContext(ctx, c.network, c.addr)
+		conn, err := c.dialConn(ctx)
 		if err != nil {
 			return nil, err
 		}
 		return &clientConn{conn: conn, r: bufio.NewReader(conn)}, nil
 	}
+}
+
+func (c *remoteClient) dialConn(ctx context.Context) (net.Conn, error) {
+	if c.network == "unix" || c.network == "pipe" {
+		return ipc.Dial(c.target)
+	}
+
+	var d net.Dialer
+	if c.cfg.TLSConfig != nil || strings.HasPrefix(c.target, "tls://") || strings.HasPrefix(c.target, "tcps://") {
+		tlsCfg := c.cfg.TLSConfig
+		if tlsCfg == nil {
+			tlsCfg = &tls.Config{
+				MinVersion:         tls.VersionTLS13,
+				InsecureSkipVerify: true,
+			}
+		}
+		tlsDialer := tls.Dialer{
+			NetDialer: &d,
+			Config:    tlsCfg,
+		}
+		return tlsDialer.DialContext(ctx, c.network, c.addr)
+	}
+
+	return d.DialContext(ctx, c.network, c.addr)
 }
 
 func (c *remoteClient) release(ch *clientConn) {

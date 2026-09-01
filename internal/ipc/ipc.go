@@ -1,6 +1,7 @@
 package ipc
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -83,6 +84,35 @@ func listenPipe(path string) (net.Listener, error) {
 	}
 
 	return listenUnix(path)
+}
+
+// Dial connects to a local IPC target (unix:// or pipe://).
+func Dial(target string) (net.Conn, error) {
+	return DialContext(context.Background(), target)
+}
+
+// DialContext connects to a local IPC target (unix:// or pipe://) with context support.
+func DialContext(ctx context.Context, target string) (net.Conn, error) {
+	network, addr, err := protocol.ParseTarget(target)
+	if err != nil {
+		return nil, err
+	}
+
+	if network != "unix" && network != "pipe" {
+		return nil, fmt.Errorf("unsupported IPC network type %q (expected unix or pipe)", network)
+	}
+
+	if network == "pipe" && runtime.GOOS == "windows" {
+		if !strings.HasPrefix(addr, `\\.\pipe\`) {
+			addr = `\\.\pipe\` + strings.TrimPrefix(addr, `\\.\pipe\`)
+		}
+		network = "unix"
+	} else if network == "pipe" {
+		network = "unix"
+	}
+
+	var d net.Dialer
+	return d.DialContext(ctx, network, addr)
 }
 
 // Close closes the underlying network listener and unlinks the IPC socket file from disk.

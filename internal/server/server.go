@@ -3,27 +3,42 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"sync"
 
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/ipc"
 	"github.com/dmunish/mikyu/internal/protocol"
 )
 
 // Server accepts client connections and dispatches wire protocol frames to internal/engine.
 type Server struct {
-	mgr      *engine.Manager
-	listener net.Listener
-	mu       sync.Mutex
-	stopCh   chan struct{}
+	mgr       *engine.Manager
+	listener  net.Listener
+	tlsConfig *tls.Config
+	mu        sync.Mutex
+	stopCh    chan struct{}
 }
 
 // New creates a new Server instance backed by the provided Manager.
-func New(mgr *engine.Manager) *Server {
-	return &Server{
+func New(mgr *engine.Manager, opts ...ServerOption) *Server {
+	s := &Server{
 		mgr:    mgr,
 		stopCh: make(chan struct{}),
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+type ServerOption func(*Server)
+
+func WithTLS(tlsConfig *tls.Config) ServerOption {
+	return func(s *Server) {
+		s.tlsConfig = tlsConfig
 	}
 }
 
@@ -34,9 +49,18 @@ func (s *Server) ListenAndServe(target string) error {
 		return err
 	}
 
-	ln, err := net.Listen(network, addr)
+	var ln net.Listener
+	if network == "unix" || network == "pipe" {
+		ln, err = ipc.Listen(target)
+	} else {
+		ln, err = net.Listen(network, addr)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s (%s): %w", network, addr, err)
+	}
+
+	if network == "tcp" && s.tlsConfig != nil {
+		ln = tls.NewListener(ln, s.tlsConfig)
 	}
 
 	s.mu.Lock()

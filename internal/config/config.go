@@ -36,8 +36,11 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Target  string `yaml:"target"`
-	DataDir string `yaml:"data_dir"`
+	Target      string `yaml:"target"`
+	DataDir     string `yaml:"data_dir"`
+	TLSEnabled  bool   `yaml:"tls_enabled"`
+	TLSCertFile string `yaml:"tls_cert_file"`
+	TLSKeyFile  string `yaml:"tls_key_file"`
 }
 
 type EngineConfig struct {
