@@ -7,19 +7,12 @@
 ### Core Architectural Guarantees & Technical Principles
 
 * **Durable-Before-Ack Semantics:** Every `Produce()` or `ProduceBatch()` invocation blocks until the payload byte slice and index metadata are durably synced to disk via the Write-Ahead Log (`wal`) flusher.
-
 * **Zero-Copy Reads:** Closed historical log segments are memory-mapped (`mmap`) into the process address space. Read requests on historical offsets return direct sub-slices of mapped memory buffers without heap allocations or system call overhead.
-
 * **Dynamic Dual-Threshold WAL Flushing:** The WAL flusher triggers a disk `Sync()` when either pending record count reaches `BatchSize` or elapsed time exceeds `Interval`, balancing single-thread latency with high-concurrency parallel throughput.
-
 * **Raw 16-Byte UUID v7 Encoding:** Messages are encoded using raw 16-byte Go 1.27 standard library `uuid.UUID` arrays (`uuid.NewV7()`), avoiding string formatting allocations and reducing log file overhead by 20 bytes per record.
-
 * **Go Range-Over-Func Integration:** Streaming and live tailing are exposed using native `iter.Seq2[Message, error]` iterators.
-
 * **Declarative Configuration & Auto-Bootstrapping:** The daemon parses `mikyu.yaml` via `goccy/go-yaml`, auto-bootstraps commented default configuration files when missing, and reconciles declared queues on launch.
-
 * **Unified Single-Binary Execution:** A single `mikyu` executable acts as a background server daemon, stateless CLI operator, interactive REPL shell with Lipgloss styling, and visual TUI dashboard.
-
 * **Non-Blocking Background Auto-Spawning:** Executing `mikyu` directly (or double-clicking the binary) probes the local IPC socket, auto-spawns a detached background daemon if offline, and immediately attaches an interactive REPL prompt.
 
 ---
@@ -49,7 +42,10 @@ github.com/dmunish/mikyu/
 │   │   ├── segment.go      # Active file I/O & read-only mmap segment handling
 │   │   ├── index.go        # In-memory index entry structures
 │   │   ├── offsets.go      # Single-file manager-level consumer offset store
-│   │   └── encode.go       # CRC32 record encoding, decoding, and raw UUID v7 handling
+│   │   ├── encode.go       # CRC32 record encoding, decoding, and raw UUID v7 handling
+│   │   ├── encrypt_linux.go# Linux fscrypt kernel ioctl directory encryption
+│   │   ├── encrypt_windows.go# Windows NTFS EFS directory encryption
+│   │   └── encrypt_other.go# Fallback directory encryption for unsupported OSes
 │   │
 │   ├── protocol/       # Binary wire format parser & opcode definitions
 │   │   ├── opcodes.go      # Wire opcodes (including OpShutdown), error codes, target parsing
@@ -74,6 +70,7 @@ github.com/dmunish/mikyu/
         ├── repl.go         # Interactive REPL session shell & command loop
         ├── banner.go       # Lipgloss-styled ASCII banner & command table
         └── cli.go          # Stateless one-shot CLI handler (@file, stdin support)
+
 ```
 
 ---
@@ -108,18 +105,14 @@ github.com/dmunish/mikyu/
                                                                  │      cmd/mikyu      │
                                                                  │  (Unified Executable)│
                                                                  └─────────────────────┘
+
 ```
 
 1. **`[github.com/dmunish/mikyu](https://github.com/dmunish/mikyu)`**: Root package exposing unified `Client`, `Queue`, and `Group` interfaces instantiated via `mikyu.Open()` (embedded) or `mikyu.Dial()` (remote TCP/IPC socket).
-
 2. **`internal/config`**: Reads and writes `mikyu.yaml` via `goccy/go-yaml`, handles resolution hierarchies, applies environment variable overrides, and converts settings to engine configurations.
-
-3. **`internal/engine`**: Storage engine handling WAL flushing, zero-copy `mmap` slices, segment rolling, index recovery, and single-file offset persistence.
-
+3. **`internal/engine`**: Storage engine handling WAL flushing, zero-copy `mmap` slices, segment rolling, index recovery, transparent directory encryption, and single-file offset persistence.
 4. **`internal/protocol`**: Defines 5-byte length-prefixed frame layout (`[4B Length][1B Opcode][Payload]`) and protocol opcodes including `OpShutdown`.
-
-5. **`internal/server` & `internal/ipc`**: Binds network/IPC listeners and dispatches binary wire frames to the underlying engine manager.
-
+5. **`internal/server` & `internal/ipc**`: Binds network/IPC listeners and dispatches binary wire frames to the underlying engine manager.
 6. **`cmd/mikyu`**: Single binary combining server daemon, detached auto-spawner, Lipgloss REPL prompt, and stateless CLI handler.
 
 ---
@@ -181,6 +174,7 @@ type Group interface {
 	Commit(ctx context.Context) error
 	FetchOffset(ctx context.Context) (uint64, error)
 }
+
 ```
 
 #### `options.go`
@@ -195,21 +189,26 @@ type ClientConfig struct {
 	DefaultMaxSegmentBytes int64
 	DefaultMaxMessageBytes int64
 	DefaultMaxSegmentAge   time.Duration
+	Encrypted              bool
 }
 
 type QueueConfig struct {
 	MaxSegmentBytes int64
 	MaxMessageBytes int64
 	MaxSegmentAge   time.Duration
+	Encrypted       bool
 }
 
 func DefaultClientConfig() ClientConfig
 func WithBatchSize(n int) ClientOption
 func WithFlushInterval(d time.Duration) ClientOption
 func WithMaxConns(n int) ClientOption
+func WithClientDirectoryEncryption(enabled bool) ClientOption
 func WithMaxSegmentBytes(bytes int64) QueueOption
 func WithMaxMessageBytes(bytes int64) QueueOption
 func WithMaxSegmentAge(age time.Duration) QueueOption
+func WithDirectoryEncryption(enabled bool) QueueOption
+
 ```
 
 #### `typed.go`
@@ -227,6 +226,7 @@ type Typed[T any] struct { /* private fields */ }
 func NewTyped[T any](q Queue, codec Codec[T]) *Typed[T]
 func (t *Typed[T]) Produce(ctx context.Context, val T) (uint64, error)
 func (t *Typed[T]) Read(ctx context.Context, offset uint64) (T, error)
+
 ```
 
 #### `embedded.go`
@@ -235,6 +235,7 @@ Implements `Client`, `Queue`, and `Group` by wrapping `internal/engine` directly
 
 ```go
 func Open(dir string, opts ...ClientOption) (Client, error)
+
 ```
 
 #### `remote.go`
@@ -243,6 +244,7 @@ Implements `Client`, `Queue`, and `Group` over pooled TCP/IPC socket connections
 
 ```go
 func Dial(target string, opts ...ClientOption) (Client, error)
+
 ```
 
 ---
@@ -271,6 +273,7 @@ type EngineConfig struct {
 	MaxSegmentBytes int64         `yaml:"max_segment_bytes"`
 	MaxMessageBytes int64         `yaml:"max_message_bytes"`
 	MaxSegmentAge   time.Duration `yaml:"max_segment_age"`
+	Encrypted       bool          `yaml:"encrypted"`
 }
 
 type QueueConfig struct {
@@ -280,12 +283,14 @@ type QueueConfig struct {
 	MaxSegmentBytes int64         `yaml:"max_segment_bytes,omitempty"`
 	MaxMessageBytes int64         `yaml:"max_message_bytes,omitempty"`
 	MaxSegmentAge   time.Duration `yaml:"max_segment_age,omitempty"`
+	Encrypted       *bool         `yaml:"encrypted,omitempty"`
 }
 
 func DefaultConfig() Config
 func Load(flagPath string) (*Config, string, error)
 func ToEngineConfig(e EngineConfig) engine.Config
 func ToQueueEngineConfig(defaults EngineConfig, q QueueConfig) engine.Config
+
 ```
 
 ---
@@ -308,6 +313,7 @@ func openOffsetStore(dir string) (*OffsetStore, error)
 func (s *OffsetStore) Commit(queueName, group string, offset uint64) error
 func (s *OffsetStore) Fetch(queueName, group string) uint64
 func (s *OffsetStore) Close() error
+
 ```
 
 #### `segment.go`
@@ -330,6 +336,7 @@ func (s *segment) writeIndex(pos, len int64) error
 func (s *segment) recover() ([]rawIndexEntry, error)
 func (s *segment) rebuild() ([]rawIndexEntry, error)
 func (s *segment) Close() error
+
 ```
 
 #### `wal.go`
@@ -359,6 +366,7 @@ func (w *wal) pushBatch(recs [][]byte, positions []int64) (seq int64, wake bool,
 func (w *wal) wait(seq int64) error
 func (w *wal) flush()
 func (w *wal) stop() error
+
 ```
 
 #### `encode.go`
@@ -371,6 +379,16 @@ Encodes/decodes records using raw 16-byte `uuid.UUID` values and calculates IEEE
 ```go
 func encodeRecord(id uuid.UUID, ts time.Time, payload []byte) []byte
 func decodeRecord(buf []byte) (id string, ts time.Time, payload []byte, err error)
+
+```
+
+#### `encrypt_linux.go` / `encrypt_windows.go` / `encrypt_other.go`
+
+Provides OS-specific transparent kernel directory encryption (`fscrypt` ioctl on Linux, NTFS EFS on Windows, no-op fallback on macOS/Darwin).
+
+```go
+func EnsureDirectoryEncrypted(dirPath string) error
+
 ```
 
 #### `queue.go`
@@ -378,16 +396,26 @@ func decodeRecord(buf []byte) (id string, ts time.Time, payload []byte, err erro
 Implements per-queue record appends, offset indexing, zero-copy reads, and segment rolling.
 
 ```go
+type Config struct {
+	BatchSize       int
+	Interval        time.Duration
+	MaxSegmentBytes int64
+	MaxMessageBytes int64
+	MaxSegmentAge   time.Duration
+	Encrypted       bool
+}
+
 type Queue struct {
-	name     string
-	dir      string
-	cfg      Config
-	active   *segment
-	segments []*segment
-	index    []indexEntry
-	w        *wal
-	offsets  *OffsetStore
-	mu       sync.Mutex
+	name       string
+	dir        string
+	cfg        Config
+	active     *segment
+	segments   []*segment
+	index      []indexEntry
+	nextOffset uint64
+	w          *wal
+	offsets    *OffsetStore
+	mu         sync.RWMutex
 }
 
 func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, error)
@@ -399,6 +427,7 @@ func (q *Queue) LastOffset() uint64
 func (q *Queue) CommitOffset(ctx context.Context, group string, offset uint64) error
 func (q *Queue) FetchOffset(ctx context.Context, group string) (uint64, error)
 func (q *Queue) Close() error
+
 ```
 
 #### `manager.go`
@@ -421,6 +450,7 @@ func (m *Manager) ListQueues() []string
 func (m *Manager) DeleteQueue(name string) error
 func (m *Manager) Stats() EngineStats
 func (m *Manager) Close() error
+
 ```
 
 ---
@@ -437,6 +467,7 @@ Defines wire opcodes, error formats, and target URI parsing.
 func EncodeError(code byte, msg string) []byte
 func DecodeError(body []byte) (code byte, msg string)
 func ParseTarget(target string) (network string, addr string, err error)
+
 ```
 
 #### `frames.go`
@@ -446,6 +477,7 @@ Manages 5-byte length-prefixed frame encoding/decoding with zero-allocation `syn
 ```go
 func ReadFrame(r *bufio.Reader) (op byte, payload []byte, err error)
 func WriteFrame(w io.Writer, op byte, payload []byte) error
+
 ```
 
 #### `bytes.go`
@@ -464,6 +496,7 @@ func (buf *Buffer) WriteU32(v uint32)
 func (buf *Buffer) WriteU64(v uint64)
 func (buf *Buffer) WriteBytes(data []byte)
 func (buf *Buffer) Bytes() []byte
+
 ```
 
 ---
@@ -486,6 +519,7 @@ func New(mgr *engine.Manager) *Server
 func (s *Server) ListenAndServe(target string) error
 func (s *Server) Serve(ln net.Listener) error
 func (s *Server) Stop()
+
 ```
 
 #### `internal/server/handlers.go`
@@ -494,6 +528,7 @@ Dispatches binary frames to storage engine calls and triggers `OpShutdown` stops
 
 ```go
 func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (byte, []byte, bool)
+
 ```
 
 #### `internal/ipc/ipc.go`
@@ -509,6 +544,7 @@ type Listener struct {
 
 func Listen(target string) (net.Listener, error)
 func (l *Listener) Close() error
+
 ```
 
 ---
@@ -523,6 +559,7 @@ Unified subcommand router and entrypoint for bare execution, server daemon, REPL
 func main()
 func runDaemonServer(configPath string)
 func printUsage()
+
 ```
 
 #### `cmd/mikyu/daemon.go`
@@ -532,6 +569,7 @@ Probes socket readiness and auto-spawns background daemon instances.
 ```go
 func IsDaemonAlive(target string) bool
 func EnsureDaemonRunning(target string) error
+
 ```
 
 #### `cmd/mikyu/detach_unix.go` & `detach_windows.go`
@@ -540,6 +578,7 @@ Platform-specific process detachment using Go build tags (`//go:build !windows` 
 
 ```go
 func setDetachedProcessAttr(cmd *exec.Cmd)
+
 ```
 
 #### `cmd/mikyu/vt_other.go` & `vt_windows.go`
@@ -550,6 +589,7 @@ Platform-specific Virtual Terminal (ANSI) enabling for colored output.
 // vt_other.go: empty init()
 // vt_windows.go: enables ENABLE_VIRTUAL_TERMINAL_PROCESSING on stdout/stderr
 func init()
+
 ```
 
 #### `cmd/mikyu/banner.go`
@@ -558,6 +598,7 @@ Renders the Lipgloss-styled ASCII banner, command reference table, and connectio
 
 ```go
 func PrintREPLBanner(target string)
+
 ```
 
 #### `cmd/mikyu/repl.go`
@@ -568,6 +609,7 @@ Interactive REPL prompt session handling command evaluation with `scanner.Err()`
 func RunREPL(target string)
 func parseREPLArgs(line string) []string
 func sendShutdownSignal(target string) error
+
 ```
 
 #### `cmd/mikyu/cli.go`
@@ -577,4 +619,5 @@ One-shot stateless CLI subcommand executor supporting raw payloads, `@file_path`
 ```go
 func RunCLI(target string, args []string)
 func resolvePayload(input string) ([]byte, error)
+
 ```
