@@ -59,7 +59,7 @@ func PrintREPLBanner(target string) {
 
 	// 1. Logo & Tagline
 	logo := logoStyle.Render(strings.TrimSpace(mikyuASCII))
-	tagline := taglineStyle.Render("High-performance zero-copy WAL message queue engine")
+	tagline := taglineStyle.Render("High-performance, low-footprint log-based message queue")
 	header := lipgloss.JoinVertical(lipgloss.Left, logo, tagline)
 
 	b.WriteString(header)
