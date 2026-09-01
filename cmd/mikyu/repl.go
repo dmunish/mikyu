@@ -7,8 +7,10 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
@@ -186,15 +188,22 @@ func RunREPL(target string) {
 				fmt.Println(errStyle.Render("Error: " + err.Error()))
 				continue
 			}
+
+			sigCtx, stopSig := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 			fmt.Println(dimStyle.Render(fmt.Sprintf("Tailing %q from offset %d (Press Ctrl+C to stop stream)...", name, startOffset)))
-			for msg, err := range q.Tail(ctx, startOffset) {
+			for msg, err := range q.Tail(sigCtx, startOffset) {
 				if err != nil {
-					fmt.Println(errStyle.Render("Stream error: " + err.Error()))
+					if sigCtx.Err() != nil {
+						fmt.Println(infoStyle.Render("\nStream stopped."))
+					} else {
+						fmt.Println(errStyle.Render("Stream error: " + err.Error()))
+					}
 					break
 				}
 				fmt.Printf("[%d] ID: %s | Time: %s | %s\n",
 					msg.Offset, msg.ID, msg.Timestamp.Format("15:04:05.000"), string(msg.Payload))
 			}
+			stopSig()
 
 		case "stats":
 			st, err := client.Stats(ctx)
