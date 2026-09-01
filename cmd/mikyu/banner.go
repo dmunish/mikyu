@@ -71,11 +71,11 @@ func PrintREPLBanner(target string) {
 		arg  string
 		desc string
 	}{
-		{"produce", "<queue> <msg>", "Produce text or file payload (@file)"},
-		{"read", "<queue> <offset>", "Read record at logical offset"},
-		{"tail", "<queue> [offset]", "Stream live records continuously"},
+		{"produce", "<queue> [msg]", "Produce text or file payload (@file)"},
+		{"read", "<queue> [offset]", "Read record at logical offset"},
 		{"list", "", "List all active queues"},
 		{"stats", "", "Display storage & throughput metrics"},
+		{"help", "", "Show all commands"},
 	}
 
 	for _, c := range commands {
