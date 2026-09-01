@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -247,4 +248,103 @@ func TestQueueCommitOffset(t *testing.T) {
 	off, err := q.FetchOffset(ctx, "group1")
 	require.NoError(t, err)
 	assert.Equal(t, uint64(42), off)
+}
+
+func TestQueueUngracefulCrashRecovery(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openOffsetStore(dir)
+	require.NoError(t, err)
+
+	q, err := openQueue(dir, "crash-queue", Config{BatchSize: 1, Interval: time.Millisecond}, store)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		_, err := q.Produce(ctx, fmt.Appendf(nil, "msg-%d", i))
+		require.NoError(t, err)
+	}
+
+	// Close queue to release OS file locks (required for Windows TempDir cleanup)
+	_ = q.Close()
+	_ = store.Close()
+
+	// Re-open queue from disk to test index recovery from log files
+	store2, err := openOffsetStore(dir)
+	require.NoError(t, err)
+	defer store2.Close()
+
+	recoveredQueue, err := openQueue(dir, "crash-queue", Config{}, store2)
+	require.NoError(t, err)
+	defer recoveredQueue.Close()
+
+	assert.Equal(t, uint64(5), recoveredQueue.LastOffset())
+	for i := 0; i < 5; i++ {
+		msg, err := recoveredQueue.Read(ctx, uint64(i))
+		require.NoError(t, err)
+		assert.Equal(t, fmt.Sprintf("msg-%d", i), string(msg.Payload))
+	}
+}
+
+func TestQueueConcurrentProduceDuringRoll(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := openOffsetStore(dir)
+	defer store.Close()
+
+	// MaxSegmentBytes set small enough to force frequent segment rolls
+	q, err := openQueue(dir, "roll-race", Config{MaxSegmentBytes: 256, BatchSize: 10}, store)
+	require.NoError(t, err)
+	defer q.Close()
+
+	ctx := context.Background()
+	const goroutines = 10
+	const msgsPerRoutine = 20
+	var wg sync.WaitGroup
+
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < msgsPerRoutine; i++ {
+				_, err := q.Produce(ctx, fmt.Appendf(nil, "g%d-m%d", g, i))
+				assert.NoError(t, err)
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	totalMsgs := uint64(goroutines * msgsPerRoutine)
+	assert.Equal(t, totalMsgs, q.LastOffset())
+	assert.GreaterOrEqual(t, len(q.segments), 2)
+
+	for i := uint64(0); i < totalMsgs; i++ {
+		_, err := q.Read(ctx, i)
+		require.NoError(t, err, "offset %d failed to read after concurrent roll", i)
+	}
+}
+
+func TestQueueReadUsesMMapOnRolledSegments(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := openOffsetStore(dir)
+	defer store.Close()
+
+	// 10B payload + 34B header = 44B record.
+	// MaxSegmentBytes = 100 allows 2 records per segment before rolling.
+	q, err := openQueue(dir, "mmap-verify", Config{MaxSegmentBytes: 100}, store)
+	require.NoError(t, err)
+	defer q.Close()
+
+	ctx := context.Background()
+	payload := []byte("0123456789") // 10 bytes
+	for i := 0; i < 3; i++ {
+		_, err := q.Produce(ctx, payload)
+		require.NoError(t, err)
+	}
+
+	require.GreaterOrEqual(t, len(q.segments), 2)
+
+	q.mu.RLock()
+	entry := q.index[0]
+	q.mu.RUnlock()
+
+	assert.NotNil(t, entry.seg.mmapData, "closed segment must have mmap enabled for zero-copy reads")
 }
