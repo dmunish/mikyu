@@ -16,7 +16,7 @@ func TestListenUnix(t *testing.T) {
 	defer ln.Close()
 
 	go func() {
-		conn, err := net.Dial("unix", path)
+		conn, err := Dial("unix://" + path)
 		if err == nil {
 			conn.Close()
 		}
@@ -41,6 +41,6 @@ func TestListenerCloseRemovesSocket(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.sock")
 	ln, _ := Listen("unix://" + path)
 	ln.Close()
-	_, err := net.Dial("unix", path)
+	_, err := Dial("unix://" + path)
 	assert.Error(t, err)
 }

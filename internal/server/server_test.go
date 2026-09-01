@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"crypto/tls"
 	"net"
 	"testing"
 	"time"
@@ -72,4 +73,37 @@ func TestServerServeClosesOnStop(t *testing.T) {
 	srv.Stop() // closes listener
 	_, err := ln.Accept()
 	assert.Error(t, err) // should fail because listener closed
+}
+
+func TestServerTLSHandshake(t *testing.T) {
+	testWithTimeout(t, 2*time.Second)
+	dir := t.TempDir()
+	mgr, err := engine.OpenManager(dir, engine.Config{})
+	require.NoError(t, err)
+	defer mgr.Close()
+
+	tlsCfg, err := DefaultTLSConfig("", "")
+	require.NoError(t, err)
+
+	srv := New(mgr, WithTLS(tlsCfg))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	tlsLn := tls.NewListener(ln, tlsCfg)
+	srv.listener = tlsLn
+	go srv.Serve(tlsLn)
+	defer srv.Stop()
+
+	conn, err := tls.Dial("tcp", ln.Addr().String(), &tls.Config{
+		InsecureSkipVerify: true,
+	})
+	require.NoError(t, err)
+	defer conn.Close()
+
+	err = protocol.WriteFrame(conn, protocol.OpListQueues, nil)
+	require.NoError(t, err)
+
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	respOp, _, err := protocol.ReadFrame(bufio.NewReader(conn))
+	require.NoError(t, err)
+	assert.Equal(t, protocol.OpListQueues, respOp)
 }
