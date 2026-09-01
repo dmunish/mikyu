@@ -2,19 +2,16 @@ package mikyu
 
 import "time"
 
-// ClientConfig holds configuration settings for Client instances.
 type ClientConfig struct {
-	// Engine & WAL tuning
 	BatchSize int
 	Interval  time.Duration
 
-	// Connection pool tuning (Remote mode)
 	MaxConns int
 
-	// Direct storage tuning defaults
 	DefaultMaxSegmentBytes int64
 	DefaultMaxMessageBytes int64
 	DefaultMaxSegmentAge   time.Duration
+	Encrypted              bool
 }
 
 func DefaultClientConfig() ClientConfig {
@@ -22,13 +19,13 @@ func DefaultClientConfig() ClientConfig {
 		BatchSize:              256,
 		Interval:               10 * time.Millisecond,
 		MaxConns:               10,
-		DefaultMaxSegmentBytes: 64 * 1024 * 1024, // 64 MiB
-		DefaultMaxMessageBytes: 1 * 1024 * 1024,  // 1 MiB
+		DefaultMaxSegmentBytes: 64 * 1024 * 1024,
+		DefaultMaxMessageBytes: 1 * 1024 * 1024,
 		DefaultMaxSegmentAge:   1 * time.Hour,
+		Encrypted:              false,
 	}
 }
 
-// ClientOption mutates a ClientConfig.
 type ClientOption func(*ClientConfig)
 
 func WithBatchSize(n int) ClientOption {
@@ -55,14 +52,19 @@ func WithMaxConns(n int) ClientOption {
 	}
 }
 
-// QueueConfig holds per-queue storage parameters.
+func WithClientDirectoryEncryption(enabled bool) ClientOption {
+	return func(c *ClientConfig) {
+		c.Encrypted = enabled
+	}
+}
+
 type QueueConfig struct {
 	MaxSegmentBytes int64
 	MaxMessageBytes int64
 	MaxSegmentAge   time.Duration
+	Encrypted       bool
 }
 
-// QueueOption mutates a QueueConfig.
 type QueueOption func(*QueueConfig)
 
 func WithMaxSegmentBytes(bytes int64) QueueOption {
@@ -86,5 +88,11 @@ func WithMaxSegmentAge(age time.Duration) QueueOption {
 		if age > 0 {
 			c.MaxSegmentAge = age
 		}
+	}
+}
+
+func WithDirectoryEncryption(enabled bool) QueueOption {
+	return func(c *QueueConfig) {
+		c.Encrypted = enabled
 	}
 }

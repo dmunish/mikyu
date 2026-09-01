@@ -33,6 +33,7 @@ type Config struct {
 	MaxSegmentBytes int64
 	MaxMessageBytes int64
 	MaxSegmentAge   time.Duration
+	Encrypted       bool
 }
 
 func (c Config) withDefaults() Config {
@@ -55,15 +56,16 @@ func (c Config) withDefaults() Config {
 }
 
 type Queue struct {
-	name     string
-	dir      string
-	cfg      Config
-	active   *segment
-	segments []*segment
-	index    []indexEntry
-	w        *wal
-	offsets  *OffsetStore
-	mu       sync.RWMutex
+	name       string
+	dir        string
+	cfg        Config
+	active     *segment
+	segments   []*segment
+	index      []indexEntry
+	nextOffset uint64
+	w          *wal
+	offsets    *OffsetStore
+	mu         sync.RWMutex
 }
 
 func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, error) {
@@ -71,6 +73,12 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, 
 	dir := filepath.Join(parentDir, name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
+	}
+
+	if cfg.Encrypted {
+		if err := EnsureDirectoryEncrypted(dir); err != nil {
+			return nil, fmt.Errorf("failed to enable storage encryption for queue %q: %w", name, err)
+		}
 	}
 
 	q := &Queue{name: name, dir: dir, cfg: cfg, offsets: store}
@@ -126,7 +134,8 @@ func (q *Queue) loadSegments() error {
 		q.active = seg
 	}
 
-	q.w = newWAL(q.active.logFile, q.cfg, int64(len(q.index)))
+	q.nextOffset = uint64(len(q.index))
+	q.w = newWAL(q.active.logFile, q.cfg, int64(q.nextOffset))
 	q.w.start()
 	return nil
 }
@@ -140,7 +149,7 @@ func (q *Queue) roll() error {
 		_ = q.active.enableMMap()
 	}
 
-	nextOff := uint64(len(q.index))
+	nextOff := q.nextOffset
 	seg, err := openSegment(q.dir, nextOff)
 	if err != nil {
 		return err
@@ -152,7 +161,7 @@ func (q *Queue) roll() error {
 
 	q.active = seg
 	q.segments = append(q.segments, seg)
-	q.w = newWAL(seg.logFile, q.cfg, int64(len(q.index)))
+	q.w = newWAL(seg.logFile, q.cfg, int64(q.nextOffset))
 	q.w.start()
 	return nil
 }
@@ -172,6 +181,7 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 
 	q.mu.Lock()
 	if int64(len(rec)) > q.cfg.MaxSegmentBytes {
+		q.mu.Unlock()
 		return 0, ErrRecordTooLarge
 	}
 	if q.active.pos+recLen > q.cfg.MaxSegmentBytes || time.Since(q.active.createdAt) > q.cfg.MaxSegmentAge {
@@ -186,6 +196,9 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 	seg.pos += recLen
 
 	seq, wake, err := q.w.push(rec, pos)
+	if err == nil {
+		q.nextOffset++
+	}
 	q.mu.Unlock()
 	if err != nil {
 		return 0, err
@@ -258,6 +271,9 @@ func (q *Queue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, 
 	}
 
 	seq, wake, err := q.w.pushBatch(recs, positions)
+	if err == nil {
+		q.nextOffset += uint64(len(payloads))
+	}
 	q.mu.Unlock()
 
 	if err != nil {
@@ -309,10 +325,8 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 
 	var rec []byte
 	if entry.seg != nil && entry.seg.mmapData != nil {
-		// Zero-copy mmap sub-slice
 		rec = entry.seg.mmapData[entry.pos : entry.pos+entry.len]
 	} else {
-		// Fallback ReadAt for active unmapped segment
 		rec = make([]byte, entry.len)
 		if _, err := entry.seg.logFile.ReadAt(rec, entry.pos); err != nil {
 			return Message{}, err
@@ -350,7 +364,7 @@ func (q *Queue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([
 func (q *Queue) LastOffset() uint64 {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
-	return uint64(len(q.index))
+	return q.nextOffset
 }
 
 func (q *Queue) CommitOffset(ctx context.Context, group string, offset uint64) error {

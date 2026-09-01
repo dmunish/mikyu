@@ -33,6 +33,12 @@ func OpenManager(dir string, cfg Config) (*Manager, error) {
 		return nil, fmt.Errorf("create wal dir: %w", err)
 	}
 
+	if cfg.Encrypted {
+		if err := EnsureDirectoryEncrypted(dir); err != nil {
+			return nil, fmt.Errorf("failed to enable data_dir encryption: %w", err)
+		}
+	}
+
 	offsets, err := openOffsetStore(dir)
 	if err != nil {
 		return nil, fmt.Errorf("open manager offset store: %w", err)

@@ -24,6 +24,7 @@ engine:
   max_segment_bytes: 67108864    # 64 MiB: Max size per log segment before rolling
   max_message_bytes: 1048576     # 1 MiB: Max payload size per produce call
   max_segment_age: "1h"          # Max time before rolling inactive segment
+  encrypted: false               # Enable OS transparent directory encryption
 
 queues: []                       # Declarative pre-created queues on startup
 `
@@ -45,6 +46,7 @@ type EngineConfig struct {
 	MaxSegmentBytes int64         `yaml:"max_segment_bytes"`
 	MaxMessageBytes int64         `yaml:"max_message_bytes"`
 	MaxSegmentAge   time.Duration `yaml:"max_segment_age"`
+	Encrypted       bool          `yaml:"encrypted"`
 }
 
 type QueueConfig struct {
@@ -54,6 +56,7 @@ type QueueConfig struct {
 	MaxSegmentBytes int64         `yaml:"max_segment_bytes,omitempty"`
 	MaxMessageBytes int64         `yaml:"max_message_bytes,omitempty"`
 	MaxSegmentAge   time.Duration `yaml:"max_segment_age,omitempty"`
+	Encrypted       *bool         `yaml:"encrypted,omitempty"`
 }
 
 func DefaultConfig() Config {
@@ -68,14 +71,12 @@ func DefaultConfig() Config {
 			MaxSegmentBytes: 64 * 1024 * 1024,
 			MaxMessageBytes: 1 * 1024 * 1024,
 			MaxSegmentAge:   1 * time.Hour,
+			Encrypted:       false,
 		},
 		Queues: []QueueConfig{},
 	}
 }
 
-// Load resolves the config file using the resolution hierarchy,
-// bootstraps a default file if missing, parses YAML via goccy/go-yaml,
-// and applies environment variable overrides.
 func Load(flagPath string) (*Config, string, error) {
 	cfg := DefaultConfig()
 	resolvedPath, bootstrapped, err := resolveOrBootstrapPath(flagPath)
@@ -92,7 +93,6 @@ func Load(flagPath string) (*Config, string, error) {
 		return nil, "", fmt.Errorf("failed to read config file %s: %w", resolvedPath, err)
 	}
 
-	// Use goccy/go-yaml unmarshaler
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, "", fmt.Errorf("failed to parse yaml config at %s: %w", resolvedPath, err)
 	}
@@ -103,7 +103,6 @@ func Load(flagPath string) (*Config, string, error) {
 }
 
 func resolveOrBootstrapPath(flagPath string) (path string, bootstrapped bool, err error) {
-	// 1. Explicit CLI Flag
 	if flagPath != "" {
 		if _, err := os.Stat(flagPath); err == nil {
 			return flagPath, false, nil
@@ -111,13 +110,11 @@ func resolveOrBootstrapPath(flagPath string) (path string, bootstrapped bool, er
 		return "", false, fmt.Errorf("specified config file does not exist: %s", flagPath)
 	}
 
-	// 2. Current working directory
 	localPath := "./mikyu.yaml"
 	if _, err := os.Stat(localPath); err == nil {
 		return localPath, false, nil
 	}
 
-	// 3. User config directory (~/.config/mikyu/mikyu.yaml)
 	userConfigDir, err := os.UserConfigDir()
 	if err == nil {
 		userPath := filepath.Join(userConfigDir, "mikyu", "mikyu.yaml")
@@ -125,7 +122,6 @@ func resolveOrBootstrapPath(flagPath string) (path string, bootstrapped bool, er
 			return userPath, false, nil
 		}
 
-		// Bootstrap default config in user config directory
 		if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err == nil {
 			if err := os.WriteFile(userPath, []byte(defaultConfigYAML), 0o644); err == nil {
 				return userPath, true, nil
@@ -133,7 +129,6 @@ func resolveOrBootstrapPath(flagPath string) (path string, bootstrapped bool, er
 		}
 	}
 
-	// 4. Fallback: Bootstrap in local directory
 	if err := os.WriteFile(localPath, []byte(defaultConfigYAML), 0o644); err == nil {
 		return localPath, true, nil
 	}
@@ -173,6 +168,11 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Engine.MaxSegmentAge = d
 		}
 	}
+	if val := os.Getenv("MIKYU_ENGINE_ENCRYPTED"); val != "" {
+		if b, err := strconv.ParseBool(val); err == nil {
+			cfg.Engine.Encrypted = b
+		}
+	}
 }
 
 func ToEngineConfig(e EngineConfig) engine.Config {
@@ -182,6 +182,7 @@ func ToEngineConfig(e EngineConfig) engine.Config {
 		MaxSegmentBytes: e.MaxSegmentBytes,
 		MaxMessageBytes: e.MaxMessageBytes,
 		MaxSegmentAge:   e.MaxSegmentAge,
+		Encrypted:       e.Encrypted,
 	}
 }
 
@@ -201,6 +202,9 @@ func ToQueueEngineConfig(defaults EngineConfig, q QueueConfig) engine.Config {
 	}
 	if q.MaxSegmentAge > 0 {
 		cfg.MaxSegmentAge = q.MaxSegmentAge
+	}
+	if q.Encrypted != nil {
+		cfg.Encrypted = *q.Encrypted
 	}
 	return cfg
 }
