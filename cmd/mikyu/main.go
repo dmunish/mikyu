@@ -89,7 +89,7 @@ func runDaemonServer(configPath string) {
 }
 
 func printUsage() {
-	fmt.Print(`mikyu - Unified Message Queue Daemon, REPL & Operator Tool
+	fmt.Print(`mikyu - Unified Operator Tool
 
 Usage:
   mikyu                      Auto-start daemon in background (if needed) & open REPL
@@ -100,6 +100,7 @@ Usage:
   mikyu tail <queue> [off]   Stream live records continuously
   mikyu list                 List all active queues
   mikyu stats                Display engine storage metrics
-  mikyu shutdown             Stop the background daemon process
+  mikyu delete <queue> [-y]  Delete a queue (add -y to skip confirmation)
+  mikyu shutdown [-y]        Stop the background daemon (add -y to skip confirmation)
 `)
 }
