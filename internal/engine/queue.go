@@ -316,22 +316,23 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 	}
 
 	q.mu.RLock()
-	if offset >= uint64(len(q.index)) {
+	if offset >= uint64(len(q.index)) || q.index[offset].seg == nil {
 		q.mu.RUnlock()
 		return Message{}, ErrOffsetNotFound
 	}
 	entry := q.index[offset]
-	q.mu.RUnlock()
 
 	var rec []byte
-	if entry.seg != nil && entry.seg.mmapData != nil {
+	if len(entry.seg.mmapData) >= int(entry.pos+entry.len) {
 		rec = entry.seg.mmapData[entry.pos : entry.pos+entry.len]
 	} else {
 		rec = make([]byte, entry.len)
 		if _, err := entry.seg.logFile.ReadAt(rec, entry.pos); err != nil {
+			q.mu.RUnlock()
 			return Message{}, err
 		}
 	}
+	q.mu.RUnlock()
 
 	id, ts, payload, err := decodeRecord(rec[4:])
 	if err != nil {
