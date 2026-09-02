@@ -132,7 +132,7 @@ func (w *wal) flush() {
 	var writeErr error
 	if _, err := w.file.WriteAt(data, entries[0].pos); err != nil {
 		writeErr = err
-	} else if err := w.file.Sync(); err != nil {
+	} else if err := syncData(w.file); err != nil {
 		writeErr = err
 	}
 
