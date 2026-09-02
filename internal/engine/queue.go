@@ -353,14 +353,58 @@ func (q *Queue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([
 	if count <= 0 {
 		return nil, nil
 	}
-	out := make([]Message, 0, count)
-	for i := range count {
-		msg, err := q.Read(ctx, startOffset+uint64(i))
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	q.mu.RLock()
+	total := uint64(len(q.index))
+	if startOffset >= total {
+		q.mu.RUnlock()
+		return nil, ErrOffsetNotFound
+	}
+
+	// Clamp requested count to available records
+	endOffset := startOffset + uint64(count)
+	if endOffset > total {
+		endOffset = total
+	}
+
+	// Snapshot index entries under a single lock acquisition
+	entries := make([]indexEntry, endOffset-startOffset)
+	copy(entries, q.index[startOffset:endOffset])
+	q.mu.RUnlock()
+
+	// Read and decode payloads outside the lock
+	out := make([]Message, 0, len(entries))
+	for i, entry := range entries {
+		if entry.seg == nil {
+			break // Pending write
+		}
+
+		var rec []byte
+		if len(entry.seg.mmapData) >= int(entry.pos+entry.len) {
+			rec = entry.seg.mmapData[entry.pos : entry.pos+entry.len]
+		} else {
+			rec = make([]byte, entry.len)
+			if _, err := entry.seg.logFile.ReadAt(rec, entry.pos); err != nil {
+				return out, err
+			}
+		}
+
+		id, ts, payload, err := decodeRecord(rec[4:])
 		if err != nil {
 			return out, err
 		}
-		out = append(out, msg)
+
+		out = append(out, Message{
+			Offset:    startOffset + uint64(i),
+			ID:        id,
+			Timestamp: ts,
+			Payload:   payload,
+		})
 	}
+
 	return out, nil
 }
 
