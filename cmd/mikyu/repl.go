@@ -34,9 +34,20 @@ var (
 
 	dimStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
+
+	confirmArrow = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#EE427D")).
+			Bold(true).
+			Render(">")
 )
 
-// RunREPL starts the interactive REPL shell.
+type replSession struct {
+	client mikyu.Client
+	target string
+	ctx    context.Context
+}
+
+// RunREPL initializes and starts the interactive REPL shell session.
 func RunREPL(target string) {
 	if err := EnsureDaemonRunning(target); err != nil {
 		fmt.Println(errStyle.Render(fmt.Sprintf("Error initializing daemon: %v", err)))
@@ -53,9 +64,13 @@ func RunREPL(target string) {
 	fmt.Print("\x1b[2J\x1b[H")
 	PrintREPLBanner(target)
 
-	scanner := bufio.NewScanner(os.Stdin)
-	ctx := context.Background()
+	sess := &replSession{
+		client: client,
+		target: target,
+		ctx:    context.Background(),
+	}
 
+	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print(promptStyle.Render("mikyu> "))
 		if !scanner.Scan() {
@@ -72,164 +87,204 @@ func RunREPL(target string) {
 			continue
 		}
 
-		args := parseREPLArgs(line)
-		cmd := strings.ToLower(args[0])
-
-		switch cmd {
-		case "exit", "quit":
-			fmt.Println("Goodbye!")
+		if sess.dispatch(line) {
 			return
-
-		case "help":
-			printREPLHelp()
-
-		case "list":
-			queues, err := client.ListQueues(ctx)
-			if err != nil {
-				fmt.Println(errStyle.Render("Error: " + err.Error()))
-				continue
-			}
-			if len(queues) == 0 {
-				fmt.Println(dimStyle.Render("No queues found."))
-				continue
-			}
-			fmt.Println(infoStyle.Render("Queues:"))
-			for _, q := range queues {
-				fmt.Printf("  • %s\n", q)
-			}
-
-		case "create":
-			if len(args) < 2 {
-				fmt.Println(errStyle.Render("Usage: create <queue_name>"))
-				continue
-			}
-			name := args[1]
-			if _, err := client.CreateQueue(ctx, name); err != nil {
-				fmt.Println(errStyle.Render("Error: " + err.Error()))
-				continue
-			}
-			fmt.Println(infoStyle.Render(fmt.Sprintf("%s Queue %q created.", successBullet(), name)))
-
-		case "delete":
-			if len(args) < 2 {
-				fmt.Println(errStyle.Render("Usage: delete <queue_name>"))
-				continue
-			}
-			name := args[1]
-			if !confirm(fmt.Sprintf("Are you sure you want to delete queue %q?", name)) {
-				fmt.Println("Cancelled.")
-				continue
-			}
-			if err := client.DeleteQueue(ctx, name); err != nil {
-				fmt.Println(errStyle.Render("Error: " + err.Error()))
-				continue
-			}
-			fmt.Println(infoStyle.Render(fmt.Sprintf("%s Queue %q deleted.", successBullet(), name)))
-
-		case "produce":
-			if len(args) < 3 {
-				fmt.Println(errStyle.Render("Usage: produce <queue_name> <payload | @file>"))
-				continue
-			}
-			name, input := args[1], args[2]
-			payload, err := resolvePayload(input)
-			if err != nil {
-				fmt.Println(errStyle.Render("Error: " + err.Error()))
-				continue
-			}
-			q, err := client.Queue(name)
-			if err != nil {
-				fmt.Println(errStyle.Render("Error: " + err.Error()))
-				continue
-			}
-			off, err := q.Produce(ctx, payload)
-			if err != nil {
-				fmt.Println(errStyle.Render("Error: " + err.Error()))
-				continue
-			}
-			fmt.Println(infoStyle.Render(fmt.Sprintf("+ Produced %d bytes to %q at offset %d", len(payload), name, off)))
-
-		case "read":
-			if len(args) < 3 {
-				fmt.Println(errStyle.Render("Usage: read <queue_name> <offset>"))
-				continue
-			}
-			name := args[1]
-			off, err := strconv.ParseUint(args[2], 10, 64)
-			if err != nil {
-				fmt.Println(errStyle.Render("Invalid offset format"))
-				continue
-			}
-			q, err := client.Queue(name)
-			if err != nil {
-				fmt.Println(errStyle.Render("Error: " + err.Error()))
-				continue
-			}
-			msg, err := q.Read(ctx, off)
-			if err != nil {
-				fmt.Println(errStyle.Render("Error: " + err.Error()))
-				continue
-			}
-			fmt.Printf("[%d] ID: %s | Time: %s | Payload: %s\n",
-				msg.Offset, msg.ID, msg.Timestamp.Format("15:04:05.000"), string(msg.Payload))
-
-		case "tail":
-			if len(args) < 2 {
-				fmt.Println(errStyle.Render("Usage: tail <queue_name> [start_offset]"))
-				continue
-			}
-			name := args[1]
-			var startOffset uint64 = 0
-			if len(args) >= 3 {
-				startOffset, _ = strconv.ParseUint(args[2], 10, 64)
-			}
-			q, err := client.Queue(name)
-			if err != nil {
-				fmt.Println(errStyle.Render("Error: " + err.Error()))
-				continue
-			}
-
-			sigCtx, stopSig := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-			fmt.Println(dimStyle.Render(fmt.Sprintf("Tailing %q from offset %d (Press Ctrl+C to stop stream)...", name, startOffset)))
-			for msg, err := range q.Tail(sigCtx, startOffset) {
-				if err != nil {
-					if sigCtx.Err() != nil {
-						fmt.Println(infoStyle.Render("\nStream stopped."))
-					} else {
-						fmt.Println(errStyle.Render("Stream error: " + err.Error()))
-					}
-					break
-				}
-				fmt.Printf("[%d] ID: %s | Time: %s | %s\n",
-					msg.Offset, msg.ID, msg.Timestamp.Format("15:04:05.000"), string(msg.Payload))
-			}
-			stopSig()
-
-		case "stats":
-			st, err := client.Stats(ctx)
-			if err != nil {
-				fmt.Println(errStyle.Render("Error: " + err.Error()))
-				continue
-			}
-			fmt.Printf("Active Queues: %d | Total Storage: %d Bytes\n", st.ActiveQueues, st.TotalBytes)
-
-		case "shutdown":
-			if !confirm("Are you sure you want to shut down the daemon?") {
-				fmt.Println("Cancelled.")
-				continue
-			}
-			fmt.Println(infoStyle.Render("Sending shutdown command to daemon..."))
-			_ = sendShutdownSignal(target)
-			fmt.Println("Daemon stopped. Exiting shell.")
-			return
-
-		default:
-			fmt.Println(errStyle.Render(fmt.Sprintf("Unknown command %q. Type 'help' for options.", cmd)))
 		}
 	}
 }
 
-// parseREPLArgs splits a REPL line into args, respecting double quotes.
+func (s *replSession) dispatch(line string) bool {
+	args := parseREPLArgs(line)
+	cmd := strings.ToLower(args[0])
+
+	switch cmd {
+	case "exit", "quit":
+		fmt.Println("Goodbye!")
+		return true
+
+	case "help":
+		printREPLHelp()
+
+	case "list":
+		s.handleList()
+
+	case "create":
+		s.handleCreate(args)
+
+	case "delete":
+		s.handleDelete(args)
+
+	case "produce":
+		s.handleProduce(args)
+
+	case "read":
+		s.handleRead(args)
+
+	case "tail":
+		s.handleTail(args)
+
+	case "stats":
+		s.handleStats()
+
+	case "shutdown":
+		return s.handleShutdown()
+
+	default:
+		fmt.Println(errStyle.Render(fmt.Sprintf("Unknown command %q. Type 'help' for options.", cmd)))
+	}
+
+	return false
+}
+
+func (s *replSession) handleList() {
+	queues, err := s.client.ListQueues(s.ctx)
+	if err != nil {
+		fmt.Println(errStyle.Render("Error: " + err.Error()))
+		return
+	}
+	if len(queues) == 0 {
+		fmt.Println(dimStyle.Render("No queues found."))
+		return
+	}
+	fmt.Println(infoStyle.Render("Queues:"))
+	for _, q := range queues {
+		fmt.Println(infoStyle.Render(fmt.Sprintf("  ● %s", q)))
+	}
+}
+
+func (s *replSession) handleCreate(args []string) {
+	if len(args) < 2 {
+		fmt.Println(errStyle.Render("Usage: create <queue_name>"))
+		return
+	}
+	name := args[1]
+	if _, err := s.client.CreateQueue(s.ctx, name); err != nil {
+		fmt.Println(errStyle.Render("Error: " + err.Error()))
+		return
+	}
+	fmt.Println(infoStyle.Render(fmt.Sprintf("● Queue %q created.", name)))
+}
+
+func (s *replSession) handleDelete(args []string) {
+	if len(args) < 2 {
+		fmt.Println(errStyle.Render("Usage: delete <queue_name>"))
+		return
+	}
+	name := args[1]
+	if !confirm(fmt.Sprintf("Are you sure you want to delete queue %q?", name)) {
+		fmt.Println("Cancelled.")
+		return
+	}
+	if err := s.client.DeleteQueue(s.ctx, name); err != nil {
+		fmt.Println(errStyle.Render("Error: " + err.Error()))
+		return
+	}
+	fmt.Println(infoStyle.Render(fmt.Sprintf("● Queue %q deleted.", name)))
+}
+
+func (s *replSession) handleProduce(args []string) {
+	if len(args) < 3 {
+		fmt.Println(errStyle.Render("Usage: produce <queue_name> <payload | @file>"))
+		return
+	}
+	name, input := args[1], args[2]
+	payload, err := resolvePayload(input)
+	if err != nil {
+		fmt.Println(errStyle.Render("Error: " + err.Error()))
+		return
+	}
+	q, err := s.client.Queue(name)
+	if err != nil {
+		fmt.Println(errStyle.Render("Error: " + err.Error()))
+		return
+	}
+	off, err := q.Produce(s.ctx, payload)
+	if err != nil {
+		fmt.Println(errStyle.Render("Error: " + err.Error()))
+		return
+	}
+	fmt.Println(infoStyle.Render(fmt.Sprintf("● Produced %d bytes to %q at offset %d", len(payload), name, off)))
+}
+
+func (s *replSession) handleRead(args []string) {
+	if len(args) < 3 {
+		fmt.Println(errStyle.Render("Usage: read <queue_name> <offset>"))
+		return
+	}
+	name := args[1]
+	off, err := strconv.ParseUint(args[2], 10, 64)
+	if err != nil {
+		fmt.Println(errStyle.Render("Invalid offset format"))
+		return
+	}
+	q, err := s.client.Queue(name)
+	if err != nil {
+		fmt.Println(errStyle.Render("Error: " + err.Error()))
+		return
+	}
+	msg, err := q.Read(s.ctx, off)
+	if err != nil {
+		fmt.Println(errStyle.Render("Error: " + err.Error()))
+		return
+	}
+	fmt.Printf("[%d] ID: %s | Time: %s | Payload: %s\n",
+		msg.Offset, msg.ID, msg.Timestamp.Format("15:04:05.000"), string(msg.Payload))
+}
+
+func (s *replSession) handleTail(args []string) {
+	if len(args) < 2 {
+		fmt.Println(errStyle.Render("Usage: tail <queue_name> [start_offset]"))
+		return
+	}
+	name := args[1]
+	var startOffset uint64 = 0
+	if len(args) >= 3 {
+		startOffset, _ = strconv.ParseUint(args[2], 10, 64)
+	}
+	q, err := s.client.Queue(name)
+	if err != nil {
+		fmt.Println(errStyle.Render("Error: " + err.Error()))
+		return
+	}
+
+	sigCtx, stopSig := signal.NotifyContext(s.ctx, os.Interrupt, syscall.SIGTERM)
+	defer stopSig()
+
+	fmt.Println(dimStyle.Render(fmt.Sprintf("Tailing %q from offset %d (Press Ctrl+C to stop stream)...", name, startOffset)))
+	for msg, err := range q.Tail(sigCtx, startOffset) {
+		if err != nil {
+			if sigCtx.Err() != nil {
+				fmt.Println(infoStyle.Render("\nStream stopped."))
+			} else {
+				fmt.Println(errStyle.Render("Stream error: " + err.Error()))
+			}
+			break
+		}
+		fmt.Printf("[%d] ID: %s | Time: %s | %s\n",
+			msg.Offset, msg.ID, msg.Timestamp.Format("15:04:05.000"), string(msg.Payload))
+	}
+}
+
+func (s *replSession) handleStats() {
+	st, err := s.client.Stats(s.ctx)
+	if err != nil {
+		fmt.Println(errStyle.Render("Error: " + err.Error()))
+		return
+	}
+	fmt.Printf("Active Queues: %d | Total Storage: %d Bytes\n", st.ActiveQueues, st.TotalBytes)
+}
+
+func (s *replSession) handleShutdown() bool {
+	if !confirm("Are you sure you want to shut down the daemon?") {
+		fmt.Println("Cancelled.")
+		return false
+	}
+	fmt.Println(infoStyle.Render("Sending shutdown command to daemon..."))
+	_ = sendShutdownSignal(s.target)
+	fmt.Println("Daemon stopped. Exiting shell.")
+	return true
+}
+
 func parseREPLArgs(line string) []string {
 	var args []string
 	var current strings.Builder
@@ -260,7 +315,6 @@ func parseREPLArgs(line string) []string {
 	return args
 }
 
-// resolvePayload reads raw bytes from input string, @file, or stdin.
 func resolvePayload(input string) ([]byte, error) {
 	if input == "-" {
 		return io.ReadAll(os.Stdin)
@@ -271,26 +325,19 @@ func resolvePayload(input string) ([]byte, error) {
 	return []byte(input), nil
 }
 
-// confirm shows a themed Yes/No confirmation prompt, returns true if Yes.
 func confirm(prompt string) bool {
 	var confirm bool
-
-	// Colored arrow + plain text title
-	arrow := lipgloss.NewStyle().Foreground(lipgloss.Color("#EE427D")).Render(">")
-	fullTitle := arrow + " " + prompt
+	fullTitle := confirmArrow + " " + prompt
 
 	theme := huh.ThemeFunc(func(isDark bool) *huh.Styles {
 		s := huh.ThemeCharm(isDark)
 
-		// Remove the left border/line and any padding
 		s.Focused.Base = lipgloss.NewStyle().Padding(0).Margin(0)
 		s.Blurred.Base = lipgloss.NewStyle().Padding(0).Margin(0)
 
-		// Title text: light grey like the normal REPL output
-		s.Focused.Title = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Padding(0).Margin(0)
-		s.Blurred.Title = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Padding(0).Margin(0)
+		s.Focused.Title = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Bold(true)
+		s.Blurred.Title = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
 
-		// Buttons: active = EE427D text, inactive = grey
 		s.Focused.FocusedButton = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#EE427D")).
 			Bold(true).
@@ -320,13 +367,6 @@ func confirm(prompt string) bool {
 	return confirm
 }
 
-func successBullet() string {
-	return lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#EE427D")).
-		Render("●")
-}
-
-// sendShutdownSignal sends OpShutdown frame to the daemon.
 func sendShutdownSignal(target string) error {
 	network, addr, err := protocol.ParseTarget(target)
 	if err != nil {
@@ -340,7 +380,6 @@ func sendShutdownSignal(target string) error {
 	return protocol.WriteFrame(conn, protocol.OpShutdown, nil)
 }
 
-// printREPLHelp prints the available REPL commands.
 func printREPLHelp() {
 	fmt.Print(`Available Commands:
   list                 List all active queues
