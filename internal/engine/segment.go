@@ -28,6 +28,10 @@ func openSegment(dir string, baseOff uint64) (*segment, error) {
 		return nil, err
 	}
 
+	if info, err := logFile.Stat(); err == nil && info.Size() == 0 {
+		_ = logFile.Truncate(64 * 1024 * 1024) // Reserves 64 MiB
+	}
+
 	idxFile, err := os.OpenFile(idxPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		_ = logFile.Close()
