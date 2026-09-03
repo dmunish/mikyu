@@ -179,14 +179,13 @@ type Group interface {
 	Commit(ctx context.Context) error
 	FetchOffset(ctx context.Context) (uint64, error)
 }
-
 ```
 
 **Implementation Details:**
 
 * `Stream`: Returns an `iter.Seq2[Message, error]` iterator. Loops from `startOffset`, calling `Read()`. Terminates when `Read()` returns `ErrOffsetNotFound` or when context is canceled.
 * `Tail`: Returns an `iter.Seq2[Message, error]` iterator. Polls `LastOffset()` continuously; if `curr >= last`, sleeps for 5 milliseconds before re-checking. Yields records as they become available.
-* `Group`: Tracks consumer high-water marks. `Mark` updates an internal `highWater` variable if `offset >= highWater`. `Commit` persists `highWater` to the engine offset store. `Close` automatically invokes `Commit(context.Background())`.
+* `Group`: Tracks consumer high-water marks. `Mark` updates an internal `highWater` variable if `offset >= highWater`; the `highWater` is set to `offset + 1` (i.e., the next offset to be read). `Commit` persists `highWater` to the engine offset store. `Close` automatically invokes `Commit(context.Background())`.
 
 #### `options.go`
 
@@ -221,7 +220,6 @@ func WithMaxSegmentBytes(bytes int64) QueueOption
 func WithMaxMessageBytes(bytes int64) QueueOption
 func WithMaxSegmentAge(age time.Duration) QueueOption
 func WithDirectoryEncryption(enabled bool) QueueOption
-
 ```
 
 **Implementation Details:**
@@ -247,7 +245,6 @@ type Typed[T any] struct {
 func NewTyped[T any](q Queue, codec Codec[T]) *Typed[T]
 func (t *Typed[T]) Produce(ctx context.Context, val T) (uint64, error)
 func (t *Typed[T]) Read(ctx context.Context, offset uint64) (T, error)
-
 ```
 
 **Implementation Details:**
@@ -257,11 +254,17 @@ func (t *Typed[T]) Read(ctx context.Context, offset uint64) (T, error)
 
 #### `embedded.go`
 
-Directly wraps `internal/engine.Manager` for in-process log operations. Re-exports core error variables (`ErrQueueExists`, `ErrQueueNotFound`, `ErrOffsetNotFound`, `ErrMessageTooLarge`).
+Directly wraps `internal/engine.Manager` for in-process log operations. Re-exports core error variables.
 
 ```go
-func Open(dir string, opts ...ClientOption) (Client, error)
+var (
+	ErrQueueExists     = engine.ErrQueueExists
+	ErrQueueNotFound   = engine.ErrQueueNotFound
+	ErrOffsetNotFound  = engine.ErrOffsetNotFound
+	ErrMessageTooLarge = engine.ErrMessageTooLarge
+)
 
+func Open(dir string, opts ...ClientOption) (Client, error)
 ```
 
 **Implementation Details:**
@@ -269,7 +272,7 @@ func Open(dir string, opts ...ClientOption) (Client, error)
 * `Open`: Applies `ClientOption`s to `DefaultClientConfig()`, creates an `engine.Config`, and calls `engine.OpenManager(dir, engineCfg)`. Returns an `*embeddedClient`.
 * `embeddedClient`: Implements `Client`. Methods validate `ctx.Err()` prior to execution and forward calls to `mgr`.
 * `embeddedQueue`: Wraps `*engine.Queue`. Methods delegate directly to engine queue primitives.
-* `embeddedGroup`: Wraps `*engine.Queue` and tracks high-water offset guarded by `sync.Mutex`. `Commit` invokes `q.CommitOffset(ctx, groupName, highWater)`.
+* `embeddedGroup`: Wraps `*engine.Queue` and tracks high-water offset guarded by `sync.Mutex`. `Mark` sets `highWater = offset + 1` if `offset >= highWater`. `Commit` invokes `q.CommitOffset(ctx, groupName, highWater)`.
 
 #### `remote.go`
 
@@ -287,8 +290,12 @@ type remoteClient struct {
 	closed   atomic.Bool
 }
 
-func Dial(target string, opts ...ClientOption) (Client, error)
+type clientConn struct {
+	conn net.Conn
+	r    *bufio.Reader
+}
 
+func Dial(target string, opts ...ClientOption) (Client, error)
 ```
 
 **Implementation Details:**
@@ -310,17 +317,59 @@ func Dial(target string, opts ...ClientOption) (Client, error)
 Parses YAML configurations using `goccy/go-yaml`, resolves config paths, auto-bootstraps missing config files, and applies environment variable overrides.
 
 ```go
+const defaultConfigYAML = `# Mikyu Daemon Configuration
+server:
+  target: "tcp://127.0.0.1:7420" # Bind target (tcp://, unix://, or pipe://)
+  data_dir: "./data"             # Path for WAL log segments and offset store
+engine:
+  batch_size: 256                # Max pending messages before triggering WAL fsync
+  flush_interval: "10ms"         # Max wait time before forcing WAL fsync
+  max_segment_bytes: 67108864    # 64 MiB: Max size per log segment before rolling
+  max_message_bytes: 1048576     # 1 MiB: Max payload size per produce call
+  max_segment_age: "1h"          # Max time before rolling inactive segment
+  encrypted: false               # Enable OS transparent directory encryption
+queues: []                       # Declarative pre-created queues on startup
+`
+
 type Config struct {
 	Server ServerConfig  `yaml:"server"`
 	Engine EngineConfig  `yaml:"engine"`
 	Queues []QueueConfig `yaml:"queues"`
 }
 
+type ServerConfig struct {
+	Target      string `yaml:"target"`
+	DataDir     string `yaml:"data_dir"`
+	TLSEnabled  bool   `yaml:"tls_enabled"`
+	TLSCertFile string `yaml:"tls_cert_file"`
+	TLSKeyFile  string `yaml:"tls_key_file"`
+}
+
+type EngineConfig struct {
+	BatchSize       int           `yaml:"batch_size"`
+	FlushInterval   time.Duration `yaml:"flush_interval"`
+	MaxSegmentBytes int64         `yaml:"max_segment_bytes"`
+	MaxMessageBytes int64         `yaml:"max_message_bytes"`
+	MaxSegmentAge   time.Duration `yaml:"max_segment_age"`
+	Encrypted       bool          `yaml:"encrypted"`
+}
+
+type QueueConfig struct {
+	Name            string        `yaml:"name"`
+	BatchSize       int           `yaml:"batch_size,omitempty"`
+	FlushInterval   time.Duration `yaml:"flush_interval,omitempty"`
+	MaxSegmentBytes int64         `yaml:"max_segment_bytes,omitempty"`
+	MaxMessageBytes int64         `yaml:"max_message_bytes,omitempty"`
+	MaxSegmentAge   time.Duration `yaml:"max_segment_age,omitempty"`
+	Encrypted       *bool         `yaml:"encrypted,omitempty"`
+}
+
 func DefaultConfig() Config
 func Load(flagPath string) (*Config, string, error)
+func resolveOrBootstrapPath(flagPath string) (path string, bootstrapped bool, err error)
+func applyEnvOverrides(cfg *Config)
 func ToEngineConfig(e EngineConfig) engine.Config
 func ToQueueEngineConfig(defaults EngineConfig, q QueueConfig) engine.Config
-
 ```
 
 **Implementation Details:**
@@ -348,7 +397,6 @@ type rawIndexEntry struct {
 	pos int64
 	len int64
 }
-
 ```
 
 **Implementation Details:**
@@ -358,9 +406,11 @@ type rawIndexEntry struct {
 
 #### `offsets.go`
 
-Provides durable consumer group offset tracking in a unified manager-level file (`manager-offsets.dat`).
+Provides durable consumer group offset tracking in a unified manager-level file.
 
 ```go
+const managerOffsetFileName = "manager-offsets.dat"
+
 type OffsetStore struct {
 	mu      sync.RWMutex
 	file    *os.File
@@ -372,7 +422,6 @@ func openOffsetStore(dir string) (*OffsetStore, error)
 func (s *OffsetStore) Commit(queueName, group string, offset uint64) error
 func (s *OffsetStore) Fetch(queueName, group string) uint64
 func (s *OffsetStore) Close() error
-
 ```
 
 **Implementation Details:**
@@ -402,7 +451,6 @@ func (s *segment) writeIndex(pos, len int64) error
 func (s *segment) recover() ([]rawIndexEntry, error)
 func (s *segment) rebuild() ([]rawIndexEntry, error)
 func (s *segment) Close() error
-
 ```
 
 **Implementation Details:**
@@ -447,7 +495,6 @@ func (w *wal) pushBatch(recs [][]byte, positions []int64) (seq int64, wake bool,
 func (w *wal) wait(seq int64) error
 func (w *wal) flush()
 func (w *wal) stop() error
-
 ```
 
 **Implementation Details:**
@@ -463,13 +510,37 @@ func (w *wal) stop() error
 * `sync_fdatasync.go` (Linux/BSD): Executes `unix.Fdatasync(int(f.Fd()))` to flush data blocks without updating directory inode metadata overhead.
 * `sync_windows.go`: Executes `f.Sync()`.
 
-
-
 #### `queue.go`
 
 Implements per-queue engine mechanics, rolling logic, batch produce, zero-copy reads, and index updates.
 
 ```go
+var (
+	ErrQueueExists     = errors.New("queue with this name already exists")
+	ErrQueueNotFound   = errors.New("queue not found")
+	ErrOffsetNotFound  = errors.New("offset not found")
+	ErrMessageTooLarge = errors.New("message payload exceeds maximum allowed size")
+	ErrRecordTooLarge  = errors.New("record size exceeds max segment size")
+)
+
+type Message struct {
+	Offset    uint64
+	ID        string
+	Timestamp time.Time
+	Payload   []byte
+}
+
+type Config struct {
+	BatchSize       int
+	Interval        time.Duration
+	MaxSegmentBytes int64
+	MaxMessageBytes int64
+	MaxSegmentAge   time.Duration
+	Encrypted       bool
+}
+
+func (c Config) withDefaults() Config
+
 type Queue struct {
 	name       string
 	dir        string
@@ -492,7 +563,6 @@ func (q *Queue) LastOffset() uint64
 func (q *Queue) CommitOffset(ctx context.Context, group string, offset uint64) error
 func (q *Queue) FetchOffset(ctx context.Context, group string) (uint64, error)
 func (q *Queue) Close() error
-
 ```
 
 **Implementation Details:**
@@ -503,20 +573,18 @@ func (q *Queue) Close() error
 * `Produce`:
 1. Validates payload length against `MaxMessageBytes` (returns `ErrMessageTooLarge` if exceeded).
 2. Encodes record with raw UUID v7 and nanosecond timestamp.
-3. Acquires `q.mu.Lock()`. Checks segment size limits (`MaxSegmentBytes`) and segment age (`MaxSegmentAge`); triggers `roll()` if thresholds are exceeded.
+3. Acquires `q.mu.Lock()`. Checks segment size limits (`MaxSegmentBytes`) and segment age (`MaxSegmentAge`); triggers `roll()` if thresholds are exceeded. Also checks that the record length itself does not exceed `MaxSegmentBytes` (returns `ErrRecordTooLarge` if so).
 4. Calls `q.w.push(rec, pos)`, updates `q.active.pos += recLen`, increments `q.nextOffset++`, unlocks `q.mu`.
 5. Signals `q.w.wake` if required, then calls `q.w.wait(seq)` to block until durable disk sync completes.
 6. Re-acquires `q.mu.Lock()`, writes 16-byte index entry to segment via `writeIndex`, updates `q.index` slice at offset position, unlocks `q.mu`, and returns offset.
 
-
-* `ProduceBatch`: Performs batched record encoding, checks limits, executes `w.pushBatch`, waits for sync, updates index entries, and returns allocated offset slice.
+* `ProduceBatch`: Performs batched record encoding, checks limits (both `MaxMessageBytes` and `MaxSegmentBytes` per record), executes `w.pushBatch`, waits for sync, updates index entries, and returns allocated offset slice.
 * `Read`:
 1. Acquires `q.mu.RLock()`. Validates offset within `q.index` bounds (returns `ErrOffsetNotFound` if invalid).
 2. Retrieves `indexEntry`. Checks if memory-mapped data (`entry.seg.mmapData`) spans the offset region.
 3. **Zero-Copy Path:** If `mmapData` is available, extracts byte slice slice `entry.seg.mmapData[pos : pos+len]` directly without memory allocation or syscalls.
 4. **Fallback Path:** If active segment (unmapped), allocates buffer and calls `entry.seg.logFile.ReadAt(rec, pos)`.
 5. Releases `q.mu.RUnlock()`. Decodes record via `decodeRecord(rec[4:])` and returns `Message`.
-
 
 * `ReadBatch`: Takes read lock, clamps `count` to available messages, snapshots `indexEntry` slice, releases lock, and decodes records outside lock hold.
 
@@ -530,7 +598,6 @@ Handles CRC32 record encoding, decoding, and raw UUID v7 conversions.
 ```go
 func encodeRecord(id uuid.UUID, ts time.Time, payload []byte) []byte
 func decodeRecord(buf []byte) (id string, ts time.Time, payload []byte, err error)
-
 ```
 
 **Implementation Details:**
@@ -544,18 +611,29 @@ OS-specific kernel directory transparent encryption handlers.
 
 **Implementation Details:**
 
-* `EnsureDirectoryEncrypted(dirPath)`:
+* `EnsureDirectoryEncrypted(dirPath)`: 
 * **Linux (`encrypt_linux.go`):** Opens directory file descriptor, constructs `fscryptPolicy` struct, and executes `unix.Syscall(unix.SYS_IOCTL, f.Fd(), FS_IOC_SET_ENCRYPTION_POLICY, ...)` using AES-256-XTS contents and AES-256-CTS filenames encryption modes. Silently ignores `ENOTTY`, `EOPNOTSUPP`, and `EEXIST` error codes for unsupported filesystems.
 * **Windows (`encrypt_windows.go`):** Invokes `EncryptFileW` via DLL procedure call on `advapi32.dll` to apply NTFS Encrypting File System (EFS) directory attributes.
 * **Other (`encrypt_other.go`):** macOS/BSD fallback. Logs a warning that host OS kernel lacks native transparent directory policies and returns nil.
-
-
 
 #### `manager.go`
 
 Manages multi-queue lifecycle, directory scanning, concurrent operations, and aggregated engine metrics.
 
 ```go
+type EngineStats struct {
+	ActiveQueues int
+	TotalBytes   int64
+	Queues       map[string]QueueStats
+}
+
+type QueueStats struct {
+	MessageCount uint64
+	SegmentCount int
+	SizeBytes    int64
+	LastOffset   uint64
+}
+
 type Manager struct {
 	mu      sync.RWMutex
 	dir     string
@@ -571,13 +649,12 @@ func (m *Manager) ListQueues() []string
 func (m *Manager) DeleteQueue(name string) error
 func (m *Manager) Stats() EngineStats
 func (m *Manager) Close() error
-
 ```
 
 **Implementation Details:**
 
 * `OpenManager`: Creates root data directory, applies directory encryption if configured, opens manager `OffsetStore`, scans subdirectories, and calls `openQueue` to restore existing queues. Returns `*Manager`.
-* `CreateQueue`: Takes write lock (`m.mu.Lock()`). Checks if queue exists in map or on disk (returns `ErrQueueExists` if present). Opens new queue via `openQueue`, stores in `m.queues`, and returns `*Queue`.
+* `CreateQueue`: Takes write lock (`m.mu.Lock()`). Checks if queue exists in map or on disk (returns `ErrQueueExists` if present). Opens new queue via `openQueue` (optionally with a custom `Config` passed as variadic argument), stores in `m.queues`, and returns `*Queue`.
 * `GetQueue`: Takes read lock (`m.mu.RLock()`), looks up queue by name, returns `ErrQueueNotFound` if absent.
 * `DeleteQueue`: Takes write lock, retrieves queue, calls `q.Close()` to flush WAL and close file handles, removes queue from map, and deletes queue directory recursively via `os.RemoveAll`.
 * `Stats`: Takes read lock, iterates through active queues, acquires per-queue read locks to sum segment sizes and index counts, and returns `EngineStats`.
@@ -618,7 +695,6 @@ const (
 func EncodeError(code byte, msg string) []byte
 func DecodeError(body []byte) (code byte, msg string)
 func ParseTarget(target string) (network string, addr string, err error)
-
 ```
 
 **Implementation Details:**
@@ -635,9 +711,10 @@ Implements length-prefixed binary frame readers and pooled frame writers.
 `[4B Big-Endian Length][1B Opcode][Payload]` (Length value = `1 + len(payload)`).
 
 ```go
+var framePool = sync.Pool{ New: func() any { b := make([]byte, 32*1024); return &b } }
+
 func ReadFrame(r *bufio.Reader) (op byte, payload []byte, err error)
 func WriteFrame(w io.Writer, op byte, payload []byte) error
-
 ```
 
 **Implementation Details:**
@@ -661,7 +738,6 @@ func (buf *Buffer) WriteU32(v uint32)
 func (buf *Buffer) WriteU64(v uint64)
 func (buf *Buffer) WriteBytes(data []byte)
 func (buf *Buffer) Bytes() []byte
-
 ```
 
 **Implementation Details:**
@@ -686,12 +762,14 @@ type Server struct {
 	stopCh    chan struct{}
 }
 
+type ServerOption func(*Server)
+
 func New(mgr *engine.Manager, opts ...ServerOption) *Server
 func WithTLS(tlsConfig *tls.Config) ServerOption
 func (s *Server) ListenAndServe(target string) error
 func (s *Server) Serve(ln net.Listener) error
 func (s *Server) Stop()
-
+func (s *Server) serveConn(conn net.Conn)
 ```
 
 **Implementation Details:**
@@ -707,12 +785,22 @@ Dispatches protocol opcodes to corresponding storage engine operations.
 
 ```go
 func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byte, respBody []byte, shouldShutdown bool)
-
+func (s *Server) handleCreateQueue(body []byte) (byte, []byte)
+func (s *Server) handleProduce(ctx context.Context, body []byte) (byte, []byte)
+func (s *Server) handleProduceBatch(ctx context.Context, body []byte) (byte, []byte)
+func (s *Server) handleRead(ctx context.Context, body []byte) (byte, []byte)
+func (s *Server) handleReadBatch(ctx context.Context, body []byte) (byte, []byte)
+func (s *Server) handleTail(body []byte) (byte, []byte)
+func (s *Server) handleCommitOffset(ctx context.Context, body []byte) (byte, []byte)
+func (s *Server) handleFetchOffset(ctx context.Context, body []byte) (byte, []byte)
+func (s *Server) handleListQueues() (byte, []byte)
+func (s *Server) handleDeleteQueue(body []byte) (byte, []byte)
+func (s *Server) handleStats() (byte, []byte)
 ```
 
 **Implementation Details:**
 
-* `dispatch`: Evaluates opcode byte:
+* `dispatch`: Evaluates opcode byte and routes to the appropriate handler. Handlers decode the request body, call the corresponding `engine.Manager`/`engine.Queue` method, and encode the response. If an error occurs, they encode a `protocol.OpError` frame with a specific error code.
 * `OpCreateQueue`: Reads queue name string, calls `mgr.CreateQueue`.
 * `OpProduce`: Reads queue name and payload bytes, calls `q.Produce`, returns Uint64 offset response.
 * `OpProduceBatch`: Reads queue name, payload count, and payloads slice, calls `q.ProduceBatch`, returns Uint32 count and array of Uint64 offsets.
@@ -727,15 +815,13 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byt
 * `OpShutdown`: Returns `(protocol.OpShutdown, nil, true)` to signal server shutdown routine.
 * Default: Encodes `ErrCodeUnknown` via `protocol.EncodeError` and returns `OpError`.
 
-
-
 #### `internal/server/tls.go`
 
 Configures server TLS settings and handles self-signed certificate auto-generation.
 
 ```go
 func DefaultTLSConfig(certFile, keyFile string) (*tls.Config, error)
-
+func generateSelfSignedCert() (tls.Certificate, error)
 ```
 
 **Implementation Details:**
@@ -756,10 +842,11 @@ type Listener struct {
 }
 
 func Listen(target string) (net.Listener, error)
+func listenUnix(path string) (net.Listener, error)
+func listenPipe(path string) (net.Listener, error)
 func Dial(target string) (net.Conn, error)
 func DialContext(ctx context.Context, target string) (net.Conn, error)
 func (l *Listener) Close() error
-
 ```
 
 **Implementation Details:**
@@ -792,13 +879,41 @@ Single-binary CLI entrypoint routing commands between background server daemon, 
 Interactive REPL shell with auto-daemon spawning, Lipgloss banner rendering, and command evaluation loop.
 
 ```go
-func RunREPL(target string)
+var (
+	accentColor  = lipgloss.Color("#FFB200")
+	promptStyle  = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+	infoStyle    = lipgloss.NewStyle().Foreground(accentColor)
+	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	confirmArrow = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE427D")).Bold(true).Render(">")
+)
 
+type replSession struct {
+	client mikyu.Client
+	target string
+	ctx    context.Context
+}
+
+func RunREPL(target string)
+func (s *replSession) dispatch(line string) bool
+func (s *replSession) handleList()
+func (s *replSession) handleCreate(args []string)
+func (s *replSession) handleDelete(args []string)
+func (s *replSession) handleProduce(args []string)
+func (s *replSession) handleRead(args []string)
+func (s *replSession) handleTail(args []string)
+func (s *replSession) handleStats()
+func (s *replSession) handleShutdown() bool
+func parseREPLArgs(line string) []string
+func resolvePayload(input string) ([]byte, error)
+func confirm(prompt string) bool
+func sendShutdownSignal(target string) error
+func printREPLHelp()
 ```
 
 **Implementation Details:**
 
-* `RunREPL`: Executes `EnsureDaemonRunning(target)`. Dials client via `mikyu.Dial(target)`. Clears terminal screen, renders header banner via `PrintREPLBanner(target)`. Reads input lines using `bufio.Scanner`.
+* `RunREPL`: Executes `EnsureDaemonRunning(target)`. Dials client via `mikyu.Dial(target)`. Clears terminal screen, renders header banner via `PrintREPLBanner(target)`. Reads input lines using `bufio.Scanner`. Dispatches each line through `replSession.dispatch`.
 * `parseREPLArgs(line)`: Custom string parser that splits arguments by space while preserving double-quoted string literals (`"hello world"`).
 * `resolvePayload(input)`: Converts argument string to bytes: reads from stdin if input is `"-"`, reads file contents from disk if input starts with `"@"` (`@file.json`), or converts raw string literal to byte slice.
 * `confirm(prompt)`: Displays an interactive confirmation prompt using `charm.land/huh/v2` form controls with custom Lipgloss button styles.
@@ -810,7 +925,8 @@ Stateless one-shot subcommand handler.
 
 ```go
 func RunCLI(target string, args []string)
-
+func isTerminal(f *os.File) bool
+func confirmCLI(prompt string, args []string) (bool, error)
 ```
 
 **Implementation Details:**
@@ -824,9 +940,8 @@ func RunCLI(target string, args []string)
 * `tail`: Parses optional startOffset argument, streams live records using `q.Tail`.
 * `stats`: Displays active queue count and storage footprint bytes.
 * `shutdown`: Prompts confirmation, calls `sendShutdownSignal(target)`.
-
-
 * `confirmCLI`: Checks arguments for `-y`/`--yes`/`-f`/`--force`. If absent, checks if `os.Stdin` is a TTY char device (`isTerminal`); if TTY, prompts `[y/N]` answer on stdin; otherwise fails with TTY error requirement.
+* `isTerminal(f *os.File) bool`: Returns true if the file descriptor refers to a character device (TTY).
 
 #### `cmd/mikyu/daemon.go`
 
@@ -835,7 +950,6 @@ Daemon socket probing and non-blocking background process spawning.
 ```go
 func IsDaemonAlive(target string) bool
 func EnsureDaemonRunning(target string) error
-
 ```
 
 **Implementation Details:**
@@ -848,8 +962,11 @@ func EnsureDaemonRunning(target string) error
 Renders Lipgloss-styled ASCII banner logo, command reference table, and status.
 
 ```go
-func PrintREPLBanner(target string)
+const mikyuASCII = `...`
+var logoGradient = []color.Color{...}
+var taglineStyle, cmdPrefixStyle, cmdNameStyle, cmdArgStyle, cmdDescStyle, tryLabelStyle, tryCmdStyle, statusStyle, statusTargetStyle = ... // various lipgloss styles
 
+func PrintREPLBanner(target string)
 ```
 
 **Implementation Details:**
@@ -859,6 +976,10 @@ func PrintREPLBanner(target string)
 #### `cmd/mikyu/detach_unix.go` & `detach_windows.go`
 
 Platform-specific background process detachment build tag routines.
+
+```go
+func setDetachedProcessAttr(cmd *exec.Cmd)
+```
 
 **Implementation Details:**
 
