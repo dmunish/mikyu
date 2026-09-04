@@ -30,10 +30,12 @@ func Open(dir string, opts ...ClientOption) (Client, error) {
 
 	engineCfg := engine.Config{
 		BatchSize:       cfg.BatchSize,
-		Interval:        cfg.Interval,
+		MaxInterval:     cfg.MaxInterval,
+		MinInterval:     cfg.MinInterval,
 		MaxSegmentBytes: cfg.DefaultMaxSegmentBytes,
 		MaxMessageBytes: cfg.DefaultMaxMessageBytes,
 		MaxSegmentAge:   cfg.DefaultMaxSegmentAge,
+		Encrypted:       cfg.Encrypted,
 	}
 
 	mgr, err := engine.OpenManager(dir, engineCfg)
@@ -53,14 +55,20 @@ func (c *embeddedClient) CreateQueue(ctx context.Context, name string, opts ...Q
 		return nil, err
 	}
 
-	cfg := engine.Config{}
 	qCfg := QueueConfig{}
 	for _, opt := range opts {
 		opt(&qCfg)
 	}
-	cfg.MaxSegmentBytes = qCfg.MaxSegmentBytes
-	cfg.MaxMessageBytes = qCfg.MaxMessageBytes
-	cfg.MaxSegmentAge = qCfg.MaxSegmentAge
+
+	cfg := engine.Config{
+		BatchSize:       qCfg.BatchSize,
+		MaxInterval:     qCfg.MaxInterval,
+		MinInterval:     qCfg.MinInterval,
+		MaxSegmentBytes: qCfg.MaxSegmentBytes,
+		MaxMessageBytes: qCfg.MaxMessageBytes,
+		MaxSegmentAge:   qCfg.MaxSegmentAge,
+		Encrypted:       qCfg.Encrypted,
+	}
 
 	q, err := c.mgr.CreateQueue(name, cfg)
 	if err != nil {

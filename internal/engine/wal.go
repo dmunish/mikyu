@@ -11,8 +11,8 @@ type pendingEntry struct {
 	len int64
 }
 
-// wal manages write-ahead logging using dynamic dual-threshold flusher batching
-// (flush when pending count >= BatchSize OR time interval elapsed).
+// wal manages write-ahead logging using adaptive dual-threshold flusher batching
+// with micro-linger group commits to minimize fsync overhead.
 type wal struct {
 	cfg  Config
 	file *os.File
@@ -53,18 +53,44 @@ func (w *wal) start() {
 
 func (w *wal) syncLoop() {
 	defer close(w.done)
-	ticker := time.NewTicker(w.cfg.Interval)
+	ticker := time.NewTicker(w.cfg.MaxInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
+			w.flush()
 		case <-w.wake:
+			w.adaptiveFlush()
 		case <-w.shutdown:
 			w.flush()
 			return
 		}
-		w.flush()
+	}
+}
+
+func (w *wal) adaptiveFlush() {
+	w.mu.Lock()
+	n := len(w.pending)
+	w.mu.Unlock()
+
+	if n == 0 {
+		return
+	}
+
+	// If pending count is below BatchSize, micro-linger briefly to allow
+	// concurrent producer goroutines to accumulate into this batch.
+	if n < w.cfg.BatchSize && w.cfg.MinInterval > 0 {
+		time.Sleep(w.cfg.MinInterval)
+	}
+
+	w.flush()
+
+	// Drain lingering wake tokens AFTER flush completes so we don't trigger
+	// a phantom sync loop on records already written to disk.
+	select {
+	case <-w.wake:
+	default:
 	}
 }
 
@@ -122,7 +148,7 @@ func (w *wal) flush() {
 		return
 	}
 
-	// Swap staged buffers to keep mutex lock duration minimal during disk I/O
+	// Swap staged buffers to keep lock duration minimal during disk I/O
 	data := w.buf
 	entries := w.pending
 	w.buf = nil

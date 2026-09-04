@@ -29,7 +29,8 @@ type Message struct {
 
 type Config struct {
 	BatchSize       int
-	Interval        time.Duration
+	MaxInterval     time.Duration
+	MinInterval     time.Duration
 	MaxSegmentBytes int64
 	MaxMessageBytes int64
 	MaxSegmentAge   time.Duration
@@ -40,8 +41,13 @@ func (c Config) withDefaults() Config {
 	if c.BatchSize <= 0 {
 		c.BatchSize = 256
 	}
-	if c.Interval <= 0 {
-		c.Interval = 10 * time.Millisecond
+	if c.MaxInterval <= 0 {
+		c.MaxInterval = 10 * time.Millisecond
+	}
+	if c.MinInterval == 0 {
+		c.MinInterval = 30 * time.Microsecond
+	} else if c.MinInterval < 0 {
+		c.MinInterval = 0 // Negative duration explicitly disables linger
 	}
 	if c.MaxSegmentBytes <= 0 {
 		c.MaxSegmentBytes = 64 * 1024 * 1024
