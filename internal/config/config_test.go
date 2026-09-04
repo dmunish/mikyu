@@ -15,7 +15,8 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, "tcp://127.0.0.1:7420", cfg.Server.Target)
 	assert.Equal(t, "./data", cfg.Server.DataDir)
 	assert.Equal(t, 256, cfg.Engine.BatchSize)
-	assert.Equal(t, 10*time.Millisecond, cfg.Engine.FlushInterval)
+	assert.Equal(t, 10*time.Millisecond, cfg.Engine.MaxInterval)
+	assert.Equal(t, 30*time.Microsecond, cfg.Engine.MinInterval)
 	assert.Equal(t, int64(64*1024*1024), cfg.Engine.MaxSegmentBytes)
 }
 
@@ -60,13 +61,17 @@ func TestEnvOverrides(t *testing.T) {
 func TestToQueueEngineConfig(t *testing.T) {
 	defaults := EngineConfig{
 		BatchSize:       100,
-		FlushInterval:   5 * time.Millisecond,
+		MaxInterval:     5 * time.Millisecond,
+		MinInterval:     20 * time.Microsecond,
 		MaxSegmentBytes: 1024,
 	}
 	q := QueueConfig{
+		MinInterval:     50 * time.Microsecond,
 		MaxSegmentBytes: 2048,
 	}
 	cfg := ToQueueEngineConfig(defaults, q)
-	assert.Equal(t, 100, cfg.BatchSize)               // inherited
-	assert.Equal(t, int64(2048), cfg.MaxSegmentBytes) // overridden
+	assert.Equal(t, 100, cfg.BatchSize)                   // inherited
+	assert.Equal(t, 5*time.Millisecond, cfg.MaxInterval)  // inherited
+	assert.Equal(t, 50*time.Microsecond, cfg.MinInterval) // overridden
+	assert.Equal(t, int64(2048), cfg.MaxSegmentBytes)     // overridden
 }

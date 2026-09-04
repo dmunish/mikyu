@@ -33,7 +33,7 @@ func TestWALPushAndWait(t *testing.T) {
 	require.NoError(t, err)
 	defer f.Close()
 
-	cfg := Config{BatchSize: 2, Interval: time.Millisecond}
+	cfg := Config{BatchSize: 2, MaxInterval: time.Millisecond}
 	w := newWAL(f, cfg, 0)
 	w.start()
 	defer w.stop()
@@ -57,7 +57,7 @@ func TestWALBatch(t *testing.T) {
 	logPath := filepath.Join(dir, "wal.log")
 	f, _ := os.Create(logPath)
 	defer f.Close()
-	cfg := Config{BatchSize: 3, Interval: time.Hour}
+	cfg := Config{BatchSize: 3, MaxInterval: time.Hour}
 	w := newWAL(f, cfg, 0)
 	w.start()
 	defer w.stop()
@@ -87,7 +87,7 @@ func TestWALErrorPropagation(t *testing.T) {
 	logPath := filepath.Join(dir, "wal.log")
 	f, _ := os.Create(logPath)
 	f.Close() // force write error
-	cfg := Config{BatchSize: 1, Interval: time.Millisecond}
+	cfg := Config{BatchSize: 1, MaxInterval: time.Millisecond}
 	w := newWAL(f, cfg, 0)
 	w.start()
 	defer w.stop()
@@ -104,7 +104,7 @@ func TestWALStopFlushesPending(t *testing.T) {
 	logPath := filepath.Join(dir, "wal.log")
 	f, _ := os.Create(logPath)
 	defer f.Close()
-	cfg := Config{BatchSize: 10, Interval: time.Hour}
+	cfg := Config{BatchSize: 10, MaxInterval: time.Hour}
 	w := newWAL(f, cfg, 0)
 	w.start()
 	_, _, _ = w.push([]byte("data"), 0)
@@ -120,7 +120,7 @@ func TestWALConcurrentPush(t *testing.T) {
 	logPath := filepath.Join(dir, "wal.log")
 	f, _ := os.Create(logPath)
 	defer f.Close()
-	cfg := Config{BatchSize: 100, Interval: time.Millisecond}
+	cfg := Config{BatchSize: 100, MaxInterval: time.Millisecond}
 	w := newWAL(f, cfg, 0)
 	w.start()
 	defer w.stop()

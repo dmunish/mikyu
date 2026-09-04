@@ -91,7 +91,7 @@ func TestQueuePermanentErrorOnFlushFailure(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	q, err := openQueue(dir, "perm-error", Config{BatchSize: 1, Interval: time.Millisecond}, store)
+	q, err := openQueue(dir, "perm-error", Config{BatchSize: 1, MaxInterval: time.Millisecond}, store)
 	require.NoError(t, err)
 	defer q.Close()
 

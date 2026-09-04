@@ -255,7 +255,7 @@ func TestQueueUngracefulCrashRecovery(t *testing.T) {
 	store, err := openOffsetStore(dir)
 	require.NoError(t, err)
 
-	q, err := openQueue(dir, "crash-queue", Config{BatchSize: 1, Interval: time.Millisecond}, store)
+	q, err := openQueue(dir, "crash-queue", Config{BatchSize: 1, MaxInterval: time.Millisecond}, store)
 	require.NoError(t, err)
 
 	ctx := context.Background()
