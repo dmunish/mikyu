@@ -20,7 +20,8 @@ server:
 
 engine:
   batch_size: 256                # Max pending messages before triggering WAL fsync
-  flush_interval: "10ms"         # Max wait time before forcing WAL fsync
+  max_interval: "10ms"           # Max wait time before forcing WAL fsync
+  min_interval: "30us"           # Micro-linger window to group concurrent produces
   max_segment_bytes: 67108864    # 64 MiB: Max size per log segment before rolling
   max_message_bytes: 1048576     # 1 MiB: Max payload size per produce call
   max_segment_age: "1h"          # Max time before rolling inactive segment
@@ -45,7 +46,8 @@ type ServerConfig struct {
 
 type EngineConfig struct {
 	BatchSize       int           `yaml:"batch_size"`
-	FlushInterval   time.Duration `yaml:"flush_interval"`
+	MaxInterval     time.Duration `yaml:"max_interval"`
+	MinInterval     time.Duration `yaml:"min_interval"`
 	MaxSegmentBytes int64         `yaml:"max_segment_bytes"`
 	MaxMessageBytes int64         `yaml:"max_message_bytes"`
 	MaxSegmentAge   time.Duration `yaml:"max_segment_age"`
@@ -55,7 +57,8 @@ type EngineConfig struct {
 type QueueConfig struct {
 	Name            string        `yaml:"name"`
 	BatchSize       int           `yaml:"batch_size,omitempty"`
-	FlushInterval   time.Duration `yaml:"flush_interval,omitempty"`
+	MaxInterval     time.Duration `yaml:"max_interval,omitempty"`
+	MinInterval     time.Duration `yaml:"min_interval,omitempty"`
 	MaxSegmentBytes int64         `yaml:"max_segment_bytes,omitempty"`
 	MaxMessageBytes int64         `yaml:"max_message_bytes,omitempty"`
 	MaxSegmentAge   time.Duration `yaml:"max_segment_age,omitempty"`
@@ -70,7 +73,8 @@ func DefaultConfig() Config {
 		},
 		Engine: EngineConfig{
 			BatchSize:       256,
-			FlushInterval:   10 * time.Millisecond,
+			MaxInterval:     10 * time.Millisecond,
+			MinInterval:     30 * time.Microsecond,
 			MaxSegmentBytes: 64 * 1024 * 1024,
 			MaxMessageBytes: 1 * 1024 * 1024,
 			MaxSegmentAge:   1 * time.Hour,
@@ -151,9 +155,18 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Engine.BatchSize = n
 		}
 	}
-	if val := os.Getenv("MIKYU_ENGINE_FLUSH_INTERVAL"); val != "" {
+	if val := os.Getenv("MIKYU_ENGINE_MAX_INTERVAL"); val != "" {
 		if d, err := time.ParseDuration(val); err == nil && d > 0 {
-			cfg.Engine.FlushInterval = d
+			cfg.Engine.MaxInterval = d
+		}
+	} else if val := os.Getenv("MIKYU_ENGINE_FLUSH_INTERVAL"); val != "" { // Fallback for legacy env
+		if d, err := time.ParseDuration(val); err == nil && d > 0 {
+			cfg.Engine.MaxInterval = d
+		}
+	}
+	if val := os.Getenv("MIKYU_ENGINE_MIN_INTERVAL"); val != "" {
+		if d, err := time.ParseDuration(val); err == nil && d >= 0 {
+			cfg.Engine.MinInterval = d
 		}
 	}
 	if val := os.Getenv("MIKYU_ENGINE_MAX_SEGMENT_BYTES"); val != "" {
@@ -181,7 +194,8 @@ func applyEnvOverrides(cfg *Config) {
 func ToEngineConfig(e EngineConfig) engine.Config {
 	return engine.Config{
 		BatchSize:       e.BatchSize,
-		Interval:        e.FlushInterval,
+		MaxInterval:     e.MaxInterval,
+		MinInterval:     e.MinInterval,
 		MaxSegmentBytes: e.MaxSegmentBytes,
 		MaxMessageBytes: e.MaxMessageBytes,
 		MaxSegmentAge:   e.MaxSegmentAge,
@@ -194,8 +208,11 @@ func ToQueueEngineConfig(defaults EngineConfig, q QueueConfig) engine.Config {
 	if q.BatchSize > 0 {
 		cfg.BatchSize = q.BatchSize
 	}
-	if q.FlushInterval > 0 {
-		cfg.Interval = q.FlushInterval
+	if q.MaxInterval > 0 {
+		cfg.MaxInterval = q.MaxInterval
+	}
+	if q.MinInterval > 0 {
+		cfg.MinInterval = q.MinInterval
 	}
 	if q.MaxSegmentBytes > 0 {
 		cfg.MaxSegmentBytes = q.MaxSegmentBytes

@@ -6,8 +6,9 @@ import (
 )
 
 type ClientConfig struct {
-	BatchSize int
-	Interval  time.Duration
+	BatchSize   int
+	MaxInterval time.Duration
+	MinInterval time.Duration
 
 	MaxConns int
 
@@ -21,7 +22,8 @@ type ClientConfig struct {
 func DefaultClientConfig() ClientConfig {
 	return ClientConfig{
 		BatchSize:              256,
-		Interval:               10 * time.Millisecond,
+		MaxInterval:            10 * time.Millisecond,
+		MinInterval:            30 * time.Microsecond,
 		MaxConns:               10,
 		DefaultMaxSegmentBytes: 64 * 1024 * 1024,
 		DefaultMaxMessageBytes: 1 * 1024 * 1024,
@@ -40,10 +42,23 @@ func WithBatchSize(n int) ClientOption {
 	}
 }
 
-func WithFlushInterval(d time.Duration) ClientOption {
+func WithMaxInterval(d time.Duration) ClientOption {
 	return func(c *ClientConfig) {
 		if d > 0 {
-			c.Interval = d
+			c.MaxInterval = d
+		}
+	}
+}
+
+// WithFlushInterval is an alias for WithMaxInterval.
+func WithFlushInterval(d time.Duration) ClientOption {
+	return WithMaxInterval(d)
+}
+
+func WithMinInterval(d time.Duration) ClientOption {
+	return func(c *ClientConfig) {
+		if d >= 0 {
+			c.MinInterval = d
 		}
 	}
 }
@@ -69,6 +84,9 @@ func WithClientTLS(tlsConfig *tls.Config) ClientOption {
 }
 
 type QueueConfig struct {
+	BatchSize       int
+	MaxInterval     time.Duration
+	MinInterval     time.Duration
 	MaxSegmentBytes int64
 	MaxMessageBytes int64
 	MaxSegmentAge   time.Duration
@@ -76,6 +94,30 @@ type QueueConfig struct {
 }
 
 type QueueOption func(*QueueConfig)
+
+func WithQueueBatchSize(n int) QueueOption {
+	return func(c *QueueConfig) {
+		if n > 0 {
+			c.BatchSize = n
+		}
+	}
+}
+
+func WithQueueMaxInterval(d time.Duration) QueueOption {
+	return func(c *QueueConfig) {
+		if d > 0 {
+			c.MaxInterval = d
+		}
+	}
+}
+
+func WithQueueMinInterval(d time.Duration) QueueOption {
+	return func(c *QueueConfig) {
+		if d >= 0 {
+			c.MinInterval = d
+		}
+	}
+}
 
 func WithMaxSegmentBytes(bytes int64) QueueOption {
 	return func(c *QueueConfig) {
