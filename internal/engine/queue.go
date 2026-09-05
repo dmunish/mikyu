@@ -65,16 +65,16 @@ func (c Config) withDefaults() Config {
 
 // Queue implements Storage using a write‑ahead log and memory‑mapped segments.
 type Queue struct {
-	name       string
-	dir        string
-	cfg        Config
-	active     *segment
-	segments   []*segment
-	index      []indexEntry
-	nextOffset uint64
-	w          *wal
-	offsets    *OffsetStore
-	mu         sync.RWMutex
+	name            string
+	dir             string
+	cfg             Config
+	active          *segment
+	segments        []*segment
+	nextOffset      uint64
+	publishedOffset uint64 // Highest offset durably synced to disk
+	w               *wal
+	offsets         *OffsetStore
+	mu              sync.RWMutex
 }
 
 // compile‑time assertion that Queue satisfies Storage.
@@ -104,23 +104,24 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, 
 	}
 	return q, nil
 }
+
 func (q *Queue) locateSegment(offset uint64) (*segment, error) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
-	if offset >= q.nextOffset {
+	if offset >= q.publishedOffset {
 		return nil, ErrOffsetNotFound
 	}
 
-	// Binary search across open segments (O(log S), where S = segment count)
-	idx, found := slices.BinarySearchFunc(q.segments, offset, func(seg *segment, target uint64) int {
+	// O(log S) binary search across open segment base offsets
+	idx, _ := slices.BinarySearchFunc(q.segments, offset, func(seg *segment, target uint64) int {
 		if target < seg.baseOff {
 			return 1
 		}
 		return -1
 	})
 
-	if !found && idx > 0 {
+	if idx > 0 {
 		idx--
 	}
 
@@ -152,6 +153,7 @@ func (q *Queue) loadSegments() error {
 		bases = []uint64{0}
 	}
 
+	var totalMsgs uint64
 	for i, base := range bases {
 		seg, err := openSegment(q.dir, base)
 		if err != nil {
@@ -173,14 +175,13 @@ func (q *Queue) loadSegments() error {
 			}
 		}
 
-		for _, e := range rawEntries {
-			q.index = append(q.index, indexEntry{seg: seg, pos: e.pos, len: e.len})
-		}
+		totalMsgs += uint64(len(rawEntries))
 		q.segments = append(q.segments, seg)
 		q.active = seg
 	}
 
-	q.nextOffset = uint64(len(q.index))
+	q.nextOffset = totalMsgs
+	q.publishedOffset = totalMsgs
 	q.w = newWAL(q.active.logFile, q.cfg, int64(q.nextOffset))
 	q.w.start()
 	return nil
@@ -257,12 +258,7 @@ func (q *Queue) Append(ctx context.Context, payload []byte) (uint64, error) {
 	off := q.nextOffset
 	q.nextOffset++
 
-	// Atomic index registration under primary lock
 	_ = seg.writeIndex(pos, recLen)
-	for uint64(len(q.index)) <= off {
-		q.index = append(q.index, indexEntry{})
-	}
-	q.index[off] = indexEntry{seg: seg, pos: pos, len: recLen}
 	q.mu.Unlock()
 
 	if wake {
@@ -275,6 +271,13 @@ func (q *Queue) Append(ctx context.Context, payload []byte) (uint64, error) {
 	if err := q.w.wait(seq); err != nil {
 		return 0, err
 	}
+
+	// Update high-water mark after disk sync completes
+	q.mu.Lock()
+	if off+1 > q.publishedOffset {
+		q.publishedOffset = off + 1
+	}
+	q.mu.Unlock()
 
 	return off, nil
 }
@@ -335,16 +338,10 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 
 	q.active.pos += batchTotalLen
 
-	// Atomic index registration under primary lock
 	for i, recLen := range recLens {
 		pos := positions[i]
 		seg := segments[i]
-		off := offsets[i]
 		_ = seg.writeIndex(pos, recLen)
-		for uint64(len(q.index)) <= off {
-			q.index = append(q.index, indexEntry{})
-		}
-		q.index[off] = indexEntry{seg: seg, pos: pos, len: recLen}
 	}
 	q.mu.Unlock()
 
@@ -358,6 +355,13 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 	if err := q.w.wait(seq); err != nil {
 		return nil, err
 	}
+
+	q.mu.Lock()
+	lastOff := offsets[len(offsets)-1]
+	if lastOff+1 > q.publishedOffset {
+		q.publishedOffset = lastOff + 1
+	}
+	q.mu.Unlock()
 
 	return offsets, nil
 }
@@ -405,7 +409,7 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 	}
 
 	q.mu.RLock()
-	total := q.nextOffset
+	total := q.publishedOffset
 	q.mu.RUnlock()
 
 	if start >= total {
@@ -422,7 +426,6 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 
 	var currentSeg *segment
 	for off := start; off < end; off++ {
-		// Re-use currentSeg if off still belongs to it; locate new segment on segment boundaries
 		if currentSeg == nil || off < currentSeg.baseOff {
 			seg, err := q.locateSegment(off)
 			if err != nil {
@@ -433,12 +436,21 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 
 		pos, recLen, err := currentSeg.readIndexEntry(off)
 		if err != nil {
-			break // Reached boundary of active pending write
+			// Offset crossed current segment boundary, locate new segment
+			seg, err := q.locateSegment(off)
+			if err != nil {
+				break
+			}
+			currentSeg = seg
+			pos, recLen, err = currentSeg.readIndexEntry(off)
+			if err != nil {
+				break
+			}
 		}
 
 		var buf []byte
 		if len(currentSeg.mmapData) >= int(pos+recLen) {
-			buf = currentSeg.mmapData[pos : pos+recLen] // Zero-copy mmap slice
+			buf = currentSeg.mmapData[pos : pos+recLen]
 		} else {
 			buf = make([]byte, recLen)
 			if _, err := currentSeg.logFile.ReadAt(buf, pos); err != nil {
@@ -465,7 +477,7 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 func (q *Queue) LastOffset() uint64 {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
-	return q.nextOffset
+	return q.publishedOffset
 }
 
 // Name returns the queue name.
