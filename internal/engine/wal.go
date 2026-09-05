@@ -69,31 +69,6 @@ func (w *wal) syncLoop() {
 	}
 }
 
-func (w *wal) adaptiveFlush() {
-	w.mu.Lock()
-	n := len(w.pending)
-	w.mu.Unlock()
-
-	if n == 0 {
-		return
-	}
-
-	// If pending count is below BatchSize, micro-linger briefly to allow
-	// concurrent producer goroutines to accumulate into this batch.
-	if n < w.cfg.BatchSize && w.cfg.MinInterval > 0 {
-		time.Sleep(w.cfg.MinInterval)
-	}
-
-	w.flush()
-
-	// Drain lingering wake tokens AFTER flush completes so we don't trigger
-	// a phantom sync loop on records already written to disk.
-	select {
-	case <-w.wake:
-	default:
-	}
-}
-
 func (w *wal) push(rec []byte, pos int64) (seq int64, wake bool, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -141,6 +116,22 @@ func (w *wal) wait(seq int64) error {
 	return w.err
 }
 
+func (w *wal) adaptiveFlush() {
+	w.mu.Lock()
+	n := len(w.pending)
+	w.mu.Unlock()
+
+	if n == 0 {
+		return
+	}
+
+	if n < w.cfg.BatchSize && w.cfg.MinInterval > 0 {
+		time.Sleep(w.cfg.MinInterval)
+	}
+
+	w.flush()
+}
+
 func (w *wal) flush() {
 	w.mu.Lock()
 	if len(w.buf) == 0 || w.err != nil {
@@ -153,6 +144,13 @@ func (w *wal) flush() {
 	entries := w.pending
 	w.buf = nil
 	w.pending = nil
+
+	// Drain wake signal associated ONLY with the buffers being flushed
+	select {
+	case <-w.wake:
+	default:
+	}
+
 	w.mu.Unlock()
 
 	var writeErr error
