@@ -16,6 +16,7 @@ type ClientConfig struct {
 	DefaultMaxMessageBytes int64
 	DefaultMaxSegmentAge   time.Duration
 	Encrypted              bool
+	Fsync                  bool
 	TLSConfig              *tls.Config
 }
 
@@ -29,6 +30,7 @@ func DefaultClientConfig() ClientConfig {
 		DefaultMaxMessageBytes: 1 * 1024 * 1024,
 		DefaultMaxSegmentAge:   1 * time.Hour,
 		Encrypted:              false,
+		Fsync:                  true,
 	}
 }
 
@@ -83,6 +85,12 @@ func WithClientTLS(tlsConfig *tls.Config) ClientOption {
 	}
 }
 
+func WithFsync(enabled bool) ClientOption {
+	return func(c *ClientConfig) {
+		c.Fsync = enabled
+	}
+}
+
 type QueueConfig struct {
 	BatchSize       int
 	MaxInterval     time.Duration
@@ -91,6 +99,7 @@ type QueueConfig struct {
 	MaxMessageBytes int64
 	MaxSegmentAge   time.Duration
 	Encrypted       bool
+	Fsync           bool
 }
 
 type QueueOption func(*QueueConfig)
@@ -146,5 +155,11 @@ func WithMaxSegmentAge(age time.Duration) QueueOption {
 func WithDirectoryEncryption(enabled bool) QueueOption {
 	return func(c *QueueConfig) {
 		c.Encrypted = enabled
+	}
+}
+
+func WithQueueFsync(enabled bool) QueueOption {
+	return func(c *QueueConfig) {
+		c.Fsync = enabled
 	}
 }

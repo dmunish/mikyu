@@ -26,6 +26,7 @@ engine:
   max_message_bytes: 1048576     # 1 MiB: Max payload size per produce call
   max_segment_age: "1h"          # Max time before rolling inactive segment
   encrypted: false               # Enable OS transparent directory encryption
+  fsync: true                    # Perform physical disk fsync on produce (false for buffered OS page cache)
 
 queues: []                       # Declarative pre-created queues on startup
 `
@@ -52,6 +53,7 @@ type EngineConfig struct {
 	MaxMessageBytes int64         `yaml:"max_message_bytes"`
 	MaxSegmentAge   time.Duration `yaml:"max_segment_age"`
 	Encrypted       bool          `yaml:"encrypted"`
+	Fsync           bool          `yaml:"fsync"`
 }
 
 type QueueConfig struct {
@@ -63,6 +65,7 @@ type QueueConfig struct {
 	MaxMessageBytes int64         `yaml:"max_message_bytes,omitempty"`
 	MaxSegmentAge   time.Duration `yaml:"max_segment_age,omitempty"`
 	Encrypted       *bool         `yaml:"encrypted,omitempty"`
+	Fsync           *bool         `yaml:"fsync,omitempty"`
 }
 
 func DefaultConfig() Config {
@@ -79,6 +82,7 @@ func DefaultConfig() Config {
 			MaxMessageBytes: 1 * 1024 * 1024,
 			MaxSegmentAge:   1 * time.Hour,
 			Encrypted:       false,
+			Fsync:           true, // Durable by default
 		},
 		Queues: []QueueConfig{},
 	}
@@ -189,6 +193,11 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.Engine.Encrypted = b
 		}
 	}
+	if val := os.Getenv("MIKYU_ENGINE_FSYNC"); val != "" {
+		if b, err := strconv.ParseBool(val); err == nil {
+			cfg.Engine.Fsync = b
+		}
+	}
 }
 
 func ToEngineConfig(e EngineConfig) engine.Config {
@@ -200,6 +209,7 @@ func ToEngineConfig(e EngineConfig) engine.Config {
 		MaxMessageBytes: e.MaxMessageBytes,
 		MaxSegmentAge:   e.MaxSegmentAge,
 		Encrypted:       e.Encrypted,
+		Fsync:           e.Fsync,
 	}
 }
 
@@ -225,6 +235,9 @@ func ToQueueEngineConfig(defaults EngineConfig, q QueueConfig) engine.Config {
 	}
 	if q.Encrypted != nil {
 		cfg.Encrypted = *q.Encrypted
+	}
+	if q.Fsync != nil {
+		cfg.Fsync = *q.Fsync
 	}
 	return cfg
 }

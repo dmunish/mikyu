@@ -37,6 +37,7 @@ type Config struct {
 	MaxMessageBytes int64
 	MaxSegmentAge   time.Duration
 	Encrypted       bool
+	Fsync           bool
 }
 
 func (c Config) withDefaults() Config {
@@ -63,6 +64,35 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
+type ringCache struct {
+	mu    sync.RWMutex
+	slots []Message
+	mask  uint64
+}
+
+func newRingCache(capacity uint64) *ringCache {
+	return &ringCache{
+		slots: make([]Message, capacity),
+		mask:  capacity - 1,
+	}
+}
+
+func (r *ringCache) Put(msg Message) {
+	r.mu.Lock()
+	r.slots[msg.Offset&r.mask] = msg
+	r.mu.Unlock()
+}
+
+func (r *ringCache) Get(offset uint64) (Message, bool) {
+	r.mu.RLock()
+	msg := r.slots[offset&r.mask]
+	r.mu.RUnlock()
+	if msg.Offset == offset && msg.Timestamp.Unix() > 0 {
+		return msg, true
+	}
+	return Message{}, false
+}
+
 // Queue implements Storage using a write‑ahead log and memory‑mapped segments.
 type Queue struct {
 	name            string
@@ -71,9 +101,10 @@ type Queue struct {
 	active          *segment
 	segments        []*segment
 	nextOffset      uint64
-	publishedOffset uint64 // Highest offset durably synced to disk
+	publishedOffset uint64
 	w               *wal
 	offsets         *OffsetStore
+	cache           *ringCache // 16k entry in-memory tail cache for fast-path reads
 	mu              sync.RWMutex
 }
 
@@ -98,6 +129,7 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, 
 		dir:     dir,
 		cfg:     cfg,
 		offsets: store,
+		cache:   newRingCache(16384),
 	}
 	if err := q.loadSegments(); err != nil {
 		return nil, err
@@ -219,7 +251,6 @@ func (q *Queue) roll() error {
 	return nil
 }
 
-// Append implements Storage.Append.
 func (q *Queue) Append(ctx context.Context, payload []byte) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -247,18 +278,39 @@ func (q *Queue) Append(ctx context.Context, payload []byte) (uint64, error) {
 
 	seg := q.active
 	pos := seg.pos
+	seg.pos += recLen
 
+	off := q.nextOffset
+	q.nextOffset++
+
+	// --- ASYNC FAST PATH (Fsync: false) ---
+	if !q.cfg.Fsync {
+		msg := Message{Offset: off, ID: id.String(), Timestamp: ts, Payload: payload}
+		q.cache.Put(msg)
+		if off+1 > q.publishedOffset {
+			q.publishedOffset = off + 1
+		}
+		asyncCh := q.w.asyncChan // Capture under q.mu lock to prevent data race with q.roll()
+		q.mu.Unlock()
+
+		// Non-blocking async dispatch
+		asyncCh <- asyncEntry{
+			seg:    seg,
+			rec:    rec,
+			pos:    pos,
+			recLen: recLen,
+			offset: off,
+		}
+		return off, nil
+	}
+
+	// --- DURABLE SYNCHRONOUS PATH (Fsync: true) ---
+	_ = seg.writeIndex(pos, recLen)
 	seq, wake, err := q.w.push(rec, pos)
 	if err != nil {
 		q.mu.Unlock()
 		return 0, err
 	}
-
-	seg.pos += recLen
-	off := q.nextOffset
-	q.nextOffset++
-
-	_ = seg.writeIndex(pos, recLen)
 	q.mu.Unlock()
 
 	if wake {
@@ -272,7 +324,6 @@ func (q *Queue) Append(ctx context.Context, payload []byte) (uint64, error) {
 		return 0, err
 	}
 
-	// Update high-water mark after disk sync completes
 	q.mu.Lock()
 	if off+1 > q.publishedOffset {
 		q.publishedOffset = off + 1
@@ -296,6 +347,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 	recLens := make([]int64, len(payloads))
 	segments := make([]*segment, len(payloads))
 	offsets := make([]uint64, len(payloads))
+	ids := make([]uuid.UUID, len(payloads))
 	ts := time.Now()
 
 	q.mu.Lock()
@@ -306,6 +358,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 			return nil, ErrMessageTooLarge
 		}
 		id := uuid.NewV7()
+		ids[i] = id
 		rec := encodeRecord(id, ts, p)
 		recLen := int64(len(rec))
 
@@ -330,6 +383,38 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 		batchTotalLen += recLen
 	}
 
+	// --- ASYNC FAST PATH (Fsync: false) ---
+	if !q.cfg.Fsync {
+		for i, p := range payloads {
+			msg := Message{
+				Offset:    offsets[i],
+				ID:        ids[i].String(),
+				Timestamp: ts,
+				Payload:   p,
+			}
+			q.cache.Put(msg)
+		}
+		q.active.pos += batchTotalLen
+		lastOff := offsets[len(offsets)-1]
+		if lastOff+1 > q.publishedOffset {
+			q.publishedOffset = lastOff + 1
+		}
+		asyncCh := q.w.asyncChan // Capture under q.mu lock to prevent data race with q.roll()
+		q.mu.Unlock()
+
+		for i := range payloads {
+			asyncCh <- asyncEntry{
+				seg:    segments[i],
+				rec:    recs[i],
+				pos:    positions[i],
+				recLen: recLens[i],
+				offset: offsets[i],
+			}
+		}
+		return offsets, nil
+	}
+
+	// --- DURABLE SYNCHRONOUS PATH (Fsync: true) ---
 	seq, wake, err := q.w.pushBatch(recs, positions)
 	if err != nil {
 		q.mu.Unlock()
@@ -372,19 +457,25 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 		return Message{}, err
 	}
 
+	// 1. Fast Path: Check in-memory ring cache first (~10 ns)
+	if msg, ok := q.cache.Get(offset); ok {
+		return msg, nil
+	}
+
+	// 2. Disk / MMap Path: Fall back to historical log segments
 	seg, err := q.locateSegment(offset)
 	if err != nil {
 		return Message{}, err
 	}
 
 	pos, recLen, err := seg.readIndexEntry(offset)
-	if err != nil {
+	if err != nil || recLen < 34 {
 		return Message{}, ErrOffsetNotFound
 	}
 
 	var buf []byte
 	if len(seg.mmapData) >= int(pos+recLen) {
-		buf = seg.mmapData[pos : pos+recLen] // Zero-copy payload slice
+		buf = seg.mmapData[pos : pos+recLen]
 	} else {
 		buf = make([]byte, recLen)
 		if _, err := seg.logFile.ReadAt(buf, pos); err != nil {
@@ -409,7 +500,8 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 	}
 
 	q.mu.RLock()
-	total := q.publishedOffset
+	// Allow reading up to nextOffset so in-cache messages can be read immediately
+	total := q.nextOffset
 	q.mu.RUnlock()
 
 	if start >= total {
@@ -426,6 +518,13 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 
 	var currentSeg *segment
 	for off := start; off < end; off++ {
+		// 1. Fast Path: Check in-memory ring cache first (~10 ns)
+		if msg, ok := q.cache.Get(off); ok {
+			msgs = append(msgs, msg)
+			continue
+		}
+
+		// 2. Disk / MMap Path: Fall back to historical log segments
 		if currentSeg == nil || off < currentSeg.baseOff {
 			seg, err := q.locateSegment(off)
 			if err != nil {
@@ -443,7 +542,7 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 			}
 			currentSeg = seg
 			pos, recLen, err = currentSeg.readIndexEntry(off)
-			if err != nil {
+			if err != nil || recLen < 34 {
 				break
 			}
 		}

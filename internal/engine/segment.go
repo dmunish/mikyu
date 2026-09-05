@@ -86,6 +86,9 @@ func (s *segment) readIndexEntry(offset uint64) (pos int64, length int64, err er
 
 	pos = int64(binary.BigEndian.Uint64(buf[0:8]))
 	length = int64(binary.BigEndian.Uint64(buf[8:16]))
+	if length < 34 { // Minimum valid record size (4B len + 4B CRC + 2B idLen + 16B UUID + 8B ts)
+		return 0, 0, ErrOffsetNotFound
+	}
 	return pos, length, nil
 }
 
@@ -94,6 +97,14 @@ func (s *segment) writeIndex(pos, len int64) error {
 	binary.BigEndian.PutUint64(buf[0:8], uint64(pos))
 	binary.BigEndian.PutUint64(buf[8:16], uint64(len))
 	_, err := s.idxFile.Write(buf[:])
+	return err
+}
+
+func (s *segment) writeIndexAt(idxPos, pos, len int64) error {
+	var buf [16]byte
+	binary.BigEndian.PutUint64(buf[0:8], uint64(pos))
+	binary.BigEndian.PutUint64(buf[8:16], uint64(len))
+	_, err := s.idxFile.WriteAt(buf[:], idxPos)
 	return err
 }
 

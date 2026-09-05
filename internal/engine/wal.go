@@ -11,6 +11,14 @@ type pendingEntry struct {
 	len int64
 }
 
+type asyncEntry struct {
+	seg    *segment
+	rec    []byte
+	pos    int64
+	recLen int64
+	offset uint64
+}
+
 // wal manages write-ahead logging using adaptive dual-threshold flusher batching
 // with micro-linger group commits to minimize fsync overhead.
 type wal struct {
@@ -27,9 +35,10 @@ type wal struct {
 	published   int64
 	err         error
 
-	wake     chan struct{}
-	shutdown chan struct{}
-	done     chan struct{}
+	asyncChan chan asyncEntry // Lock-free channel for fsync: false fast-path
+	wake      chan struct{}
+	shutdown  chan struct{}
+	done      chan struct{}
 }
 
 func newWAL(f *os.File, cfg Config, startOffset int64) *wal {
@@ -43,6 +52,7 @@ func newWAL(f *os.File, cfg Config, startOffset int64) *wal {
 		pending:     make([]pendingEntry, 0, cfg.BatchSize),
 		swapBuf:     make([]byte, 0, initCap),
 		swapPending: make([]pendingEntry, 0, cfg.BatchSize),
+		asyncChan:   make(chan asyncEntry, 65536),
 		wake:        make(chan struct{}, 1),
 		shutdown:    make(chan struct{}),
 		done:        make(chan struct{}),
@@ -62,12 +72,16 @@ func (w *wal) syncLoop() {
 
 	for {
 		select {
+		case entry := <-w.asyncChan:
+			w.drainAndFlushAsync(entry)
 		case <-ticker.C:
 			w.flush()
 		case <-w.wake:
 			w.adaptiveFlush()
 		case <-w.shutdown:
+			w.drainRemainingAsync()
 			w.flush()
+			_ = syncData(w.file) // Always force physical disk sync on shutdown
 			return
 		}
 	}
@@ -161,8 +175,11 @@ func (w *wal) flush() {
 	var writeErr error
 	if _, err := w.file.WriteAt(data, entries[0].pos); err != nil {
 		writeErr = err
-	} else if err := syncData(w.file); err != nil {
-		writeErr = err
+	} else if w.cfg.Fsync {
+		// Only execute physical disk sync if Fsync is enabled
+		if err := syncData(w.file); err != nil {
+			writeErr = err
+		}
 	}
 
 	w.mu.Lock()
@@ -178,6 +195,49 @@ func (w *wal) flush() {
 
 	w.cond.Broadcast()
 	w.mu.Unlock()
+}
+
+func (w *wal) drainAndFlushAsync(first asyncEntry) {
+	entries := []asyncEntry{first}
+
+	// Drain up to BatchSize entries from the channel without blocking
+	for len(entries) < w.cfg.BatchSize {
+		select {
+		case entry := <-w.asyncChan:
+			entries = append(entries, entry)
+		default:
+			goto WRITE
+		}
+	}
+
+WRITE:
+	var maxOff uint64
+	for _, e := range entries {
+		if _, err := e.seg.logFile.WriteAt(e.rec, e.pos); err == nil {
+			idxPos := int64(e.offset-e.seg.baseOff) * 16
+			_ = e.seg.writeIndexAt(idxPos, e.pos, e.recLen)
+		}
+		if e.offset > maxOff {
+			maxOff = e.offset
+		}
+	}
+
+	w.mu.Lock()
+	if int64(maxOff+1) > w.published {
+		w.published = int64(maxOff + 1)
+	}
+	w.mu.Unlock()
+}
+
+func (w *wal) drainRemainingAsync() {
+	for {
+		select {
+		case entry := <-w.asyncChan:
+			w.drainAndFlushAsync(entry)
+		default:
+			return
+		}
+	}
 }
 
 func (w *wal) stop() error {
