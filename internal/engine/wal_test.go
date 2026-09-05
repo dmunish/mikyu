@@ -153,3 +153,55 @@ func TestWALConcurrentPush(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWALWakeTokenLossRace(t *testing.T) {
+	testWithTimeout(t, 2*time.Second)
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "wal_race.log")
+	f, err := os.Create(logPath)
+	require.NoError(t, err)
+	defer f.Close()
+
+	// MaxInterval set to 5s so ticker won't hide the missing wake signal
+	cfg := Config{BatchSize: 10, MaxInterval: 5 * time.Second, MinInterval: 10 * time.Millisecond}
+	w := newWAL(f, cfg, 0)
+	w.start()
+	defer w.stop()
+
+	// 1. Initial push triggers flusher
+	seq1, wake1, err := w.push([]byte("msg1"), 0)
+	require.NoError(t, err)
+	if wake1 {
+		select {
+		case w.wake <- struct{}{}:
+		default:
+		}
+	}
+
+	// 2. Allow flusher to enter adaptiveFlush sleep
+	time.Sleep(5 * time.Millisecond)
+
+	// 3. Second push while adaptiveFlush is in flight
+	seq2, wake2, err := w.push([]byte("msg2"), 4)
+	require.NoError(t, err)
+	if wake2 {
+		select {
+		case w.wake <- struct{}{}:
+		default:
+		}
+	}
+
+	// 4. Must complete within 200ms; if wake token was stolen, wait times out after 5s
+	done := make(chan error, 1)
+	go func() {
+		done <- w.wait(seq2)
+	}()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+		assert.NoError(t, w.wait(seq1))
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("WAL wait timed out! Wake token was drained by adaptiveFlush for an unflushed message.")
+	}
+}
