@@ -140,22 +140,16 @@ func (m *Manager) Stats() EngineStats {
 	}
 
 	for name, q := range m.queues {
-		q.mu.Lock()
+		q.mu.RLock()
 		msgCount := uint64(len(q.index))
 		segCount := len(q.segments)
-		lastOff := q.nextOffset // Read field directly to avoid RWMutex deadlock
+		lastOff := q.nextOffset
 
 		var size int64
 		for _, seg := range q.segments {
-			if seg.logFile != nil {
-				if info, err := seg.logFile.Stat(); err == nil {
-					size += info.Size()
-				} else {
-					size += seg.pos
-				}
-			}
+			size += seg.pos
 		}
-		q.mu.Unlock()
+		q.mu.RUnlock()
 
 		stats.Queues[name] = QueueStats{
 			MessageCount: msgCount,
