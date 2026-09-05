@@ -31,7 +31,7 @@ func TestQueueProduceAndRead(t *testing.T) {
 	payloads := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
 	offsets := make([]uint64, 0, len(payloads))
 	for i, payload := range payloads {
-		off, err := q.Produce(ctx, payload)
+		off, err := q.Append(ctx, payload)
 		require.NoError(t, err)
 		assert.Equal(t, uint64(i), off)
 		offsets = append(offsets, off)
@@ -55,13 +55,13 @@ func TestQueueProduceBatch(t *testing.T) {
 
 	ctx := context.Background()
 	payloads := [][]byte{[]byte("1"), []byte("2"), []byte("3")}
-	offsets, err := q.ProduceBatch(ctx, payloads)
+	offsets, err := q.AppendBatch(ctx, payloads)
 	require.NoError(t, err)
 	assert.Len(t, offsets, 3)
 	for i, off := range offsets {
 		assert.Equal(t, uint64(i), off)
 	}
-	// Read back
+
 	for i, off := range offsets {
 		msg, err := q.Read(ctx, off)
 		require.NoError(t, err)
@@ -94,7 +94,7 @@ func TestQueueProduceConcurrentBatch(t *testing.T) {
 				for i := 0; i < msgsPerBatch; i++ {
 					payloads[i] = fmt.Appendf(nil, "g%d-b%d-m%d", g, b, i)
 				}
-				offsets, err := q.ProduceBatch(ctx, payloads)
+				offsets, err := q.AppendBatch(ctx, payloads)
 				if err != nil {
 					errCh <- err
 					return
@@ -112,7 +112,6 @@ func TestQueueProduceConcurrentBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Verify total count and that all messages are readable
 	total := int(q.LastOffset())
 	assert.Equal(t, goroutines*batches*msgsPerBatch, total)
 	for i := 0; i < total; i++ {
@@ -141,7 +140,7 @@ func TestQueueRolling(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 20; i++ {
-		_, err := q.Produce(ctx, fmt.Appendf(nil, "message-%d", i))
+		_, err := q.Append(ctx, fmt.Appendf(nil, "message-%d", i))
 		require.NoError(t, err)
 	}
 	assert.GreaterOrEqual(t, len(q.segments), 2)
@@ -180,7 +179,7 @@ func TestQueueProduceConcurrentBatchExactOffsets(t *testing.T) {
 					payload := fmt.Sprintf("g%d-b%d-m%d", g, b, i)
 					payloads[i] = []byte(payload)
 				}
-				offsets, err := q.ProduceBatch(ctx, payloads)
+				offsets, err := q.AppendBatch(ctx, payloads)
 				if err != nil {
 					errCh <- err
 					return
@@ -217,7 +216,7 @@ func TestQueueProduceMessageTooLarge(t *testing.T) {
 	q, _ := openQueue(dir, "large", Config{MaxMessageBytes: 10}, store)
 	defer q.Close()
 
-	_, err := q.Produce(context.Background(), make([]byte, 11))
+	_, err := q.Append(context.Background(), make([]byte, 11))
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, ErrMessageTooLarge))
 }
@@ -230,8 +229,8 @@ func TestQueueProduceBatchMessageExceedsSegmentSize(t *testing.T) {
 	require.NoError(t, err)
 	defer q.Close()
 
-	payloads := [][]byte{make([]byte, 100), []byte("ok")} // first is too large
-	_, err = q.ProduceBatch(context.Background(), payloads)
+	payloads := [][]byte{make([]byte, 100), []byte("ok")}
+	_, err = q.AppendBatch(context.Background(), payloads)
 	assert.ErrorIs(t, err, ErrRecordTooLarge)
 }
 
@@ -260,15 +259,13 @@ func TestQueueUngracefulCrashRecovery(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		_, err := q.Produce(ctx, fmt.Appendf(nil, "msg-%d", i))
+		_, err := q.Append(ctx, fmt.Appendf(nil, "msg-%d", i))
 		require.NoError(t, err)
 	}
 
-	// Close queue to release OS file locks (required for Windows TempDir cleanup)
 	_ = q.Close()
 	_ = store.Close()
 
-	// Re-open queue from disk to test index recovery from log files
 	store2, err := openOffsetStore(dir)
 	require.NoError(t, err)
 	defer store2.Close()
@@ -290,7 +287,6 @@ func TestQueueConcurrentProduceDuringRoll(t *testing.T) {
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
 
-	// MaxSegmentBytes set small enough to force frequent segment rolls
 	q, err := openQueue(dir, "roll-race", Config{MaxSegmentBytes: 256, BatchSize: 10}, store)
 	require.NoError(t, err)
 	defer q.Close()
@@ -305,7 +301,7 @@ func TestQueueConcurrentProduceDuringRoll(t *testing.T) {
 		go func(g int) {
 			defer wg.Done()
 			for i := 0; i < msgsPerRoutine; i++ {
-				_, err := q.Produce(ctx, fmt.Appendf(nil, "g%d-m%d", g, i))
+				_, err := q.Append(ctx, fmt.Appendf(nil, "g%d-m%d", g, i))
 				assert.NoError(t, err)
 			}
 		}(g)
@@ -327,16 +323,14 @@ func TestQueueReadUsesMMapOnRolledSegments(t *testing.T) {
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
 
-	// 10B payload + 34B header = 44B record.
-	// MaxSegmentBytes = 100 allows 2 records per segment before rolling.
 	q, err := openQueue(dir, "mmap-verify", Config{MaxSegmentBytes: 100}, store)
 	require.NoError(t, err)
 	defer q.Close()
 
 	ctx := context.Background()
-	payload := []byte("0123456789") // 10 bytes
+	payload := []byte("0123456789")
 	for i := 0; i < 3; i++ {
-		_, err := q.Produce(ctx, payload)
+		_, err := q.Append(ctx, payload)
 		require.NoError(t, err)
 	}
 

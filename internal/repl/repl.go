@@ -1,11 +1,10 @@
-package main
+package repl
 
 import (
 	"bufio"
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -15,30 +14,7 @@ import (
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/dmunish/mikyu"
-	"github.com/dmunish/mikyu/internal/protocol"
-)
-
-var (
-	accentColor = lipgloss.Color("#FFB200")
-
-	promptStyle = lipgloss.NewStyle().
-			Foreground(accentColor).
-			Bold(true)
-
-	infoStyle = lipgloss.NewStyle().
-			Foreground(accentColor)
-
-	errStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196")).
-			Bold(true)
-
-	dimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240"))
-
-	confirmArrow = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#EE427D")).
-			Bold(true).
-			Render(">")
+	"github.com/dmunish/mikyu/internal/daemon"
 )
 
 type replSession struct {
@@ -47,9 +23,9 @@ type replSession struct {
 	ctx    context.Context
 }
 
-// RunREPL initializes and starts the interactive REPL shell session.
+// RunREPL starts the interactive REPL session with full TUI styling.
 func RunREPL(target string) {
-	if err := EnsureDaemonRunning(target); err != nil {
+	if err := daemon.EnsureDaemonRunning(target); err != nil {
 		fmt.Println(errStyle.Render(fmt.Sprintf("Error initializing daemon: %v", err)))
 		return
 	}
@@ -158,7 +134,7 @@ func (s *replSession) handleCreate(args []string) {
 		return
 	}
 	name := args[1]
-	if _, err := s.client.CreateQueue(s.ctx, name); err != nil {
+	if err := s.client.CreateQueue(s.ctx, name); err != nil {
 		fmt.Println(errStyle.Render("Error: " + err.Error()))
 		return
 	}
@@ -193,7 +169,7 @@ func (s *replSession) handleProduce(args []string) {
 		fmt.Println(errStyle.Render("Error: " + err.Error()))
 		return
 	}
-	q, err := s.client.Queue(name)
+	q, err := s.client.LogQueue(name)
 	if err != nil {
 		fmt.Println(errStyle.Render("Error: " + err.Error()))
 		return
@@ -217,7 +193,7 @@ func (s *replSession) handleRead(args []string) {
 		fmt.Println(errStyle.Render("Invalid offset format"))
 		return
 	}
-	q, err := s.client.Queue(name)
+	q, err := s.client.LogQueue(name)
 	if err != nil {
 		fmt.Println(errStyle.Render("Error: " + err.Error()))
 		return
@@ -241,7 +217,7 @@ func (s *replSession) handleTail(args []string) {
 	if len(args) >= 3 {
 		startOffset, _ = strconv.ParseUint(args[2], 10, 64)
 	}
-	q, err := s.client.Queue(name)
+	q, err := s.client.LogQueue(name)
 	if err != nil {
 		fmt.Println(errStyle.Render("Error: " + err.Error()))
 		return
@@ -280,7 +256,7 @@ func (s *replSession) handleShutdown() bool {
 		return false
 	}
 	fmt.Println(infoStyle.Render("Sending shutdown command to daemon..."))
-	_ = sendShutdownSignal(s.target)
+	_ = daemon.SendShutdownSignal(s.target)
 	fmt.Println("Daemon stopped. Exiting shell.")
 	return true
 }
@@ -326,7 +302,7 @@ func resolvePayload(input string) ([]byte, error) {
 }
 
 func confirm(prompt string) bool {
-	var confirm bool
+	var isConfirmed bool
 	fullTitle := confirmArrow + " " + prompt
 
 	theme := huh.ThemeFunc(func(isDark bool) *huh.Styles {
@@ -355,7 +331,7 @@ func confirm(prompt string) bool {
 				Title(fullTitle).
 				Affirmative("Yes").
 				Negative("No").
-				Value(&confirm).
+				Value(&isConfirmed).
 				Inline(true).
 				WithButtonAlignment(lipgloss.Left),
 		).WithShowHelp(false),
@@ -364,20 +340,7 @@ func confirm(prompt string) bool {
 	if err != nil {
 		return false
 	}
-	return confirm
-}
-
-func sendShutdownSignal(target string) error {
-	network, addr, err := protocol.ParseTarget(target)
-	if err != nil {
-		return err
-	}
-	conn, err := net.Dial(network, addr)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	return protocol.WriteFrame(conn, protocol.OpShutdown, nil)
+	return isConfirmed
 }
 
 func printREPLHelp() {

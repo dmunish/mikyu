@@ -22,7 +22,7 @@ func TestManagerCreateGetDelete(t *testing.T) {
 
 	q2, err := mgr.GetQueue("orders")
 	require.NoError(t, err)
-	assert.Equal(t, "orders", q2.name)
+	assert.Equal(t, "orders", q2.Name())
 
 	queues := mgr.ListQueues()
 	assert.Equal(t, []string{"orders"}, queues)

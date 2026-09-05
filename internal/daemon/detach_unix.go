@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package daemon
 
 import (
 	"os/exec"
@@ -8,7 +8,5 @@ import (
 )
 
 func setDetachedProcessAttr(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true,
-	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }

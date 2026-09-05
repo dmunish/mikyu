@@ -20,6 +20,7 @@ var (
 	ErrRecordTooLarge  = errors.New("record size exceeds max segment size")
 )
 
+// Message is the internal engine‑level message representation.
 type Message struct {
 	Offset    uint64
 	ID        string
@@ -27,6 +28,7 @@ type Message struct {
 	Payload   []byte
 }
 
+// Config holds per‑queue configuration parameters.
 type Config struct {
 	BatchSize       int
 	MaxInterval     time.Duration
@@ -61,6 +63,7 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
+// Queue implements Storage using a write‑ahead log and memory‑mapped segments.
 type Queue struct {
 	name       string
 	dir        string
@@ -73,6 +76,9 @@ type Queue struct {
 	offsets    *OffsetStore
 	mu         sync.RWMutex
 }
+
+// compile‑time assertion that Queue satisfies Storage.
+var _ Storage = (*Queue)(nil)
 
 func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, error) {
 	cfg = cfg.withDefaults()
@@ -87,13 +93,19 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, 
 		}
 	}
 
-	q := &Queue{name: name, dir: dir, cfg: cfg, offsets: store}
+	q := &Queue{
+		name:    name,
+		dir:     dir,
+		cfg:     cfg,
+		offsets: store,
+	}
 	if err := q.loadSegments(); err != nil {
 		return nil, err
 	}
 	return q, nil
 }
 
+// loadSegments opens all existing segment files and initialises the WAL.
 func (q *Queue) loadSegments() error {
 	entries, err := os.ReadDir(q.dir)
 	if err != nil {
@@ -118,17 +130,20 @@ func (q *Queue) loadSegments() error {
 	for i, base := range bases {
 		seg, err := openSegment(q.dir, base)
 		if err != nil {
+			q.closeSegments()
 			return err
 		}
 		rawEntries, err := seg.recover()
 		if err != nil {
 			_ = seg.Close()
+			q.closeSegments()
 			return err
 		}
 
 		if i < len(bases)-1 {
 			if err := seg.enableMMap(); err != nil {
 				_ = seg.Close()
+				q.closeSegments()
 				return err
 			}
 		}
@@ -146,22 +161,28 @@ func (q *Queue) loadSegments() error {
 	return nil
 }
 
+func (q *Queue) closeSegments() {
+	for _, seg := range q.segments {
+		_ = seg.Close()
+	}
+	q.segments = nil
+}
+
+// roll rotates to a new active segment.
 func (q *Queue) roll() error {
 	if err := q.w.stop(); err != nil {
 		return err
 	}
 
 	if q.active != nil {
-		_ = q.active.enableMMap()
+		if err := q.active.enableMMap(); err != nil {
+			return err
+		}
 	}
 
 	nextOff := q.nextOffset
 	seg, err := openSegment(q.dir, nextOff)
 	if err != nil {
-		return err
-	}
-	if _, err := seg.recover(); err != nil {
-		_ = seg.Close()
 		return err
 	}
 
@@ -172,7 +193,8 @@ func (q *Queue) roll() error {
 	return nil
 }
 
-func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
+// Append implements Storage.Append.
+func (q *Queue) Append(ctx context.Context, payload []byte) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -186,7 +208,7 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 	recLen := int64(len(rec))
 
 	q.mu.Lock()
-	if int64(len(rec)) > q.cfg.MaxSegmentBytes {
+	if recLen > q.cfg.MaxSegmentBytes {
 		q.mu.Unlock()
 		return 0, ErrRecordTooLarge
 	}
@@ -207,6 +229,7 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 	}
 
 	seg.pos += recLen
+	off := q.nextOffset
 	q.nextOffset++
 	q.mu.Unlock()
 
@@ -221,20 +244,19 @@ func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error) {
 		return 0, err
 	}
 
-	offset := uint64(seq)
-
 	q.mu.Lock()
 	_ = seg.writeIndex(pos, recLen)
-	for len(q.index) <= int(offset) {
+	for uint64(len(q.index)) <= off {
 		q.index = append(q.index, indexEntry{})
 	}
-	q.index[offset] = indexEntry{seg: seg, pos: pos, len: recLen}
+	q.index[off] = indexEntry{seg: seg, pos: pos, len: recLen}
 	q.mu.Unlock()
 
-	return offset, nil
+	return off, nil
 }
 
-func (q *Queue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error) {
+// AppendBatch implements Storage.AppendBatch.
+func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -246,6 +268,7 @@ func (q *Queue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, 
 	positions := make([]int64, len(payloads))
 	recLens := make([]int64, len(payloads))
 	segments := make([]*segment, len(payloads))
+	offsets := make([]uint64, len(payloads))
 	ts := time.Now()
 
 	q.mu.Lock()
@@ -275,6 +298,8 @@ func (q *Queue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, 
 		recLens[i] = recLen
 		recs[i] = rec
 		segments[i] = q.active
+		offsets[i] = q.nextOffset
+		q.nextOffset++
 		batchTotalLen += recLen
 	}
 
@@ -285,7 +310,6 @@ func (q *Queue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, 
 	}
 
 	q.active.pos += batchTotalLen
-	q.nextOffset += uint64(len(payloads))
 	q.mu.Unlock()
 
 	if wake {
@@ -298,26 +322,24 @@ func (q *Queue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, 
 	if err := q.w.wait(seq); err != nil {
 		return nil, err
 	}
-	firstOffset := seq - int64(len(payloads)-1)
 
-	offsets := make([]uint64, len(payloads))
 	q.mu.Lock()
 	for i, recLen := range recLens {
 		pos := positions[i]
 		seg := segments[i]
+		off := offsets[i]
 		_ = seg.writeIndex(pos, recLen)
-		off := uint64(firstOffset + int64(i))
-		for len(q.index) <= int(off) {
+		for uint64(len(q.index)) <= off {
 			q.index = append(q.index, indexEntry{})
 		}
 		q.index[off] = indexEntry{seg: seg, pos: pos, len: recLen}
-		offsets[i] = off
 	}
 	q.mu.Unlock()
 
 	return offsets, nil
 }
 
+// Read implements Storage.Read.
 func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 	if err := ctx.Err(); err != nil {
 		return Message{}, err
@@ -329,34 +351,28 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 		return Message{}, ErrOffsetNotFound
 	}
 	entry := q.index[offset]
+	q.mu.RUnlock()
 
-	var rec []byte
+	var buf []byte
 	if len(entry.seg.mmapData) >= int(entry.pos+entry.len) {
-		rec = entry.seg.mmapData[entry.pos : entry.pos+entry.len]
+		buf = entry.seg.mmapData[entry.pos : entry.pos+entry.len]
 	} else {
-		rec = make([]byte, entry.len)
-		if _, err := entry.seg.logFile.ReadAt(rec, entry.pos); err != nil {
-			q.mu.RUnlock()
+		buf = make([]byte, entry.len)
+		if _, err := entry.seg.logFile.ReadAt(buf, entry.pos); err != nil {
 			return Message{}, err
 		}
 	}
-	q.mu.RUnlock()
 
-	id, ts, payload, err := decodeRecord(rec[4:])
+	id, ts, payload, err := decodeRecord(buf[4:])
 	if err != nil {
 		return Message{}, err
 	}
-
-	return Message{
-		Offset:    offset,
-		ID:        id,
-		Timestamp: ts,
-		Payload:   payload,
-	}, nil
+	return Message{Offset: offset, ID: id, Timestamp: ts, Payload: payload}, nil
 }
 
-func (q *Queue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([]Message, error) {
-	if count <= 0 {
+// ReadBatch implements Storage.ReadBatch.
+func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, error) {
+	if n <= 0 {
 		return nil, nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -365,61 +381,63 @@ func (q *Queue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([
 
 	q.mu.RLock()
 	total := uint64(len(q.index))
-	if startOffset >= total {
+	if start >= total {
 		q.mu.RUnlock()
 		return nil, ErrOffsetNotFound
 	}
 
-	// Clamp requested count to available records
-	endOffset := startOffset + uint64(count)
-	if endOffset > total {
-		endOffset = total
+	end := int(start) + n
+	if uint64(end) > total {
+		end = int(total)
 	}
 
-	// Snapshot index entries under a single lock acquisition
-	entries := make([]indexEntry, endOffset-startOffset)
-	copy(entries, q.index[startOffset:endOffset])
+	entries := make([]indexEntry, end-int(start))
+	copy(entries, q.index[start:end])
 	q.mu.RUnlock()
 
-	// Read and decode payloads outside the lock
-	out := make([]Message, 0, len(entries))
+	msgs := make([]Message, 0, len(entries))
 	for i, entry := range entries {
 		if entry.seg == nil {
 			break // Pending write
 		}
 
-		var rec []byte
+		var buf []byte
 		if len(entry.seg.mmapData) >= int(entry.pos+entry.len) {
-			rec = entry.seg.mmapData[entry.pos : entry.pos+entry.len]
+			buf = entry.seg.mmapData[entry.pos : entry.pos+entry.len]
 		} else {
-			rec = make([]byte, entry.len)
-			if _, err := entry.seg.logFile.ReadAt(rec, entry.pos); err != nil {
-				return out, err
+			buf = make([]byte, entry.len)
+			if _, err := entry.seg.logFile.ReadAt(buf, entry.pos); err != nil {
+				return msgs, err
 			}
 		}
 
-		id, ts, payload, err := decodeRecord(rec[4:])
+		id, ts, payload, err := decodeRecord(buf[4:])
 		if err != nil {
-			return out, err
+			return msgs, err
 		}
-
-		out = append(out, Message{
-			Offset:    startOffset + uint64(i),
+		msgs = append(msgs, Message{
+			Offset:    start + uint64(i),
 			ID:        id,
 			Timestamp: ts,
 			Payload:   payload,
 		})
 	}
-
-	return out, nil
+	return msgs, nil
 }
 
+// LastOffset implements Storage.LastOffset.
 func (q *Queue) LastOffset() uint64 {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 	return q.nextOffset
 }
 
+// Name returns the queue name.
+func (q *Queue) Name() string {
+	return q.name
+}
+
+// CommitOffset implements Storage.CommitOffset.
 func (q *Queue) CommitOffset(ctx context.Context, group string, offset uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -430,6 +448,7 @@ func (q *Queue) CommitOffset(ctx context.Context, group string, offset uint64) e
 	return q.offsets.Commit(q.name, group, offset)
 }
 
+// FetchOffset implements Storage.FetchOffset.
 func (q *Queue) FetchOffset(ctx context.Context, group string) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -440,16 +459,21 @@ func (q *Queue) FetchOffset(ctx context.Context, group string) (uint64, error) {
 	return q.offsets.Fetch(q.name, group), nil
 }
 
+// Close flushes the WAL and closes all segment resources.
 func (q *Queue) Close() error {
-	flushErr := q.w.stop()
-	var closeErr error
-	for _, seg := range q.segments {
-		if err := seg.Close(); err != nil && closeErr == nil {
-			closeErr = err
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var firstErr error
+	if q.w != nil {
+		if err := q.w.stop(); err != nil {
+			firstErr = err
 		}
 	}
-	if flushErr != nil {
-		return flushErr
+	for _, seg := range q.segments {
+		if err := seg.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return closeErr
+	return firstErr
 }

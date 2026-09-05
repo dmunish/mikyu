@@ -1,0 +1,263 @@
+package cli
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/dmunish/mikyu"
+	"github.com/dmunish/mikyu/internal/daemon"
+)
+
+func RunCLI(target string, args []string) {
+	if err := daemon.EnsureDaemonRunning(target); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	client, err := mikyu.Dial(target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	defer client.Close()
+
+	if len(args) == 0 {
+		printUsage()
+		os.Exit(2)
+	}
+
+	ctx := context.Background()
+	switch args[0] {
+	case "list":
+		handleList(ctx, client)
+	case "create":
+		handleCreate(ctx, client, args[1:])
+	case "delete":
+		handleDelete(ctx, client, args[1:])
+	case "produce":
+		handleProduce(ctx, client, args[1:])
+	case "read":
+		handleRead(ctx, client, args[1:])
+	case "tail":
+		handleTail(ctx, client, args[1:])
+	case "stats":
+		handleStats(ctx, client)
+	case "shutdown":
+		handleShutdown(target, args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
+		printUsage()
+		os.Exit(2)
+	}
+}
+
+func printUsage() {
+	fmt.Fprintf(os.Stderr, "Usage: mikyu <command> [args]\n")
+	fmt.Fprintf(os.Stderr, "Commands: list, create, delete, produce, read, tail, stats, shutdown\n")
+}
+
+func handleList(ctx context.Context, client mikyu.Client) {
+	queues, err := client.ListQueues(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	for _, q := range queues {
+		fmt.Println(q)
+	}
+}
+
+func handleCreate(ctx context.Context, client mikyu.Client, args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: mikyu create <queue>")
+		os.Exit(2)
+	}
+	if err := client.CreateQueue(ctx, args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("created queue %q\n", args[0])
+}
+
+func handleDelete(ctx context.Context, client mikyu.Client, args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: mikyu delete <queue> [-y]")
+		os.Exit(2)
+	}
+	name := args[0]
+	force := false
+	for _, a := range args[1:] {
+		if a == "-y" || a == "--yes" || a == "-f" || a == "--force" {
+			force = true
+		}
+	}
+	if !force {
+		ok, err := confirmCLI(fmt.Sprintf("delete queue %q? [y/N]: ", name), args)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if !ok {
+			fmt.Println("aborted")
+			return
+		}
+	}
+	if err := client.DeleteQueue(ctx, name); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("deleted queue %q\n", name)
+}
+
+func handleProduce(ctx context.Context, client mikyu.Client, args []string) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: mikyu produce <queue> <payload|@file|->")
+		os.Exit(2)
+	}
+	q, err := client.LogQueue(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	payload, err := resolvePayload(args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	offset, err := q.Produce(ctx, payload)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("produced at offset %d\n", offset)
+}
+
+func handleRead(ctx context.Context, client mikyu.Client, args []string) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: mikyu read <queue> <offset>")
+		os.Exit(2)
+	}
+	q, err := client.LogQueue(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	offset, err := strconv.ParseUint(args[1], 10, 64)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid offset: %v\n", err)
+		os.Exit(2)
+	}
+	msg, err := q.Read(ctx, offset)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("offset=%d id=%s ts=%s payload=%s\n", msg.Offset, msg.ID, msg.Timestamp.Format(time.RFC3339Nano), string(msg.Payload))
+}
+
+func handleTail(ctx context.Context, client mikyu.Client, args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: mikyu tail <queue> [start-offset]")
+		os.Exit(2)
+	}
+	q, err := client.LogQueue(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	var start uint64 = 0
+	if len(args) > 1 {
+		start, err = strconv.ParseUint(args[1], 10, 64)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid offset: %v\n", err)
+			os.Exit(2)
+		}
+	}
+	for msg, err := range q.Tail(ctx, start) {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("offset=%d id=%s ts=%s payload=%s\n", msg.Offset, msg.ID, msg.Timestamp.Format(time.RFC3339Nano), string(msg.Payload))
+	}
+}
+
+func handleStats(ctx context.Context, client mikyu.Client) {
+	stats, err := client.Stats(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("active queues: %d\n", stats.ActiveQueues)
+	fmt.Printf("total bytes: %d\n", stats.TotalBytes)
+	for name, qs := range stats.Queues {
+		fmt.Printf("queue %s: messages=%d, segments=%d, size=%d, last_offset=%d\n", name, qs.MessageCount, qs.SegmentCount, qs.SizeBytes, qs.LastOffset)
+	}
+}
+
+func handleShutdown(target string, args []string) {
+	force := false
+	for _, a := range args {
+		if a == "-y" || a == "--yes" || a == "-f" || a == "--force" {
+			force = true
+		}
+	}
+	if !force {
+		ok, err := confirmCLI("shutdown daemon? [y/N]: ", args)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if !ok {
+			fmt.Println("aborted")
+			return
+		}
+	}
+	if err := daemon.SendShutdownSignal(target); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("shutdown signal sent")
+}
+
+func resolvePayload(input string) ([]byte, error) {
+	if input == "-" {
+		return io.ReadAll(os.Stdin)
+	}
+	if strings.HasPrefix(input, "@") {
+		path := strings.TrimPrefix(input, "@")
+		return os.ReadFile(path)
+	}
+	return []byte(input), nil
+}
+
+func confirmCLI(prompt string, args []string) (bool, error) {
+	for _, a := range args {
+		if a == "-y" || a == "--yes" || a == "-f" || a == "--force" {
+			return true, nil
+		}
+	}
+	if !isTerminal(os.Stdin) {
+		return false, fmt.Errorf("cannot prompt in non-interactive mode; use -y/--yes")
+	}
+	fmt.Print(prompt)
+	var answer string
+	if _, err := fmt.Scanln(&answer); err != nil {
+		return false, err
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	return answer == "y" || answer == "yes", nil
+}
+
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}

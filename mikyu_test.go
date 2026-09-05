@@ -21,7 +21,10 @@ func TestEmbeddedClientLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	defer client.Close()
 
-	q, err := client.CreateQueue(context.Background(), "test")
+	err = client.CreateQueue(context.Background(), "test")
+	require.NoError(t, err)
+
+	q, err := client.LogQueue("test")
 	require.NoError(t, err)
 	assert.Equal(t, "test", q.Name())
 
@@ -43,8 +46,9 @@ func TestEmbeddedClientDuplicateQueue(t *testing.T) {
 	client, _ := mikyu.Open(dir)
 	defer client.Close()
 
-	_, _ = client.CreateQueue(context.Background(), "dup")
-	_, err := client.CreateQueue(context.Background(), "dup")
+	err := client.CreateQueue(context.Background(), "dup")
+	require.NoError(t, err)
+	err = client.CreateQueue(context.Background(), "dup")
 	assert.Error(t, err)
 }
 
@@ -53,10 +57,13 @@ func TestEmbeddedClientDeleteQueue(t *testing.T) {
 	client, _ := mikyu.Open(dir)
 	defer client.Close()
 
-	_, _ = client.CreateQueue(context.Background(), "temp")
-	err := client.DeleteQueue(context.Background(), "temp")
+	err := client.CreateQueue(context.Background(), "temp")
 	require.NoError(t, err)
-	_, err = client.Queue("temp")
+
+	err = client.DeleteQueue(context.Background(), "temp")
+	require.NoError(t, err)
+
+	_, err = client.LogQueue("temp")
 	assert.Error(t, err)
 }
 
@@ -77,7 +84,12 @@ func TestTypedQueue(t *testing.T) {
 	dir := t.TempDir()
 	client, _ := mikyu.Open(dir)
 	defer client.Close()
-	q, _ := client.CreateQueue(context.Background(), "typed")
+
+	err := client.CreateQueue(context.Background(), "typed")
+	require.NoError(t, err)
+
+	q, err := client.LogQueue("typed")
+	require.NoError(t, err)
 
 	type Item struct {
 		Name string
@@ -92,7 +104,7 @@ func TestTypedQueue(t *testing.T) {
 		},
 	}
 	tq := mikyu.NewTyped(q, codec)
-	_, err := tq.Produce(context.Background(), Item{Name: "test"})
+	_, err = tq.Produce(context.Background(), Item{Name: "test"})
 	require.NoError(t, err)
 	item, err := tq.Read(context.Background(), 0)
 	require.NoError(t, err)

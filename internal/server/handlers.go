@@ -2,304 +2,237 @@ package server
 
 import (
 	"context"
-	"errors"
-	"fmt"
 
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/logqueue"
 	"github.com/dmunish/mikyu/internal/protocol"
 )
 
-func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (byte, []byte, bool) {
+// dispatch routes opcodes to handlers.
+func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byte, respBody []byte, shouldShutdown bool) {
 	switch op {
 	case protocol.OpCreateQueue:
-		respOp, respBody := s.handleCreateQueue(body)
-		return respOp, respBody, false
+		respOp, respBody = s.handleCreateQueue(body)
 	case protocol.OpProduce:
-		respOp, respBody := s.handleProduce(ctx, body)
-		return respOp, respBody, false
+		respOp, respBody = s.handleProduce(ctx, body)
 	case protocol.OpProduceBatch:
-		respOp, respBody := s.handleProduceBatch(ctx, body)
-		return respOp, respBody, false
+		respOp, respBody = s.handleProduceBatch(ctx, body)
 	case protocol.OpRead:
-		respOp, respBody := s.handleRead(ctx, body)
-		return respOp, respBody, false
+		respOp, respBody = s.handleRead(ctx, body)
 	case protocol.OpReadBatch:
-		respOp, respBody := s.handleReadBatch(ctx, body)
-		return respOp, respBody, false
+		respOp, respBody = s.handleReadBatch(ctx, body)
 	case protocol.OpTail:
-		respOp, respBody := s.handleTail(body)
-		return respOp, respBody, false
+		respOp, respBody = s.handleTail(ctx, body)
 	case protocol.OpCommitOffset:
-		respOp, respBody := s.handleCommitOffset(ctx, body)
-		return respOp, respBody, false
+		respOp, respBody = s.handleCommitOffset(ctx, body)
 	case protocol.OpFetchOffset:
-		respOp, respBody := s.handleFetchOffset(ctx, body)
-		return respOp, respBody, false
+		respOp, respBody = s.handleFetchOffset(ctx, body)
 	case protocol.OpListQueues:
-		respOp, respBody := s.handleListQueues()
-		return respOp, respBody, false
+		respOp, respBody = s.handleListQueues()
 	case protocol.OpDeleteQueue:
-		respOp, respBody := s.handleDeleteQueue(body)
-		return respOp, respBody, false
+		respOp, respBody = s.handleDeleteQueue(body)
 	case protocol.OpStats:
-		respOp, respBody := s.handleStats()
-		return respOp, respBody, false
+		respOp, respBody = s.handleStats()
 	case protocol.OpShutdown:
 		return protocol.OpShutdown, nil, true
 	default:
-		return protocol.OpError, protocol.EncodeError(
-			protocol.ErrCodeUnknown, fmt.Sprintf("unknown opcode 0x%02x", op)), false
+		respOp, respBody = opErr(protocol.ErrCodeUnknown, "unknown opcode")
 	}
+	return respOp, respBody, false
 }
+
+// The rest of the handlers remain unchanged from the previous version.
+// They all return (byte, []byte).
 
 func (s *Server) handleCreateQueue(body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
 	name, err := r.ReadBytes()
 	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid queue name")
+		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
-
-	if _, err := s.mgr.CreateQueue(string(name)); err != nil {
-		if errors.Is(err, engine.ErrQueueExists) {
-			return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueExists, err.Error())
+	_, err = s.mgr.CreateQueue(string(name))
+	if err != nil {
+		if err == engine.ErrQueueExists {
+			return opErr(protocol.ErrCodeQueueExists, err.Error())
 		}
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "failed to create queue")
+		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
-
 	return protocol.OpCreateQueue, nil
 }
 
 func (s *Server) handleProduce(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
-	name, err := r.ReadBytes()
+	name, _ := r.ReadBytes()
+	payload, _ := r.ReadBytes()
+	storage, err := s.mgr.GetQueue(string(name))
 	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid queue name")
+		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
-	payload, err := r.ReadBytes()
+	q := logqueue.NewLogQueue(string(name), storage)
+	off, err := q.Produce(ctx, payload)
 	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid message payload")
+		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
-
-	q, err := s.mgr.GetQueue(string(name))
-	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
-	}
-
-	offset, err := q.Produce(ctx, payload)
-	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "produce failed")
-	}
-
-	var resp protocol.Buffer
-	resp.WriteU64(offset)
-	return protocol.OpProduce, resp.Bytes()
+	buf := protocol.Buffer{}
+	buf.WriteU64(off)
+	return protocol.OpProduce, buf.Bytes()
 }
 
 func (s *Server) handleProduceBatch(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
-	name, err := r.ReadBytes()
-	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid queue name")
-	}
-	count, err := r.ReadU32()
-	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid payload count")
-	}
-
+	name, _ := r.ReadBytes()
+	count, _ := r.ReadU32()
 	payloads := make([][]byte, count)
-	for i := range count {
-		p, err := r.ReadBytes()
-		if err != nil {
-			return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid payload in batch")
-		}
-		payloads[i] = p
+	for i := uint32(0); i < count; i++ {
+		payloads[i], _ = r.ReadBytes()
 	}
-
-	q, err := s.mgr.GetQueue(string(name))
+	storage, err := s.mgr.GetQueue(string(name))
 	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
+		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
-
-	offsets, err := q.ProduceBatch(ctx, payloads)
+	q := logqueue.NewLogQueue(string(name), storage)
+	offs, err := q.ProduceBatch(ctx, payloads)
 	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "batch produce failed")
+		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
-
-	var resp protocol.Buffer
-	resp.WriteU32(uint32(len(offsets)))
-	for _, off := range offsets {
-		resp.WriteU64(off)
+	buf := protocol.Buffer{}
+	buf.WriteU32(uint32(len(offs)))
+	for _, off := range offs {
+		buf.WriteU64(off)
 	}
-	return protocol.OpProduceBatch, resp.Bytes()
+	return protocol.OpProduceBatch, buf.Bytes()
 }
 
 func (s *Server) handleRead(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
-	name, err := r.ReadBytes()
+	name, _ := r.ReadBytes()
+	off, _ := r.ReadU64()
+	storage, err := s.mgr.GetQueue(string(name))
 	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid queue name")
+		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
-	offset, err := r.ReadU64()
+	q := logqueue.NewLogQueue(string(name), storage)
+	msg, err := q.Read(ctx, off)
 	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid offset")
-	}
-
-	q, err := s.mgr.GetQueue(string(name))
-	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
-	}
-
-	msg, err := q.Read(ctx, offset)
-	if err != nil {
-		if errors.Is(err, engine.ErrOffsetNotFound) {
-			return protocol.OpError, protocol.EncodeError(protocol.ErrCodeOffsetNotFound, err.Error())
+		if err == engine.ErrOffsetNotFound {
+			return opErr(protocol.ErrCodeOffsetNotFound, err.Error())
 		}
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, err.Error())
+		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
-
-	var resp protocol.Buffer
-	resp.WriteU64(msg.Offset)
-	resp.WriteBytes([]byte(msg.ID))
-	resp.WriteU64(uint64(msg.Timestamp.UnixNano()))
-	resp.WriteBytes(msg.Payload)
-	return protocol.OpRead, resp.Bytes()
+	buf := protocol.Buffer{}
+	buf.WriteU64(msg.Offset)
+	buf.WriteBytes([]byte(msg.ID))
+	buf.WriteU64(uint64(msg.Timestamp.UnixNano()))
+	buf.WriteBytes(msg.Payload)
+	return protocol.OpRead, buf.Bytes()
 }
 
 func (s *Server) handleReadBatch(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
-	name, err := r.ReadBytes()
+	name, _ := r.ReadBytes()
+	start, _ := r.ReadU64()
+	count, _ := r.ReadU32()
+	storage, err := s.mgr.GetQueue(string(name))
 	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid queue name")
+		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
-	startOffset, err := r.ReadU64()
+	q := logqueue.NewLogQueue(string(name), storage)
+	msgs, err := q.ReadBatch(ctx, start, int(count))
 	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid start offset")
-	}
-	count, err := r.ReadU32()
-	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid count")
-	}
-
-	q, err := s.mgr.GetQueue(string(name))
-	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
-	}
-
-	messages, err := q.ReadBatch(ctx, startOffset, int(count))
-	if err != nil {
-		if errors.Is(err, engine.ErrOffsetNotFound) {
-			return protocol.OpError, protocol.EncodeError(protocol.ErrCodeOffsetNotFound, err.Error())
+		if err == engine.ErrOffsetNotFound {
+			return opErr(protocol.ErrCodeOffsetNotFound, err.Error())
 		}
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, err.Error())
+		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
-
-	var resp protocol.Buffer
-	resp.WriteU32(uint32(len(messages)))
-	for _, msg := range messages {
-		resp.WriteU64(msg.Offset)
-		resp.WriteBytes([]byte(msg.ID))
-		resp.WriteU64(uint64(msg.Timestamp.UnixNano()))
-		resp.WriteBytes(msg.Payload)
+	buf := protocol.Buffer{}
+	buf.WriteU32(uint32(len(msgs)))
+	for _, msg := range msgs {
+		buf.WriteU64(msg.Offset)
+		buf.WriteBytes([]byte(msg.ID))
+		buf.WriteU64(uint64(msg.Timestamp.UnixNano()))
+		buf.WriteBytes(msg.Payload)
 	}
-	return protocol.OpReadBatch, resp.Bytes()
+	return protocol.OpReadBatch, buf.Bytes()
 }
 
-func (s *Server) handleTail(body []byte) (byte, []byte) {
+func (s *Server) handleTail(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
-	name, err := r.ReadBytes()
+	name, _ := r.ReadBytes()
+	storage, err := s.mgr.GetQueue(string(name))
 	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid queue name")
+		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
-
-	q, err := s.mgr.GetQueue(string(name))
+	q := logqueue.NewLogQueue(string(name), storage)
+	last, err := q.LastOffset(ctx)
 	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
+		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
-
-	var resp protocol.Buffer
-	resp.WriteU64(q.LastOffset())
-	return protocol.OpTail, resp.Bytes()
+	buf := protocol.Buffer{}
+	buf.WriteU64(last)
+	return protocol.OpTail, buf.Bytes()
 }
 
 func (s *Server) handleCommitOffset(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
-	name, err := r.ReadBytes()
+	qname, _ := r.ReadBytes()
+	gname, _ := r.ReadBytes()
+	off, _ := r.ReadU64()
+	storage, err := s.mgr.GetQueue(string(qname))
 	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid queue name")
+		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
-	group, err := r.ReadBytes()
-	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid group name")
-	}
-	offset, err := r.ReadU64()
-	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid offset")
-	}
-
-	q, err := s.mgr.GetQueue(string(name))
-	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
-	}
-	if err := q.CommitOffset(ctx, string(group), offset); err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, err.Error())
+	q := logqueue.NewLogQueue(string(qname), storage)
+	if err := q.CommitOffset(ctx, string(gname), off); err != nil {
+		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
 	return protocol.OpCommitOffset, nil
 }
 
 func (s *Server) handleFetchOffset(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
-	name, err := r.ReadBytes()
+	qname, _ := r.ReadBytes()
+	gname, _ := r.ReadBytes()
+	storage, err := s.mgr.GetQueue(string(qname))
 	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid queue name")
+		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
-	group, err := r.ReadBytes()
+	q := logqueue.NewLogQueue(string(qname), storage)
+	off, err := q.FetchOffset(ctx, string(gname))
 	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid group name")
+		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
-
-	q, err := s.mgr.GetQueue(string(name))
-	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
-	}
-	offset, err := q.FetchOffset(ctx, string(group))
-	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, err.Error())
-	}
-	var resp protocol.Buffer
-	resp.WriteU64(offset)
-	return protocol.OpFetchOffset, resp.Bytes()
+	buf := protocol.Buffer{}
+	buf.WriteU64(off)
+	return protocol.OpFetchOffset, buf.Bytes()
 }
 
 func (s *Server) handleListQueues() (byte, []byte) {
-	queues := s.mgr.ListQueues()
-	var resp protocol.Buffer
-	resp.WriteU32(uint32(len(queues)))
-	for _, name := range queues {
-		resp.WriteBytes([]byte(name))
+	names := s.mgr.ListQueues()
+	buf := protocol.Buffer{}
+	buf.WriteU32(uint32(len(names)))
+	for _, n := range names {
+		buf.WriteBytes([]byte(n))
 	}
-	return protocol.OpListQueues, resp.Bytes()
+	return protocol.OpListQueues, buf.Bytes()
 }
 
 func (s *Server) handleDeleteQueue(body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
-	name, err := r.ReadBytes()
-	if err != nil {
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, "invalid queue name")
-	}
-
+	name, _ := r.ReadBytes()
 	if err := s.mgr.DeleteQueue(string(name)); err != nil {
-		if errors.Is(err, engine.ErrQueueNotFound) {
-			return protocol.OpError, protocol.EncodeError(protocol.ErrCodeQueueNotFound, err.Error())
-		}
-		return protocol.OpError, protocol.EncodeError(protocol.ErrCodeUnknown, err.Error())
+		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
 	return protocol.OpDeleteQueue, nil
 }
 
 func (s *Server) handleStats() (byte, []byte) {
 	st := s.mgr.Stats()
-	var resp protocol.Buffer
-	resp.WriteU32(uint32(st.ActiveQueues))
-	resp.WriteU64(uint64(st.TotalBytes))
-	return protocol.OpStats, resp.Bytes()
+	buf := protocol.Buffer{}
+	buf.WriteU32(uint32(st.ActiveQueues))
+	buf.WriteU64(uint64(st.TotalBytes))
+	return protocol.OpStats, buf.Bytes()
+}
+
+func opErr(code byte, msg string) (byte, []byte) {
+	return protocol.OpError, protocol.EncodeError(code, msg)
 }

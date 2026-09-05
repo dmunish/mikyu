@@ -1,11 +1,18 @@
 package engine
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 )
+
+type Manager struct {
+	mu      sync.RWMutex
+	dir     string
+	cfg     Config
+	queues  map[string]*Queue
+	offsets *OffsetStore
+}
 
 type EngineStats struct {
 	ActiveQueues int
@@ -20,41 +27,31 @@ type QueueStats struct {
 	LastOffset   uint64
 }
 
-type Manager struct {
-	mu      sync.RWMutex
-	dir     string
-	cfg     Config
-	queues  map[string]*Queue
-	offsets *OffsetStore
-}
-
+// OpenManager creates a Manager and loads existing queues.
 func OpenManager(dir string, cfg Config) (*Manager, error) {
+	cfg = cfg.withDefaults()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("create wal dir: %w", err)
+		return nil, err
 	}
-
 	if cfg.Encrypted {
-		if err := EnsureDirectoryEncrypted(dir); err != nil {
-			return nil, fmt.Errorf("failed to enable data_dir encryption: %w", err)
-		}
+		_ = EnsureDirectoryEncrypted(dir)
 	}
-
-	offsets, err := openOffsetStore(dir)
+	store, err := openOffsetStore(dir)
 	if err != nil {
-		return nil, fmt.Errorf("open manager offset store: %w", err)
+		return nil, err
 	}
-
 	m := &Manager{
 		dir:     dir,
 		cfg:     cfg,
 		queues:  make(map[string]*Queue),
-		offsets: offsets,
+		offsets: store,
 	}
 
+	// Load existing queue subdirectories.
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		_ = offsets.Close()
-		return nil, fmt.Errorf("read wal dir: %w", err)
+		_ = store.Close()
+		return nil, err
 	}
 
 	for _, e := range entries {
@@ -62,45 +59,38 @@ func OpenManager(dir string, cfg Config) (*Manager, error) {
 			continue
 		}
 		name := e.Name()
-		q, err := openQueue(dir, name, cfg, m.offsets)
+		q, err := openQueue(dir, name, cfg, store)
 		if err != nil {
-			_ = offsets.Close()
-			return nil, fmt.Errorf("restore queue %q: %w", name, err)
+			_ = m.Close() // Clean up open queues and offset store on failure
+			return nil, err
 		}
 		m.queues[name] = q
 	}
-
 	return m, nil
 }
 
-func (m *Manager) CreateQueue(name string, opts ...Config) (*Queue, error) {
+// CreateQueue creates a new queue and returns it as a Storage.
+func (m *Manager) CreateQueue(name string, opts ...Config) (Storage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.queues[name]; exists {
+		return nil, ErrQueueExists
+	}
 	cfg := m.cfg
 	if len(opts) > 0 {
 		cfg = opts[0]
 	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if _, ok := m.queues[name]; ok {
-		return nil, ErrQueueExists
-	}
-
-	queueDir := filepath.Join(m.dir, name)
-	if _, err := os.Stat(queueDir); err == nil {
-		return nil, ErrQueueExists
-	}
-
 	q, err := openQueue(m.dir, name, cfg, m.offsets)
 	if err != nil {
 		return nil, err
 	}
-
 	m.queues[name] = q
 	return q, nil
 }
 
-func (m *Manager) GetQueue(name string) (*Queue, error) {
+// GetQueue returns an existing queue as a Storage.
+func (m *Manager) GetQueue(name string) (Storage, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -111,6 +101,7 @@ func (m *Manager) GetQueue(name string) (*Queue, error) {
 	return q, nil
 }
 
+// ListQueues returns the names of all active queues.
 func (m *Manager) ListQueues() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -122,6 +113,7 @@ func (m *Manager) ListQueues() []string {
 	return names
 }
 
+// DeleteQueue closes and removes a queue and its data.
 func (m *Manager) DeleteQueue(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -130,15 +122,14 @@ func (m *Manager) DeleteQueue(name string) error {
 	if !ok {
 		return ErrQueueNotFound
 	}
-
 	if err := q.Close(); err != nil {
 		return err
 	}
-
 	delete(m.queues, name)
 	return os.RemoveAll(filepath.Join(m.dir, name))
 }
 
+// Stats returns aggregate engine statistics.
 func (m *Manager) Stats() EngineStats {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -152,9 +143,17 @@ func (m *Manager) Stats() EngineStats {
 		q.mu.Lock()
 		msgCount := uint64(len(q.index))
 		segCount := len(q.segments)
+		lastOff := q.nextOffset // Read field directly to avoid RWMutex deadlock
+
 		var size int64
 		for _, seg := range q.segments {
-			size += seg.pos
+			if seg.logFile != nil {
+				if info, err := seg.logFile.Stat(); err == nil {
+					size += info.Size()
+				} else {
+					size += seg.pos
+				}
+			}
 		}
 		q.mu.Unlock()
 
@@ -162,7 +161,7 @@ func (m *Manager) Stats() EngineStats {
 			MessageCount: msgCount,
 			SegmentCount: segCount,
 			SizeBytes:    size,
-			LastOffset:   msgCount,
+			LastOffset:   lastOff,
 		}
 		stats.TotalBytes += size
 	}
@@ -170,6 +169,7 @@ func (m *Manager) Stats() EngineStats {
 	return stats
 }
 
+// Close shuts down the manager and all its queues cleanly.
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

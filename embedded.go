@@ -2,32 +2,28 @@ package mikyu
 
 import (
 	"context"
-	"errors"
-	"iter"
 	"sync"
-	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/logqueue"
 )
 
-var (
-	ErrQueueExists     = engine.ErrQueueExists
-	ErrQueueNotFound   = engine.ErrQueueNotFound
-	ErrOffsetNotFound  = engine.ErrOffsetNotFound
-	ErrMessageTooLarge = engine.ErrMessageTooLarge
-)
-
+// embeddedClient implements Client using an in-process engine.Manager.
 type embeddedClient struct {
-	mgr *engine.Manager
+	mgr    *engine.Manager
+	queues map[string]*logqueue.LogQueue
+	tasks  map[string]TaskQueue // stub, unused
+	mu     sync.RWMutex
+	cfg    ClientConfig
+	closed bool
 }
 
-// Open initializes an embedded, in-process Mikyu engine at the specified directory.
+// Open creates an in-process Client.
 func Open(dir string, opts ...ClientOption) (Client, error) {
 	cfg := DefaultClientConfig()
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-
 	engineCfg := engine.Config{
 		BatchSize:       cfg.BatchSize,
 		MaxInterval:     cfg.MaxInterval,
@@ -37,30 +33,36 @@ func Open(dir string, opts ...ClientOption) (Client, error) {
 		MaxSegmentAge:   cfg.DefaultMaxSegmentAge,
 		Encrypted:       cfg.Encrypted,
 	}
-
 	mgr, err := engine.OpenManager(dir, engineCfg)
 	if err != nil {
 		return nil, err
 	}
-
-	return &embeddedClient{mgr: mgr}, nil
+	return &embeddedClient{
+		mgr:    mgr,
+		queues: make(map[string]*logqueue.LogQueue),
+		tasks:  make(map[string]TaskQueue),
+		cfg:    cfg,
+	}, nil
 }
 
-func (c *embeddedClient) Close() error {
-	return c.mgr.Close()
-}
-
-func (c *embeddedClient) CreateQueue(ctx context.Context, name string, opts ...QueueOption) (Queue, error) {
+// CreateQueue creates a new log queue.
+func (c *embeddedClient) CreateQueue(ctx context.Context, name string, opts ...QueueOption) error {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return err
 	}
-
-	qCfg := QueueConfig{}
+	qCfg := QueueConfig{
+		BatchSize:       c.cfg.BatchSize,
+		MaxInterval:     c.cfg.MaxInterval,
+		MinInterval:     c.cfg.MinInterval,
+		MaxSegmentBytes: c.cfg.DefaultMaxSegmentBytes,
+		MaxMessageBytes: c.cfg.DefaultMaxMessageBytes,
+		MaxSegmentAge:   c.cfg.DefaultMaxSegmentAge,
+		Encrypted:       c.cfg.Encrypted,
+	}
 	for _, opt := range opts {
 		opt(&qCfg)
 	}
-
-	cfg := engine.Config{
+	engineCfg := engine.Config{
 		BatchSize:       qCfg.BatchSize,
 		MaxInterval:     qCfg.MaxInterval,
 		MinInterval:     qCfg.MinInterval,
@@ -69,23 +71,44 @@ func (c *embeddedClient) CreateQueue(ctx context.Context, name string, opts ...Q
 		MaxSegmentAge:   qCfg.MaxSegmentAge,
 		Encrypted:       qCfg.Encrypted,
 	}
+	storage, err := c.mgr.CreateQueue(name, engineCfg)
+	if err != nil {
+		return err
+	}
+	lq := logqueue.NewLogQueue(name, storage)
+	c.mu.Lock()
+	c.queues[name] = lq
+	c.mu.Unlock()
+	return nil
+}
 
-	q, err := c.mgr.CreateQueue(name, cfg)
+// LogQueue returns a handle to an existing log queue.
+func (c *embeddedClient) LogQueue(name string) (LogQueue, error) {
+	c.mu.RLock()
+	lq, ok := c.queues[name]
+	c.mu.RUnlock()
+	if ok {
+		return lq, nil
+	}
+
+	storage, err := c.mgr.GetQueue(name)
 	if err != nil {
 		return nil, err
 	}
+	lq = logqueue.NewLogQueue(name, storage)
 
-	return &embeddedQueue{q: q, name: name}, nil
+	c.mu.Lock()
+	c.queues[name] = lq
+	c.mu.Unlock()
+	return lq, nil
 }
 
-func (c *embeddedClient) Queue(name string) (Queue, error) {
-	q, err := c.mgr.GetQueue(name)
-	if err != nil {
-		return nil, err
-	}
-	return &embeddedQueue{q: q, name: name}, nil
+// TaskQueue is not yet implemented.
+func (c *embeddedClient) TaskQueue(name string) (TaskQueue, error) {
+	return nil, ErrTaskNotSupported
 }
 
+// ListQueues returns all queue names.
 func (c *embeddedClient) ListQueues(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -93,180 +116,49 @@ func (c *embeddedClient) ListQueues(ctx context.Context) ([]string, error) {
 	return c.mgr.ListQueues(), nil
 }
 
+// DeleteQueue removes a queue.
 func (c *embeddedClient) DeleteQueue(ctx context.Context, name string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	c.mu.Lock()
+	delete(c.queues, name)
+	c.mu.Unlock()
 	return c.mgr.DeleteQueue(name)
 }
 
+// Stats returns engine statistics.
 func (c *embeddedClient) Stats(ctx context.Context) (SystemStats, error) {
 	if err := ctx.Err(); err != nil {
 		return SystemStats{}, err
 	}
-	raw := c.mgr.Stats()
-
-	stats := SystemStats{
-		ActiveQueues: raw.ActiveQueues,
-		TotalBytes:   raw.TotalBytes,
-		Queues:       make(map[string]QueueStats, len(raw.Queues)),
+	es := c.mgr.Stats()
+	ss := SystemStats{
+		ActiveQueues: es.ActiveQueues,
+		TotalBytes:   es.TotalBytes,
+		Queues:       make(map[string]QueueStats, len(es.Queues)),
 	}
-
-	for k, v := range raw.Queues {
-		stats.Queues[k] = QueueStats{
-			MessageCount: v.MessageCount,
-			SegmentCount: v.SegmentCount,
-			SizeBytes:    v.SizeBytes,
-			LastOffset:   v.LastOffset,
+	for name, qs := range es.Queues {
+		ss.Queues[name] = QueueStats{
+			MessageCount: qs.MessageCount,
+			SegmentCount: qs.SegmentCount,
+			SizeBytes:    qs.SizeBytes,
+			LastOffset:   qs.LastOffset,
 		}
 	}
-	return stats, nil
+	return ss, nil
 }
 
-// embeddedQueue wraps internal/engine.Queue directly.
-type embeddedQueue struct {
-	q    *engine.Queue
-	name string
-}
-
-func (q *embeddedQueue) Name() string {
-	return q.name
-}
-
-func (q *embeddedQueue) Produce(ctx context.Context, payload []byte) (uint64, error) {
-	return q.q.Produce(ctx, payload)
-}
-
-func (q *embeddedQueue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error) {
-	return q.q.ProduceBatch(ctx, payloads)
-}
-
-func (q *embeddedQueue) Read(ctx context.Context, offset uint64) (Message, error) {
-	msg, err := q.q.Read(ctx, offset)
-	if err != nil {
-		return Message{}, err
+// Close shuts down the embedded client.
+func (c *embeddedClient) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil
 	}
-	return Message{
-		Offset:    msg.Offset,
-		ID:        msg.ID,
-		Timestamp: msg.Timestamp,
-		Payload:   msg.Payload,
-	}, nil
+	c.closed = true
+	return c.mgr.Close()
 }
 
-func (q *embeddedQueue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([]Message, error) {
-	rawMsgs, err := q.q.ReadBatch(ctx, startOffset, count)
-	if err != nil {
-		return nil, err
-	}
-	msgs := make([]Message, len(rawMsgs))
-	for i, msg := range rawMsgs {
-		msgs[i] = Message{
-			Offset:    msg.Offset,
-			ID:        msg.ID,
-			Timestamp: msg.Timestamp,
-			Payload:   msg.Payload,
-		}
-	}
-	return msgs, nil
-}
-
-func (q *embeddedQueue) LastOffset(ctx context.Context) (uint64, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	return q.q.LastOffset(), nil
-}
-
-func (q *embeddedQueue) Stream(ctx context.Context, startOffset uint64) iter.Seq2[Message, error] {
-	return func(yield func(Message, error) bool) {
-		for curr := startOffset; ; curr++ {
-			if err := ctx.Err(); err != nil {
-				yield(Message{}, err)
-				return
-			}
-			msg, err := q.Read(ctx, curr)
-			if errors.Is(err, ErrOffsetNotFound) {
-				return
-			}
-			if !yield(msg, err) || err != nil {
-				return
-			}
-		}
-	}
-}
-
-func (q *embeddedQueue) Tail(ctx context.Context, startOffset uint64) iter.Seq2[Message, error] {
-	return func(yield func(Message, error) bool) {
-		curr := startOffset
-		for {
-			if err := ctx.Err(); err != nil {
-				yield(Message{}, err)
-				return
-			}
-			last, err := q.LastOffset(ctx)
-			if err != nil {
-				yield(Message{}, err)
-				return
-			}
-			if curr >= last {
-				time.Sleep(5 * time.Millisecond)
-				continue
-			}
-			msg, err := q.Read(ctx, curr)
-			if err != nil {
-				yield(Message{}, err)
-				return
-			}
-			if !yield(msg, nil) {
-				return
-			}
-			curr++
-		}
-	}
-}
-
-func (q *embeddedQueue) Group(name string) Group {
-	return &embeddedGroup{
-		q:         q.q,
-		queueName: q.name,
-		groupName: name,
-		highWater: 0,
-	}
-}
-
-// embeddedGroup handles consumer group offset state in embedded mode.
-type embeddedGroup struct {
-	q         *engine.Queue
-	queueName string
-	groupName string
-	mu        sync.Mutex
-	highWater uint64
-}
-
-func (g *embeddedGroup) Name() string {
-	return g.groupName
-}
-
-func (g *embeddedGroup) Mark(offset uint64) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if offset >= g.highWater {
-		g.highWater = offset + 1
-	}
-}
-
-func (g *embeddedGroup) Commit(ctx context.Context) error {
-	g.mu.Lock()
-	off := g.highWater
-	g.mu.Unlock()
-	return g.q.CommitOffset(ctx, g.groupName, off)
-}
-
-func (g *embeddedGroup) FetchOffset(ctx context.Context) (uint64, error) {
-	return g.q.FetchOffset(ctx, g.groupName)
-}
-
-func (g *embeddedGroup) Close() error {
-	return g.Commit(context.Background())
-}
+// Ensure that embeddedClient implements Client.
+var _ Client = (*embeddedClient)(nil)

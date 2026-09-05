@@ -1,4 +1,4 @@
-package main
+package repl
 
 import (
 	"fmt"
@@ -25,6 +25,15 @@ var logoGradient = []color.Color{
 	lipgloss.Color("#A100FF"),
 	lipgloss.Color("#6F1FEF"),
 }
+
+var (
+	accentColor  = lipgloss.Color("#FFB200")
+	promptStyle  = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+	infoStyle    = lipgloss.NewStyle().Foreground(accentColor)
+	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	confirmArrow = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE427D")).Bold(true).Render(">")
+)
 
 var (
 	taglineStyle = lipgloss.NewStyle().

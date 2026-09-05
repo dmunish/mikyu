@@ -1,78 +1,72 @@
+// Package mikyu provides the public API for the Mikyu message queue.
 package mikyu
 
 import (
 	"context"
+	"errors"
 	"io"
 	"iter"
 	"time"
+
+	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/logqueue"
 )
 
-// Message is the primary domain record stored in a queue log.
-type Message struct {
-	Offset    uint64
-	ID        string
-	Timestamp time.Time
-	Payload   []byte
+// Re-export core engine types as type aliases.
+type Message = engine.Message
+type SystemStats = engine.EngineStats
+type QueueStats = engine.QueueStats
+
+// Group tracks consumer offsets for a log queue.
+type Group = logqueue.Group
+
+// Task represents a unit of work (future).
+type Task struct {
+	ID          string
+	Payload     []byte
+	Attempts    uint32
+	MaxAttempts uint32
+	Visibility  time.Time
+	ScheduledAt time.Time
 }
 
-// SystemStats contains global metrics across all queues in an engine instance.
-type SystemStats struct {
-	ActiveQueues int
-	TotalBytes   int64
-	Queues       map[string]QueueStats
-}
-
-// QueueStats contains operational metrics for a specific queue.
-type QueueStats struct {
-	MessageCount uint64
-	SegmentCount int
-	SizeBytes    int64
-	LastOffset   uint64
-}
-
-// Client represents a top-level Mikyu instance, working in both
-// in-process embedded mode (Open) and remote server mode (Dial).
-type Client interface {
-	io.Closer
-
-	// Queue retrieval and management
-	CreateQueue(ctx context.Context, name string, opts ...QueueOption) (Queue, error)
-	Queue(name string) (Queue, error)
-	ListQueues(ctx context.Context) ([]string, error)
-	DeleteQueue(ctx context.Context, name string) error
-
-	// Observability
-	Stats(ctx context.Context) (SystemStats, error)
-}
-
-// Queue represents operations scoped to a single log-structured queue.
-type Queue interface {
+// LogQueue provides log‑oriented operations (streaming, tailing, groups).
+type LogQueue interface {
 	Name() string
-
-	// Produce I/O
 	Produce(ctx context.Context, payload []byte) (uint64, error)
 	ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
-
-	// Read I/O
 	Read(ctx context.Context, offset uint64) (Message, error)
 	ReadBatch(ctx context.Context, startOffset uint64, count int) ([]Message, error)
-
-	// Offsets & Iteration
 	LastOffset(ctx context.Context) (uint64, error)
 	Stream(ctx context.Context, startOffset uint64) iter.Seq2[Message, error]
 	Tail(ctx context.Context, startOffset uint64) iter.Seq2[Message, error]
-
-	// Consumer Groups
 	Group(name string) Group
 }
 
-// Group manages consumer group high-water mark progress and commits.
-type Group interface {
+// TaskQueue is a placeholder for future task semantics.
+type TaskQueue interface {
 	io.Closer
 	Name() string
-
-	// Progress tracking
-	Mark(offset uint64)
-	Commit(ctx context.Context) error
-	FetchOffset(ctx context.Context) (uint64, error)
 }
+
+// Client is the top‑level interface for interacting with a Mikyu server.
+type Client interface {
+	io.Closer
+	CreateQueue(ctx context.Context, name string, opts ...QueueOption) error
+	LogQueue(name string) (LogQueue, error)
+	TaskQueue(name string) (TaskQueue, error)
+	ListQueues(ctx context.Context) ([]string, error)
+	DeleteQueue(ctx context.Context, name string) error
+	Stats(ctx context.Context) (SystemStats, error)
+}
+
+// Error variables re‑exported from the engine.
+var (
+	ErrQueueExists      = errors.New("queue with this name already exists")
+	ErrQueueNotFound    = errors.New("queue not found")
+	ErrOffsetNotFound   = errors.New("offset not found")
+	ErrMessageTooLarge  = errors.New("message payload exceeds maximum allowed size")
+	ErrTaskNotSupported = errors.New("task queues are not yet supported")
+)
+
+type _ = iter.Seq2[Message, error]

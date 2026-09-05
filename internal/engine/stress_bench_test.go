@@ -48,7 +48,7 @@ func BenchmarkProduceOnly(b *testing.B) {
 
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
-					if _, err := q.Produce(ctx, payload); err != nil {
+					if _, err := q.Append(ctx, payload); err != nil {
 						b.Error(err)
 						return
 					}
@@ -75,7 +75,7 @@ func BenchmarkReadOnly(b *testing.B) {
 			const prefill = 10000
 			ctx := context.Background()
 			for i := 0; i < prefill; i++ {
-				if _, err := q.Produce(ctx, payload); err != nil {
+				if _, err := q.Append(ctx, payload); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -131,7 +131,7 @@ func BenchmarkMixedWorkload(b *testing.B) {
 				rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 				for pb.Next() {
 					if rng.Intn(100) < workload.produceP {
-						if _, err := q.Produce(ctx, payload); err != nil {
+						if _, err := q.Append(ctx, payload); err != nil {
 							b.Error(err)
 							return
 						}
@@ -173,7 +173,7 @@ func BenchmarkBatchOperations(b *testing.B) {
 
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
-					offsets, err := q.ProduceBatch(ctx, payloads)
+					offsets, err := q.AppendBatch(ctx, payloads)
 					if err != nil {
 						b.Error(err)
 						return
@@ -193,9 +193,7 @@ func BenchmarkBatchOperations(b *testing.B) {
 }
 
 // BenchmarkHighConcurrencyStress simulates a burst of many concurrent workers
-// doing a mix of operations (produce, read, batch). This is the closest to
-// a fluctuating-pressure scenario: we use a semaphore to limit concurrency
-// but keep the number of goroutines high.
+// doing a mix of operations (produce, read, batch).
 func BenchmarkHighConcurrencyStress(b *testing.B) {
 	q, store := newBenchQueue(b, Config{
 		MaxMessageBytes: 64 * 1024,
@@ -224,7 +222,7 @@ func BenchmarkHighConcurrencyStress(b *testing.B) {
 			for i := 0; i < opsPerG; i++ {
 				switch rng.Intn(3) {
 				case 0:
-					if _, err := q.Produce(ctx, payload); err != nil {
+					if _, err := q.Append(ctx, payload); err != nil {
 						b.Error(err)
 						return
 					}
@@ -238,7 +236,7 @@ func BenchmarkHighConcurrencyStress(b *testing.B) {
 					for j := range batch {
 						batch[j] = payload
 					}
-					if _, err := q.ProduceBatch(ctx, batch); err != nil {
+					if _, err := q.AppendBatch(ctx, batch); err != nil {
 						b.Error(err)
 						return
 					}
