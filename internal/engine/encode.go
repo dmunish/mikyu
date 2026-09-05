@@ -17,35 +17,24 @@ var encPool = sync.Pool{
 }
 
 func encodeRecord(id uuid.UUID, ts time.Time, payload []byte) []byte {
-	buf := encPool.Get().(*bytes.Buffer)
-	buf.Reset()
-
-	idBytes := id[:]              // Fixed 16-byte slice
-	idLen := uint16(len(idBytes)) // Always 16
-
-	// Layout: [4B Framing Length][4B CRC32][2B ID Len (16)][16B Raw UUID][8B TS Nano][M-B Payload]
-	bodyLen := uint32(4 + 2 + 16 + 8 + len(payload))
+	// Frame Layout:
+	// [4B Body Length][4B CRC32][2B ID Len (16)][16B Raw UUID][8B TS Nano][Payload]
+	payloadLen := len(payload)
+	bodyLen := uint32(4 + 2 + 16 + 8 + payloadLen) // CRC + IDLen + UUID + TS + Payload
 	totalLen := 4 + bodyLen
 
-	var hdr [10]byte
-	binary.BigEndian.PutUint32(hdr[0:4], bodyLen)
-	binary.BigEndian.PutUint16(hdr[8:10], idLen)
-
-	buf.Write(hdr[:])
-	buf.Write(idBytes)
-
-	var tsNano [8]byte
-	binary.BigEndian.PutUint64(tsNano[:], uint64(ts.UnixNano()))
-	buf.Write(tsNano[:])
-	buf.Write(payload)
-
-	b := buf.Bytes()
-	sum := crc32.ChecksumIEEE(b[8:])
-	binary.BigEndian.PutUint32(b[4:8], sum)
-
 	rec := make([]byte, totalLen)
-	copy(rec, b)
-	encPool.Put(buf)
+
+	binary.BigEndian.PutUint32(rec[0:4], bodyLen)
+	// rec[4:8] reserved for CRC32 checksum
+	binary.BigEndian.PutUint16(rec[8:10], 16)
+	copy(rec[10:26], id[:])
+	binary.BigEndian.PutUint64(rec[26:34], uint64(ts.UnixNano()))
+	copy(rec[34:], payload)
+
+	sum := crc32.ChecksumIEEE(rec[8:])
+	binary.BigEndian.PutUint32(rec[4:8], sum)
+
 	return rec
 }
 
