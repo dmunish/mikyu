@@ -205,3 +205,32 @@ func TestWALWakeTokenLossRace(t *testing.T) {
 		t.Fatal("WAL wait timed out! Wake token was drained by adaptiveFlush for an unflushed message.")
 	}
 }
+
+func BenchmarkWALFlushAllocations(b *testing.B) {
+	dir := b.TempDir()
+	logPath := filepath.Join(dir, "bench_wal.log")
+	f, err := os.Create(logPath)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer f.Close()
+
+	cfg := Config{BatchSize: 256, MaxInterval: time.Millisecond}
+	w := newWAL(f, cfg, 0)
+	w.start()
+	defer w.stop()
+
+	payload := make([]byte, 512)
+
+	b.ReportAllocs()
+
+	for i := 0; b.Loop(); i++ {
+		seq, _, err := w.push(payload, int64(i*len(payload)))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := w.wait(seq); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
