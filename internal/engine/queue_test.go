@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -341,4 +342,47 @@ func TestQueueReadUsesMMapOnRolledSegments(t *testing.T) {
 	q.mu.RUnlock()
 
 	assert.NotNil(t, entry.seg.mmapData, "closed segment must have mmap enabled for zero-copy reads")
+}
+
+func TestQueueConcurrentIndexDiskOrdering(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openOffsetStore(dir)
+	require.NoError(t, err)
+	defer store.Close()
+
+	q, err := openQueue(dir, "disk-index-order", Config{BatchSize: 10, MaxInterval: time.Millisecond}, store)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	const goroutines = 16
+	const msgsPerRoutine = 50
+	var wg sync.WaitGroup
+
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < msgsPerRoutine; i++ {
+				_, err := q.Append(ctx, []byte("payload"))
+				assert.NoError(t, err)
+			}
+		}(g)
+	}
+	wg.Wait()
+	require.NoError(t, q.Close())
+
+	// Re-open active segment raw index file and verify positions are strictly monotonic
+	seg, err := openSegment(filepath.Join(dir, "disk-index-order"), 0)
+	require.NoError(t, err)
+	defer seg.Close()
+
+	entries, err := seg.recover()
+	require.NoError(t, err)
+	assert.Len(t, entries, goroutines*msgsPerRoutine)
+
+	var lastPos int64 = -1
+	for i, e := range entries {
+		assert.Greater(t, e.pos, lastPos, "index entry %d on disk is out of order!", i)
+		lastPos = e.pos
+	}
 }
