@@ -27,11 +27,11 @@ github.com/dmunish/mikyu/
 ├── go.sum
 ├── README.md
 │
-├── mikyu.go            # Top-level domain models & interfaces: Client, Queue, Group, Message, SystemStats
+├── mikyu.go            # Top-level domain models & interfaces: Client, LogQueue, TaskQueue, Message, SystemStats
 ├── options.go          # Functional configuration options for Client and Queue
 ├── typed.go            # Generic Typed[T] queue wrapper & Codec[T] interface
-├── embedded.go         # In-process embedded driver implementing Client, Queue, Group
-├── remote.go           # Connection-pooled TCP/IPC network driver implementing Client, Queue, Group
+├── embedded.go         # In-process embedded driver implementing Client, LogQueue, TaskQueue
+├── remote.go           # Connection-pooled TCP/IPC network driver implementing Client, LogQueue, TaskQueue
 │
 ├── internal/
 │   ├── config/         # Declarative YAML & environment variable configuration manager
@@ -45,12 +45,17 @@ github.com/dmunish/mikyu/
 │   │   ├── index.go            # In-memory and raw on-disk index entry structures
 │   │   ├── offsets.go          # Single-file manager-level consumer group offset store
 │   │   ├── encode.go           # CRC32 record framing, decoding, and raw UUID v7 handling
+│   │   ├── storage.go          # Storage interface definition
 │   │   ├── sync_darwin.go      # macOS F_FULLFSYNC drive cache flusher
 │   │   ├── sync_fdatasync.go   # POSIX unix.Fdatasync implementation
 │   │   ├── sync_windows.go     # Windows file.Sync implementation
 │   │   ├── encrypt_linux.go    # Linux fscrypt kernel ioctl directory encryption
 │   │   ├── encrypt_windows.go  # Windows NTFS EFS directory encryption
 │   │   └── encrypt_other.go    # Fallback directory encryption for unsupported OSes
+│   │
+│   ├── logqueue/       # High-level log-oriented queue wrapper & consumer group tracking
+│   │   ├── logqueue.go       # LogQueue struct implementing streaming, tailing, group semantics
+│   │   └── group.go          # Group interface & implementation for offset tracking
 │   │
 │   ├── protocol/       # Binary wire format parser & opcode definitions
 │   │   ├── opcodes.go      # Wire opcodes, error codes, and target URI parser
@@ -62,20 +67,26 @@ github.com/dmunish/mikyu/
 │   │   ├── handlers.go     # Wire opcode handler routines mapping to internal/engine
 │   │   └── tls.go          # TLS 1.3 helper & self-signed ECDSA cert generator
 │   │
-│   └── ipc/            # Specialized local IPC listeners and dialers
-│       └── ipc.go          # Unix Domain Socket and Windows Named Pipe helpers
+│   ├── ipc/            # Specialized local IPC listeners and dialers
+│   │   └── ipc.go          # Unix Domain Socket and Windows Named Pipe helpers
+│   │
+│   ├── daemon/         # Background daemon lifecycle management & socket probing
+│   │   ├── daemon.go        # Daemon Run(), EnsureDaemonRunning(), IsDaemonAlive(), SendShutdownSignal()
+│   │   ├── detach_unix.go   # POSIX process detachment (//go:build !windows)
+│   │   └── detach_windows.go # Windows process detachment (//go:build windows)
+│   │
+│   ├── repl/           # Interactive REPL session shell & command loop
+│   │   ├── repl.go         # REPL session struct, command dispatch, payload resolution
+│   │   ├── style.go        # Lipgloss-styled ASCII banner & command table
+│   │   ├── vt_other.go     # Virtual terminal setup stub (//go:build !windows)
+│   │   └── vt_windows.go   # Windows ANSI escape sequence enabler (//go:build windows)
+│   │
+│   └── cli/            # Stateless one-shot CLI handler
+│       └── cli.go         # CLI subcommand router, payload resolution, confirmation prompts
 │
 └── cmd/
     └── mikyu/            # Unified single-binary entrypoint
-        ├── main.go           # Subcommand router (daemon, shell, tui, CLI)
-        ├── daemon.go         # Socket prober & background process spawner
-        ├── repl.go           # Interactive REPL session shell & command loop
-        ├── cli.go            # Stateless one-shot CLI handler (@file, stdin support)
-        ├── banner.go         # Lipgloss-styled ASCII banner & command table
-        ├── detach_unix.go    # POSIX process detachment (//go:build !windows)
-        ├── detach_windows.go # Windows process detachment (//go:build windows)
-        ├── vt_other.go       # Virtual terminal setup stub (//go:build !windows)
-        └── vt_windows.go     # Windows ANSI escape sequence enabler (//go:build windows)
+        └── main.go           # Subcommand router (daemon, shell, cli, default)
 ```
 
 ---
@@ -98,25 +109,27 @@ github.com/dmunish/mikyu/
                  ┌─────────────────────┐                         ┌─────────────────────┐
                  │   internal/engine   │                         │  internal/protocol  │
                  │ (Storage Engine)    │                         └──────────┬──────────┘
-                 └─────────────────────┘                                    │
-                            ▲                                               ▼
-                            │                                    ┌─────────────────────┐
-                            │ (Server Dispatch)                  │   internal/server   │
-                            └────────────────────────────────────┤   internal/ipc      │
-                                                                 └─────────────────────┘
-                                                                            ▲
-                                                                            │ (IPC / TLS TCP)
-                                                                 ┌──────────┴──────────┐
-                                                                 │      cmd/mikyu      │
-                                                                 │  (Unified Executable)│
-                                                                 └─────────────────────┘
+                 └──────────┬──────────┘                                    │
+                            │                                               ▼
+                            ▼                                    ┌─────────────────────┐
+                 ┌─────────────────────┐                        │   internal/server   │
+                 │ internal/logqueue   │                        │   internal/ipc      │
+                 │ (LogQueue wrapper)  │                        └─────────────────────┘
+                 └─────────────────────┘                                    ▲
+                                                                           │ (IPC / TLS TCP)
+                                                                 ┌─────────┴─────────┐
+                                                                 │  internal/daemon  │
+                                                                 │  internal/repl    │
+                                                                 │  internal/cli     │
+                                                                 │  cmd/mikyu        │
+                                                                 └───────────────────┘
 ```
 
 **Data Flow & Lifecycle:**
 
-1. **Embedded mode:** `mikyu.Open(dir, opts...)` creates an `engine.Manager` directly in-process. Client calls delegate to engine queues without network/IPC overhead.
+1. **Embedded mode:** `mikyu.Open(dir, opts...)` creates an `engine.Manager` directly in-process. Client calls delegate to `engine.Queue` via `logqueue.LogQueue` wrappers without network/IPC overhead.
 2. **Remote mode:** `mikyu.Dial(target, opts...)` initializes a `remoteClient` managing a thread-safe connection pool (`chan *clientConn`). Each client operation acquires a connection, writes length-prefixed protocol frames, awaits the response frame, and returns the connection to the pool.
-3. **Daemon mode:** `cmd/mikyu` loads `mikyu.yaml` configuration, instantiates `engine.Manager`, creates `server.Server`, and listens on target endpoints (TCP, Unix domain socket, or Windows named pipe).
+3. **Daemon mode:** `daemon.Run(configPath)` loads `mikyu.yaml` configuration, instantiates `engine.Manager`, creates `server.Server`, and listens on target endpoints (TCP, Unix domain socket, or Windows named pipe). The daemon also reconciles declared queues on startup.
 
 ---
 
@@ -129,36 +142,39 @@ github.com/dmunish/mikyu/
 Defines public domain models and primary client/queue interfaces.
 
 ```go
-type Message struct {
-	Offset    uint64    // Monotonically increasing logical record offset
-	ID        string    // UUID v7 string representation
-	Timestamp time.Time // Creation timestamp (nanosecond accuracy)
-	Payload   []byte    // Raw user payload slice
+package mikyu
+
+import (
+	"context"
+	"errors"
+	"io"
+	"iter"
+	"time"
+
+	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/logqueue"
+)
+
+// Re-export core engine types as type aliases.
+type Message = engine.Message
+type SystemStats = engine.EngineStats
+type QueueStats = engine.QueueStats
+
+// Group tracks consumer offsets for a log queue.
+type Group = logqueue.Group
+
+// Task represents a unit of work (future).
+type Task struct {
+	ID          string
+	Payload     []byte
+	Attempts    uint32
+	MaxAttempts uint32
+	Visibility  time.Time
+	ScheduledAt time.Time
 }
 
-type SystemStats struct {
-	ActiveQueues int
-	TotalBytes   int64
-	Queues       map[string]QueueStats
-}
-
-type QueueStats struct {
-	MessageCount uint64
-	SegmentCount int
-	SizeBytes    int64
-	LastOffset   uint64
-}
-
-type Client interface {
-	io.Closer
-	CreateQueue(ctx context.Context, name string, opts ...QueueOption) (Queue, error)
-	Queue(name string) (Queue, error)
-	ListQueues(ctx context.Context) ([]string, error)
-	DeleteQueue(ctx context.Context, name string) error
-	Stats(ctx context.Context) (SystemStats, error)
-}
-
-type Queue interface {
+// LogQueue provides log-oriented operations (streaming, tailing, groups).
+type LogQueue interface {
 	Name() string
 	Produce(ctx context.Context, payload []byte) (uint64, error)
 	ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
@@ -170,13 +186,33 @@ type Queue interface {
 	Group(name string) Group
 }
 
-type Group interface {
+// TaskQueue is a placeholder for future task semantics.
+type TaskQueue interface {
 	io.Closer
 	Name() string
-	Mark(offset uint64)
-	Commit(ctx context.Context) error
-	FetchOffset(ctx context.Context) (uint64, error)
 }
+
+// Client is the top-level interface for interacting with a Mikyu server.
+type Client interface {
+	io.Closer
+	CreateQueue(ctx context.Context, name string, opts ...QueueOption) error
+	LogQueue(name string) (LogQueue, error)
+	TaskQueue(name string) (TaskQueue, error)
+	ListQueues(ctx context.Context) ([]string, error)
+	DeleteQueue(ctx context.Context, name string) error
+	Stats(ctx context.Context) (SystemStats, error)
+}
+
+// Error variables re-exported from the engine.
+var (
+	ErrQueueExists      = errors.New("queue with this name already exists")
+	ErrQueueNotFound    = errors.New("queue not found")
+	ErrOffsetNotFound   = errors.New("offset not found")
+	ErrMessageTooLarge  = errors.New("message payload exceeds maximum allowed size")
+	ErrTaskNotSupported = errors.New("task queues are not yet supported")
+)
+
+type _ = iter.Seq2[Message, error]
 ```
 
 **Implementation Details:**
@@ -248,11 +284,11 @@ type Codec[T any] struct {
 }
 
 type Typed[T any] struct {
-	queue Queue
+	queue LogQueue
 	codec Codec[T]
 }
 
-func NewTyped[T any](q Queue, codec Codec[T]) *Typed[T]
+func NewTyped[T any](q LogQueue, codec Codec[T]) *Typed[T]
 func (t *Typed[T]) Produce(ctx context.Context, val T) (uint64, error)
 func (t *Typed[T]) Read(ctx context.Context, offset uint64) (T, error)
 ```
@@ -264,15 +300,17 @@ func (t *Typed[T]) Read(ctx context.Context, offset uint64) (T, error)
 
 #### `embedded.go`
 
-Directly wraps `internal/engine.Manager` for in-process log operations. Re-exports core error variables.
+Directly wraps `internal/engine.Manager` for in-process log operations, using `internal/logqueue` for high-level queue semantics.
 
 ```go
-var (
-	ErrQueueExists     = engine.ErrQueueExists
-	ErrQueueNotFound   = engine.ErrQueueNotFound
-	ErrOffsetNotFound  = engine.ErrOffsetNotFound
-	ErrMessageTooLarge = engine.ErrMessageTooLarge
-)
+type embeddedClient struct {
+	mgr    *engine.Manager
+	queues map[string]*logqueue.LogQueue
+	tasks  map[string]TaskQueue // stub, unused
+	mu     sync.RWMutex
+	cfg    ClientConfig
+	closed bool
+}
 
 func Open(dir string, opts ...ClientOption) (Client, error)
 ```
@@ -280,9 +318,11 @@ func Open(dir string, opts ...ClientOption) (Client, error)
 **Implementation Details:**
 
 - `Open`: Applies `ClientOption`s to `DefaultClientConfig()`, creates an `engine.Config`, and calls `engine.OpenManager(dir, engineCfg)`. Returns an `*embeddedClient`.
+- `CreateQueue`: Creates an `engine.Queue` via `mgr.CreateQueue(name, engineCfg)`, then wraps it in a `logqueue.NewLogQueue(name, storage)` and stores it in the `queues` map.
+- `LogQueue`: Returns an existing `*logqueue.LogQueue` or creates a new wrapper around an existing `engine.Storage` retrieved from the manager.
+- `TaskQueue`: Returns `ErrTaskNotSupported` (stub).
 - `embeddedClient`: Implements `Client`. Methods validate `ctx.Err()` prior to execution and forward calls to `mgr`.
-- `embeddedQueue`: Wraps `*engine.Queue`. Methods delegate directly to engine queue primitives.
-- `embeddedGroup`: Wraps `*engine.Queue` and tracks high-water offset guarded by `sync.Mutex`. `Mark` sets `highWater = offset + 1` if `offset >= highWater`. `Commit` invokes `q.CommitOffset(ctx, groupName, highWater)`.
+- `Stats`: Calls `mgr.Stats()` and converts `engine.EngineStats` to `SystemStats`.
 
 #### `remote.go`
 
@@ -316,6 +356,7 @@ func Dial(target string, opts ...ClientOption) (Client, error)
 - `release(ch)`: Returns `ch` to `pool`. If `closed.Load()` is true or `pool` is full, closes underlying `ch.conn`.
 - `Close()`: Swaps `closed` atomic boolean to true and drains/closes all idle connections in `pool`.
 - `exchange(ctx, op, body)`: Acquires connection, sets write/read timeout deadline from `ctx`, calls `protocol.WriteFrame` and `protocol.ReadFrame`. If response opcode is `OpError`, decodes wire error via `decodeProtocolError` and returns corresponding Go error (`ErrQueueExists`, `ErrQueueNotFound`, `ErrOffsetNotFound`).
+- `remoteLogQueue`: Implements `LogQueue`. `Produce` writes `OpProduce` frame, `Read` writes `OpRead` frame, `LastOffset` writes `OpTail` frame, `Stream`/`Tail` use `iter.Seq2` with `q.Read` and `q.LastOffset`.
 - `remoteGroup`: Uses `sync.Mutex` for thread-safe high-water offset tracking; `Commit` writes an `OpCommitOffset` binary frame to the connection.
 
 ---
@@ -397,6 +438,27 @@ func ToQueueEngineConfig(defaults EngineConfig, q QueueConfig) engine.Config
 ---
 
 ### Internal Storage Engine (`package engine`)
+
+#### `storage.go`
+
+Defines the policy-agnostic storage interface implemented by `Queue`.
+
+```go
+type Storage interface {
+	Name() string
+	Append(ctx context.Context, payload []byte) (uint64, error)
+	AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
+	Read(ctx context.Context, offset uint64) (Message, error)
+	ReadBatch(ctx context.Context, start uint64, n int) ([]Message, error)
+	LastOffset() uint64
+	CommitOffset(ctx context.Context, group string, offset uint64) error
+	FetchOffset(ctx context.Context, group string) (uint64, error)
+}
+```
+
+**Implementation Details:**
+
+- `Storage` is the minimal interface required by `logqueue.LogQueue` to provide log-oriented operations. It abstracts the engine `Queue` implementation, allowing the `logqueue` package to be reuseable across embedded and remote backends.
 
 #### `index.go`
 
@@ -527,9 +589,9 @@ func (w *wal) stop() error
 - `wait(seq)`: Holds `mu`, calls `cond.Wait()` in a loop while `published <= seq && err == nil`. Returns persistent write error if present.
 - `flush()`: Locks `mu`. If `buf` is empty or `err` is set, unlocks and returns. Otherwise, **swaps `buf` and `pending` to local variables** (`w.buf = nil`, `w.pending = nil`) and **unlocks `mu`**. Performs `w.file.WriteAt(data, entries[0].pos)` followed by `syncData(w.file)`. Relocks `mu`: if write failed, sets `w.err`; otherwise advances `published += len(entries)`. Signals waiting caller goroutines via `cond.Broadcast()`.
 - **Platform Sync Helpers:**
-- `sync_darwin.go`: Calls `unix.FcntlInt(f.Fd(), unix.F_FULLFSYNC, 0)`; falls back to `f.Sync()` on failure.
-- `sync_fdatasync.go` (Linux/BSD): Executes `unix.Fdatasync(int(f.Fd()))` to flush data blocks without updating directory inode metadata overhead.
-- `sync_windows.go`: Executes `f.Sync()`.
+  - `sync_darwin.go`: Calls `unix.FcntlInt(f.Fd(), unix.F_FULLFSYNC, 0)`; falls back to `f.Sync()` on failure.
+  - `sync_fdatasync.go` (Linux/BSD): Executes `unix.Fdatasync(int(f.Fd()))` to flush data blocks without updating directory inode metadata overhead.
+  - `sync_windows.go`: Executes `f.Sync()`.
 
 #### `queue.go`
 
@@ -577,8 +639,8 @@ type Queue struct {
 }
 
 func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, error)
-func (q *Queue) Produce(ctx context.Context, payload []byte) (uint64, error)
-func (q *Queue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
+func (q *Queue) Append(ctx context.Context, payload []byte) (uint64, error)
+func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
 func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error)
 func (q *Queue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([]Message, error)
 func (q *Queue) LastOffset() uint64
@@ -592,28 +654,31 @@ func (q *Queue) Close() error
 - `openQueue`: Invokes `cfg.withDefaults()`, creates queue directory, applies directory encryption if configured, calls `loadSegments()`.
 - `loadSegments()`: Identifies `.log` files in directory, extracts numerical base offsets (`%020d.log`), sorts base offsets. Opens each segment via `openSegment`, recovers index entries. Calls `enableMMap()` on all historical closed segments. Sets active segment to the latest segment, initializes WAL at `startOffset = len(q.index)`, and starts WAL flusher goroutine.
 - `roll()`: Stops active WAL, enables `mmap` on active segment, opens a new segment starting at `nextOffset`, appends it to `segments`, initializes a new WAL, and starts it.
-- `Produce`:
+- `Append` (renamed from `Produce`):
   1. Validates payload length against `MaxMessageBytes` (returns `ErrMessageTooLarge` if exceeded).
   2. Encodes record with raw UUID v7 and nanosecond timestamp.
   3. Acquires `q.mu.Lock()`. Checks segment size limits (`MaxSegmentBytes`) and segment age (`MaxSegmentAge`); triggers `roll()` if thresholds are exceeded. Also checks that the record length itself does not exceed `MaxSegmentBytes` (returns `ErrRecordTooLarge` if so).
   4. Calls `q.w.push(rec, pos)`, updates `q.active.pos += recLen`, increments `q.nextOffset++`, unlocks `q.mu`.
   5. Signals `q.w.wake` if required, then calls `q.w.wait(seq)` to block until durable disk sync completes.
   6. Re-acquires `q.mu.Lock()`, writes 16-byte index entry to segment via `writeIndex`, updates `q.index` slice at offset position, unlocks `q.mu`, and returns offset.
-- `ProduceBatch`: Performs batched record encoding, checks limits (both `MaxMessageBytes` and `MaxSegmentBytes` per record), executes `w.pushBatch`, waits for sync, updates index entries, and returns allocated offset slice.
+- `AppendBatch` (renamed from `ProduceBatch`): Performs batched record encoding, checks limits (both `MaxMessageBytes` and `MaxSegmentBytes` per record), executes `w.pushBatch`, waits for sync, updates index entries, and returns allocated offset slice.
 - `Read`:
   1. Acquires `q.mu.RLock()`. Validates offset within `q.index` bounds (returns `ErrOffsetNotFound` if invalid).
   2. Retrieves `indexEntry`. Checks if memory-mapped data (`entry.seg.mmapData`) spans the offset region.
-  3. **Zero-Copy Path:** If `mmapData` is available, extracts byte slice slice `entry.seg.mmapData[pos : pos+len]` directly without memory allocation or syscalls.
+  3. **Zero-Copy Path:** If `mmapData` is available, extracts byte slice `entry.seg.mmapData[pos : pos+len]` directly without memory allocation or syscalls.
   4. **Fallback Path:** If active segment (unmapped), allocates buffer and calls `entry.seg.logFile.ReadAt(rec, pos)`.
   5. Releases `q.mu.RUnlock()`. Decodes record via `decodeRecord(rec[4:])` and returns `Message`.
 - `ReadBatch`: Takes read lock, clamps `count` to available messages, snapshots `indexEntry` slice, releases lock, and decodes records outside lock hold.
+- `LastOffset`: Returns `q.nextOffset` (the offset of the next message to be written).
+- `CommitOffset`: Delegates to `q.offsets.Commit(q.name, group, offset)`.
+- `FetchOffset`: Delegates to `q.offsets.Fetch(q.name, group)`.
 
 #### `encode.go`
 
 Handles CRC32 record encoding, decoding, and raw UUID v7 conversions.
 
 - **Binary Record Framing:**
-`[4B Body Length][4B CRC32 Checksum][2B ID Len (16)][16B Raw UUID v7][8B Timestamp Nano][M-B Payload]`
+  `[4B Body Length][4B CRC32 Checksum][2B ID Len (16)][16B Raw UUID v7][8B Timestamp Nano][M-B Payload]`
 
 ```go
 func encodeRecord(id uuid.UUID, ts time.Time, payload []byte) []byte
@@ -631,10 +696,10 @@ OS-specific kernel directory transparent encryption handlers.
 
 **Implementation Details:**
 
-- `EnsureDirectoryEncrypted(dirPath)`: 
-- **Linux (`encrypt_linux.go`):** Opens directory file descriptor, constructs `fscryptPolicy` struct, and executes `unix.Syscall(unix.SYS_IOCTL, f.Fd(), FS_IOC_SET_ENCRYPTION_POLICY, ...)` using AES-256-XTS contents and AES-256-CTS filenames encryption modes. Silently ignores `ENOTTY`, `EOPNOTSUPP`, and `EEXIST` error codes for unsupported filesystems.
-- **Windows (`encrypt_windows.go`):** Invokes `EncryptFileW` via DLL procedure call on `advapi32.dll` to apply NTFS Encrypting File System (EFS) directory attributes.
-- **Other (`encrypt_other.go`):** macOS/BSD fallback. Logs a warning that host OS kernel lacks native transparent directory policies and returns nil.
+- `EnsureDirectoryEncrypted(dirPath)`:
+  - **Linux (`encrypt_linux.go`):** Opens directory file descriptor, constructs `fscryptPolicy` struct, and executes `unix.Syscall(unix.SYS_IOCTL, f.Fd(), FS_IOC_SET_ENCRYPTION_POLICY, ...)` using AES-256-XTS contents and AES-256-CTS filenames encryption modes. Silently ignores `ENOTTY`, `EOPNOTSUPP`, and `EEXIST` error codes for unsupported filesystems.
+  - **Windows (`encrypt_windows.go`):** Invokes `EncryptFileW` via DLL procedure call on `advapi32.dll` to apply NTFS Encrypting File System (EFS) directory attributes.
+  - **Other (`encrypt_other.go`):** macOS/BSD fallback. Logs a warning that host OS kernel lacks native transparent directory policies and returns nil.
 
 #### `manager.go`
 
@@ -663,8 +728,8 @@ type Manager struct {
 }
 
 func OpenManager(dir string, cfg Config) (*Manager, error)
-func (m *Manager) CreateQueue(name string, opts ...Config) (*Queue, error)
-func (m *Manager) GetQueue(name string) (*Queue, error)
+func (m *Manager) CreateQueue(name string, opts ...Config) (Storage, error)
+func (m *Manager) GetQueue(name string) (Storage, error)
 func (m *Manager) ListQueues() []string
 func (m *Manager) DeleteQueue(name string) error
 func (m *Manager) Stats() EngineStats
@@ -674,11 +739,85 @@ func (m *Manager) Close() error
 **Implementation Details:**
 
 - `OpenManager`: Creates root data directory, applies directory encryption if configured, opens manager `OffsetStore`, scans subdirectories, and calls `openQueue` to restore existing queues. Returns `*Manager`.
-- `CreateQueue`: Takes write lock (`m.mu.Lock()`). Checks if queue exists in map or on disk (returns `ErrQueueExists` if present). Opens new queue via `openQueue` (optionally with a custom `Config` passed as variadic argument), stores in `m.queues`, and returns `*Queue`.
+- `CreateQueue`: Takes write lock (`m.mu.Lock()`). Checks if queue exists in map or on disk (returns `ErrQueueExists` if present). Opens new queue via `openQueue` (optionally with a custom `Config` passed as variadic argument), stores in `m.queues`, and returns `Storage` (the `*Queue`).
 - `GetQueue`: Takes read lock (`m.mu.RLock()`), looks up queue by name, returns `ErrQueueNotFound` if absent.
 - `DeleteQueue`: Takes write lock, retrieves queue, calls `q.Close()` to flush WAL and close file handles, removes queue from map, and deletes queue directory recursively via `os.RemoveAll`.
 - `Stats`: Takes read lock, iterates through active queues, acquires per-queue **exclusive** lock (`q.mu.Lock()`) to sum segment sizes and index counts, and returns `EngineStats`.
 - `Close`: Takes write lock, invokes `Close()` on all active queues, and closes manager `OffsetStore`.
+
+---
+
+### Internal Log Queue Wrapper (`package logqueue`)
+
+#### `logqueue.go`
+
+Provides high-level log-oriented operations built on top of the `engine.Storage` interface.
+
+```go
+type LogQueue struct {
+	name    string
+	storage engine.Storage
+	mu      sync.RWMutex
+	groups  map[string]*group
+}
+
+func NewLogQueue(name string, storage engine.Storage) *LogQueue
+func (q *LogQueue) Name() string
+func (q *LogQueue) Produce(ctx context.Context, payload []byte) (uint64, error)
+func (q *LogQueue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
+func (q *LogQueue) Read(ctx context.Context, offset uint64) (engine.Message, error)
+func (q *LogQueue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([]engine.Message, error)
+func (q *LogQueue) LastOffset(ctx context.Context) (uint64, error)
+func (q *LogQueue) Stream(ctx context.Context, startOffset uint64) iter.Seq2[engine.Message, error]
+func (q *LogQueue) Tail(ctx context.Context, startOffset uint64) iter.Seq2[engine.Message, error]
+func (q *LogQueue) Group(name string) Group
+func (q *LogQueue) CommitOffset(ctx context.Context, group string, offset uint64) error
+func (q *LogQueue) FetchOffset(ctx context.Context, group string) (uint64, error)
+func (q *LogQueue) Close() error
+```
+
+**Implementation Details:**
+
+- `Produce`: Delegates to `q.storage.Append(ctx, payload)`.
+- `ProduceBatch`: Delegates to `q.storage.AppendBatch(ctx, payloads)`.
+- `Read`: Delegates to `q.storage.Read(ctx, offset)`.
+- `ReadBatch`: Delegates to `q.storage.ReadBatch(ctx, startOffset, count)`.
+- `LastOffset`: Checks context cancellation, then returns `q.storage.LastOffset()`.
+- `Stream`: Returns an `iter.Seq2[engine.Message, error]` iterator. Loops from `startOffset`, calling `q.storage.Read()`. Terminates when `Read()` returns `engine.ErrOffsetNotFound` or when context is canceled.
+- `Tail`: Returns an `iter.Seq2[engine.Message, error]` iterator. Polls `q.storage.LastOffset()` continuously; if `offset <= last`, reads and yields records; otherwise sleeps for 5 milliseconds before re-checking. Respects context cancellation.
+- `Group`: Returns a `group` instance (or an existing one from the `groups` map).
+- `CommitOffset`: Delegates to `q.storage.CommitOffset(ctx, group, offset)`.
+- `FetchOffset`: Delegates to `q.storage.FetchOffset(ctx, group)`.
+- `Close`: Returns nil (the underlying storage is managed by the client/manager).
+
+#### `group.go`
+
+Implements consumer group offset tracking.
+
+```go
+type Group interface {
+	io.Closer
+	Name() string
+	Mark(offset uint64)
+	Commit(ctx context.Context) error
+	FetchOffset(ctx context.Context) (uint64, error)
+}
+
+type group struct {
+	q         *LogQueue
+	name      string
+	mu        sync.Mutex
+	highWater uint64
+	closed    bool
+}
+```
+
+**Implementation Details:**
+
+- `Mark(offset)`: Updates `highWater = offset + 1` if `offset >= highWater`.
+- `Commit(ctx)`: Persists `highWater` via `q.CommitOffset(ctx, g.name, offset)`.
+- `FetchOffset(ctx)`: Retrieves persisted offset via `q.FetchOffset(ctx, g.name)`.
+- `Close()`: Automatically commits the current `highWater` using `context.Background()`.
 
 ---
 
@@ -728,7 +867,7 @@ func ParseTarget(target string) (network string, addr string, err error)
 Implements length-prefixed binary frame readers and pooled frame writers.
 
 - **Wire Frame Layout:**
-`[4B Big-Endian Length][1B Opcode][Payload]` (Length value = `1 + len(payload)`).
+  `[4B Big-Endian Length][1B Opcode][Payload]` (Length value = `1 + len(payload)`).
 
 ```go
 var framePool = sync.Pool{ New: func() any { b := make([]byte, 32*1024); return &b } }
@@ -801,7 +940,7 @@ func (s *Server) serveConn(conn net.Conn)
 
 #### `internal/server/handlers.go`
 
-Dispatches protocol opcodes to corresponding storage engine operations.
+Dispatches protocol opcodes to corresponding storage engine operations via `logqueue`.
 
 ```go
 func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byte, respBody []byte, shouldShutdown bool)
@@ -810,7 +949,7 @@ func (s *Server) handleProduce(ctx context.Context, body []byte) (byte, []byte)
 func (s *Server) handleProduceBatch(ctx context.Context, body []byte) (byte, []byte)
 func (s *Server) handleRead(ctx context.Context, body []byte) (byte, []byte)
 func (s *Server) handleReadBatch(ctx context.Context, body []byte) (byte, []byte)
-func (s *Server) handleTail(body []byte) (byte, []byte)
+func (s *Server) handleTail(ctx context.Context, body []byte) (byte, []byte)
 func (s *Server) handleCommitOffset(ctx context.Context, body []byte) (byte, []byte)
 func (s *Server) handleFetchOffset(ctx context.Context, body []byte) (byte, []byte)
 func (s *Server) handleListQueues() (byte, []byte)
@@ -820,18 +959,18 @@ func (s *Server) handleStats() (byte, []byte)
 
 **Implementation Details:**
 
-- `dispatch`: Evaluates opcode byte and routes to the appropriate handler. Handlers decode the request body, call the corresponding `engine.Manager`/`engine.Queue` method, and encode the response. If an error occurs, they encode a `protocol.OpError` frame with a specific error code.
-- `OpCreateQueue`: Reads queue name string, calls `mgr.CreateQueue`.
-- `OpProduce`: Reads queue name and payload bytes, calls `q.Produce`, returns Uint64 offset response.
-- `OpProduceBatch`: Reads queue name, payload count, and payloads slice, calls `q.ProduceBatch`, returns Uint32 count and array of Uint64 offsets.
-- `OpRead`: Reads queue name and Uint64 offset, calls `q.Read`, encodes offset, string ID, Uint64 timestamp (nanoseconds), and payload bytes.
-- `OpReadBatch`: Reads queue name, Uint64 startOffset, and Uint32 count, calls `q.ReadBatch`, encodes batch response.
-- `OpTail`: Reads queue name, calls `q.LastOffset()`, returns Uint64 offset.
-- `OpCommitOffset`: Reads queue name, group name, Uint64 offset, calls `q.CommitOffset`.
-- `OpFetchOffset`: Reads queue name, group name, calls `q.FetchOffset`, returns Uint64 offset.
-- `OpListQueues`: Calls `mgr.ListQueues`, encodes Uint32 count and string names.
-- `OpDeleteQueue`: Reads queue name string, calls `mgr.DeleteQueue`.
-- `OpStats`: Calls `mgr.Stats`, encodes Uint32 active queues and Uint64 total bytes.
+- `dispatch`: Evaluates opcode byte and routes to the appropriate handler. Handlers decode the request body, call the corresponding `engine.Manager`/`engine.Storage` method via `logqueue.LogQueue` wrappers, and encode the response. If an error occurs, they encode a `protocol.OpError` frame with a specific error code.
+- `handleCreateQueue`: Reads queue name string, calls `mgr.CreateQueue`.
+- `handleProduce`: Reads queue name and payload bytes, gets storage from `mgr.GetQueue`, wraps in `logqueue.NewLogQueue`, calls `q.Produce`, returns Uint64 offset response.
+- `handleProduceBatch`: Reads queue name, payload count, and payloads slice, calls `q.ProduceBatch`, returns Uint32 count and array of Uint64 offsets.
+- `handleRead`: Reads queue name and Uint64 offset, calls `q.Read`, encodes offset, string ID, Uint64 timestamp (nanoseconds), and payload bytes.
+- `handleReadBatch`: Reads queue name, Uint64 startOffset, and Uint32 count, calls `q.ReadBatch`, encodes batch response.
+- `handleTail`: Reads queue name, calls `q.LastOffset()`, returns Uint64 offset.
+- `handleCommitOffset`: Reads queue name, group name, Uint64 offset, calls `q.CommitOffset`.
+- `handleFetchOffset`: Reads queue name, group name, calls `q.FetchOffset`, returns Uint64 offset.
+- `handleListQueues`: Calls `mgr.ListQueues`, encodes Uint32 count and string names.
+- `handleDeleteQueue`: Reads queue name string, calls `mgr.DeleteQueue`.
+- `handleStats`: Calls `mgr.Stats`, encodes Uint32 active queues and Uint64 total bytes.
 - `OpShutdown`: Returns `(protocol.OpShutdown, nil, true)` to signal server shutdown routine.
 - Default: Encodes `ErrCodeUnknown` via `protocol.EncodeError` and returns `OpError`.
 
@@ -878,36 +1017,48 @@ func (l *Listener) Close() error
 
 ---
 
-### Executable Application (`cmd/mikyu`)
+### Internal Daemon Module (`package daemon`)
 
-#### `cmd/mikyu/main.go`
+#### `internal/daemon/daemon.go`
 
-Single-binary CLI entrypoint routing commands between background server daemon, REPL shell, TUI dashboard, and CLI executor.
+Manages daemon lifecycle, socket probing, background process spawning, and shutdown signal sending.
+
+```go
+func Run(configPath string) error
+func EnsureDaemonRunning(target string) error
+func IsDaemonAlive(target string) bool
+func SendShutdownSignal(target string) error
+```
 
 **Implementation Details:**
 
-- `main()`: Declares `-target` and `-config` flags via `flag.String()`, but **does not call `flag.Parse()`**. Consequently, `*targetFlag` and `*configFlag` always retain their default values. Subcommand detection uses `os.Args[1]` directly.
-- **Bare Execution (`len(os.Args) == 1`):** Calls `RunREPL(*targetFlag)`. Auto-spawns daemon if offline.
-- **Subcommand `daemon`/`server`:** Calls `runDaemonServer(*configFlag)`.
-- **Subcommand `shell`/`repl`:** Calls `RunREPL(*targetFlag)`.
-- **Subcommand `tui`/`dashboard`:** Prints TUI connection notice.
-- **Default Fallback:** Routes remaining commands directly to `RunCLI(*targetFlag, os.Args[1:])`.
-- `runDaemonServer`: Loads config via `config.Load`, opens `engine.Manager`, reconciles declared queues in `cfg.Queues` (calling `mgr.CreateQueue`), starts `server.Server`, listens for `SIGINT`/`SIGTERM` OS signal notifications, closes manager, stops server, and exits cleanly.
+- `Run`: Loads config via `config.Load`, opens `engine.Manager`, reconciles declared queues in `cfg.Queues` (calling `mgr.CreateQueue`), starts `server.Server`, listens for `SIGINT`/`SIGTERM` OS signal notifications, closes manager, stops server, and exits cleanly.
+- `IsDaemonAlive`: Attempts `net.DialTimeout(network, addr, 150ms)`. Returns `true` if connection succeeds, `false` otherwise.
+- `EnsureDaemonRunning`: Returns immediately if `IsDaemonAlive(target)` is true. If false, resolves `os.Executable()`, creates process `exec.Command(execPath, "daemon")`, sets platform process detachment attributes via `setDetachedProcessAttr(cmd)`, and executes `cmd.Start()`. Polls `IsDaemonAlive` every 50ms for up to 3 seconds until daemon responds.
+- `SendShutdownSignal`: Dials target, writes an `OpShutdown` wire frame, and closes connection.
 
-#### `cmd/mikyu/repl.go`
+#### `detach_unix.go` & `detach_windows.go`
 
-Interactive REPL shell with auto-daemon spawning, Lipgloss banner rendering, and command evaluation loop.
+Platform-specific background process detachment build tag routines.
 
 ```go
-var (
-	accentColor  = lipgloss.Color("#FFB200")
-	promptStyle  = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
-	infoStyle    = lipgloss.NewStyle().Foreground(accentColor)
-	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
-	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	confirmArrow = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE427D")).Bold(true).Render(">")
-)
+func setDetachedProcessAttr(cmd *exec.Cmd)
+```
 
+**Implementation Details:**
+
+- **Unix (`detach_unix.go` - `//go:build !windows`):** Sets `cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}` to create a new session group detached from the controlling terminal.
+- **Windows (`detach_windows.go` - `//go:build windows`):** Sets `cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000}` (`CREATE_NO_WINDOW`) to prevent spawning a console window.
+
+---
+
+### Internal REPL Module (`package repl`)
+
+#### `internal/repl/repl.go`
+
+Interactive REPL session with auto-daemon spawning, command dispatch, and payload resolution.
+
+```go
 type replSession struct {
 	client mikyu.Client
 	target string
@@ -939,45 +1090,7 @@ func printREPLHelp()
 - `confirm(prompt)`: Displays an interactive confirmation prompt using `charm.land/huh/v2` form controls with custom Lipgloss button styles.
 - `sendShutdownSignal(target)`: Dials daemon directly, writes an `OpShutdown` wire frame, and closes connection.
 
-#### `cmd/mikyu/cli.go`
-
-Stateless one-shot subcommand handler.
-
-```go
-func RunCLI(target string, args []string)
-func isTerminal(f *os.File) bool
-func confirmCLI(prompt string, args []string) (bool, error)
-```
-
-**Implementation Details:**
-
-- `RunCLI`: Calls `EnsureDaemonRunning(target)`, connects via `mikyu.Dial(target)`, and evaluates `args[0]`:
-- `list`: Calls `client.ListQueues` and prints queue list.
-- `create`: Reads queue name, calls `client.CreateQueue`.
-- `delete`: Requires confirmation prompt via `confirmCLI` unless `-y`/`--yes`/`-f`/`--force` flag is present. Calls `client.DeleteQueue`.
-- `produce`: Resolves payload via `resolvePayload` (supports raw text, `@file`, stdin `-`), calls `q.Produce`.
-- `read`: Parses Uint64 offset argument, calls `q.Read`, prints formatted message string.
-- `tail`: Parses optional startOffset argument, streams live records using `q.Tail`.
-- `stats`: Displays active queue count and storage footprint bytes.
-- `shutdown`: Prompts confirmation, calls `sendShutdownSignal(target)`.
-- `confirmCLI`: Checks arguments for `-y`/`--yes`/`-f`/`--force`. If absent, checks if `os.Stdin` is a TTY char device (`isTerminal`); if TTY, prompts `[y/N]` answer on stdin; otherwise fails with TTY error requirement.
-- `isTerminal(f *os.File) bool`: Returns true if the file descriptor refers to a character device (TTY).
-
-#### `cmd/mikyu/daemon.go`
-
-Daemon socket probing and non-blocking background process spawning.
-
-```go
-func IsDaemonAlive(target string) bool
-func EnsureDaemonRunning(target string) error
-```
-
-**Implementation Details:**
-
-- `IsDaemonAlive`: Attempts `net.DialTimeout(network, addr, 150ms)`. Returns `true` if connection succeeds, `false` otherwise.
-- `EnsureDaemonRunning`: Returns immediately if `IsDaemonAlive(target)` is true. If false, resolves `os.Executable()`, creates process `exec.Command(execPath, "daemon")`, sets platform process detachment attributes via `setDetachedProcessAttr(cmd)`, and executes `cmd.Start()`. Polls `IsDaemonAlive` every 50ms for up to 3 seconds until daemon responds.
-
-#### `cmd/mikyu/banner.go`
+#### `internal/repl/style.go`
 
 Renders Lipgloss-styled ASCII banner logo, command reference table, and status.
 
@@ -993,20 +1106,7 @@ func PrintREPLBanner(target string)
 
 - `PrintREPLBanner`: Renders ASCII logo with multi-color vertical fire gradient using `charm.land/lipgloss/v2` (`#FFB200` to `#6F1FEF`). Renders command reference table, quickstart command hint (`produce events "hello world"`), and daemon connection target footer.
 
-#### `cmd/mikyu/detach_unix.go` & `detach_windows.go`
-
-Platform-specific background process detachment build tag routines.
-
-```go
-func setDetachedProcessAttr(cmd *exec.Cmd)
-```
-
-**Implementation Details:**
-
-- **Unix (`detach_unix.go` - `//go:build !windows`):** Sets `cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}` to create a new session group detached from the controlling terminal.
-- **Windows (`detach_windows.go` - `//go:build windows`):** Sets `cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000}` (`CREATE_NO_WINDOW`) to prevent spawning a console window.
-
-#### `cmd/mikyu/vt_other.go` & `vt_windows.go`
+#### `vt_other.go` & `vt_windows.go`
 
 Platform-specific virtual terminal setup routines.
 
@@ -1014,3 +1114,56 @@ Platform-specific virtual terminal setup routines.
 
 - **Windows (`vt_windows.go` - `//go:build windows`):** Executed in package `init()`. Retrieves stdout and stderr console handles (`windows.STD_OUTPUT_HANDLE`, `windows.STD_ERROR_HANDLE`) and updates console mode flags using `ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT` to enable native ANSI escape code sequence parsing.
 - **Other (`vt_other.go` - `//go:build !windows`):** Empty `init()` stub for POSIX systems.
+
+---
+
+### Internal CLI Module (`package cli`)
+
+#### `internal/cli/cli.go`
+
+Stateless one-shot subcommand handler.
+
+```go
+func RunCLI(target string, args []string)
+func isTerminal(f *os.File) bool
+func confirmCLI(prompt string, args []string) (bool, error)
+```
+
+**Implementation Details:**
+
+- `RunCLI`: Calls `EnsureDaemonRunning(target)`, connects via `mikyu.Dial(target)`, and evaluates `args[0]`:
+  - `list`: Calls `client.ListQueues` and prints queue list.
+  - `create`: Reads queue name, calls `client.CreateQueue`.
+  - `delete`: Requires confirmation prompt via `confirmCLI` unless `-y`/`--yes`/`-f`/`--force` flag is present. Calls `client.DeleteQueue`.
+  - `produce`: Resolves payload via `resolvePayload` (supports raw text, `@file`, stdin `-`), calls `q.Produce`.
+  - `read`: Parses Uint64 offset argument, calls `q.Read`, prints formatted message string.
+  - `tail`: Parses optional startOffset argument, streams live records using `q.Tail`.
+  - `stats`: Displays active queue count and storage footprint bytes.
+  - `shutdown`: Prompts confirmation, calls `sendShutdownSignal(target)`.
+- `confirmCLI`: Checks arguments for `-y`/`--yes`/`-f`/`--force`. If absent, checks if `os.Stdin` is a TTY char device (`isTerminal`); if TTY, prompts `[y/N]` answer on stdin; otherwise fails with TTY error requirement.
+- `isTerminal(f *os.File) bool`: Returns true if the file descriptor refers to a character device (TTY).
+
+---
+
+### Executable Application (`cmd/mikyu`)
+
+#### `cmd/mikyu/main.go`
+
+Single-binary CLI entrypoint routing commands between background server daemon, REPL shell, and CLI executor.
+
+```go
+const defaultTarget = "tcp://127.0.0.1:7420"
+
+func main()
+func run(args []string) error
+```
+
+**Implementation Details:**
+
+- `main()`: Calls `run(os.Args[1:])` and prints error to stderr if it returns non-nil.
+- `run(args)`:
+  - **Bare Execution (`len(args) == 0`):** Calls `repl.RunREPL(defaultTarget)`. Auto-spawns daemon if offline.
+  - **Subcommand `daemon`/`server`:** Calls `daemon.Run(configPath)` (config path from args[1] if present).
+  - **Subcommand `shell`/`repl`:** Calls `repl.RunREPL(defaultTarget)`.
+  - **Subcommand `cli`:** Calls `cli.RunCLI(defaultTarget, args[1:])`.
+  - **Default Fallback:** Routes remaining commands directly to `cli.RunCLI(defaultTarget, args)`.
