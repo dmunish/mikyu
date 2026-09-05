@@ -56,10 +56,14 @@ func Run(configPath string) error {
 		}
 	}()
 
-	// Wait for signals.
+	// Wait for signals or server shutdown.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+
+	select {
+	case <-sigCh:
+	case <-srv.Done():
+	}
 
 	srv.Stop()
 	return nil

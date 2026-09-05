@@ -20,21 +20,23 @@ type Server struct {
 	tlsConfig *tls.Config
 	mu        sync.Mutex
 	stopCh    chan struct{}
+	doneCh    chan struct{}
 }
+
+type ServerOption func(*Server)
 
 // New creates a new Server instance backed by the provided Manager.
 func New(mgr *engine.Manager, opts ...ServerOption) *Server {
 	s := &Server{
 		mgr:    mgr,
 		stopCh: make(chan struct{}),
+		doneCh: make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
 }
-
-type ServerOption func(*Server)
 
 func WithTLS(tlsConfig *tls.Config) ServerOption {
 	return func(s *Server) {
@@ -87,6 +89,11 @@ func (s *Server) Serve(ln net.Listener) error {
 	}
 }
 
+// Done returns a channel that is closed when the server shuts down.
+func (s *Server) Done() <-chan struct{} {
+	return s.doneCh
+}
+
 func (s *Server) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -97,6 +104,7 @@ func (s *Server) Stop() {
 		if s.listener != nil {
 			_ = s.listener.Close()
 		}
+		close(s.doneCh)
 	}
 }
 
