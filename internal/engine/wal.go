@@ -17,13 +17,15 @@ type wal struct {
 	cfg  Config
 	file *os.File
 
-	mu        sync.Mutex
-	cond      *sync.Cond
-	buf       []byte
-	pending   []pendingEntry
-	pushed    int64
-	published int64
-	err       error
+	mu          sync.Mutex
+	cond        *sync.Cond
+	buf         []byte
+	pending     []pendingEntry
+	swapBuf     []byte
+	swapPending []pendingEntry
+	pushed      int64
+	published   int64
+	err         error
 
 	wake     chan struct{}
 	shutdown chan struct{}
@@ -33,15 +35,17 @@ type wal struct {
 func newWAL(f *os.File, cfg Config, startOffset int64) *wal {
 	initCap := cfg.BatchSize * 1024
 	w := &wal{
-		file:      f,
-		cfg:       cfg.withDefaults(),
-		published: startOffset,
-		pushed:    startOffset,
-		buf:       make([]byte, 0, initCap),
-		pending:   make([]pendingEntry, 0, cfg.BatchSize),
-		wake:      make(chan struct{}, 1),
-		shutdown:  make(chan struct{}),
-		done:      make(chan struct{}),
+		file:        f,
+		cfg:         cfg.withDefaults(),
+		published:   startOffset,
+		pushed:      startOffset,
+		buf:         make([]byte, 0, initCap),
+		pending:     make([]pendingEntry, 0, cfg.BatchSize),
+		swapBuf:     make([]byte, 0, initCap),
+		swapPending: make([]pendingEntry, 0, cfg.BatchSize),
+		wake:        make(chan struct{}, 1),
+		shutdown:    make(chan struct{}),
+		done:        make(chan struct{}),
 	}
 	w.cond = sync.NewCond(&w.mu)
 	return w
@@ -139,11 +143,12 @@ func (w *wal) flush() {
 		return
 	}
 
-	// Swap staged buffers to keep lock duration minimal during disk I/O
+	// Swap staged buffers with pre-allocated swap buffers
 	data := w.buf
 	entries := w.pending
-	w.buf = nil
-	w.pending = nil
+
+	w.buf = w.swapBuf[:0]
+	w.pending = w.swapPending[:0]
 
 	// Drain wake signal associated ONLY with the buffers being flushed
 	select {
@@ -166,6 +171,11 @@ func (w *wal) flush() {
 	} else {
 		w.published += int64(len(entries))
 	}
+
+	// Reclaim used buffer capacity for next swap cycle
+	w.swapBuf = data[:0]
+	w.swapPending = entries[:0]
+
 	w.cond.Broadcast()
 	w.mu.Unlock()
 }
