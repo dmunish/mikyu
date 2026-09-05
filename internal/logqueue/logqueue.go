@@ -81,7 +81,7 @@ func (q *LogQueue) Tail(ctx context.Context, startOffset uint64) iter.Seq2[engin
 		offset := startOffset
 		for {
 			last := q.storage.LastOffset()
-			if offset <= last {
+			if offset < last {
 				msg, err := q.storage.Read(ctx, offset)
 				if err != nil {
 					if !yield(engine.Message{}, err) {
