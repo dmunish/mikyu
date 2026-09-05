@@ -98,6 +98,10 @@ func (c *embeddedClient) LogQueue(name string) (LogQueue, error) {
 	lq = logqueue.NewLogQueue(name, storage)
 
 	c.mu.Lock()
+	if existing, ok := c.queues[name]; ok {
+		c.mu.Unlock()
+		return existing, nil
+	}
 	c.queues[name] = lq
 	c.mu.Unlock()
 	return lq, nil
