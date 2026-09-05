@@ -14,10 +14,12 @@ const managerOffsetFileName = "manager-offsets.dat"
 // OffsetStore is a manager-level offset persistence store.
 // A single file tracks consumer group offsets across all queues to avoid inode exhaustion.
 type OffsetStore struct {
-	mu      sync.RWMutex
-	file    *os.File
-	w       *bufio.Writer
-	offsets map[string]uint64
+	mu                  sync.RWMutex
+	dir                 string
+	file                *os.File
+	w                   *bufio.Writer
+	offsets             map[string]uint64
+	appendsSinceCompact int
 }
 
 func openOffsetStore(dir string) (*OffsetStore, error) {
@@ -27,6 +29,7 @@ func openOffsetStore(dir string) (*OffsetStore, error) {
 		return nil, err
 	}
 	s := &OffsetStore{
+		dir:     dir,
 		file:    f,
 		w:       bufio.NewWriter(f),
 		offsets: make(map[string]uint64),
@@ -60,6 +63,51 @@ func (s *OffsetStore) recover() error {
 	}
 }
 
+func (s *OffsetStore) compactLocked() error {
+	tmpPath := filepath.Join(s.dir, "manager-offsets.dat.tmp")
+	f, err := os.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	w := bufio.NewWriter(f)
+
+	for key, off := range s.offsets {
+		keyBytes := []byte(key)
+		var hdr [2]byte
+		binary.BigEndian.PutUint16(hdr[:], uint16(len(keyBytes)))
+		_, _ = w.Write(hdr[:])
+		_, _ = w.Write(keyBytes)
+		var offBuf [8]byte
+		binary.BigEndian.PutUint64(offBuf[:], off)
+		_, _ = w.Write(offBuf[:])
+	}
+
+	if err := w.Flush(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	_ = f.Close()
+	_ = s.file.Close()
+
+	targetPath := filepath.Join(s.dir, managerOffsetFileName)
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		return err
+	}
+
+	newFile, err := os.OpenFile(targetPath, os.O_RDWR|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	s.file = newFile
+	s.w = bufio.NewWriter(newFile)
+	s.appendsSinceCompact = 0
+	return nil
+}
+
 func (s *OffsetStore) Commit(queueName, group string, offset uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -85,7 +133,15 @@ func (s *OffsetStore) Commit(queueName, group string, offset uint64) error {
 	if err := s.w.Flush(); err != nil {
 		return err
 	}
-	return s.file.Sync()
+	if err := s.file.Sync(); err != nil {
+		return err
+	}
+
+	s.appendsSinceCompact++
+	if s.appendsSinceCompact >= 5000 {
+		return s.compactLocked()
+	}
+	return nil
 }
 
 func (s *OffsetStore) Fetch(queueName, group string) uint64 {
