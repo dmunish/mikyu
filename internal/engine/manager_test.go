@@ -1,7 +1,10 @@
 package engine
 
 import (
+	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -65,4 +68,46 @@ func TestManagerCloseCleansUp(t *testing.T) {
 	_, _ = mgr.CreateQueue("q")
 	err := mgr.Close()
 	assert.NoError(t, err)
+}
+
+func TestManagerStatsConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := OpenManager(dir, Config{BatchSize: 10, MaxInterval: time.Millisecond})
+	require.NoError(t, err)
+	defer mgr.Close()
+
+	q, err := mgr.CreateQueue("concurrent-stats")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	const workers = 8
+	const ops = 50
+
+	// Concurrent producers & readers
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < ops; j++ {
+				off, err := q.Append(ctx, []byte("data"))
+				assert.NoError(t, err)
+				_, _ = q.Read(ctx, off)
+			}
+		}(i)
+	}
+
+	// Concurrent stats readers
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < ops; j++ {
+				st := mgr.Stats()
+				assert.GreaterOrEqual(t, st.ActiveQueues, 1)
+			}
+		}()
+	}
+
+	wg.Wait()
 }
