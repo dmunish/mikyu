@@ -87,3 +87,14 @@ func TestDecodeRecordInvalidIDLength(t *testing.T) {
 	// Currently decodeRecord doesn't validate ID length, so we expect it to fail CRC first.
 	assert.Error(t, err) // this will pass because CRC mismatch
 }
+
+func BenchmarkEncodeRecord(b *testing.B) {
+	id := uuid.NewV7()
+	ts := time.Now()
+	payload := make([]byte, 1024)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = encodeRecord(id, ts, payload)
+	}
+}
