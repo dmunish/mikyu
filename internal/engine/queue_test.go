@@ -338,10 +338,11 @@ func TestQueueReadUsesMMapOnRolledSegments(t *testing.T) {
 	require.GreaterOrEqual(t, len(q.segments), 2)
 
 	q.mu.RLock()
-	entry := q.index[0]
+	closedSeg := q.segments[0]
 	q.mu.RUnlock()
 
-	assert.NotNil(t, entry.seg.mmapData, "closed segment must have mmap enabled for zero-copy reads")
+	assert.NotNil(t, closedSeg.mmapData, "closed segment payload must have mmap enabled for zero-copy reads")
+	assert.NotNil(t, closedSeg.idxMMap, "closed segment index must have mmap enabled for zero-copy index reads")
 }
 
 func TestQueueConcurrentIndexDiskOrdering(t *testing.T) {
