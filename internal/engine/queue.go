@@ -231,6 +231,13 @@ func (q *Queue) Append(ctx context.Context, payload []byte) (uint64, error) {
 	seg.pos += recLen
 	off := q.nextOffset
 	q.nextOffset++
+
+	// Atomic index registration under primary lock
+	_ = seg.writeIndex(pos, recLen)
+	for uint64(len(q.index)) <= off {
+		q.index = append(q.index, indexEntry{})
+	}
+	q.index[off] = indexEntry{seg: seg, pos: pos, len: recLen}
 	q.mu.Unlock()
 
 	if wake {
@@ -243,14 +250,6 @@ func (q *Queue) Append(ctx context.Context, payload []byte) (uint64, error) {
 	if err := q.w.wait(seq); err != nil {
 		return 0, err
 	}
-
-	q.mu.Lock()
-	_ = seg.writeIndex(pos, recLen)
-	for uint64(len(q.index)) <= off {
-		q.index = append(q.index, indexEntry{})
-	}
-	q.index[off] = indexEntry{seg: seg, pos: pos, len: recLen}
-	q.mu.Unlock()
 
 	return off, nil
 }
@@ -310,6 +309,18 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 	}
 
 	q.active.pos += batchTotalLen
+
+	// Atomic index registration under primary lock
+	for i, recLen := range recLens {
+		pos := positions[i]
+		seg := segments[i]
+		off := offsets[i]
+		_ = seg.writeIndex(pos, recLen)
+		for uint64(len(q.index)) <= off {
+			q.index = append(q.index, indexEntry{})
+		}
+		q.index[off] = indexEntry{seg: seg, pos: pos, len: recLen}
+	}
 	q.mu.Unlock()
 
 	if wake {
@@ -322,19 +333,6 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 	if err := q.w.wait(seq); err != nil {
 		return nil, err
 	}
-
-	q.mu.Lock()
-	for i, recLen := range recLens {
-		pos := positions[i]
-		seg := segments[i]
-		off := offsets[i]
-		_ = seg.writeIndex(pos, recLen)
-		for uint64(len(q.index)) <= off {
-			q.index = append(q.index, indexEntry{})
-		}
-		q.index[off] = indexEntry{seg: seg, pos: pos, len: recLen}
-	}
-	q.mu.Unlock()
 
 	return offsets, nil
 }
