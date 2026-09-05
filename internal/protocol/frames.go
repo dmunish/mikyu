@@ -24,7 +24,7 @@ Wire format:
  +-----------------+---------------+----------------------+
 */
 
-// ReadFrame reads a 4-byte big-endian length prefix followed by opcode and payload.
+// ReadFrame reads opcode and reads payload directly into the destination slice.
 func ReadFrame(r *bufio.Reader) (op byte, payload []byte, err error) {
 	var hdr [4]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
@@ -36,15 +36,25 @@ func ReadFrame(r *bufio.Reader) (op byte, payload []byte, err error) {
 		return 0, nil, errors.New("zero-length frame")
 	}
 
-	buf := make([]byte, length)
-	if _, err := io.ReadFull(r, buf); err != nil {
+	var opBuf [1]byte
+	if _, err := io.ReadFull(r, opBuf[:]); err != nil {
 		return 0, nil, err
 	}
 
-	return buf[0], buf[1:], nil
+	payloadLen := length - 1
+	if payloadLen == 0 {
+		return opBuf[0], nil, nil
+	}
+
+	payload = make([]byte, payloadLen)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return 0, nil, err
+	}
+
+	return opBuf[0], payload, nil
 }
 
-// WriteFrame writes an opcode and payload using a pooled buffer to prevent memory allocations.
+// WriteFrame writes an opcode and payload using a pooled buffer, preserving enlarged buffers.
 func WriteFrame(w io.Writer, op byte, payload []byte) error {
 	total := uint32(1 + len(payload))
 
@@ -53,6 +63,7 @@ func WriteFrame(w io.Writer, op byte, payload []byte) error {
 
 	if uint32(len(buf)) < 4+total {
 		buf = make([]byte, 4+total)
+		*bufPtr = buf // Retain expanded buffer pointer for pool reuse
 	}
 
 	binary.BigEndian.PutUint32(buf[0:4], total)
@@ -60,8 +71,6 @@ func WriteFrame(w io.Writer, op byte, payload []byte) error {
 	copy(buf[5:], payload)
 
 	_, err := w.Write(buf[:4+total])
-	if uint32(len(*bufPtr)) >= 4+total {
-		framePool.Put(bufPtr)
-	}
+	framePool.Put(bufPtr) // Always return buffer pointer to pool
 	return err
 }
