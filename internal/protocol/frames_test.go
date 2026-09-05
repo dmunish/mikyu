@@ -3,6 +3,7 @@ package protocol
 import (
 	"bufio"
 	"bytes"
+	"io"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -49,4 +50,16 @@ func TestWriteFrameEmptyPayload(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, OpShutdown, op)
 	assert.Empty(t, data)
+}
+
+func BenchmarkWriteFrame(b *testing.B) {
+	payload := make([]byte, 64*1024) // 64 KB frame
+
+	b.ReportAllocs()
+
+	for b.Loop() {
+		if err := WriteFrame(io.Discard, OpProduce, payload); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
