@@ -141,7 +141,7 @@ func (m *Manager) Stats() EngineStats {
 
 	for name, q := range m.queues {
 		q.mu.RLock()
-		msgCount := uint64(len(q.index))
+		msgCount := q.publishedOffset
 		segCount := len(q.segments)
 		lastOff := q.nextOffset
 
