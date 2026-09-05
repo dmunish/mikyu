@@ -17,6 +17,7 @@ type segment struct {
 	pos       int64
 	createdAt time.Time
 	mmapData  mmap.MMap
+	idxMMap   mmap.MMap // Memory-mapped index region for closed historical segment
 }
 
 func openSegment(dir string, baseOff uint64) (*segment, error) {
@@ -53,15 +54,39 @@ func openSegment(dir string, baseOff uint64) (*segment, error) {
 
 // Map the segment into read-only memory once closed for production zero-copy reads.
 func (s *segment) enableMMap() error {
-	if s.mmapData != nil {
-		return nil
+	if s.mmapData == nil {
+		m, err := mmap.Map(s.logFile, mmap.RDONLY, 0)
+		if err != nil {
+			return err
+		}
+		s.mmapData = m
 	}
-	m, err := mmap.Map(s.logFile, mmap.RDONLY, 0)
-	if err != nil {
-		return err
+	if s.idxMMap == nil {
+		if info, err := s.idxFile.Stat(); err == nil && info.Size() > 0 {
+			m, err := mmap.Map(s.idxFile, mmap.RDONLY, 0)
+			if err != nil {
+				return err
+			}
+			s.idxMMap = m
+		}
 	}
-	s.mmapData = m
 	return nil
+}
+
+func (s *segment) readIndexEntry(offset uint64) (pos int64, length int64, err error) {
+	idxPos := int64(offset-s.baseOff) * 16
+	var buf [16]byte
+
+	// Zero-copy read from mapped .idx file if historical, otherwise syscall ReadAt
+	if len(s.idxMMap) >= int(idxPos+16) {
+		copy(buf[:], s.idxMMap[idxPos:idxPos+16])
+	} else if _, err := s.idxFile.ReadAt(buf[:], idxPos); err != nil {
+		return 0, 0, err
+	}
+
+	pos = int64(binary.BigEndian.Uint64(buf[0:8]))
+	length = int64(binary.BigEndian.Uint64(buf[8:16]))
+	return pos, length, nil
 }
 
 func (s *segment) writeIndex(pos, len int64) error {
