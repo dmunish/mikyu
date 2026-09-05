@@ -104,6 +104,31 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, 
 	}
 	return q, nil
 }
+func (q *Queue) locateSegment(offset uint64) (*segment, error) {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+
+	if offset >= q.nextOffset {
+		return nil, ErrOffsetNotFound
+	}
+
+	// Binary search across open segments (O(log S), where S = segment count)
+	idx, found := slices.BinarySearchFunc(q.segments, offset, func(seg *segment, target uint64) int {
+		if target < seg.baseOff {
+			return 1
+		}
+		return -1
+	})
+
+	if !found && idx > 0 {
+		idx--
+	}
+
+	if idx < len(q.segments) {
+		return q.segments[idx], nil
+	}
+	return nil, ErrOffsetNotFound
+}
 
 // loadSegments opens all existing segment files and initialises the WAL.
 func (q *Queue) loadSegments() error {
@@ -343,20 +368,22 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 		return Message{}, err
 	}
 
-	q.mu.RLock()
-	if offset >= uint64(len(q.index)) || q.index[offset].seg == nil {
-		q.mu.RUnlock()
+	seg, err := q.locateSegment(offset)
+	if err != nil {
+		return Message{}, err
+	}
+
+	pos, recLen, err := seg.readIndexEntry(offset)
+	if err != nil {
 		return Message{}, ErrOffsetNotFound
 	}
-	entry := q.index[offset]
-	q.mu.RUnlock()
 
 	var buf []byte
-	if len(entry.seg.mmapData) >= int(entry.pos+entry.len) {
-		buf = entry.seg.mmapData[entry.pos : entry.pos+entry.len]
+	if len(seg.mmapData) >= int(pos+recLen) {
+		buf = seg.mmapData[pos : pos+recLen] // Zero-copy payload slice
 	} else {
-		buf = make([]byte, entry.len)
-		if _, err := entry.seg.logFile.ReadAt(buf, entry.pos); err != nil {
+		buf = make([]byte, recLen)
+		if _, err := seg.logFile.ReadAt(buf, pos); err != nil {
 			return Message{}, err
 		}
 	}
@@ -378,33 +405,43 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 	}
 
 	q.mu.RLock()
-	total := uint64(len(q.index))
+	total := q.nextOffset
+	q.mu.RUnlock()
+
 	if start >= total {
-		q.mu.RUnlock()
 		return nil, ErrOffsetNotFound
 	}
 
-	end := int(start) + n
-	if uint64(end) > total {
-		end = int(total)
+	end := start + uint64(n)
+	if end > total {
+		end = total
 	}
 
-	entries := make([]indexEntry, end-int(start))
-	copy(entries, q.index[start:end])
-	q.mu.RUnlock()
+	count := int(end - start)
+	msgs := make([]Message, 0, count)
 
-	msgs := make([]Message, 0, len(entries))
-	for i, entry := range entries {
-		if entry.seg == nil {
-			break // Pending write
+	var currentSeg *segment
+	for off := start; off < end; off++ {
+		// Re-use currentSeg if off still belongs to it; locate new segment on segment boundaries
+		if currentSeg == nil || off < currentSeg.baseOff {
+			seg, err := q.locateSegment(off)
+			if err != nil {
+				break
+			}
+			currentSeg = seg
+		}
+
+		pos, recLen, err := currentSeg.readIndexEntry(off)
+		if err != nil {
+			break // Reached boundary of active pending write
 		}
 
 		var buf []byte
-		if len(entry.seg.mmapData) >= int(entry.pos+entry.len) {
-			buf = entry.seg.mmapData[entry.pos : entry.pos+entry.len]
+		if len(currentSeg.mmapData) >= int(pos+recLen) {
+			buf = currentSeg.mmapData[pos : pos+recLen] // Zero-copy mmap slice
 		} else {
-			buf = make([]byte, entry.len)
-			if _, err := entry.seg.logFile.ReadAt(buf, entry.pos); err != nil {
+			buf = make([]byte, recLen)
+			if _, err := currentSeg.logFile.ReadAt(buf, pos); err != nil {
 				return msgs, err
 			}
 		}
@@ -414,12 +451,13 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 			return msgs, err
 		}
 		msgs = append(msgs, Message{
-			Offset:    start + uint64(i),
+			Offset:    off,
 			ID:        id,
 			Timestamp: ts,
 			Payload:   payload,
 		})
 	}
+
 	return msgs, nil
 }
 
