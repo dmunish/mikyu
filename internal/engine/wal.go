@@ -218,22 +218,28 @@ func (w *wal) drainAndFlushAsync(first asyncEntry) {
 	}
 
 WRITE:
-	var maxOff uint64
+	var maxSuccessfulOff uint64
+	var hasSuccess bool
+
 	for _, e := range entries {
 		if _, err := e.seg.logFile.WriteAt(e.rec, e.pos); err == nil {
 			idxPos := int64(e.offset-e.seg.baseOff) * rawIndexEntrySize
-			_ = e.seg.writeIndexAt(idxPos, e.pos, e.recLen)
-		}
-		if e.offset > maxOff {
-			maxOff = e.offset
+			if err := e.seg.writeIndexAt(idxPos, e.pos, e.recLen); err == nil {
+				if !hasSuccess || e.offset > maxSuccessfulOff {
+					maxSuccessfulOff = e.offset
+					hasSuccess = true
+				}
+			}
 		}
 	}
 
-	w.mu.Lock()
-	if int64(maxOff+1) > w.published {
-		w.published = int64(maxOff + 1)
+	if hasSuccess {
+		w.mu.Lock()
+		if int64(maxSuccessfulOff+1) > w.published {
+			w.published = int64(maxSuccessfulOff + 1)
+		}
+		w.mu.Unlock()
 	}
-	w.mu.Unlock()
 }
 
 func (w *wal) drainRemainingAsync() {
