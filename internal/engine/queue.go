@@ -127,7 +127,7 @@ func (q *Queue) locateSegment(offset uint64) (*segment, error) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
-	if offset >= q.publishedOffset {
+	if len(q.segments) == 0 || offset >= q.publishedOffset || offset < q.segments[0].baseOff {
 		return nil, ErrOffsetNotFound
 	}
 
