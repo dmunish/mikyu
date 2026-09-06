@@ -282,16 +282,46 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if len(payloads) == 0 {
+	n := len(payloads)
+	if n == 0 {
 		return nil, nil
 	}
 
-	recs := make([][]byte, len(payloads))
-	positions := make([]int64, len(payloads))
-	recLens := make([]int64, len(payloads))
-	segments := make([]*segment, len(payloads))
-	offsets := make([]uint64, len(payloads))
-	ids := make([]uuid.UUID, len(payloads))
+	var (
+		recs      [][]byte
+		positions []int64
+		recLens   []int64
+		segments  []*segment
+		offsets   []uint64
+		ids       []uuid.UUID
+	)
+
+	// Stack-allocate fixed arrays for single-element batches (e.g. delegated from Append)
+	// to prevent escaping slice headers to the heap.
+	if n == 1 {
+		var (
+			rBuf [1][]byte
+			pBuf [1]int64
+			lBuf [1]int64
+			sBuf [1]*segment
+			oBuf [1]uint64
+			iBuf [1]uuid.UUID
+		)
+		recs = rBuf[:1]
+		positions = pBuf[:1]
+		recLens = lBuf[:1]
+		segments = sBuf[:1]
+		offsets = oBuf[:1]
+		ids = iBuf[:1]
+	} else {
+		recs = make([][]byte, n)
+		positions = make([]int64, n)
+		recLens = make([]int64, n)
+		segments = make([]*segment, n)
+		offsets = make([]uint64, n)
+		ids = make([]uuid.UUID, n)
+	}
+
 	ts := time.Now()
 
 	q.mu.Lock()
