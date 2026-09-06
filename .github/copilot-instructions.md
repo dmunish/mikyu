@@ -60,6 +60,7 @@ github.com/dmunish/mikyu/
 │   │   ├── index.go            # In-memory and raw on-disk index entry structures
 │   │   ├── offsets.go          # Single-file manager-level consumer group offset store
 │   │   ├── encode.go           # CRC32 record framing, decoding, and raw UUID v7 handling
+│   │   ├── cache.go            # In-memory ring cache for recent messages (fast tail reads)
 │   │   ├── storage.go          # Storage interface definition
 │   │   ├── sync_darwin.go      # macOS F_FULLFSYNC drive cache flusher
 │   │   ├── sync_fdatasync.go   # POSIX unix.Fdatasync implementation
@@ -546,6 +547,29 @@ func (s *OffsetStore) Close() error
 - `Commit`: Takes write lock (`mu.Lock`), updates `offsets["queueName:group"]`, appends entry to `bufio.Writer`, flushes writer, and calls `file.Sync()` to ensure immediate disk durability. **Compaction:** After every 5,000 appends, `compactLocked()` rewrites the entire offset file to a temporary file, fsyncs, atomically renames, and reopens it. This bounds the file size to `O(active groups)` and keeps recovery fast.
 - `Fetch`: Takes read lock (`mu.RLock`), returns offset value from map (0 if not present).
 
+#### `cache.go`
+
+Provides a fixed-capacity ring buffer for the most recent messages, enabling ~100 ns/op tail reads with zero heap allocations.
+
+```go
+type ringCache struct {
+	mu    sync.RWMutex
+	slots []Message
+	mask  uint64
+}
+
+func newRingCache(capacity uint64) *ringCache
+func (r *ringCache) Put(msg Message)
+func (r *ringCache) Get(offset uint64) (Message, bool)
+```
+
+**Implementation Details:**
+
+- `newRingCache`: Allocates a slice of `capacity` `Message` values. The `mask` is `capacity - 1` (capacity must be a power of two).
+- `Put`: Stores a message at the slot indexed by `msg.Offset & mask` under write lock.
+- `Get`: Reads the slot under read lock and verifies the offset matches and the timestamp is non-zero before returning a hit.
+- The default capacity is `defaultRingCacheCapacity = 16384`.
+
 #### `segment.go`
 
 Manages log files (`.log`), index files (`.idx`), pre-allocation, zero-copy `mmap` regions, and index recovery.
@@ -561,7 +585,7 @@ type segment struct {
 	idxMMap   mmap.MMap // Memory-mapped index region for closed historical segment
 }
 
-func openSegment(dir string, baseOff uint64) (*segment, error)
+func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, error)
 func (s *segment) enableMMap() error
 func (s *segment) writeIndex(pos, len int64) error
 func (s *segment) recover() ([]rawIndexEntry, error)
@@ -571,7 +595,7 @@ func (s *segment) Close() error
 
 **Implementation Details:**
 
-- `openSegment`: Opens `%020d.log` and `%020d.idx` files. If log file size is zero, pre-allocates 64 MiB (`logFile.Truncate(64 * 1024 * 1024)`).
+- `openSegment`: Opens `%020d.log` and `%020d.idx` files. If log file size is zero, pre-allocates `preallocSize` bytes (dynamic based on the queue's `nextPreallocBytes` field) using `logFile.Truncate(preallocSize)`.
 - `enableMMap`: Maps log file into memory using `mmap.Map(logFile, mmap.RDONLY, 0)`. Called when a segment is closed after rolling to enable zero-copy read paths. Before mapping the index file, checks `idxFile.Stat().Size() > 0` to avoid Windows `CreateFileMapping` errors on zero-byte files. If size is zero, skips mapping `idxMMap`.
 - `writeIndex`: Encodes `pos` and `len` into 16 big-endian bytes and writes to `idxFile`.
 - `recover()`: Performs fast-path verification by reading the final 16-byte record in `idxFile`. If `lastPos + lastLen == logFileSize`, reads the index file in bulk. Otherwise, falls back to `rebuild()`.
@@ -582,4 +606,99 @@ func (s *segment) Close() error
 
 Implements Write-Ahead Log flushing using dynamic dual-threshold batching, micro-linger grouping, and platform-optimal disk sync system calls. The WAL supports two modes controlled by the `Fsync` flag:
 
-- **Durable mode (`Fsync: true`):** Standard blocking path. Producers append to the WAL buffer, then wait on `sync.C
+- **Durable mode (`Fsync: true`):** Standard blocking path. Producers append to the WAL buffer, then wait on `sync.Cond` for the flusher to publish their sequence. The flusher performs `WriteAt` followed by `syncData` on the underlying file. This guarantees that once an offset is returned, the record is durable.
+- **Async mode (`Fsync: false`):** The producers write records directly to the segment file via an asynchronous channel (`asyncChan`) and immediately advance `publishedOffset`. The WAL's background goroutine drains the channel, writes the records, and updates the index. No `syncData` is performed, trading a small crash-loss window for significantly lower latency.
+
+The flusher runs in a dedicated goroutine and uses double-buffered swap to minimize lock hold time. Wake tokens are drained inside `flush()` to avoid producer hangs. The implementation uses `sync.Cond` to block producers until their pending records are published.
+
+For OS-specific sync, the following files provide platform-optimal implementations:
+
+- `sync_darwin.go`: Uses `unix.FcntlInt(fd, unix.F_FULLFSYNC, 0)` for maximum durability on macOS.
+- `sync_fdatasync.go`: Uses `unix.Fdatasync(fd)` on Linux and other POSIX systems.
+- `sync_windows.go`: Uses `file.Sync()` (FlushFileBuffers) on Windows.
+
+#### `manager.go`
+
+Manages multiple queues within a single data directory, handling lifecycle and aggregate statistics.
+
+```go
+type Manager struct {
+	mu      sync.RWMutex
+	dir     string
+	cfg     Config
+	queues  map[string]*Queue
+	offsets *OffsetStore
+}
+
+func OpenManager(dir string, cfg Config) (*Manager, error)
+func (m *Manager) CreateQueue(name string, opts ...Config) (Storage, error)
+func (m *Manager) GetQueue(name string) (Storage, error)
+func (m *Manager) ListQueues() []string
+func (m *Manager) DeleteQueue(name string) error
+func (m *Manager) Stats() EngineStats
+func (m *Manager) Close() error
+```
+
+**Implementation Details:**
+
+- `OpenManager`: Creates the data directory if not present, initializes the `OffsetStore`, scans for existing queue subdirectories, and opens each one via `openQueue`. If `cfg.Encrypted` is true, it bootstraps directory encryption.
+- `CreateQueue`: Checks for existence, optionally applies per-queue overrides, and opens a new `Queue` via `openQueue`.
+- `GetQueue`: Returns the `Storage` for an existing queue.
+- `ListQueues`: Returns the names of all active queues.
+- `DeleteQueue`: Closes the queue and removes its directory.
+- `Stats`: Aggregates per-queue statistics (message count, segment count, size, last offset) using in-memory counters under `RLock`.
+- `Close`: Closes all queues and the offset store.
+
+#### `queue.go`
+
+Implements the `Storage` interface with log-structured append, zero-copy reads, segment rolling, and WAL integration.
+
+```go
+type Queue struct {
+	name              string
+	dir               string
+	cfg               Config
+	active            *segment
+	segments          []*segment
+	nextOffset        uint64
+	publishedOffset   uint64
+	w                 *wal
+	offsets           *OffsetStore
+	cache             *ringCache
+	nextPreallocBytes int64
+	mu                sync.RWMutex
+}
+
+func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, error)
+func (q *Queue) Append(ctx context.Context, payload []byte) (uint64, error)
+func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
+func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error)
+func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, error)
+func (q *Queue) LastOffset() uint64
+func (q *Queue) CommitOffset(ctx context.Context, group string, offset uint64) error
+func (q *Queue) FetchOffset(ctx context.Context, group string) (uint64, error)
+func (q *Queue) Close() error
+```
+
+**Implementation Details:**
+
+- `openQueue`: Creates the queue directory, clamps initial preallocation to `MaxSegmentBytes`, loads existing segments via `loadSegments`, and initializes the WAL.
+- `AppendBatch`: Encodes each payload with `encodeRecord`, checks size limits, and either follows the async fast path (Fsync=false) or the synchronous durable path (Fsync=true). In async mode, messages are placed in the ring cache and `publishedOffset` is advanced immediately, then queued for background write. In durable mode, producers push to the WAL and wait for the flusher to publish.
+- `Read`: Checks the ring cache first; otherwise locates the segment via binary search and reads from the segment (mmap for closed segments, `ReadAt` for active).
+- `ReadBatch`: Reads a contiguous range of offsets, preferring cache hits and falling back to segment reads.
+- `roll()`: Rotates the active segment based on size or age, adjusts `nextPreallocBytes` dynamically (doubling or halving based on fill duration), truncates the old segment to its written size, and enables mmap for zero-copy reads.
+- `CommitOffset` / `FetchOffset`: Delegate to the `OffsetStore`.
+
+#### `encode.go`
+
+Provides CRC32 record framing, decoding, and raw UUID v7 encoding.
+
+```go
+func encodeRecord(id uuid.UUID, ts time.Time, payload []byte) []byte
+func decodeRecord(buf []byte) (id string, ts time.Time, payload []byte, err error)
+```
+
+**Implementation Details:**
+
+- `encodeRecord`: Constructs a record of the form `[4B Body Length][4B CRC32][2B ID Length][16B Raw UUID][8B Unix Nanoseconds][Payload]`. CRC32 is computed over the bytes following the length field.
+- `decodeRecord`: Validates the CRC32 checksum, extracts the UUID and timestamp, and returns the payload. Returns `ErrCorruptRecord` on any mismatch or truncation.
