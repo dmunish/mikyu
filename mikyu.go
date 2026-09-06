@@ -62,10 +62,10 @@ type Client interface {
 
 // Error variables re‑exported from the engine.
 var (
-	ErrQueueExists      = errors.New("queue with this name already exists")
-	ErrQueueNotFound    = errors.New("queue not found")
-	ErrOffsetNotFound   = errors.New("offset not found")
-	ErrMessageTooLarge  = errors.New("message payload exceeds maximum allowed size")
+	ErrQueueExists      = engine.ErrQueueExists
+	ErrQueueNotFound    = engine.ErrQueueNotFound
+	ErrOffsetNotFound   = engine.ErrOffsetNotFound
+	ErrMessageTooLarge  = engine.ErrOffsetNotFound
 	ErrTaskNotSupported = errors.New("task queues are not yet supported")
 )
 
