@@ -260,9 +260,13 @@ func (s *replSession) handleCompact(args []string) {
 		}
 	}
 
-	prompt := fmt.Sprintf("Are you sure you want to truncate physical log segments for queue %q?", name)
+	tag := warnTagStyle.Render("[IRREVERSIBLE]")
+	var prompt string
+
 	if minOffset > 0 {
-		prompt = fmt.Sprintf("Are you sure you want to truncate physical log segments before offset %d for queue %q?", minOffset, name)
+		prompt = fmt.Sprintf("%s Truncate queue %q before offset %d?", tag, name, minOffset)
+	} else {
+		prompt = fmt.Sprintf("%s Truncate physical segments for queue %q?", tag, name)
 	}
 
 	if !confirm(prompt) {
@@ -381,16 +385,64 @@ func confirm(prompt string) bool {
 }
 
 func printREPLHelp() {
-	fmt.Print(`Available Commands:
-  list                 List all active queues
-  create <queue>       Create a new queue
-  delete <queue>       Delete a queue and its stored records
-  produce <q> <msg|@f> Produce text, file payload (@file.json), or stdin (-)
-  read <queue> <off>   Read record at specific logical offset
-  tail <queue> [off]   Stream live records continuously
-  stats                Display engine storage metrics
-  compact <q> [off]    Truncate physical log segments before offset
-  shutdown             Stop the background daemon process
-  exit / quit          Exit the REPL shell
-`)
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(infoStyle.Render("  Available Commands:"))
+	b.WriteString("\n\n")
+
+	commands := []struct {
+		cmd  string
+		arg  string
+		desc string
+	}{
+		{"list", "", "List all active queues"},
+		{"create", "<queue>", "Create a new queue"},
+		{"delete", "<queue>", "Delete a queue and its stored records"},
+		{"produce", "<q> <msg|@f>", "Produce text, file payload (@file), or stdin (-)"},
+		{"read", "<queue> <off>", "Read record at specific logical offset"},
+		{"tail", "<queue> [off]", "Stream live records continuously"},
+		{"stats", "", "Display engine storage metrics"},
+		{"compact", "<q> [off]", "Truncate physical log segments before offset"},
+		{"shutdown", "", "Stop the background daemon process"},
+		{"exit / quit", "", "Exit the REPL shell"},
+	}
+
+	for _, c := range commands {
+		prefix := cmdPrefixStyle.Render("  $ ")
+		name := cmdNameStyle.Render(fmt.Sprintf("%-12s", c.cmd))
+		argsFormatted := formatHelpArgs(c.arg, 18)
+		desc := cmdDescStyle.Render(c.desc)
+
+		b.WriteString(fmt.Sprintf("%s%s %s %s\n", prefix, name, argsFormatted, desc))
+	}
+	b.WriteString("\n")
+	fmt.Print(b.String())
+}
+
+func formatHelpArgs(raw string, width int) string {
+	if raw == "" {
+		return strings.Repeat(" ", width)
+	}
+
+	var sb strings.Builder
+	visibleLen := 0
+
+	tokens := strings.Split(raw, " ")
+	for i, token := range tokens {
+		if i > 0 {
+			sb.WriteString(" ")
+			visibleLen++
+		}
+		if strings.HasPrefix(token, "<") && strings.HasSuffix(token, ">") {
+			sb.WriteString(cmdReqArgStyle.Render(token))
+		} else {
+			sb.WriteString(cmdArgStyle.Render(token))
+		}
+		visibleLen += len(token)
+	}
+
+	if visibleLen < width {
+		sb.WriteString(strings.Repeat(" ", width-visibleLen))
+	}
+	return sb.String()
 }

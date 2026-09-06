@@ -53,6 +53,9 @@ var (
 	cmdDescStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("243"))
 
+	cmdReqArgStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#EE427D"))
+
 	tryLabelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("255")). // White
 			Bold(true)
@@ -66,6 +69,10 @@ var (
 	statusTargetStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("248")).
 				Underline(true)
+
+	warnTagStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#EE427D")).
+			Bold(true)
 )
 
 func PrintREPLBanner(target string) {
