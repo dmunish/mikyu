@@ -64,35 +64,6 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-type ringCache struct {
-	mu    sync.RWMutex
-	slots []Message
-	mask  uint64
-}
-
-func newRingCache(capacity uint64) *ringCache {
-	return &ringCache{
-		slots: make([]Message, capacity),
-		mask:  capacity - 1,
-	}
-}
-
-func (r *ringCache) Put(msg Message) {
-	r.mu.Lock()
-	r.slots[msg.Offset&r.mask] = msg
-	r.mu.Unlock()
-}
-
-func (r *ringCache) Get(offset uint64) (Message, bool) {
-	r.mu.RLock()
-	msg := r.slots[offset&r.mask]
-	r.mu.RUnlock()
-	if msg.Offset == offset && msg.Timestamp.Unix() > 0 {
-		return msg, true
-	}
-	return Message{}, false
-}
-
 // Queue implements Storage using a write‑ahead log and memory‑mapped segments.
 type Queue struct {
 	name            string
@@ -129,7 +100,7 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, 
 		dir:     dir,
 		cfg:     cfg,
 		offsets: store,
-		cache:   newRingCache(16384),
+		cache:   newRingCache(defaultRingCacheCapacity),
 	}
 	if err := q.loadSegments(); err != nil {
 		return nil, err
@@ -252,85 +223,11 @@ func (q *Queue) roll() error {
 }
 
 func (q *Queue) Append(ctx context.Context, payload []byte) (uint64, error) {
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	if int64(len(payload)) > q.cfg.MaxMessageBytes {
-		return 0, ErrMessageTooLarge
-	}
-
-	ts := time.Now()
-	id := uuid.NewV7()
-	rec := encodeRecord(id, ts, payload)
-	recLen := int64(len(rec))
-
-	q.mu.Lock()
-	if recLen > q.cfg.MaxSegmentBytes {
-		q.mu.Unlock()
-		return 0, ErrRecordTooLarge
-	}
-	if q.active.pos+recLen > q.cfg.MaxSegmentBytes || time.Since(q.active.createdAt) > q.cfg.MaxSegmentAge {
-		if err := q.roll(); err != nil {
-			q.mu.Unlock()
-			return 0, err
-		}
-	}
-
-	seg := q.active
-	pos := seg.pos
-	seg.pos += recLen
-
-	off := q.nextOffset
-	q.nextOffset++
-
-	// --- ASYNC FAST PATH (Fsync: false) ---
-	if !q.cfg.Fsync {
-		msg := Message{Offset: off, ID: id.String(), Timestamp: ts, Payload: payload}
-		q.cache.Put(msg)
-		if off+1 > q.publishedOffset {
-			q.publishedOffset = off + 1
-		}
-		asyncCh := q.w.asyncChan // Capture under q.mu lock to prevent data race with q.roll()
-		q.mu.Unlock()
-
-		// Non-blocking async dispatch
-		asyncCh <- asyncEntry{
-			seg:    seg,
-			rec:    rec,
-			pos:    pos,
-			recLen: recLen,
-			offset: off,
-		}
-		return off, nil
-	}
-
-	// --- DURABLE SYNCHRONOUS PATH (Fsync: true) ---
-	_ = seg.writeIndex(pos, recLen)
-	seq, wake, err := q.w.push(rec, pos)
+	offs, err := q.AppendBatch(ctx, [][]byte{payload})
 	if err != nil {
-		q.mu.Unlock()
 		return 0, err
 	}
-	q.mu.Unlock()
-
-	if wake {
-		select {
-		case q.w.wake <- struct{}{}:
-		default:
-		}
-	}
-
-	if err := q.w.wait(seq); err != nil {
-		return 0, err
-	}
-
-	q.mu.Lock()
-	if off+1 > q.publishedOffset {
-		q.publishedOffset = off + 1
-	}
-	q.mu.Unlock()
-
-	return off, nil
+	return offs[0], nil
 }
 
 // AppendBatch implements Storage.AppendBatch.
@@ -451,6 +348,29 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 	return offsets, nil
 }
 
+func (q *Queue) readFromSegment(seg *segment, offset uint64) (Message, error) {
+	pos, recLen, err := seg.readIndexEntry(offset)
+	if err != nil || recLen < (minRecordSize-recordLengthSize) {
+		return Message{}, ErrOffsetNotFound
+	}
+
+	var buf []byte
+	if len(seg.mmapData) >= int(pos+recLen) {
+		buf = seg.mmapData[pos : pos+recLen]
+	} else {
+		buf = make([]byte, recLen)
+		if _, err := seg.logFile.ReadAt(buf, pos); err != nil {
+			return Message{}, err
+		}
+	}
+
+	id, ts, payload, err := decodeRecord(buf[recordLengthSize:])
+	if err != nil {
+		return Message{}, err
+	}
+	return Message{Offset: offset, ID: id, Timestamp: ts, Payload: payload}, nil
+}
+
 // Read implements Storage.Read.
 func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 	if err := ctx.Err(); err != nil {
@@ -468,26 +388,7 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 		return Message{}, err
 	}
 
-	pos, recLen, err := seg.readIndexEntry(offset)
-	if err != nil || recLen < 34 {
-		return Message{}, ErrOffsetNotFound
-	}
-
-	var buf []byte
-	if len(seg.mmapData) >= int(pos+recLen) {
-		buf = seg.mmapData[pos : pos+recLen]
-	} else {
-		buf = make([]byte, recLen)
-		if _, err := seg.logFile.ReadAt(buf, pos); err != nil {
-			return Message{}, err
-		}
-	}
-
-	id, ts, payload, err := decodeRecord(buf[4:])
-	if err != nil {
-		return Message{}, err
-	}
-	return Message{Offset: offset, ID: id, Timestamp: ts, Payload: payload}, nil
+	return q.readFromSegment(seg, offset)
 }
 
 // ReadBatch implements Storage.ReadBatch.
@@ -533,7 +434,7 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 			currentSeg = seg
 		}
 
-		pos, recLen, err := currentSeg.readIndexEntry(off)
+		msg, err := q.readFromSegment(currentSeg, off)
 		if err != nil {
 			// Offset crossed current segment boundary, locate new segment
 			seg, err := q.locateSegment(off)
@@ -541,32 +442,12 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 				break
 			}
 			currentSeg = seg
-			pos, recLen, err = currentSeg.readIndexEntry(off)
-			if err != nil || recLen < 34 {
+			msg, err = q.readFromSegment(currentSeg, off)
+			if err != nil {
 				break
 			}
 		}
-
-		var buf []byte
-		if len(currentSeg.mmapData) >= int(pos+recLen) {
-			buf = currentSeg.mmapData[pos : pos+recLen]
-		} else {
-			buf = make([]byte, recLen)
-			if _, err := currentSeg.logFile.ReadAt(buf, pos); err != nil {
-				return msgs, err
-			}
-		}
-
-		id, ts, payload, err := decodeRecord(buf[4:])
-		if err != nil {
-			return msgs, err
-		}
-		msgs = append(msgs, Message{
-			Offset:    off,
-			ID:        id,
-			Timestamp: ts,
-			Payload:   payload,
-		})
+		msgs = append(msgs, msg)
 	}
 
 	return msgs, nil

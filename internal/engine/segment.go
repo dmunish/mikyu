@@ -74,36 +74,33 @@ func (s *segment) enableMMap() error {
 }
 
 func (s *segment) readIndexEntry(offset uint64) (pos int64, length int64, err error) {
-	idxPos := int64(offset-s.baseOff) * 16
-	var buf [16]byte
+	idxPos := int64(offset-s.baseOff) * rawIndexEntrySize
+	var buf [rawIndexEntrySize]byte
 
 	// Zero-copy read from mapped .idx file if historical, otherwise syscall ReadAt
-	if len(s.idxMMap) >= int(idxPos+16) {
-		copy(buf[:], s.idxMMap[idxPos:idxPos+16])
+	if len(s.idxMMap) >= int(idxPos+rawIndexEntrySize) {
+		copy(buf[:], s.idxMMap[idxPos:idxPos+rawIndexEntrySize])
 	} else if _, err := s.idxFile.ReadAt(buf[:], idxPos); err != nil {
 		return 0, 0, err
 	}
 
-	pos = int64(binary.BigEndian.Uint64(buf[0:8]))
-	length = int64(binary.BigEndian.Uint64(buf[8:16]))
-	if length < 34 { // Minimum valid record size (4B len + 4B CRC + 2B idLen + 16B UUID + 8B ts)
+	entry := UnmarshalRawIndexEntry(buf[:])
+	if entry.len < (minRecordSize - recordLengthSize) {
 		return 0, 0, ErrOffsetNotFound
 	}
-	return pos, length, nil
+	return entry.pos, entry.len, nil
 }
 
 func (s *segment) writeIndex(pos, len int64) error {
-	var buf [16]byte
-	binary.BigEndian.PutUint64(buf[0:8], uint64(pos))
-	binary.BigEndian.PutUint64(buf[8:16], uint64(len))
+	var buf [rawIndexEntrySize]byte
+	rawIndexEntry{pos: pos, len: len}.MarshalBinary(&buf)
 	_, err := s.idxFile.Write(buf[:])
 	return err
 }
 
 func (s *segment) writeIndexAt(idxPos, pos, len int64) error {
-	var buf [16]byte
-	binary.BigEndian.PutUint64(buf[0:8], uint64(pos))
-	binary.BigEndian.PutUint64(buf[8:16], uint64(len))
+	var buf [rawIndexEntrySize]byte
+	rawIndexEntry{pos: pos, len: len}.MarshalBinary(&buf)
 	_, err := s.idxFile.WriteAt(buf[:], idxPos)
 	return err
 }
@@ -118,34 +115,39 @@ func (s *segment) recover() ([]rawIndexEntry, error) {
 		return nil, err
 	}
 
-	logSize := logInfo.Size()
-	idxSize := idxInfo.Size()
-
-	// Fast Path: Validate index file consistency against total log file size
-	if idxSize > 0 && idxSize%16 == 0 {
-		var lastBuf [16]byte
-		if _, err := s.idxFile.ReadAt(lastBuf[:], idxSize-16); err == nil {
-			lastPos := int64(binary.BigEndian.Uint64(lastBuf[0:8]))
-			lastLen := int64(binary.BigEndian.Uint64(lastBuf[8:16]))
-			if lastPos+lastLen == logSize {
-				buf := make([]byte, idxSize)
-				if _, err := s.idxFile.ReadAt(buf, 0); err == nil {
-					entries := make([]rawIndexEntry, idxSize/16)
-					for i := range entries {
-						entries[i] = rawIndexEntry{
-							pos: int64(binary.BigEndian.Uint64(buf[i*16 : i*16+8])),
-							len: int64(binary.BigEndian.Uint64(buf[i*16+8 : i*16+16])),
-						}
-					}
-					s.pos = logSize
-					return entries, nil
-				}
-			}
-		}
+	if entries, ok := s.tryFastRecovery(logInfo.Size(), idxInfo.Size()); ok {
+		return entries, nil
 	}
 
-	// Fallback: Rebuild index dynamically from log records if index is damaged/incomplete
 	return s.rebuild()
+}
+
+func (s *segment) tryFastRecovery(logSize, idxSize int64) ([]rawIndexEntry, bool) {
+	if idxSize == 0 || idxSize%rawIndexEntrySize != 0 {
+		return nil, false
+	}
+
+	var lastBuf [rawIndexEntrySize]byte
+	if _, err := s.idxFile.ReadAt(lastBuf[:], idxSize-rawIndexEntrySize); err != nil {
+		return nil, false
+	}
+
+	lastEntry := UnmarshalRawIndexEntry(lastBuf[:])
+	if lastEntry.pos+lastEntry.len != logSize {
+		return nil, false
+	}
+
+	buf := make([]byte, idxSize)
+	if _, err := s.idxFile.ReadAt(buf, 0); err != nil {
+		return nil, false
+	}
+
+	entries := make([]rawIndexEntry, idxSize/rawIndexEntrySize)
+	for i := range entries {
+		entries[i] = UnmarshalRawIndexEntry(buf[i*rawIndexEntrySize : (i+1)*rawIndexEntrySize])
+	}
+	s.pos = logSize
+	return entries, true
 }
 
 func (s *segment) rebuild() ([]rawIndexEntry, error) {
@@ -155,17 +157,17 @@ func (s *segment) rebuild() ([]rawIndexEntry, error) {
 	var pos int64
 
 	for {
-		var lenBuf [4]byte
+		var lenBuf [recordLengthSize]byte
 		n, _ := s.logFile.ReadAt(lenBuf[:], pos)
-		if n < 4 {
+		if n < recordLengthSize {
 			break
 		}
 
 		bodyLen := binary.BigEndian.Uint32(lenBuf[:])
-		total := int64(4) + int64(bodyLen)
+		total := int64(recordLengthSize) + int64(bodyLen)
 
 		body := make([]byte, bodyLen)
-		n, _ = s.logFile.ReadAt(body, pos+4)
+		n, _ = s.logFile.ReadAt(body, pos+int64(recordLengthSize))
 		if int64(n) < int64(bodyLen) {
 			break // torn write tail
 		}

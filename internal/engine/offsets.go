@@ -9,7 +9,10 @@ import (
 	"sync"
 )
 
-const managerOffsetFileName = "manager-offsets.dat"
+const (
+	managerOffsetFileName   = "manager-offsets.dat"
+	compactAppendsThreshold = 5000
+)
 
 // OffsetStore is a manager-level offset persistence store.
 // A single file tracks consumer group offsets across all queues to avoid inode exhaustion.
@@ -138,7 +141,7 @@ func (s *OffsetStore) Commit(queueName, group string, offset uint64) error {
 	}
 
 	s.appendsSinceCompact++
-	if s.appendsSinceCompact >= 5000 {
+	if s.appendsSinceCompact >= compactAppendsThreshold {
 		return s.compactLocked()
 	}
 	return nil

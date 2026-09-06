@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const asyncChanBufferCap = 65536
+
 type pendingEntry struct {
 	pos int64
 	len int64
@@ -52,7 +54,7 @@ func newWAL(f *os.File, cfg Config, startOffset int64) *wal {
 		pending:     make([]pendingEntry, 0, cfg.BatchSize),
 		swapBuf:     make([]byte, 0, initCap),
 		swapPending: make([]pendingEntry, 0, cfg.BatchSize),
-		asyncChan:   make(chan asyncEntry, 65536),
+		asyncChan:   make(chan asyncEntry, asyncChanBufferCap),
 		wake:        make(chan struct{}, 1),
 		shutdown:    make(chan struct{}),
 		done:        make(chan struct{}),
@@ -79,12 +81,16 @@ func (w *wal) syncLoop() {
 		case <-w.wake:
 			w.adaptiveFlush()
 		case <-w.shutdown:
-			w.drainRemainingAsync()
-			w.flush()
-			_ = syncData(w.file) // Always force physical disk sync on shutdown
+			w.shutdownFlush()
 			return
 		}
 	}
+}
+
+func (w *wal) shutdownFlush() {
+	w.drainRemainingAsync()
+	w.flush()
+	_ = syncData(w.file) // Always force physical disk sync on shutdown
 }
 
 func (w *wal) push(rec []byte, pos int64) (seq int64, wake bool, err error) {
@@ -214,7 +220,7 @@ WRITE:
 	var maxOff uint64
 	for _, e := range entries {
 		if _, err := e.seg.logFile.WriteAt(e.rec, e.pos); err == nil {
-			idxPos := int64(e.offset-e.seg.baseOff) * 16
+			idxPos := int64(e.offset-e.seg.baseOff) * rawIndexEntrySize
 			_ = e.seg.writeIndexAt(idxPos, e.pos, e.recLen)
 		}
 		if e.offset > maxOff {
