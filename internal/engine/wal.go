@@ -41,6 +41,7 @@ type wal struct {
 	wake      chan struct{}
 	shutdown  chan struct{}
 	done      chan struct{}
+	stopOnce  sync.Once
 }
 
 func newWAL(f *os.File, cfg Config, startOffset int64) *wal {
@@ -247,7 +248,9 @@ func (w *wal) drainRemainingAsync() {
 }
 
 func (w *wal) stop() error {
-	close(w.shutdown)
-	<-w.done
+	w.stopOnce.Do(func() {
+		close(w.shutdown)
+		<-w.done
+	})
 	return w.err
 }

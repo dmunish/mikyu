@@ -12,6 +12,13 @@ import (
 	"uuid"
 )
 
+const (
+	minSegmentPrealloc = 8 * 1024 * 1024   // 8 MB floor
+	maxSegmentPrealloc = 256 * 1024 * 1024 // 256 MB ceiling
+	fastFillThreshold  = 10 * time.Second  // Double allocation if filled under 10s
+	slowFillThreshold  = 5 * time.Minute   // Halve allocation if filling took longer than 5m
+)
+
 var (
 	ErrQueueExists     = errors.New("queue with this name already exists")
 	ErrQueueNotFound   = errors.New("queue not found")
@@ -66,17 +73,18 @@ func (c Config) withDefaults() Config {
 
 // Queue implements Storage using a write‑ahead log and memory‑mapped segments.
 type Queue struct {
-	name            string
-	dir             string
-	cfg             Config
-	active          *segment
-	segments        []*segment
-	nextOffset      uint64
-	publishedOffset uint64
-	w               *wal
-	offsets         *OffsetStore
-	cache           *ringCache // 16k entry in-memory tail cache for fast-path reads
-	mu              sync.RWMutex
+	name              string
+	dir               string
+	cfg               Config
+	active            *segment
+	segments          []*segment
+	nextOffset        uint64
+	publishedOffset   uint64
+	w                 *wal
+	offsets           *OffsetStore
+	cache             *ringCache
+	nextPreallocBytes int64 // Dynamic pre-allocation target for the next active segment
+	mu                sync.RWMutex
 }
 
 // compile‑time assertion that Queue satisfies Storage.
@@ -95,12 +103,19 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, 
 		}
 	}
 
+	// Clamp initial pre-allocation size to MaxSegmentBytes
+	initialPrealloc := int64(minSegmentPrealloc)
+	if initialPrealloc > cfg.MaxSegmentBytes {
+		initialPrealloc = cfg.MaxSegmentBytes
+	}
+
 	q := &Queue{
-		name:    name,
-		dir:     dir,
-		cfg:     cfg,
-		offsets: store,
-		cache:   newRingCache(defaultRingCacheCapacity),
+		name:              name,
+		dir:               dir,
+		cfg:               cfg,
+		offsets:           store,
+		cache:             newRingCache(defaultRingCacheCapacity),
+		nextPreallocBytes: initialPrealloc,
 	}
 	if err := q.loadSegments(); err != nil {
 		return nil, err
@@ -158,7 +173,7 @@ func (q *Queue) loadSegments() error {
 
 	var totalMsgs uint64
 	for i, base := range bases {
-		seg, err := openSegment(q.dir, base)
+		seg, err := openSegment(q.dir, base, q.nextPreallocBytes)
 		if err != nil {
 			q.closeSegments()
 			return err
@@ -204,13 +219,45 @@ func (q *Queue) roll() error {
 	}
 
 	if q.active != nil {
+		fillDuration := time.Since(q.active.createdAt)
+
+		// Max cap is the lesser of maxSegmentPrealloc (256MB) and q.cfg.MaxSegmentBytes
+		maxCap := q.cfg.MaxSegmentBytes
+		if maxCap > maxSegmentPrealloc {
+			maxCap = maxSegmentPrealloc
+		}
+
+		// Min cap is the lesser of minSegmentPrealloc (8MB) and q.cfg.MaxSegmentBytes
+		minCap := int64(minSegmentPrealloc)
+		if minCap > q.cfg.MaxSegmentBytes {
+			minCap = q.cfg.MaxSegmentBytes
+		}
+
+		if fillDuration < fastFillThreshold {
+			q.nextPreallocBytes *= 2
+			if q.nextPreallocBytes > maxCap {
+				q.nextPreallocBytes = maxCap
+			}
+		} else if fillDuration > slowFillThreshold {
+			q.nextPreallocBytes /= 2
+			if q.nextPreallocBytes < minCap {
+				q.nextPreallocBytes = minCap
+			}
+		}
+
+		// Truncate unwritten pre-allocated bytes before memory mapping
+		if err := q.active.logFile.Truncate(q.active.pos); err != nil {
+			return err
+		}
+		_ = q.active.logFile.Sync()
+
 		if err := q.active.enableMMap(); err != nil {
 			return err
 		}
 	}
 
 	nextOff := q.nextOffset
-	seg, err := openSegment(q.dir, nextOff)
+	seg, err := openSegment(q.dir, nextOff, q.nextPreallocBytes)
 	if err != nil {
 		return err
 	}

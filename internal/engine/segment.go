@@ -20,7 +20,7 @@ type segment struct {
 	idxMMap   mmap.MMap // Memory-mapped index region for closed historical segment
 }
 
-func openSegment(dir string, baseOff uint64) (*segment, error) {
+func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, error) {
 	logPath := filepath.Join(dir, fmt.Sprintf("%020d.log", baseOff))
 	idxPath := filepath.Join(dir, fmt.Sprintf("%020d.idx", baseOff))
 
@@ -29,8 +29,8 @@ func openSegment(dir string, baseOff uint64) (*segment, error) {
 		return nil, err
 	}
 
-	if info, err := logFile.Stat(); err == nil && info.Size() == 0 {
-		_ = logFile.Truncate(64 * 1024 * 1024) // Reserves 64 MiB
+	if info, err := logFile.Stat(); err == nil && info.Size() == 0 && preallocSize > 0 {
+		_ = logFile.Truncate(preallocSize)
 	}
 
 	idxFile, err := os.OpenFile(idxPath, os.O_CREATE|os.O_RDWR, 0o644)
@@ -53,17 +53,30 @@ func openSegment(dir string, baseOff uint64) (*segment, error) {
 }
 
 // Map the segment into read-only memory once closed for production zero-copy reads.
+// Map the segment into read-only memory once closed for production zero-copy reads.
 func (s *segment) enableMMap() error {
 	if s.mmapData == nil {
-		m, err := mmap.Map(s.logFile, mmap.RDONLY, 0)
-		if err != nil {
-			return err
+		if info, err := s.logFile.Stat(); err == nil && info.Size() > 0 {
+			mf, err := os.Open(s.logFile.Name())
+			if err != nil {
+				return err
+			}
+			m, err := mmap.Map(mf, mmap.RDONLY, 0)
+			_ = mf.Close()
+			if err != nil {
+				return err
+			}
+			s.mmapData = m
 		}
-		s.mmapData = m
 	}
 	if s.idxMMap == nil {
 		if info, err := s.idxFile.Stat(); err == nil && info.Size() > 0 {
-			m, err := mmap.Map(s.idxFile, mmap.RDONLY, 0)
+			mf, err := os.Open(s.idxFile.Name())
+			if err != nil {
+				return err
+			}
+			m, err := mmap.Map(mf, mmap.RDONLY, 0)
+			_ = mf.Close()
 			if err != nil {
 				return err
 			}
@@ -133,7 +146,7 @@ func (s *segment) tryFastRecovery(logSize, idxSize int64) ([]rawIndexEntry, bool
 	}
 
 	lastEntry := UnmarshalRawIndexEntry(lastBuf[:])
-	if lastEntry.pos+lastEntry.len != logSize {
+	if lastEntry.pos+lastEntry.len > logSize {
 		return nil, false
 	}
 
@@ -146,7 +159,7 @@ func (s *segment) tryFastRecovery(logSize, idxSize int64) ([]rawIndexEntry, bool
 	for i := range entries {
 		entries[i] = UnmarshalRawIndexEntry(buf[i*rawIndexEntrySize : (i+1)*rawIndexEntrySize])
 	}
-	s.pos = logSize
+	s.pos = lastEntry.pos + lastEntry.len
 	return entries, true
 }
 
@@ -164,6 +177,9 @@ func (s *segment) rebuild() ([]rawIndexEntry, error) {
 		}
 
 		bodyLen := binary.BigEndian.Uint32(lenBuf[:])
+		if bodyLen == 0 {
+			break // Stop at unwritten pre-allocated zeroes
+		}
 		total := int64(recordLengthSize) + int64(bodyLen)
 
 		body := make([]byte, bodyLen)
@@ -182,12 +198,17 @@ func (s *segment) rebuild() ([]rawIndexEntry, error) {
 	}
 
 	s.pos = pos
-	_ = s.logFile.Truncate(pos)
 	_ = s.idxFile.Sync()
 	return entries, nil
 }
 
 func (s *segment) Close() error {
+	// Trim unused pre-allocated capacity to match actual written bytes
+	if s.logFile != nil && s.pos >= 0 {
+		_ = s.logFile.Truncate(s.pos)
+		_ = s.logFile.Sync()
+	}
+
 	var mmapErr error
 	if s.mmapData != nil {
 		mmapErr = s.mmapData.Unmap()
