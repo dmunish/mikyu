@@ -214,6 +214,12 @@ func (s *segment) Close() error {
 		mmapErr = s.mmapData.Unmap()
 		s.mmapData = nil
 	}
+	if s.idxMMap != nil {
+		if err := s.idxMMap.Unmap(); err != nil && mmapErr == nil {
+			mmapErr = err
+		}
+		s.idxMMap = nil
+	}
 
 	err1 := s.logFile.Close()
 	err2 := s.idxFile.Close()
