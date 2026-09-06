@@ -25,6 +25,7 @@ var (
 	ErrOffsetNotFound  = errors.New("offset not found")
 	ErrMessageTooLarge = errors.New("message payload exceeds maximum allowed size")
 	ErrRecordTooLarge  = errors.New("record size exceeds max segment size")
+	ErrOffsetTruncated = errors.New("offset has been truncated from storage")
 )
 
 // Message is the internal engine‑level message representation.
@@ -79,11 +80,12 @@ type Queue struct {
 	active            *segment
 	segments          []*segment
 	nextOffset        uint64
+	minOffset         uint64
 	publishedOffset   uint64
 	w                 *wal
 	offsets           *OffsetStore
 	cache             *ringCache
-	nextPreallocBytes int64 // Dynamic pre-allocation target for the next active segment
+	nextPreallocBytes int64
 	mu                sync.RWMutex
 }
 
@@ -127,7 +129,14 @@ func (q *Queue) locateSegment(offset uint64) (*segment, error) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
+	if offset < q.minOffset {
+		return nil, ErrOffsetTruncated
+	}
+
 	if len(q.segments) == 0 || offset >= q.publishedOffset || offset < q.segments[0].baseOff {
+		if offset < q.segments[0].baseOff {
+			return nil, ErrOffsetTruncated
+		}
 		return nil, ErrOffsetNotFound
 	}
 
@@ -171,7 +180,7 @@ func (q *Queue) loadSegments() error {
 		bases = []uint64{0}
 	}
 
-	var totalMsgs uint64
+	var lastSegNextOffset uint64
 	for i, base := range bases {
 		seg, err := openSegment(q.dir, base, q.nextPreallocBytes)
 		if err != nil {
@@ -193,13 +202,17 @@ func (q *Queue) loadSegments() error {
 			}
 		}
 
-		totalMsgs += uint64(len(rawEntries))
+		// Calculate logical sequence high-water mark from baseOff + record count
+		lastSegNextOffset = seg.baseOff + uint64(len(rawEntries))
 		q.segments = append(q.segments, seg)
 		q.active = seg
 	}
 
-	q.nextOffset = totalMsgs
-	q.publishedOffset = totalMsgs
+	q.nextOffset = lastSegNextOffset
+	q.publishedOffset = lastSegNextOffset
+	if len(q.segments) > 0 {
+		q.minOffset = q.segments[0].baseOff
+	}
 	q.w = newWAL(q.active.logFile, q.cfg, int64(q.nextOffset))
 	q.w.start()
 	return nil
@@ -454,6 +467,10 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 		return Message{}, err
 	}
 
+	if offset < q.MinOffset() {
+		return Message{}, ErrOffsetTruncated
+	}
+
 	// 1. Fast Path: Check in-memory ring cache first (~10 ns)
 	if msg, ok := q.cache.Get(offset); ok {
 		return msg, nil
@@ -478,9 +495,14 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 	}
 
 	q.mu.RLock()
-	// Allow reading up to nextOffset so in-cache messages can be read immediately
+	minOff := q.minOffset
 	total := q.nextOffset
 	q.mu.RUnlock()
+
+	// 1. Fast Failure: Reject requests below the minimum available offset
+	if start < minOff {
+		return nil, ErrOffsetTruncated
+	}
 
 	if start >= total {
 		return nil, ErrOffsetNotFound
@@ -496,16 +518,19 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 
 	var currentSeg *segment
 	for off := start; off < end; off++ {
-		// 1. Fast Path: Check in-memory ring cache first (~10 ns)
+		// 2. Fast Path: Check in-memory ring cache first (~10 ns)
 		if msg, ok := q.cache.Get(off); ok {
 			msgs = append(msgs, msg)
 			continue
 		}
 
-		// 2. Disk / MMap Path: Fall back to historical log segments
+		// 3. Disk / MMap Path: Fall back to historical log segments
 		if currentSeg == nil || off < currentSeg.baseOff {
 			seg, err := q.locateSegment(off)
 			if err != nil {
+				if errors.Is(err, ErrOffsetTruncated) {
+					return nil, ErrOffsetTruncated
+				}
 				break
 			}
 			currentSeg = seg
@@ -516,6 +541,9 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 			// Offset crossed current segment boundary, locate new segment
 			seg, err := q.locateSegment(off)
 			if err != nil {
+				if errors.Is(err, ErrOffsetTruncated) {
+					return nil, ErrOffsetTruncated
+				}
 				break
 			}
 			currentSeg = seg

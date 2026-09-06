@@ -53,7 +53,6 @@ func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, erro
 }
 
 // Map the segment into read-only memory once closed for production zero-copy reads.
-// Map the segment into read-only memory once closed for production zero-copy reads.
 func (s *segment) enableMMap() error {
 	if s.mmapData == nil {
 		if info, err := s.logFile.Stat(); err == nil && info.Size() > 0 {
@@ -200,6 +199,57 @@ func (s *segment) rebuild() ([]rawIndexEntry, error) {
 	s.pos = pos
 	_ = s.idxFile.Sync()
 	return entries, nil
+}
+
+// Add these methods to internal/engine/segment.go
+
+func (s *segment) diskSize() int64 {
+	var total int64
+	if s.logFile != nil {
+		if info, err := s.logFile.Stat(); err == nil {
+			total += info.Size()
+		}
+	}
+	if s.idxFile != nil {
+		if info, err := s.idxFile.Stat(); err == nil {
+			total += info.Size()
+		}
+	}
+	return total
+}
+
+func (s *segment) nextOffset() uint64 {
+	if len(s.idxMMap) > 0 {
+		return s.baseOff + uint64(len(s.idxMMap)/rawIndexEntrySize)
+	}
+	if s.idxFile != nil {
+		if info, err := s.idxFile.Stat(); err == nil && info.Size() > 0 {
+			return s.baseOff + uint64(info.Size()/rawIndexEntrySize)
+		}
+	}
+	return s.baseOff
+}
+
+func (s *segment) destroy() (int64, error) {
+	logPath := s.logFile.Name()
+	idxPath := s.idxFile.Name()
+
+	freed := s.diskSize()
+
+	// 1. First unmap memory regions and close file handles
+	_ = s.Close()
+
+	// 2. Unlink physical files from disk
+	err1 := os.Remove(logPath)
+	err2 := os.Remove(idxPath)
+
+	if err1 != nil && !os.IsNotExist(err1) {
+		return freed, err1
+	}
+	if err2 != nil && !os.IsNotExist(err2) {
+		return freed, err2
+	}
+	return freed, nil
 }
 
 func (s *segment) Close() error {

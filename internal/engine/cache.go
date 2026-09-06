@@ -32,3 +32,13 @@ func (r *ringCache) Get(offset uint64) (Message, bool) {
 	}
 	return Message{}, false
 }
+
+func (r *ringCache) EvictBefore(minOffset uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.slots {
+		if !r.slots[i].Timestamp.IsZero() && r.slots[i].Offset < minOffset {
+			r.slots[i] = Message{}
+		}
+	}
+}
