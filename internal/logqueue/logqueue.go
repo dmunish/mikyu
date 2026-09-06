@@ -16,6 +16,7 @@ var ErrNotSupported = errors.New("feature not supported")
 type LogQueue struct {
 	name    string
 	storage engine.Storage
+	policy  LogRetentionPolicy
 	mu      sync.RWMutex
 	groups  map[string]*group
 }
