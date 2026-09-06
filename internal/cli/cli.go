@@ -47,6 +47,8 @@ func RunCLI(target string, args []string) {
 		handleTail(ctx, client, args[1:])
 	case "stats":
 		handleStats(ctx, client)
+	case "compact", "truncate":
+		handleCompact(ctx, client, args[1:])
 	case "shutdown":
 		handleShutdown(target, args[1:])
 	default:
@@ -58,7 +60,7 @@ func RunCLI(target string, args []string) {
 
 func printUsage() {
 	fmt.Fprintf(os.Stderr, "Usage: mikyu <command> [args]\n")
-	fmt.Fprintf(os.Stderr, "Commands: list, create, delete, produce, read, tail, stats, shutdown\n")
+	fmt.Fprintf(os.Stderr, "Commands: list, create, delete, produce, read, tail, stats, compact, shutdown\n")
 }
 
 func handleList(ctx context.Context, client mikyu.Client) {
@@ -187,6 +189,49 @@ func handleTail(ctx context.Context, client mikyu.Client, args []string) {
 	}
 }
 
+func handleCompact(ctx context.Context, client mikyu.Client, args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: mikyu compact <queue> [min-offset] [-y]")
+		os.Exit(2)
+	}
+	name := args[0]
+	var minOffset uint64 = 0
+	force := false
+
+	for _, a := range args[1:] {
+		if a == "-y" || a == "--yes" || a == "-f" || a == "--force" {
+			force = true
+			continue
+		}
+		if off, err := strconv.ParseUint(a, 10, 64); err == nil {
+			minOffset = off
+		}
+	}
+
+	if !force {
+		prompt := fmt.Sprintf("truncate physical log segments for queue %q? [y/N]: ", name)
+		if minOffset > 0 {
+			prompt = fmt.Sprintf("truncate physical log segments before offset %d for queue %q? [y/N]: ", minOffset, name)
+		}
+		ok, err := confirmCLI(prompt, args)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if !ok {
+			fmt.Println("aborted")
+			return
+		}
+	}
+
+	reclaimed, err := client.TruncateQueue(ctx, name, minOffset)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("truncated queue %q (%d bytes reclaimed)\n", name, reclaimed)
+}
+
 func handleStats(ctx context.Context, client mikyu.Client) {
 	stats, err := client.Stats(ctx)
 	if err != nil {
@@ -196,7 +241,7 @@ func handleStats(ctx context.Context, client mikyu.Client) {
 	fmt.Printf("active queues: %d\n", stats.ActiveQueues)
 	fmt.Printf("total bytes: %d\n", stats.TotalBytes)
 	for name, qs := range stats.Queues {
-		fmt.Printf("queue %s: messages=%d, segments=%d, size=%d, last_offset=%d\n", name, qs.MessageCount, qs.SegmentCount, qs.SizeBytes, qs.LastOffset)
+		fmt.Printf("queue %s: messages=%d, segments=%d, size=%d, last_offset=%d, min_offset=%d\n", name, qs.MessageCount, qs.SegmentCount, qs.SizeBytes, qs.LastOffset, qs.MinOffset)
 	}
 }
 

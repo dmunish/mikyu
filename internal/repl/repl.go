@@ -102,6 +102,9 @@ func (s *replSession) dispatch(line string) bool {
 	case "stats":
 		s.handleStats()
 
+	case "compact", "truncate":
+		s.handleCompact(args)
+
 	case "shutdown":
 		return s.handleShutdown()
 
@@ -241,6 +244,40 @@ func (s *replSession) handleTail(args []string) {
 	}
 }
 
+func (s *replSession) handleCompact(args []string) {
+	if len(args) < 2 {
+		fmt.Println(errStyle.Render("Usage: compact <queue_name> [min_offset]"))
+		return
+	}
+	name := args[1]
+	var minOffset uint64 = 0
+	if len(args) >= 3 {
+		var err error
+		minOffset, err = strconv.ParseUint(args[2], 10, 64)
+		if err != nil {
+			fmt.Println(errStyle.Render("Invalid min_offset format"))
+			return
+		}
+	}
+
+	prompt := fmt.Sprintf("Are you sure you want to truncate physical log segments for queue %q?", name)
+	if minOffset > 0 {
+		prompt = fmt.Sprintf("Are you sure you want to truncate physical log segments before offset %d for queue %q?", minOffset, name)
+	}
+
+	if !confirm(prompt) {
+		fmt.Println("Cancelled.")
+		return
+	}
+
+	reclaimed, err := s.client.TruncateQueue(s.ctx, name, minOffset)
+	if err != nil {
+		fmt.Println(errStyle.Render("Error: " + err.Error()))
+		return
+	}
+	fmt.Println(infoStyle.Render(fmt.Sprintf("● Queue %q truncated (%d bytes reclaimed).", name, reclaimed)))
+}
+
 func (s *replSession) handleStats() {
 	st, err := s.client.Stats(s.ctx)
 	if err != nil {
@@ -352,6 +389,7 @@ func printREPLHelp() {
   read <queue> <off>   Read record at specific logical offset
   tail <queue> [off]   Stream live records continuously
   stats                Display engine storage metrics
+  compact <q> [off]    Truncate physical log segments before offset
   shutdown             Stop the background daemon process
   exit / quit          Exit the REPL shell
 `)
