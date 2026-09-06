@@ -19,14 +19,16 @@ const (
 	OpDeleteQueue  byte = 0x0A
 	OpStats        byte = 0x0B
 	OpShutdown     byte = 0x0C
+	OpTruncate     byte = 0x11
 	OpError        byte = 0xFF
 )
 
 const (
-	ErrCodeUnknown        byte = 0x01
-	ErrCodeQueueNotFound  byte = 0x02
-	ErrCodeQueueExists    byte = 0x03
-	ErrCodeOffsetNotFound byte = 0x04
+	ErrCodeUnknown         byte = 0x01
+	ErrCodeQueueNotFound   byte = 0x02
+	ErrCodeQueueExists     byte = 0x03
+	ErrCodeOffsetNotFound  byte = 0x04
+	ErrCodeOffsetTruncated byte = 0x05
 )
 
 // EncodeError encodes an error byte code and string message into a wire byte slice.

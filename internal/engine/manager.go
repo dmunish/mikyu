@@ -25,6 +25,7 @@ type QueueStats struct {
 	SegmentCount int
 	SizeBytes    int64
 	LastOffset   uint64
+	MinOffset    uint64
 }
 
 // OpenManager creates a Manager and loads existing queues.
@@ -144,6 +145,7 @@ func (m *Manager) Stats() EngineStats {
 		msgCount := q.publishedOffset
 		segCount := len(q.segments)
 		lastOff := q.nextOffset
+		minOff := q.minOffset
 
 		var size int64
 		for _, seg := range q.segments {
@@ -156,6 +158,7 @@ func (m *Manager) Stats() EngineStats {
 			SegmentCount: segCount,
 			SizeBytes:    size,
 			LastOffset:   lastOff,
+			MinOffset:    minOff,
 		}
 		stats.TotalBytes += size
 	}

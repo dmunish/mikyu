@@ -78,14 +78,18 @@ func (q *LogQueue) TruncateFloor(ctx context.Context) (uint64, error) {
 	return floor, nil
 }
 
-// Truncate computes the current retention floor and executes physical segment truncation.
-func (q *LogQueue) Truncate(ctx context.Context) (int64, error) {
-	floor, err := q.TruncateFloor(ctx)
-	if err != nil {
+// Truncate executes physical segment truncation before minOffset.
+// If minOffset is 0, it automatically computes the driver's retention floor via TruncateFloor().
+func (q *LogQueue) Truncate(ctx context.Context, minOffset uint64) (int64, error) {
+	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	if floor == 0 {
-		return 0, nil
+	if minOffset == 0 {
+		floor, err := q.TruncateFloor(ctx)
+		if err != nil || floor == 0 {
+			return 0, err
+		}
+		minOffset = floor
 	}
-	return q.storage.TruncateBefore(ctx, floor)
+	return q.storage.TruncateBefore(ctx, minOffset)
 }

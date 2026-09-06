@@ -38,6 +38,8 @@ type LogQueue interface {
 	Read(ctx context.Context, offset uint64) (Message, error)
 	ReadBatch(ctx context.Context, startOffset uint64, count int) ([]Message, error)
 	LastOffset(ctx context.Context) (uint64, error)
+	MinOffset(ctx context.Context) (uint64, error)
+	Truncate(ctx context.Context, minOffset uint64) (int64, error)
 	Stream(ctx context.Context, startOffset uint64) iter.Seq2[Message, error]
 	Tail(ctx context.Context, startOffset uint64) iter.Seq2[Message, error]
 	Group(name string) Group
@@ -57,6 +59,7 @@ type Client interface {
 	TaskQueue(name string) (TaskQueue, error)
 	ListQueues(ctx context.Context) ([]string, error)
 	DeleteQueue(ctx context.Context, name string) error
+	TruncateQueue(ctx context.Context, name string, minOffset uint64) (int64, error)
 	Stats(ctx context.Context) (SystemStats, error)
 }
 
@@ -65,7 +68,8 @@ var (
 	ErrQueueExists      = engine.ErrQueueExists
 	ErrQueueNotFound    = engine.ErrQueueNotFound
 	ErrOffsetNotFound   = engine.ErrOffsetNotFound
-	ErrMessageTooLarge  = engine.ErrOffsetNotFound
+	ErrOffsetTruncated  = engine.ErrOffsetTruncated
+	ErrMessageTooLarge  = engine.ErrMessageTooLarge
 	ErrTaskNotSupported = errors.New("task queues are not yet supported")
 )
 

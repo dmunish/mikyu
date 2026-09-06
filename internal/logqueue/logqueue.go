@@ -56,6 +56,13 @@ func (q *LogQueue) LastOffset(ctx context.Context) (uint64, error) {
 	return q.storage.LastOffset(), nil
 }
 
+func (q *LogQueue) MinOffset(ctx context.Context) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return q.storage.MinOffset(), nil
+}
+
 func (q *LogQueue) Stream(ctx context.Context, startOffset uint64) iter.Seq2[engine.Message, error] {
 	return func(yield func(engine.Message, error) bool) {
 		offset := startOffset

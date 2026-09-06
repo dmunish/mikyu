@@ -189,6 +189,22 @@ func (c *remoteClient) DeleteQueue(ctx context.Context, name string) error {
 	return err
 }
 
+func (c *remoteClient) TruncateQueue(ctx context.Context, name string, minOffset uint64) (int64, error) {
+	body := protocol.Buffer{}
+	body.WriteBytes([]byte(name))
+	body.WriteU64(minOffset)
+	resp, err := c.exchange(ctx, protocol.OpTruncate, body.Bytes())
+	if err != nil {
+		return 0, err
+	}
+	r := protocol.NewReader(resp)
+	reclaimed, err := r.ReadU64()
+	if err != nil {
+		return 0, err
+	}
+	return int64(reclaimed), nil
+}
+
 func (c *remoteClient) Stats(ctx context.Context) (SystemStats, error) {
 	body, err := c.exchange(ctx, protocol.OpStats, nil)
 	if err != nil {
@@ -218,6 +234,8 @@ func decodeProtocolError(code byte, msg string) error {
 		return ErrQueueExists
 	case protocol.ErrCodeOffsetNotFound:
 		return ErrOffsetNotFound
+	case protocol.ErrCodeOffsetTruncated:
+		return ErrOffsetTruncated
 	default:
 		return errors.New(msg)
 	}
@@ -341,6 +359,22 @@ func (q *remoteLogQueue) LastOffset(ctx context.Context) (uint64, error) {
 	}
 	r := protocol.NewReader(resp)
 	return r.ReadU64()
+}
+
+func (q *remoteLogQueue) MinOffset(ctx context.Context) (uint64, error) {
+	stats, err := q.client.Stats(ctx)
+	if err != nil {
+		return 0, err
+	}
+	qs, ok := stats.Queues[q.name]
+	if !ok {
+		return 0, ErrQueueNotFound
+	}
+	return qs.MinOffset, nil
+}
+
+func (q *remoteLogQueue) Truncate(ctx context.Context, minOffset uint64) (int64, error) {
+	return q.client.TruncateQueue(ctx, q.name, minOffset)
 }
 
 func (q *remoteLogQueue) Stream(ctx context.Context, startOffset uint64) iter.Seq2[Message, error] {

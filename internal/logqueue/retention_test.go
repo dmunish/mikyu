@@ -67,7 +67,8 @@ func TestLogQueue_TruncateExecution(t *testing.T) {
 	g := lq.Group("fast-consumer")
 	g.Mark(12) // Highwater = 13
 
-	reclaimed, err := lq.Truncate(ctx)
+	// Pass 0 to compute retention floor automatically from active consumer groups
+	reclaimed, err := lq.Truncate(ctx, 0)
 	require.NoError(t, err)
 	assert.Greater(t, reclaimed, int64(0))
 

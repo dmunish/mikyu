@@ -131,6 +131,18 @@ func (c *embeddedClient) DeleteQueue(ctx context.Context, name string) error {
 	return c.mgr.DeleteQueue(name)
 }
 
+// TruncateQueue manually truncates log segments before minOffset.
+func (c *embeddedClient) TruncateQueue(ctx context.Context, name string, minOffset uint64) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	q, err := c.mgr.GetQueue(name)
+	if err != nil {
+		return 0, err
+	}
+	return q.TruncateBefore(ctx, minOffset)
+}
+
 // Stats returns engine statistics.
 func (c *embeddedClient) Stats(ctx context.Context) (SystemStats, error) {
 	if err := ctx.Err(); err != nil {
@@ -148,6 +160,7 @@ func (c *embeddedClient) Stats(ctx context.Context) (SystemStats, error) {
 			SegmentCount: qs.SegmentCount,
 			SizeBytes:    qs.SizeBytes,
 			LastOffset:   qs.LastOffset,
+			MinOffset:    qs.MinOffset,
 		}
 	}
 	return ss, nil

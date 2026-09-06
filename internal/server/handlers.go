@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 
 	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/logqueue"
@@ -33,6 +34,8 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byt
 		respOp, respBody = s.handleDeleteQueue(body)
 	case protocol.OpStats:
 		respOp, respBody = s.handleStats()
+	case protocol.OpTruncate:
+		respOp, respBody = s.handleTruncate(ctx, body)
 	case protocol.OpShutdown:
 		return protocol.OpShutdown, nil, true
 	default:
@@ -40,9 +43,6 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byt
 	}
 	return respOp, respBody, false
 }
-
-// The rest of the handlers remain unchanged from the previous version.
-// They all return (byte, []byte).
 
 func (s *Server) handleCreateQueue(body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
@@ -52,7 +52,7 @@ func (s *Server) handleCreateQueue(body []byte) (byte, []byte) {
 	}
 	_, err = s.mgr.CreateQueue(string(name))
 	if err != nil {
-		if err == engine.ErrQueueExists {
+		if errors.Is(err, engine.ErrQueueExists) {
 			return opErr(protocol.ErrCodeQueueExists, err.Error())
 		}
 		return opErr(protocol.ErrCodeUnknown, err.Error())
@@ -114,8 +114,11 @@ func (s *Server) handleRead(ctx context.Context, body []byte) (byte, []byte) {
 	q := logqueue.NewLogQueue(string(name), storage)
 	msg, err := q.Read(ctx, off)
 	if err != nil {
-		if err == engine.ErrOffsetNotFound {
+		if errors.Is(err, engine.ErrOffsetNotFound) {
 			return opErr(protocol.ErrCodeOffsetNotFound, err.Error())
+		}
+		if errors.Is(err, engine.ErrOffsetTruncated) {
+			return opErr(protocol.ErrCodeOffsetTruncated, err.Error())
 		}
 		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
@@ -139,8 +142,11 @@ func (s *Server) handleReadBatch(ctx context.Context, body []byte) (byte, []byte
 	q := logqueue.NewLogQueue(string(name), storage)
 	msgs, err := q.ReadBatch(ctx, start, int(count))
 	if err != nil {
-		if err == engine.ErrOffsetNotFound {
+		if errors.Is(err, engine.ErrOffsetNotFound) {
 			return opErr(protocol.ErrCodeOffsetNotFound, err.Error())
+		}
+		if errors.Is(err, engine.ErrOffsetTruncated) {
+			return opErr(protocol.ErrCodeOffsetTruncated, err.Error())
 		}
 		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
@@ -223,6 +229,35 @@ func (s *Server) handleDeleteQueue(body []byte) (byte, []byte) {
 		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
 	return protocol.OpDeleteQueue, nil
+}
+
+func (s *Server) handleTruncate(ctx context.Context, body []byte) (byte, []byte) {
+	r := protocol.NewReader(body)
+	name, err := r.ReadBytes()
+	if err != nil {
+		return opErr(protocol.ErrCodeUnknown, err.Error())
+	}
+	minOffset, err := r.ReadU64()
+	if err != nil {
+		return opErr(protocol.ErrCodeUnknown, err.Error())
+	}
+
+	storage, err := s.mgr.GetQueue(string(name))
+	if err != nil {
+		if errors.Is(err, engine.ErrQueueNotFound) {
+			return opErr(protocol.ErrCodeQueueNotFound, err.Error())
+		}
+		return opErr(protocol.ErrCodeUnknown, err.Error())
+	}
+
+	reclaimed, err := storage.TruncateBefore(ctx, minOffset)
+	if err != nil {
+		return opErr(protocol.ErrCodeUnknown, err.Error())
+	}
+
+	buf := protocol.Buffer{}
+	buf.WriteU64(uint64(reclaimed))
+	return protocol.OpTruncate, buf.Bytes()
 }
 
 func (s *Server) handleStats() (byte, []byte) {
