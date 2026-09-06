@@ -11,7 +11,7 @@ import (
 
 func TestSegmentWriteAndRecover(t *testing.T) {
 	dir := t.TempDir()
-	seg, err := openSegment(dir, 0)
+	seg, err := openSegment(dir, 0, minSegmentPrealloc)
 	require.NoError(t, err)
 	defer seg.Close()
 
@@ -36,7 +36,7 @@ func TestSegmentWriteAndRecover(t *testing.T) {
 
 func TestSegmentRebuildOnCorruptIndex(t *testing.T) {
 	dir := t.TempDir()
-	seg, _ := openSegment(dir, 0)
+	seg, _ := openSegment(dir, 0, minSegmentPrealloc)
 	defer seg.Close()
 
 	rec := encodeRecord(uuid.NewV7(), time.Now(), []byte("payload"))
@@ -53,7 +53,7 @@ func TestSegmentRebuildOnCorruptIndex(t *testing.T) {
 
 func TestSegmentTornWriteRecovery(t *testing.T) {
 	dir := t.TempDir()
-	seg, _ := openSegment(dir, 0)
+	seg, _ := openSegment(dir, 0, minSegmentPrealloc)
 	defer seg.Close()
 
 	rec := encodeRecord(uuid.NewV7(), time.Now(), []byte("payload"))
@@ -69,7 +69,7 @@ func TestSegmentTornWriteRecovery(t *testing.T) {
 
 func TestSegmentMMap(t *testing.T) {
 	dir := t.TempDir()
-	seg, _ := openSegment(dir, 0)
+	seg, _ := openSegment(dir, 0, minSegmentPrealloc)
 	defer seg.Close()
 	rec := encodeRecord(uuid.NewV7(), time.Now(), []byte("data"))
 	_, _ = seg.logFile.WriteAt(rec, 0)
@@ -83,7 +83,7 @@ func TestSegmentMMap(t *testing.T) {
 
 func TestSegmentCloseUnmapsMMap(t *testing.T) {
 	dir := t.TempDir()
-	seg, _ := openSegment(dir, 0)
+	seg, _ := openSegment(dir, 0, minSegmentPrealloc)
 	rec := encodeRecord(uuid.NewV7(), time.Now(), []byte("data"))
 	_, _ = seg.logFile.WriteAt(rec, 0)
 	seg.pos = int64(len(rec))

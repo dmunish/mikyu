@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -373,7 +374,7 @@ func TestQueueConcurrentIndexDiskOrdering(t *testing.T) {
 	require.NoError(t, q.Close())
 
 	// Re-open active segment raw index file and verify positions are strictly monotonic
-	seg, err := openSegment(filepath.Join(dir, "disk-index-order"), 0)
+	seg, err := openSegment(filepath.Join(dir, "disk-index-order"), 0, minSegmentPrealloc)
 	require.NoError(t, err)
 	defer seg.Close()
 
@@ -386,4 +387,71 @@ func TestQueueConcurrentIndexDiskOrdering(t *testing.T) {
 		assert.Greater(t, e.pos, lastPos, "index entry %d on disk is out of order!", i)
 		lastPos = e.pos
 	}
+}
+
+func TestQueueVelocityPreallocationScaling(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openOffsetStore(dir)
+	require.NoError(t, err)
+	defer store.Close()
+
+	// MaxSegmentBytes set to 64 MiB so it doesn't clamp minSegmentPrealloc (8 MiB)
+	q, err := openQueue(dir, "velocity-test", Config{MaxSegmentBytes: 64 * 1024 * 1024}, store)
+	require.NoError(t, err)
+	defer q.Close()
+
+	ctx := context.Background()
+
+	// Initial pre-allocation target starts at minSegmentPrealloc (8 MB)
+	assert.Equal(t, int64(minSegmentPrealloc), q.nextPreallocBytes)
+
+	// 1. Fast fill (< 10s): Trigger roll and verify target doubles to 16 MB
+	_, err = q.Append(ctx, []byte("large-payload-to-force-roll-1"))
+	require.NoError(t, err)
+
+	q.mu.Lock()
+	err = q.roll()
+	q.mu.Unlock()
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(16*1024*1024), q.nextPreallocBytes)
+
+	// 2. Slow fill (> 5m): Artificially age active segment's createdAt time
+	q.mu.Lock()
+	q.active.createdAt = time.Now().Add(-6 * time.Minute)
+	err = q.roll()
+	q.mu.Unlock()
+	require.NoError(t, err)
+
+	// Target should decay back down to the 8 MB floor
+	assert.Equal(t, int64(minSegmentPrealloc), q.nextPreallocBytes)
+}
+
+func TestSegmentPreallocationTruncatedOnClose(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openOffsetStore(dir)
+	require.NoError(t, err)
+	defer store.Close()
+
+	q, err := openQueue(dir, "trunc-test", Config{MaxSegmentBytes: 64 * 1024 * 1024}, store)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	_, err = q.Append(ctx, []byte("hello world"))
+	require.NoError(t, err)
+
+	// Active segment file initially has full pre-allocated capacity on disk
+	activePath := q.active.logFile.Name()
+	info, err := os.Stat(activePath)
+	require.NoError(t, err)
+	assert.Equal(t, int64(minSegmentPrealloc), info.Size())
+
+	// Closing queue must truncate file down to actual written length (s.pos)
+	writtenPos := q.active.pos
+	require.NoError(t, q.Close())
+
+	info, err = os.Stat(activePath)
+	require.NoError(t, err)
+	assert.Equal(t, writtenPos, info.Size())
+	assert.Less(t, info.Size(), int64(minSegmentPrealloc))
 }
