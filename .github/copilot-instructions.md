@@ -61,6 +61,7 @@ github.com/dmunish/mikyu/
 │   │   ├── offsets.go          # Single-file manager-level consumer group offset store
 │   │   ├── encode.go           # CRC32 record framing, decoding, and raw UUID v7 handling
 │   │   ├── cache.go            # In-memory ring cache for recent messages (fast tail reads)
+│   │   ├── compact.go          # Segment metadata & truncation (MinOffset, Segments, TruncateBefore)
 │   │   ├── storage.go          # Storage interface definition
 │   │   ├── sync_darwin.go      # macOS F_FULLFSYNC drive cache flusher
 │   │   ├── sync_fdatasync.go   # POSIX unix.Fdatasync implementation
@@ -489,12 +490,18 @@ type Storage interface {
 	LastOffset() uint64
 	CommitOffset(ctx context.Context, group string, offset uint64) error
 	FetchOffset(ctx context.Context, group string) (uint64, error)
+
+	// Policy-agnostic maintenance & truncation primitives
+	MinOffset() uint64
+	Segments() []SegmentInfo
+	TruncateBefore(ctx context.Context, offset uint64) (reclaimedBytes int64, err error)
 }
 ```
 
 **Implementation Details:**
 
 - `Storage` is the minimal interface required by `logqueue.LogQueue` to provide log-oriented operations. It abstracts the engine `Queue` implementation, allowing the `logqueue` package to be reusable across embedded and remote backends.
+- The added `MinOffset`, `Segments`, and `TruncateBefore` methods expose maintenance and compaction capabilities to higher layers (e.g., a future garbage collector or admin API).
 
 #### `index.go`
 
@@ -561,6 +568,7 @@ type ringCache struct {
 func newRingCache(capacity uint64) *ringCache
 func (r *ringCache) Put(msg Message)
 func (r *ringCache) Get(offset uint64) (Message, bool)
+func (r *ringCache) EvictBefore(minOffset uint64)
 ```
 
 **Implementation Details:**
@@ -568,6 +576,7 @@ func (r *ringCache) Get(offset uint64) (Message, bool)
 - `newRingCache`: Allocates a slice of `capacity` `Message` values. The `mask` is `capacity - 1` (capacity must be a power of two).
 - `Put`: Stores a message at the slot indexed by `msg.Offset & mask` under write lock.
 - `Get`: Reads the slot under read lock and verifies the offset matches and the timestamp is non-zero before returning a hit.
+- `EvictBefore`: Iterates all slots and clears any message whose offset is strictly less than `minOffset`. This method is used by `TruncateBefore` to invalidate stale cache entries after physical segment deletion.
 - The default capacity is `defaultRingCacheCapacity = 16384`.
 
 #### `segment.go`
@@ -590,6 +599,9 @@ func (s *segment) enableMMap() error
 func (s *segment) writeIndex(pos, len int64) error
 func (s *segment) recover() ([]rawIndexEntry, error)
 func (s *segment) rebuild() ([]rawIndexEntry, error)
+func (s *segment) diskSize() int64
+func (s *segment) nextOffset() uint64
+func (s *segment) destroy() (int64, error)
 func (s *segment) Close() error
 ```
 
@@ -600,7 +612,34 @@ func (s *segment) Close() error
 - `writeIndex`: Encodes `pos` and `len` into 16 big-endian bytes and writes to `idxFile`.
 - `recover()`: Performs fast-path verification by reading the final 16-byte record in `idxFile`. If `lastPos + lastLen == logFileSize`, reads the index file in bulk. Otherwise, falls back to `rebuild()`.
 - `rebuild()`: Truncates `idxFile` to zero. Scans `logFile` sequentially from `pos = 0`, reading 4-byte record length prefixes and verifying CRC checksums via `decodeRecord`. Reconstructs valid `rawIndexEntry` slices, writes repaired index entries to `idxFile`, truncates `logFile` to the last valid position, and syncs `idxFile`.
-- `Close()`: Unmaps `mmapData` and `idxMMap` if non-nil, then closes `logFile` and `idxFile`.
+- `diskSize()`: Returns the combined size of the log and index files on disk.
+- `nextOffset()`: Computes the logical next offset as `baseOff + number_of_index_entries` (derived from the index file size or mapped index length). This is used by `Segments()` to report the boundary of a closed segment.
+- `destroy()`: Unmaps memory, closes file handles, and unlinks the log and index files. Returns the total freed bytes.
+- `Close()`: Trims the log file to the actually written size (`s.pos`) and syncs it, then unmaps any mapped regions and closes both file handles. This ensures that pre-allocated capacity is not left on disk after a clean shutdown.
+
+#### `compact.go`
+
+Provides segment metadata and logical truncation for safe physical compaction.
+
+```go
+type SegmentInfo struct {
+	BaseOffset uint64
+	NextOffset uint64
+	SizeBytes  int64
+	CreatedAt  time.Time
+	IsActive   bool
+}
+
+func (q *Queue) MinOffset() uint64
+func (q *Queue) Segments() []SegmentInfo
+func (q *Queue) TruncateBefore(ctx context.Context, targetOffset uint64) (reclaimedBytes int64, err error)
+```
+
+**Implementation Details:**
+
+- `MinOffset()`: Returns the lowest readable logical offset currently held in storage. This is initialized from the first segment's `baseOff` and updated after truncation.
+- `Segments()`: Returns metadata for each segment, including its base offset, next offset (boundary), physical size, creation time, and whether it is the active write segment. This information is useful for administrative tools and compaction decision-making.
+- `TruncateBefore(ctx, targetOffset)`: Locks the queue, then iterates through closed segments in order. For each closed segment whose `nextOffset <= targetOffset`, it calls `seg.destroy()` to unlink the files and accumulates the reclaimed bytes. It stops at the first segment that spans `targetOffset` (i.e., its records are not all below `targetOffset`) or at the active segment. After deletion, it updates `minOffset` to the new first segment's `baseOff` and evicts stale ring cache entries via `cache.EvictBefore`. Returns the total reclaimed bytes, or an error if a file deletion fails.
 
 #### `wal.go` & OS-Specific Sync Helpers
 
@@ -651,7 +690,7 @@ func (m *Manager) Close() error
 
 #### `queue.go`
 
-Implements the `Storage` interface with log-structured append, zero-copy reads, segment rolling, and WAL integration.
+Implements the `Storage` interface with log-structured append, zero-copy reads, segment rolling, WAL integration, and safe truncation.
 
 ```go
 type Queue struct {
@@ -661,6 +700,7 @@ type Queue struct {
 	active            *segment
 	segments          []*segment
 	nextOffset        uint64
+	minOffset         uint64
 	publishedOffset   uint64
 	w                 *wal
 	offsets           *OffsetStore
@@ -684,9 +724,11 @@ func (q *Queue) Close() error
 
 - `openQueue`: Creates the queue directory, clamps initial preallocation to `MaxSegmentBytes`, loads existing segments via `loadSegments`, and initializes the WAL.
 - `AppendBatch`: Encodes each payload with `encodeRecord`, checks size limits, and either follows the async fast path (Fsync=false) or the synchronous durable path (Fsync=true). In async mode, messages are placed in the ring cache and `publishedOffset` is advanced immediately, then queued for background write. In durable mode, producers push to the WAL and wait for the flusher to publish.
-- `Read`: Checks the ring cache first; otherwise locates the segment via binary search and reads from the segment (mmap for closed segments, `ReadAt` for active).
-- `ReadBatch`: Reads a contiguous range of offsets, preferring cache hits and falling back to segment reads.
+- `Read`: Checks the ring cache first; otherwise locates the segment via binary search and reads from the segment (mmap for closed segments, `ReadAt` for active). If the offset is below `minOffset`, returns `ErrOffsetTruncated`.
+- `ReadBatch`: Reads a contiguous range of offsets, preferring cache hits and falling back to segment reads. Handles segment boundary crossing and truncation errors.
 - `roll()`: Rotates the active segment based on size or age, adjusts `nextPreallocBytes` dynamically (doubling or halving based on fill duration), truncates the old segment to its written size, and enables mmap for zero-copy reads.
+- `loadSegments()`: Scans the queue directory for log files, sorts them by base offset, and opens each via `openSegment`. Calls `recover()` on each segment to rebuild valid index entries. Sets `minOffset` to the first segment's `baseOff`, and initializes `nextOffset`/`publishedOffset` from the last segment's record count. If no segments exist, creates an empty segment at offset 0.
+- `TruncateBefore` (implemented in `compact.go`): Physically deletes closed segments whose records are all below `targetOffset`, updating `minOffset` and evicting stale cache entries.
 - `CommitOffset` / `FetchOffset`: Delegate to the `OffsetStore`.
 
 #### `encode.go`
