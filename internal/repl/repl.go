@@ -400,7 +400,7 @@ func printREPLHelp() {
 		{"read", "<queue> <off>", "Read record at specific logical offset"},
 		{"tail", "<queue> [off]", "Stream live records continuously"},
 		{"stats", "", "Display engine storage metrics"},
-		{"compact", "<q> [off]", "Truncate physical log segments before offset"},
+		{"compact / truncate", "<q> [off]", "Truncate physical log segments before offset"},
 		{"shutdown", "", "Stop the background daemon process"},
 		{"exit / quit", "", "Exit the REPL shell"},
 	}
