@@ -8,7 +8,7 @@ type Storage interface {
 	Name() string
 	// Append stores a single payload and returns its offset[cite: 3].
 	Append(ctx context.Context, payload []byte) (uint64, error)
-	// AppendBatch stores multiple payloads and returns their offsets[cite: 3].
+	// AppendBatch stores multiple payloads and returns their offsets.
 	AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
 	// Read retrieves a single message by offset[cite: 3].
 	Read(ctx context.Context, offset uint64) (Message, error)
@@ -20,6 +20,11 @@ type Storage interface {
 	CommitOffset(ctx context.Context, group string, offset uint64) error
 	// FetchOffset retrieves the persisted consumer group offset[cite: 3].
 	FetchOffset(ctx context.Context, group string) (uint64, error)
+
+	// MaxAppendPayloadBytes returns the largest payload that can fit in a single
+	// storage record, accounting for the engine record overhead and the queue
+	// maximum message size.
+	MaxAppendPayloadBytes() int64
 
 	// Policy-agnostic maintenance & truncation primitives
 	MinOffset() uint64

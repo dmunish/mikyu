@@ -282,6 +282,17 @@ func (q *Queue) roll() error {
 	return nil
 }
 
+func (q *Queue) MaxAppendPayloadBytes() int64 {
+	maxPayload := q.cfg.MaxSegmentBytes - int64(minRecordSize)
+	if q.cfg.MaxMessageBytes < maxPayload {
+		maxPayload = q.cfg.MaxMessageBytes
+	}
+	if maxPayload < 0 {
+		return 0
+	}
+	return maxPayload
+}
+
 func (q *Queue) Append(ctx context.Context, payload []byte) (uint64, error) {
 	offs, err := q.AppendBatch(ctx, [][]byte{payload})
 	if err != nil {
