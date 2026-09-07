@@ -8,21 +8,20 @@ import (
 
 	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/logqueue"
+	"github.com/dmunish/mikyu/internal/taskqueue"
 )
 
-// TaskQueue is a placeholder for future task semantics.
-type TaskQueue interface {
-	io.Closer
-	Name() string
-}
+// TaskQueue is the client-facing task driver interface.
+type TaskQueue = taskqueue.ClientTaskQueue
 
-var ErrTaskNotSupported = errors.New("task queues are not yet supported")
+// ErrTaskNotSupported is retained for source compatibility; task queues are now supported.
+var ErrTaskNotSupported = errors.New("task queues are not supported by this client")
 
 // embeddedClient implements the client using an in-process engine.Manager.
 type embeddedClient struct {
 	mgr    *engine.Manager
 	queues map[string]*logqueue.LogQueue
-	tasks  map[string]TaskQueue // stub, unused
+	tasks  map[string]TaskQueue
 	mu     sync.RWMutex
 	cfg    Config
 	closed bool
@@ -126,9 +125,22 @@ func (c *embeddedClient) getOrCreateLogQueue(name string) (*logqueue.LogQueue, e
 	return lq, nil
 }
 
-// TaskQueue is not yet implemented.
 func (c *embeddedClient) TaskQueue(name string) (TaskQueue, error) {
-	return nil, ErrTaskNotSupported
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if tq, ok := c.tasks[name]; ok {
+		return tq, nil
+	}
+	storage, err := c.mgr.GetQueue(name)
+	if err != nil {
+		return nil, err
+	}
+	tq, err := taskqueue.NewTaskQueue(name, storage)
+	if err != nil {
+		return nil, err
+	}
+	c.tasks[name] = tq
+	return tq, nil
 }
 
 // ListQueues returns all queue names.
@@ -145,6 +157,10 @@ func (c *embeddedClient) DeleteQueue(ctx context.Context, name string) error {
 		return err
 	}
 	c.mu.Lock()
+	if tq, ok := c.tasks[name]; ok {
+		_ = tq.Close()
+		delete(c.tasks, name)
+	}
 	delete(c.queues, name)
 	c.mu.Unlock()
 	return c.mgr.DeleteQueue(name)
@@ -193,7 +209,17 @@ func (c *embeddedClient) Close() error {
 		return nil
 	}
 	c.closed = true
-	return c.mgr.Close()
+	var firstErr error
+	for name, tq := range c.tasks {
+		if err := tq.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		delete(c.tasks, name)
+	}
+	if err := c.mgr.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 var _ interface {

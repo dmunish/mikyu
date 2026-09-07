@@ -10,6 +10,7 @@ import (
 	"github.com/dmunish/mikyu/internal/client"
 	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/logqueue"
+	"github.com/dmunish/mikyu/internal/taskqueue"
 )
 
 // Re-export core engine types as type aliases.
@@ -20,20 +21,25 @@ type QueueStats = engine.QueueStats
 // Group tracks consumer offsets for a log queue.
 type Group = logqueue.Group
 
-// Task represents a unit of work (future).
-type Task struct {
-	ID          string
-	Payload     []byte
-	Attempts    uint32
-	MaxAttempts uint32
-	Visibility  time.Time
-	ScheduledAt time.Time
+// Task represents a unit of work owned by a TaskQueue. MaxAttempts is the maximum
+// number of deliveries. DeliveryID identifies the current delivery lease.
+type Task = taskqueue.Task
+
+type TaskOption = taskqueue.TaskOption
+type FailOption = taskqueue.FailOption
+
+func WithVisibilityTimeout(timeout time.Duration) TaskOption {
+	return taskqueue.WithVisibilityTimeout(timeout)
 }
+func WithMaxAttempts(n uint32) TaskOption           { return taskqueue.WithMaxAttempts(n) }
+func WithScheduleAt(at time.Time) TaskOption        { return taskqueue.WithScheduleAt(at) }
+func WithRetryAfter(delay time.Duration) FailOption { return taskqueue.WithRetryAfter(delay) }
 
 // LogQueue provides log-oriented operations (streaming, tailing, groups).
 type LogQueue = logqueue.ClientLogQueue
 
-// TaskQueue is a placeholder for future task semantics.
+// TaskQueue provides at-least-once delivery, visibility leases, retries, stale-delivery
+// protection, checkpoint recovery, and a durable per-queue dead-letter queue.
 type TaskQueue = client.TaskQueue
 
 // Client is the top-level interface for interacting with a Mikyu server.
@@ -60,6 +66,16 @@ func Dial(target string, opts ...ClientOption) (Client, error) {
 
 // Error variables re-exported from the engine/client layers.
 var (
+	ErrTaskNotAvailable   = taskqueue.ErrTaskNotAvailable
+	ErrTaskNotFound       = taskqueue.ErrTaskNotFound
+	ErrTaskNotInflight    = taskqueue.ErrTaskNotInflight
+	ErrTaskStale          = taskqueue.ErrTaskStale
+	ErrTaskClosed         = taskqueue.ErrTaskClosed
+	ErrInvalidTask        = taskqueue.ErrInvalidTask
+	ErrCheckpointCorrupt  = taskqueue.ErrCheckpointCorrupt
+	ErrDeadLetterNotFound = taskqueue.ErrDeadLetterNotFound
+	ErrDeadLetterStale    = taskqueue.ErrDeadLetterStale
+
 	ErrQueueExists      = engine.ErrQueueExists
 	ErrQueueNotFound    = engine.ErrQueueNotFound
 	ErrOffsetNotFound   = engine.ErrOffsetNotFound

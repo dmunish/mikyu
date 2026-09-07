@@ -142,3 +142,45 @@ func TestTypedQueue(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "test", item.Name)
 }
+
+func TestEmbeddedTaskQueueLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	client, err := mikyu.Open(dir)
+	require.NoError(t, err)
+	defer client.Close()
+	require.NoError(t, client.CreateQueue(context.Background(), "tasks"))
+
+	q, err := client.TaskQueue("tasks")
+	require.NoError(t, err)
+	task, err := q.Enqueue(context.Background(), []byte("hello"), mikyu.WithMaxAttempts(2), mikyu.WithVisibilityTimeout(time.Second))
+	require.NoError(t, err)
+	got, err := q.Dequeue(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, task.ID, got.ID)
+	assert.Equal(t, uint32(1), got.Attempts)
+	require.NoError(t, q.Ack(context.Background(), got))
+}
+
+func TestEmbeddedTaskQueueStableHandle(t *testing.T) {
+	client, err := mikyu.Open(t.TempDir())
+	require.NoError(t, err)
+	defer client.Close()
+	require.NoError(t, client.CreateQueue(context.Background(), "tasks"))
+
+	const n = 16
+	queues := make([]mikyu.TaskQueue, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			q, err := client.TaskQueue("tasks")
+			require.NoError(t, err)
+			queues[i] = q
+		}(i)
+	}
+	wg.Wait()
+	for i := 1; i < n; i++ {
+		assert.Equal(t, queues[0], queues[i])
+	}
+}

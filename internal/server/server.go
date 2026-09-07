@@ -12,6 +12,7 @@ import (
 	"github.com/dmunish/mikyu/internal/ipc"
 	"github.com/dmunish/mikyu/internal/logqueue"
 	"github.com/dmunish/mikyu/internal/protocol"
+	"github.com/dmunish/mikyu/internal/taskqueue"
 )
 
 // Server accepts client connections and dispatches wire protocol frames to internal/engine.
@@ -20,6 +21,7 @@ type Server struct {
 	listener  net.Listener
 	tlsConfig *tls.Config
 	queues    map[string]*logqueue.LogQueue
+	tasks     map[string]*taskqueue.TaskQueue
 	mu        sync.RWMutex
 	stopCh    chan struct{}
 	doneCh    chan struct{}
@@ -32,6 +34,7 @@ func New(mgr *engine.Manager, opts ...ServerOption) *Server {
 	s := &Server{
 		mgr:    mgr,
 		queues: make(map[string]*logqueue.LogQueue),
+		tasks:  make(map[string]*taskqueue.TaskQueue),
 		stopCh: make(chan struct{}),
 		doneCh: make(chan struct{}),
 	}
@@ -72,6 +75,42 @@ func (s *Server) getOrCreateLogQueue(name string) (*logqueue.LogQueue, error) {
 	q = logqueue.NewLogQueue(name, storage)
 	s.queues[name] = q
 	return q, nil
+}
+
+// getOrCreateTaskQueue returns the stable server-side task handle for name.
+func (s *Server) getOrCreateTaskQueue(name string) (*taskqueue.TaskQueue, error) {
+	s.mu.RLock()
+	q, ok := s.tasks[name]
+	s.mu.RUnlock()
+	if ok {
+		return q, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if q, ok := s.tasks[name]; ok {
+		return q, nil
+	}
+
+	storage, err := s.mgr.GetQueue(name)
+	if err != nil {
+		return nil, err
+	}
+	q, err = taskqueue.NewTaskQueue(name, storage)
+	if err != nil {
+		return nil, err
+	}
+	s.tasks[name] = q
+	return q, nil
+}
+
+func (s *Server) closeTaskQueues() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name, q := range s.tasks {
+		_ = q.Close()
+		delete(s.tasks, name)
+	}
 }
 
 // ListenAndServe binds to target (e.g. "tcp://:7420", "unix:///tmp/mikyu.sock") and serves incoming requests.
@@ -126,9 +165,10 @@ func (s *Server) Done() <-chan struct{} {
 
 func (s *Server) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	select {
 	case <-s.stopCh:
+		s.mu.Unlock()
+		return
 	default:
 		close(s.stopCh)
 		if s.listener != nil {
@@ -136,6 +176,8 @@ func (s *Server) Stop() {
 		}
 		close(s.doneCh)
 	}
+	s.mu.Unlock()
+	s.closeTaskQueues()
 }
 
 func (s *Server) serveConn(conn net.Conn) {
@@ -156,6 +198,7 @@ func (s *Server) serveConn(conn net.Conn) {
 
 		if shouldShutdown {
 			go func() {
+				s.closeTaskQueues()
 				_ = s.mgr.Close()
 				s.Stop()
 			}()

@@ -17,6 +17,7 @@ import (
 	"github.com/dmunish/mikyu/internal/ipc"
 	"github.com/dmunish/mikyu/internal/logqueue"
 	"github.com/dmunish/mikyu/internal/protocol"
+	"github.com/dmunish/mikyu/internal/taskqueue"
 )
 
 // remoteClient implements Client over a network connection pool.
@@ -162,7 +163,7 @@ func (c *remoteClient) LogQueue(name string) (logqueue.ClientLogQueue, error) {
 }
 
 func (c *remoteClient) TaskQueue(name string) (TaskQueue, error) {
-	return nil, ErrTaskNotSupported
+	return &remoteTaskQueue{client: c, name: name}, nil
 }
 
 func (c *remoteClient) ListQueues(ctx context.Context) ([]string, error) {
@@ -240,6 +241,22 @@ func decodeProtocolError(code byte, msg string) error {
 		return engine.ErrOffsetNotFound
 	case protocol.ErrCodeOffsetTruncated:
 		return engine.ErrOffsetTruncated
+	case protocol.ErrCodeTaskNotAvailable:
+		return taskqueue.ErrTaskNotAvailable
+	case protocol.ErrCodeTaskNotFound:
+		return taskqueue.ErrTaskNotFound
+	case protocol.ErrCodeTaskNotInflight:
+		return taskqueue.ErrTaskNotInflight
+	case protocol.ErrCodeTaskStale:
+		return taskqueue.ErrTaskStale
+	case protocol.ErrCodeTaskClosed:
+		return taskqueue.ErrTaskClosed
+	case protocol.ErrCodeInvalidTask:
+		return taskqueue.ErrInvalidTask
+	case protocol.ErrCodeDeadLetterNotFound:
+		return taskqueue.ErrDeadLetterNotFound
+	case protocol.ErrCodeDeadLetterStale:
+		return taskqueue.ErrDeadLetterStale
 	default:
 		return errors.New(msg)
 	}
@@ -502,4 +519,115 @@ func isRetryable(err error) bool {
 		errors.Is(err, engine.ErrCorruptRecord) ||
 		errors.Is(err, io.EOF) ||
 		errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+type remoteTaskQueue struct {
+	client *remoteClient
+	name   string
+}
+
+func (q *remoteTaskQueue) Close() error { return nil }
+func (q *remoteTaskQueue) Name() string { return q.name }
+
+func (q *remoteTaskQueue) Enqueue(ctx context.Context, payload []byte, opts ...taskqueue.TaskOption) (taskqueue.Task, error) {
+	visibility, maxAttempts, scheduled := taskqueue.ResolveTaskOptions(opts...)
+	if visibility <= 0 || maxAttempts == 0 || scheduled.IsZero() {
+		return taskqueue.Task{}, taskqueue.ErrInvalidTask
+	}
+	var b protocol.Buffer
+	b.WriteBytes([]byte(q.name))
+	b.WriteBytes(payload)
+	b.WriteU32(maxAttempts)
+	b.WriteU64(uint64(int64(visibility)))
+	if scheduled.IsZero() {
+		b.WriteU64(0)
+	} else {
+		b.WriteU64(uint64(scheduled.UnixNano()))
+	}
+	resp, err := q.client.exchange(ctx, protocol.OpTaskEnqueue, b.Bytes())
+	if err != nil {
+		return taskqueue.Task{}, err
+	}
+	r := protocol.NewReader(resp)
+	return protocol.DecodeTask(r)
+}
+
+func (q *remoteTaskQueue) Dequeue(ctx context.Context) (taskqueue.Task, error) {
+	for {
+		var b protocol.Buffer
+		b.WriteBytes([]byte(q.name))
+		resp, err := q.client.exchange(ctx, protocol.OpTaskDequeue, b.Bytes())
+		if err == nil {
+			r := protocol.NewReader(resp)
+			return protocol.DecodeTask(r)
+		}
+		if !errors.Is(err, taskqueue.ErrTaskNotAvailable) {
+			return taskqueue.Task{}, err
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				drainRemoteTimer(timer)
+			}
+			return taskqueue.Task{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (q *remoteTaskQueue) Ack(ctx context.Context, task taskqueue.Task) error {
+	var b protocol.Buffer
+	b.WriteBytes([]byte(q.name))
+	protocol.EncodeTask(&b, task)
+	_, err := q.client.exchange(ctx, protocol.OpTaskAck, b.Bytes())
+	return err
+}
+
+func (q *remoteTaskQueue) Fail(ctx context.Context, task taskqueue.Task, opts ...taskqueue.FailOption) error {
+	delay := taskqueue.ResolveFailOptions(task, opts...)
+	var b protocol.Buffer
+	b.WriteBytes([]byte(q.name))
+	protocol.EncodeTask(&b, task)
+	b.WriteU64(uint64(int64(delay)))
+	_, err := q.client.exchange(ctx, protocol.OpTaskFail, b.Bytes())
+	return err
+}
+
+func (q *remoteTaskQueue) Extend(ctx context.Context, task taskqueue.Task, timeout time.Duration) error {
+	if timeout <= 0 {
+		return taskqueue.ErrInvalidTask
+	}
+	var b protocol.Buffer
+	b.WriteBytes([]byte(q.name))
+	protocol.EncodeTask(&b, task)
+	b.WriteU64(uint64(int64(timeout)))
+	_, err := q.client.exchange(ctx, protocol.OpTaskExtend, b.Bytes())
+	return err
+}
+
+func (q *remoteTaskQueue) DeadLetters(ctx context.Context) ([]taskqueue.Task, error) {
+	var b protocol.Buffer
+	b.WriteBytes([]byte(q.name))
+	resp, err := q.client.exchange(ctx, protocol.OpTaskDeadLetters, b.Bytes())
+	if err != nil {
+		return nil, err
+	}
+	r := protocol.NewReader(resp)
+	return protocol.DecodeTaskList(r)
+}
+
+func (q *remoteTaskQueue) AckDeadLetter(ctx context.Context, task taskqueue.Task) error {
+	var b protocol.Buffer
+	b.WriteBytes([]byte(q.name))
+	protocol.EncodeTask(&b, task)
+	_, err := q.client.exchange(ctx, protocol.OpTaskDeadLetterAck, b.Bytes())
+	return err
+}
+
+func drainRemoteTimer(t *time.Timer) {
+	select {
+	case <-t.C:
+	default:
+	}
 }

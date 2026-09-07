@@ -45,3 +45,14 @@ func TestDecodeErrorEmpty(t *testing.T) {
 	assert.Equal(t, ErrCodeUnknown, code)
 	assert.Equal(t, "unknown error", msg)
 }
+
+func TestTaskOpcodesAllocatedContiguously(t *testing.T) {
+	assert.Equal(t, byte(0x0D), OpTaskEnqueue)
+	assert.Equal(t, byte(0x0E), OpTaskDequeue)
+	assert.Equal(t, byte(0x0F), OpTaskAck)
+	assert.Equal(t, byte(0x10), OpTaskFail)
+	assert.Equal(t, byte(0x11), OpTruncate)
+	assert.Equal(t, byte(0x12), OpTaskExtend)
+	assert.Equal(t, byte(0x13), OpTaskDeadLetters)
+	assert.Equal(t, byte(0x14), OpTaskDeadLetterAck)
+}
