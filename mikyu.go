@@ -70,6 +70,7 @@ var (
 	ErrOffsetNotFound   = engine.ErrOffsetNotFound
 	ErrOffsetTruncated  = engine.ErrOffsetTruncated
 	ErrMessageTooLarge  = engine.ErrMessageTooLarge
+	ErrCorruptRecord    = engine.ErrCorruptRecord
 	ErrTaskNotSupported = errors.New("task queues are not yet supported")
 )
 
