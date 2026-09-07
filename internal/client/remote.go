@@ -1,4 +1,4 @@
-package mikyu
+package client
 
 import (
 	"bufio"
@@ -12,7 +12,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/group"
 	"github.com/dmunish/mikyu/internal/ipc"
+	"github.com/dmunish/mikyu/internal/logqueue"
 	"github.com/dmunish/mikyu/internal/protocol"
 )
 
@@ -21,7 +24,7 @@ type remoteClient struct {
 	target   string
 	network  string
 	addr     string
-	cfg      ClientConfig
+	cfg      Config
 	pool     chan *clientConn
 	maxConns int
 	mu       sync.Mutex
@@ -33,8 +36,8 @@ type clientConn struct {
 	r    *bufio.Reader
 }
 
-// Dial connects to a remote Mikyu server.
-func Dial(target string, opts ...ClientOption) (Client, error) {
+// NewRemote creates a lazy remote client for target.
+func NewRemote(target string, opts ...Option) (*remoteClient, error) {
 	cfg := DefaultClientConfig()
 	for _, opt := range opts {
 		opt(&cfg)
@@ -154,7 +157,7 @@ func (c *remoteClient) CreateQueue(ctx context.Context, name string, opts ...Que
 	return err
 }
 
-func (c *remoteClient) LogQueue(name string) (LogQueue, error) {
+func (c *remoteClient) LogQueue(name string) (logqueue.ClientLogQueue, error) {
 	return &remoteLogQueue{client: c, name: name}, nil
 }
 
@@ -206,37 +209,37 @@ func (c *remoteClient) TruncateQueue(ctx context.Context, name string, minOffset
 	return int64(reclaimed), nil
 }
 
-func (c *remoteClient) Stats(ctx context.Context) (SystemStats, error) {
+func (c *remoteClient) Stats(ctx context.Context) (engine.EngineStats, error) {
 	body, err := c.exchange(ctx, protocol.OpStats, nil)
 	if err != nil {
-		return SystemStats{}, err
+		return engine.EngineStats{}, err
 	}
 	r := protocol.NewReader(body)
 	active, err := r.ReadU32()
 	if err != nil {
-		return SystemStats{}, err
+		return engine.EngineStats{}, err
 	}
 	totalBytes, err := r.ReadU64()
 	if err != nil {
-		return SystemStats{}, err
+		return engine.EngineStats{}, err
 	}
-	return SystemStats{
+	return engine.EngineStats{
 		ActiveQueues: int(active),
 		TotalBytes:   int64(totalBytes),
-		Queues:       make(map[string]QueueStats),
+		Queues:       make(map[string]engine.QueueStats),
 	}, nil
 }
 
 func decodeProtocolError(code byte, msg string) error {
 	switch code {
 	case protocol.ErrCodeQueueNotFound:
-		return ErrQueueNotFound
+		return engine.ErrQueueNotFound
 	case protocol.ErrCodeQueueExists:
-		return ErrQueueExists
+		return engine.ErrQueueExists
 	case protocol.ErrCodeOffsetNotFound:
-		return ErrOffsetNotFound
+		return engine.ErrOffsetNotFound
 	case protocol.ErrCodeOffsetTruncated:
-		return ErrOffsetTruncated
+		return engine.ErrOffsetTruncated
 	default:
 		return errors.New(msg)
 	}
@@ -288,32 +291,32 @@ func (q *remoteLogQueue) ProduceBatch(ctx context.Context, payloads [][]byte) ([
 	return offsets, nil
 }
 
-func (q *remoteLogQueue) Read(ctx context.Context, offset uint64) (Message, error) {
+func (q *remoteLogQueue) Read(ctx context.Context, offset uint64) (engine.Message, error) {
 	body := protocol.Buffer{}
 	body.WriteBytes([]byte(q.name))
 	body.WriteU64(offset)
 	resp, err := q.client.exchange(ctx, protocol.OpRead, body.Bytes())
 	if err != nil {
-		return Message{}, err
+		return engine.Message{}, err
 	}
 	r := protocol.NewReader(resp)
 	off, err := r.ReadU64()
 	if err != nil {
-		return Message{}, err
+		return engine.Message{}, err
 	}
 	idBytes, err := r.ReadBytes()
 	if err != nil {
-		return Message{}, err
+		return engine.Message{}, err
 	}
 	tsNano, err := r.ReadU64()
 	if err != nil {
-		return Message{}, err
+		return engine.Message{}, err
 	}
 	payload, err := r.ReadBytes()
 	if err != nil {
-		return Message{}, err
+		return engine.Message{}, err
 	}
-	return Message{
+	return engine.Message{
 		Offset:    off,
 		ID:        string(idBytes),
 		Timestamp: time.Unix(0, int64(tsNano)),
@@ -321,7 +324,7 @@ func (q *remoteLogQueue) Read(ctx context.Context, offset uint64) (Message, erro
 	}, nil
 }
 
-func (q *remoteLogQueue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([]Message, error) {
+func (q *remoteLogQueue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([]engine.Message, error) {
 	body := protocol.Buffer{}
 	body.WriteBytes([]byte(q.name))
 	body.WriteU64(startOffset)
@@ -335,13 +338,13 @@ func (q *remoteLogQueue) ReadBatch(ctx context.Context, startOffset uint64, coun
 	if err != nil {
 		return nil, err
 	}
-	msgs := make([]Message, 0, n)
+	msgs := make([]engine.Message, 0, n)
 	for i := uint32(0); i < n; i++ {
 		off, _ := r.ReadU64()
 		idBytes, _ := r.ReadBytes()
 		tsNano, _ := r.ReadU64()
 		payload, _ := r.ReadBytes()
-		msgs = append(msgs, Message{
+		msgs = append(msgs, engine.Message{
 			Offset:    off,
 			ID:        string(idBytes),
 			Timestamp: time.Unix(0, int64(tsNano)),
@@ -369,7 +372,7 @@ func (q *remoteLogQueue) MinOffset(ctx context.Context) (uint64, error) {
 	}
 	qs, ok := stats.Queues[q.name]
 	if !ok {
-		return 0, ErrQueueNotFound
+		return 0, engine.ErrQueueNotFound
 	}
 	return qs.MinOffset, nil
 }
@@ -378,15 +381,15 @@ func (q *remoteLogQueue) Truncate(ctx context.Context, minOffset uint64) (int64,
 	return q.client.TruncateQueue(ctx, q.name, minOffset)
 }
 
-func (q *remoteLogQueue) Stream(ctx context.Context, startOffset uint64) iter.Seq2[Message, error] {
-	return func(yield func(Message, error) bool) {
+func (q *remoteLogQueue) Stream(ctx context.Context, startOffset uint64) iter.Seq2[engine.Message, error] {
+	return func(yield func(engine.Message, error) bool) {
 		for curr := startOffset; ; curr++ {
 			if err := ctx.Err(); err != nil {
-				yield(Message{}, err)
+				yield(engine.Message{}, err)
 				return
 			}
 			msg, err := q.Read(ctx, curr)
-			if errors.Is(err, ErrOffsetNotFound) {
+			if errors.Is(err, engine.ErrOffsetNotFound) {
 				return
 			}
 			if !yield(msg, err) || err != nil {
@@ -396,12 +399,12 @@ func (q *remoteLogQueue) Stream(ctx context.Context, startOffset uint64) iter.Se
 	}
 }
 
-func (q *remoteLogQueue) Tail(ctx context.Context, startOffset uint64) iter.Seq2[Message, error] {
-	return func(yield func(Message, error) bool) {
+func (q *remoteLogQueue) Tail(ctx context.Context, startOffset uint64) iter.Seq2[engine.Message, error] {
+	return func(yield func(engine.Message, error) bool) {
 		curr := startOffset
 		for {
 			if err := ctx.Err(); err != nil {
-				yield(Message{}, err)
+				yield(engine.Message{}, err)
 				return
 			}
 			last, err := q.LastOffset(ctx)
@@ -415,7 +418,7 @@ func (q *remoteLogQueue) Tail(ctx context.Context, startOffset uint64) iter.Seq2
 						continue
 					}
 				}
-				yield(Message{}, err)
+				yield(engine.Message{}, err)
 				return
 			}
 			if curr >= last {
@@ -436,7 +439,7 @@ func (q *remoteLogQueue) Tail(ctx context.Context, startOffset uint64) iter.Seq2
 						continue
 					}
 				}
-				yield(Message{}, err)
+				yield(engine.Message{}, err)
 				return
 			}
 			if !yield(msg, nil) {
@@ -447,44 +450,33 @@ func (q *remoteLogQueue) Tail(ctx context.Context, startOffset uint64) iter.Seq2
 	}
 }
 
-func (q *remoteLogQueue) Group(name string) Group {
-	return &remoteGroup{queue: q, name: name}
+func (q *remoteLogQueue) Group(name string) logqueue.Group {
+	g := &remoteGroup{queue: q}
+	g.Base.Name = name
+	g.Base.CommitFn = func(ctx context.Context, offset uint64) error {
+		body := protocol.Buffer{}
+		body.WriteBytes([]byte(q.name))
+		body.WriteBytes([]byte(name))
+		body.WriteU64(offset)
+		_, err := q.client.exchange(ctx, protocol.OpCommitOffset, body.Bytes())
+		return err
+	}
+	return g
 }
 
 type remoteGroup struct {
-	queue     *remoteLogQueue
-	name      string
-	mu        sync.Mutex
-	highWater uint64
-	closed    bool
+	group.Base
+	queue *remoteLogQueue
 }
 
-func (g *remoteGroup) Name() string { return g.name }
-
-func (g *remoteGroup) Mark(offset uint64) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if offset >= g.highWater {
-		g.highWater = offset + 1
-	}
-}
-
-func (g *remoteGroup) Commit(ctx context.Context) error {
-	g.mu.Lock()
-	off := g.highWater
-	g.mu.Unlock()
-	body := protocol.Buffer{}
-	body.WriteBytes([]byte(g.queue.name))
-	body.WriteBytes([]byte(g.name))
-	body.WriteU64(off)
-	_, err := g.queue.client.exchange(ctx, protocol.OpCommitOffset, body.Bytes())
-	return err
+func (g *remoteGroup) Name() string {
+	return g.Base.Name
 }
 
 func (g *remoteGroup) FetchOffset(ctx context.Context) (uint64, error) {
 	body := protocol.Buffer{}
 	body.WriteBytes([]byte(g.queue.name))
-	body.WriteBytes([]byte(g.name))
+	body.WriteBytes([]byte(g.Base.Name))
 	resp, err := g.queue.client.exchange(ctx, protocol.OpFetchOffset, body.Bytes())
 	if err != nil {
 		return 0, err
@@ -493,23 +485,21 @@ func (g *remoteGroup) FetchOffset(ctx context.Context) (uint64, error) {
 	return r.ReadU64()
 }
 
-func (g *remoteGroup) Close() error {
-	g.mu.Lock()
-	if g.closed {
-		g.mu.Unlock()
-		return nil
-	}
-	g.closed = true
-	g.mu.Unlock()
-	return g.Commit(context.Background())
-}
-
-var _ Client = (*remoteClient)(nil)
+var _ interface {
+	io.Closer
+	CreateQueue(context.Context, string, ...QueueOption) error
+	LogQueue(string) (logqueue.ClientLogQueue, error)
+	TaskQueue(string) (TaskQueue, error)
+	ListQueues(context.Context) ([]string, error)
+	DeleteQueue(context.Context, string) error
+	TruncateQueue(context.Context, string, uint64) (int64, error)
+	Stats(context.Context) (engine.EngineStats, error)
+} = (*remoteClient)(nil)
 
 func isRetryable(err error) bool {
-	return errors.Is(err, ErrOffsetNotFound) ||
-		errors.Is(err, ErrOffsetTruncated) || // optional; truncated offsets won't recover, but you may want to fail fast
-		errors.Is(err, ErrCorruptRecord) ||
+	return errors.Is(err, engine.ErrOffsetNotFound) ||
+		errors.Is(err, engine.ErrOffsetTruncated) || // optional; truncated offsets won't recover, but you may want to fail fast
+		errors.Is(err, engine.ErrCorruptRecord) ||
 		errors.Is(err, io.EOF) ||
 		errors.Is(err, io.ErrUnexpectedEOF)
 }

@@ -3,7 +3,8 @@ package logqueue
 import (
 	"context"
 	"io"
-	"sync"
+
+	"github.com/dmunish/mikyu/internal/group"
 )
 
 // Group defines the consumer group offset tracking interface.
@@ -15,45 +16,24 @@ type Group interface {
 	FetchOffset(ctx context.Context) (uint64, error)
 }
 
-type group struct {
-	q         *LogQueue
-	name      string
-	mu        sync.Mutex
-	highWater uint64
-	closed    bool
+type queueGroup struct {
+	group.Base
+	q *LogQueue
 }
 
-func (g *group) Name() string {
-	return g.name
-}
-
-func (g *group) Mark(offset uint64) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if offset >= g.highWater {
-		g.highWater = offset + 1
+func newQueueGroup(q *LogQueue, name string) *queueGroup {
+	g := &queueGroup{q: q}
+	g.Base.Name = name
+	g.Base.CommitFn = func(ctx context.Context, offset uint64) error {
+		return q.CommitOffset(ctx, name, offset)
 	}
+	return g
 }
 
-func (g *group) Commit(ctx context.Context) error {
-	g.mu.Lock()
-	offset := g.highWater
-	g.mu.Unlock()
-	return g.q.CommitOffset(ctx, g.name, offset)
+func (g *queueGroup) Name() string {
+	return g.Base.Name
 }
 
-func (g *group) FetchOffset(ctx context.Context) (uint64, error) {
-	return g.q.FetchOffset(ctx, g.name)
-}
-
-func (g *group) Close() error {
-	g.mu.Lock()
-	if g.closed {
-		g.mu.Unlock()
-		return nil
-	}
-	g.closed = true
-	offset := g.highWater
-	g.mu.Unlock()
-	return g.q.CommitOffset(context.Background(), g.name, offset)
+func (g *queueGroup) FetchOffset(ctx context.Context) (uint64, error) {
+	return g.q.FetchOffset(ctx, g.Base.Name)
 }

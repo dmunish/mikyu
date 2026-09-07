@@ -5,7 +5,6 @@ import (
 	"errors"
 
 	"github.com/dmunish/mikyu/internal/engine"
-	"github.com/dmunish/mikyu/internal/logqueue"
 	"github.com/dmunish/mikyu/internal/protocol"
 )
 
@@ -64,11 +63,10 @@ func (s *Server) handleProduce(ctx context.Context, body []byte) (byte, []byte) 
 	r := protocol.NewReader(body)
 	name, _ := r.ReadBytes()
 	payload, _ := r.ReadBytes()
-	storage, err := s.mgr.GetQueue(string(name))
+	q, err := s.getOrCreateLogQueue(string(name))
 	if err != nil {
 		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
-	q := logqueue.NewLogQueue(string(name), storage)
 	off, err := q.Produce(ctx, payload)
 	if err != nil {
 		return opErr(protocol.ErrCodeUnknown, err.Error())
@@ -86,11 +84,10 @@ func (s *Server) handleProduceBatch(ctx context.Context, body []byte) (byte, []b
 	for i := uint32(0); i < count; i++ {
 		payloads[i], _ = r.ReadBytes()
 	}
-	storage, err := s.mgr.GetQueue(string(name))
+	q, err := s.getOrCreateLogQueue(string(name))
 	if err != nil {
 		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
-	q := logqueue.NewLogQueue(string(name), storage)
 	offs, err := q.ProduceBatch(ctx, payloads)
 	if err != nil {
 		return opErr(protocol.ErrCodeUnknown, err.Error())
@@ -107,11 +104,10 @@ func (s *Server) handleRead(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
 	name, _ := r.ReadBytes()
 	off, _ := r.ReadU64()
-	storage, err := s.mgr.GetQueue(string(name))
+	q, err := s.getOrCreateLogQueue(string(name))
 	if err != nil {
 		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
-	q := logqueue.NewLogQueue(string(name), storage)
 	msg, err := q.Read(ctx, off)
 	if err != nil {
 		if errors.Is(err, engine.ErrOffsetNotFound) {
@@ -135,11 +131,10 @@ func (s *Server) handleReadBatch(ctx context.Context, body []byte) (byte, []byte
 	name, _ := r.ReadBytes()
 	start, _ := r.ReadU64()
 	count, _ := r.ReadU32()
-	storage, err := s.mgr.GetQueue(string(name))
+	q, err := s.getOrCreateLogQueue(string(name))
 	if err != nil {
 		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
-	q := logqueue.NewLogQueue(string(name), storage)
 	msgs, err := q.ReadBatch(ctx, start, int(count))
 	if err != nil {
 		if errors.Is(err, engine.ErrOffsetNotFound) {
@@ -164,11 +159,10 @@ func (s *Server) handleReadBatch(ctx context.Context, body []byte) (byte, []byte
 func (s *Server) handleTail(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
 	name, _ := r.ReadBytes()
-	storage, err := s.mgr.GetQueue(string(name))
+	q, err := s.getOrCreateLogQueue(string(name))
 	if err != nil {
 		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
-	q := logqueue.NewLogQueue(string(name), storage)
 	last, err := q.LastOffset(ctx)
 	if err != nil {
 		return opErr(protocol.ErrCodeUnknown, err.Error())
@@ -183,11 +177,10 @@ func (s *Server) handleCommitOffset(ctx context.Context, body []byte) (byte, []b
 	qname, _ := r.ReadBytes()
 	gname, _ := r.ReadBytes()
 	off, _ := r.ReadU64()
-	storage, err := s.mgr.GetQueue(string(qname))
+	q, err := s.getOrCreateLogQueue(string(qname))
 	if err != nil {
 		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
-	q := logqueue.NewLogQueue(string(qname), storage)
 	if err := q.CommitOffset(ctx, string(gname), off); err != nil {
 		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
@@ -198,11 +191,10 @@ func (s *Server) handleFetchOffset(ctx context.Context, body []byte) (byte, []by
 	r := protocol.NewReader(body)
 	qname, _ := r.ReadBytes()
 	gname, _ := r.ReadBytes()
-	storage, err := s.mgr.GetQueue(string(qname))
+	q, err := s.getOrCreateLogQueue(string(qname))
 	if err != nil {
 		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
-	q := logqueue.NewLogQueue(string(qname), storage)
 	off, err := q.FetchOffset(ctx, string(gname))
 	if err != nil {
 		return opErr(protocol.ErrCodeUnknown, err.Error())
@@ -225,6 +217,9 @@ func (s *Server) handleListQueues() (byte, []byte) {
 func (s *Server) handleDeleteQueue(body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
 	name, _ := r.ReadBytes()
+	s.mu.Lock()
+	delete(s.queues, string(name))
+	s.mu.Unlock()
 	if err := s.mgr.DeleteQueue(string(name)); err != nil {
 		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
@@ -242,7 +237,7 @@ func (s *Server) handleTruncate(ctx context.Context, body []byte) (byte, []byte)
 		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
 
-	storage, err := s.mgr.GetQueue(string(name))
+	q, err := s.getOrCreateLogQueue(string(name))
 	if err != nil {
 		if errors.Is(err, engine.ErrQueueNotFound) {
 			return opErr(protocol.ErrCodeQueueNotFound, err.Error())
@@ -250,7 +245,7 @@ func (s *Server) handleTruncate(ctx context.Context, body []byte) (byte, []byte)
 		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
 
-	reclaimed, err := storage.TruncateBefore(ctx, minOffset)
+	reclaimed, err := q.Truncate(ctx, minOffset)
 	if err != nil {
 		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}

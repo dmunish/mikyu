@@ -1,29 +1,40 @@
-package mikyu
+package client
 
 import (
 	"context"
+	"errors"
+	"io"
 	"sync"
 
 	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/logqueue"
 )
 
-// embeddedClient implements Client using an in-process engine.Manager.
+// TaskQueue is a placeholder for future task semantics.
+type TaskQueue interface {
+	io.Closer
+	Name() string
+}
+
+var ErrTaskNotSupported = errors.New("task queues are not yet supported")
+
+// embeddedClient implements the client using an in-process engine.Manager.
 type embeddedClient struct {
 	mgr    *engine.Manager
 	queues map[string]*logqueue.LogQueue
 	tasks  map[string]TaskQueue // stub, unused
 	mu     sync.RWMutex
-	cfg    ClientConfig
+	cfg    Config
 	closed bool
 }
 
-// Open creates an in-process Client.
-func Open(dir string, opts ...ClientOption) (Client, error) {
+// NewEmbedded creates an in-process client.
+func NewEmbedded(dir string, opts ...Option) (*embeddedClient, error) {
 	cfg := DefaultClientConfig()
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+
 	engineCfg := engine.Config{
 		BatchSize:       cfg.BatchSize,
 		MaxInterval:     cfg.MaxInterval,
@@ -33,6 +44,7 @@ func Open(dir string, opts ...ClientOption) (Client, error) {
 		MaxSegmentAge:   cfg.DefaultMaxSegmentAge,
 		Encrypted:       cfg.Encrypted,
 	}
+
 	mgr, err := engine.OpenManager(dir, engineCfg)
 	if err != nil {
 		return nil, err
@@ -50,6 +62,7 @@ func (c *embeddedClient) CreateQueue(ctx context.Context, name string, opts ...Q
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
 	qCfg := QueueConfig{
 		BatchSize:       c.cfg.BatchSize,
 		MaxInterval:     c.cfg.MaxInterval,
@@ -62,6 +75,7 @@ func (c *embeddedClient) CreateQueue(ctx context.Context, name string, opts ...Q
 	for _, opt := range opts {
 		opt(&qCfg)
 	}
+
 	engineCfg := engine.Config{
 		BatchSize:       qCfg.BatchSize,
 		MaxInterval:     qCfg.MaxInterval,
@@ -71,6 +85,7 @@ func (c *embeddedClient) CreateQueue(ctx context.Context, name string, opts ...Q
 		MaxSegmentAge:   qCfg.MaxSegmentAge,
 		Encrypted:       qCfg.Encrypted,
 	}
+
 	storage, err := c.mgr.CreateQueue(name, engineCfg)
 	if err != nil {
 		return err
@@ -82,8 +97,12 @@ func (c *embeddedClient) CreateQueue(ctx context.Context, name string, opts ...Q
 	return nil
 }
 
-// LogQueue returns a handle to an existing log queue.
-func (c *embeddedClient) LogQueue(name string) (LogQueue, error) {
+// LogQueue returns a cached handle to an existing log queue.
+func (c *embeddedClient) LogQueue(name string) (logqueue.ClientLogQueue, error) {
+	return c.getOrCreateLogQueue(name)
+}
+
+func (c *embeddedClient) getOrCreateLogQueue(name string) (*logqueue.LogQueue, error) {
 	c.mu.RLock()
 	lq, ok := c.queues[name]
 	c.mu.RUnlock()
@@ -136,26 +155,26 @@ func (c *embeddedClient) TruncateQueue(ctx context.Context, name string, minOffs
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	q, err := c.mgr.GetQueue(name)
+	q, err := c.getOrCreateLogQueue(name)
 	if err != nil {
 		return 0, err
 	}
-	return q.TruncateBefore(ctx, minOffset)
+	return q.Truncate(ctx, minOffset)
 }
 
 // Stats returns engine statistics.
-func (c *embeddedClient) Stats(ctx context.Context) (SystemStats, error) {
+func (c *embeddedClient) Stats(ctx context.Context) (engine.EngineStats, error) {
 	if err := ctx.Err(); err != nil {
-		return SystemStats{}, err
+		return engine.EngineStats{}, err
 	}
 	es := c.mgr.Stats()
-	ss := SystemStats{
+	ss := engine.EngineStats{
 		ActiveQueues: es.ActiveQueues,
 		TotalBytes:   es.TotalBytes,
-		Queues:       make(map[string]QueueStats, len(es.Queues)),
+		Queues:       make(map[string]engine.QueueStats, len(es.Queues)),
 	}
 	for name, qs := range es.Queues {
-		ss.Queues[name] = QueueStats{
+		ss.Queues[name] = engine.QueueStats{
 			MessageCount: qs.MessageCount,
 			SegmentCount: qs.SegmentCount,
 			SizeBytes:    qs.SizeBytes,
@@ -177,5 +196,13 @@ func (c *embeddedClient) Close() error {
 	return c.mgr.Close()
 }
 
-// Ensure that embeddedClient implements Client.
-var _ Client = (*embeddedClient)(nil)
+var _ interface {
+	io.Closer
+	CreateQueue(context.Context, string, ...QueueOption) error
+	LogQueue(string) (logqueue.ClientLogQueue, error)
+	TaskQueue(string) (TaskQueue, error)
+	ListQueues(context.Context) ([]string, error)
+	DeleteQueue(context.Context, string) error
+	TruncateQueue(context.Context, string, uint64) (int64, error)
+	Stats(context.Context) (engine.EngineStats, error)
+} = (*embeddedClient)(nil)

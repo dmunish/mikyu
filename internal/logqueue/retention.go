@@ -37,9 +37,9 @@ func (q *LogQueue) TruncateFloor(ctx context.Context) (uint64, error) {
 		hasGroups      bool
 	)
 	for _, g := range q.groups {
-		g.mu.Lock()
-		hw := g.highWater
-		g.mu.Unlock()
+		g.Mu.Lock()
+		hw := g.HighWater
+		g.Mu.Unlock()
 
 		if !hasGroups || hw < minConsumerOff {
 			minConsumerOff = hw

@@ -18,14 +18,14 @@ type LogQueue struct {
 	storage engine.Storage
 	policy  LogRetentionPolicy
 	mu      sync.RWMutex
-	groups  map[string]*group
+	groups  map[string]*queueGroup
 }
 
 func NewLogQueue(name string, storage engine.Storage) *LogQueue {
 	return &LogQueue{
 		name:    name,
 		storage: storage,
-		groups:  make(map[string]*group),
+		groups:  make(map[string]*queueGroup),
 	}
 }
 
@@ -134,11 +134,7 @@ func (q *LogQueue) Group(name string) Group {
 	if g, ok := q.groups[name]; ok {
 		return g
 	}
-	g := &group{
-		q:         q,
-		name:      name,
-		highWater: 0,
-	}
+	g := newQueueGroup(q, name)
 	q.groups[name] = g
 	return g
 }

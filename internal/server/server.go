@@ -10,6 +10,7 @@ import (
 
 	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/ipc"
+	"github.com/dmunish/mikyu/internal/logqueue"
 	"github.com/dmunish/mikyu/internal/protocol"
 )
 
@@ -18,7 +19,8 @@ type Server struct {
 	mgr       *engine.Manager
 	listener  net.Listener
 	tlsConfig *tls.Config
-	mu        sync.Mutex
+	queues    map[string]*logqueue.LogQueue
+	mu        sync.RWMutex
 	stopCh    chan struct{}
 	doneCh    chan struct{}
 }
@@ -29,6 +31,7 @@ type ServerOption func(*Server)
 func New(mgr *engine.Manager, opts ...ServerOption) *Server {
 	s := &Server{
 		mgr:    mgr,
+		queues: make(map[string]*logqueue.LogQueue),
 		stopCh: make(chan struct{}),
 		doneCh: make(chan struct{}),
 	}
@@ -42,6 +45,33 @@ func WithTLS(tlsConfig *tls.Config) ServerOption {
 	return func(s *Server) {
 		s.tlsConfig = tlsConfig
 	}
+}
+
+// getOrCreateLogQueue returns the stable server-side handle for name.
+// The fast path only takes a read lock; construction is serialized and uses
+// double-checking so concurrent requests cannot create duplicate handles.
+func (s *Server) getOrCreateLogQueue(name string) (*logqueue.LogQueue, error) {
+	s.mu.RLock()
+	q, ok := s.queues[name]
+	s.mu.RUnlock()
+	if ok {
+		return q, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if q, ok := s.queues[name]; ok {
+		return q, nil
+	}
+
+	storage, err := s.mgr.GetQueue(name)
+	if err != nil {
+		return nil, err
+	}
+
+	q = logqueue.NewLogQueue(name, storage)
+	s.queues[name] = q
+	return q, nil
 }
 
 // ListenAndServe binds to target (e.g. "tcp://:7420", "unix:///tmp/mikyu.sock") and serves incoming requests.

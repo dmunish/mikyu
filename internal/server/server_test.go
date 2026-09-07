@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/logqueue"
 	"github.com/dmunish/mikyu/internal/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,6 +26,47 @@ func testWithTimeout(t *testing.T, timeout time.Duration) {
 			panic("test timed out")
 		}
 	}()
+}
+
+func TestServerQueueHandleCaching(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := engine.OpenManager(dir, engine.Config{})
+	require.NoError(t, err)
+	defer mgr.Close()
+
+	_, err = mgr.CreateQueue("cached")
+	require.NoError(t, err)
+
+	srv := New(mgr)
+	first, err := srv.getOrCreateLogQueue("cached")
+	require.NoError(t, err)
+
+	second, err := srv.getOrCreateLogQueue("cached")
+	require.NoError(t, err)
+	assert.Same(t, first, second)
+
+	const goroutines = 32
+	results := make(chan any, goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			q, err := srv.getOrCreateLogQueue("cached")
+			if err != nil {
+				results <- err
+				return
+			}
+			results <- q
+		}()
+	}
+
+	for i := 0; i < goroutines; i++ {
+		value := <-results
+		if err, ok := value.(error); ok {
+			t.Fatalf("getOrCreateLogQueue failed: %v", err)
+		}
+		q, ok := value.(*logqueue.LogQueue)
+		require.True(t, ok, "unexpected cache result type")
+		assert.Same(t, first, q)
+	}
 }
 
 func TestServerListenAndServe(t *testing.T) {

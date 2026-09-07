@@ -3,163 +3,87 @@ package mikyu
 import (
 	"crypto/tls"
 	"time"
+
+	"github.com/dmunish/mikyu/internal/client"
 )
 
-type ClientConfig struct {
-	BatchSize   int
-	MaxInterval time.Duration
-	MinInterval time.Duration
+// ClientConfig is re-exported from the internal client package for backwards compatibility.
+type ClientConfig = client.Config
 
-	MaxConns int
+// ClientOption configures a client.
+type ClientOption = client.Option
 
-	DefaultMaxSegmentBytes int64
-	DefaultMaxMessageBytes int64
-	DefaultMaxSegmentAge   time.Duration
-	Encrypted              bool
-	Fsync                  bool
-	TLSConfig              *tls.Config
-}
+// QueueConfig is re-exported from the internal client package for backwards compatibility.
+type QueueConfig = client.QueueConfig
+
+// QueueOption configures a queue.
+type QueueOption = client.QueueOption
 
 func DefaultClientConfig() ClientConfig {
-	return ClientConfig{
-		BatchSize:              256,
-		MaxInterval:            10 * time.Millisecond,
-		MinInterval:            30 * time.Microsecond,
-		MaxConns:               10,
-		DefaultMaxSegmentBytes: 64 * 1024 * 1024,
-		DefaultMaxMessageBytes: 1 * 1024 * 1024,
-		DefaultMaxSegmentAge:   1 * time.Hour,
-		Encrypted:              false,
-		Fsync:                  true,
-	}
+	return client.DefaultClientConfig()
 }
 
-type ClientOption func(*ClientConfig)
-
 func WithBatchSize(n int) ClientOption {
-	return func(c *ClientConfig) {
-		if n > 0 {
-			c.BatchSize = n
-		}
-	}
+	return client.WithBatchSize(n)
 }
 
 func WithMaxInterval(d time.Duration) ClientOption {
-	return func(c *ClientConfig) {
-		if d > 0 {
-			c.MaxInterval = d
-		}
-	}
+	return client.WithMaxInterval(d)
 }
 
 // WithFlushInterval is an alias for WithMaxInterval.
 func WithFlushInterval(d time.Duration) ClientOption {
-	return WithMaxInterval(d)
+	return client.WithFlushInterval(d)
 }
 
 func WithMinInterval(d time.Duration) ClientOption {
-	return func(c *ClientConfig) {
-		if d >= 0 {
-			c.MinInterval = d
-		}
-	}
+	return client.WithMinInterval(d)
 }
 
 func WithMaxConns(n int) ClientOption {
-	return func(c *ClientConfig) {
-		if n > 0 {
-			c.MaxConns = n
-		}
-	}
+	return client.WithMaxConns(n)
 }
 
 func WithClientDirectoryEncryption(enabled bool) ClientOption {
-	return func(c *ClientConfig) {
-		c.Encrypted = enabled
-	}
+	return client.WithClientDirectoryEncryption(enabled)
 }
 
 func WithClientTLS(tlsConfig *tls.Config) ClientOption {
-	return func(c *ClientConfig) {
-		c.TLSConfig = tlsConfig
-	}
+	return client.WithClientTLS(tlsConfig)
 }
 
 func WithFsync(enabled bool) ClientOption {
-	return func(c *ClientConfig) {
-		c.Fsync = enabled
-	}
+	return client.WithFsync(enabled)
 }
-
-type QueueConfig struct {
-	BatchSize       int
-	MaxInterval     time.Duration
-	MinInterval     time.Duration
-	MaxSegmentBytes int64
-	MaxMessageBytes int64
-	MaxSegmentAge   time.Duration
-	Encrypted       bool
-	Fsync           bool
-}
-
-type QueueOption func(*QueueConfig)
 
 func WithQueueBatchSize(n int) QueueOption {
-	return func(c *QueueConfig) {
-		if n > 0 {
-			c.BatchSize = n
-		}
-	}
+	return client.WithQueueBatchSize(n)
 }
 
 func WithQueueMaxInterval(d time.Duration) QueueOption {
-	return func(c *QueueConfig) {
-		if d > 0 {
-			c.MaxInterval = d
-		}
-	}
+	return client.WithQueueMaxInterval(d)
 }
 
 func WithQueueMinInterval(d time.Duration) QueueOption {
-	return func(c *QueueConfig) {
-		if d >= 0 {
-			c.MinInterval = d
-		}
-	}
+	return client.WithQueueMinInterval(d)
 }
 
 func WithMaxSegmentBytes(bytes int64) QueueOption {
-	return func(c *QueueConfig) {
-		if bytes > 0 {
-			c.MaxSegmentBytes = bytes
-		}
-	}
+	return client.WithMaxSegmentBytes(bytes)
 }
 
 func WithMaxMessageBytes(bytes int64) QueueOption {
-	return func(c *QueueConfig) {
-		if bytes > 0 {
-			c.MaxMessageBytes = bytes
-		}
-	}
+	return client.WithMaxMessageBytes(bytes)
 }
 
 func WithMaxSegmentAge(age time.Duration) QueueOption {
-	return func(c *QueueConfig) {
-		if age > 0 {
-			c.MaxSegmentAge = age
-		}
-	}
+	return client.WithMaxSegmentAge(age)
 }
 
 func WithDirectoryEncryption(enabled bool) QueueOption {
-	return func(c *QueueConfig) {
-		c.Encrypted = enabled
-	}
+	return client.WithDirectoryEncryption(enabled)
 }
 
 func WithQueueFsync(enabled bool) QueueOption {
-	return func(c *QueueConfig) {
-		c.Fsync = enabled
-	}
+	return client.WithQueueFsync(enabled)
 }

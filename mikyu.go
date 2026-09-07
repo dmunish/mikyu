@@ -3,11 +3,11 @@ package mikyu
 
 import (
 	"context"
-	"errors"
 	"io"
 	"iter"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/client"
 	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/logqueue"
 )
@@ -30,28 +30,13 @@ type Task struct {
 	ScheduledAt time.Time
 }
 
-// LogQueue provides log‑oriented operations (streaming, tailing, groups).
-type LogQueue interface {
-	Name() string
-	Produce(ctx context.Context, payload []byte) (uint64, error)
-	ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
-	Read(ctx context.Context, offset uint64) (Message, error)
-	ReadBatch(ctx context.Context, startOffset uint64, count int) ([]Message, error)
-	LastOffset(ctx context.Context) (uint64, error)
-	MinOffset(ctx context.Context) (uint64, error)
-	Truncate(ctx context.Context, minOffset uint64) (int64, error)
-	Stream(ctx context.Context, startOffset uint64) iter.Seq2[Message, error]
-	Tail(ctx context.Context, startOffset uint64) iter.Seq2[Message, error]
-	Group(name string) Group
-}
+// LogQueue provides log-oriented operations (streaming, tailing, groups).
+type LogQueue = logqueue.ClientLogQueue
 
 // TaskQueue is a placeholder for future task semantics.
-type TaskQueue interface {
-	io.Closer
-	Name() string
-}
+type TaskQueue = client.TaskQueue
 
-// Client is the top‑level interface for interacting with a Mikyu server.
+// Client is the top-level interface for interacting with a Mikyu server.
 type Client interface {
 	io.Closer
 	CreateQueue(ctx context.Context, name string, opts ...QueueOption) error
@@ -63,7 +48,17 @@ type Client interface {
 	Stats(ctx context.Context) (SystemStats, error)
 }
 
-// Error variables re‑exported from the engine.
+// Open creates an in-process Client.
+func Open(dir string, opts ...ClientOption) (Client, error) {
+	return client.NewEmbedded(dir, opts...)
+}
+
+// Dial creates a lazy remote Client for target.
+func Dial(target string, opts ...ClientOption) (Client, error) {
+	return client.NewRemote(target, opts...)
+}
+
+// Error variables re-exported from the engine/client layers.
 var (
 	ErrQueueExists      = engine.ErrQueueExists
 	ErrQueueNotFound    = engine.ErrQueueNotFound
@@ -71,7 +66,7 @@ var (
 	ErrOffsetTruncated  = engine.ErrOffsetTruncated
 	ErrMessageTooLarge  = engine.ErrMessageTooLarge
 	ErrCorruptRecord    = engine.ErrCorruptRecord
-	ErrTaskNotSupported = errors.New("task queues are not yet supported")
+	ErrTaskNotSupported = client.ErrTaskNotSupported
 )
 
 type _ = iter.Seq2[Message, error]
