@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
 	"iter"
 	"net"
 	"sync"
@@ -405,6 +406,15 @@ func (q *remoteLogQueue) Tail(ctx context.Context, startOffset uint64) iter.Seq2
 			}
 			last, err := q.LastOffset(ctx)
 			if err != nil {
+				// transient? retry after sleep
+				if isRetryable(err) {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(5 * time.Millisecond):
+						continue
+					}
+				}
 				yield(Message{}, err)
 				return
 			}
@@ -418,6 +428,14 @@ func (q *remoteLogQueue) Tail(ctx context.Context, startOffset uint64) iter.Seq2
 			}
 			msg, err := q.Read(ctx, curr)
 			if err != nil {
+				if isRetryable(err) {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(5 * time.Millisecond):
+						continue
+					}
+				}
 				yield(Message{}, err)
 				return
 			}
@@ -487,3 +505,11 @@ func (g *remoteGroup) Close() error {
 }
 
 var _ Client = (*remoteClient)(nil)
+
+func isRetryable(err error) bool {
+	return errors.Is(err, ErrOffsetNotFound) ||
+		errors.Is(err, ErrOffsetTruncated) || // optional; truncated offsets won't recover, but you may want to fail fast
+		errors.Is(err, ErrCorruptRecord) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF)
+}
