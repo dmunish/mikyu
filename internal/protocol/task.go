@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/dmunish/mikyu/internal/taskqueue"
@@ -21,37 +22,44 @@ func EncodeTask(b *Buffer, task taskqueue.Task) {
 
 // DecodeTask parses a task from a task-driver wire payload.
 func DecodeTask(r *Reader) (taskqueue.Task, error) {
+	invalid := func(err error) error {
+		if err == nil {
+			return taskqueue.ErrInvalidTask
+		}
+		return fmt.Errorf("%w: %v", taskqueue.ErrInvalidTask, err)
+	}
+
 	id, err := r.ReadBytes()
 	if err != nil {
-		return taskqueue.Task{}, err
+		return taskqueue.Task{}, invalid(err)
 	}
 	payload, err := r.ReadBytes()
 	if err != nil {
-		return taskqueue.Task{}, err
+		return taskqueue.Task{}, invalid(err)
 	}
 	attempts, err := r.ReadU32()
 	if err != nil {
-		return taskqueue.Task{}, err
+		return taskqueue.Task{}, invalid(err)
 	}
 	maxAttempts, err := r.ReadU32()
 	if err != nil {
-		return taskqueue.Task{}, err
+		return taskqueue.Task{}, invalid(err)
 	}
 	visibility, err := r.ReadU64()
 	if err != nil {
-		return taskqueue.Task{}, err
+		return taskqueue.Task{}, invalid(err)
 	}
 	scheduled, err := r.ReadU64()
 	if err != nil {
-		return taskqueue.Task{}, err
+		return taskqueue.Task{}, invalid(err)
 	}
 	deliveryID, err := r.ReadBytes()
 	if err != nil {
-		return taskqueue.Task{}, err
+		return taskqueue.Task{}, invalid(err)
 	}
 	offset, err := r.ReadU64()
 	if err != nil {
-		return taskqueue.Task{}, err
+		return taskqueue.Task{}, invalid(err)
 	}
 	if len(id) == 0 || maxAttempts == 0 || attempts > maxAttempts {
 		return taskqueue.Task{}, taskqueue.ErrInvalidTask
@@ -91,7 +99,7 @@ func EncodeTaskList(b *Buffer, tasks []taskqueue.Task) {
 func DecodeTaskList(r *Reader) ([]taskqueue.Task, error) {
 	count, err := r.ReadU32()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", taskqueue.ErrInvalidTask, err)
 	}
 	if count > 10_000_000 {
 		return nil, taskqueue.ErrInvalidTask
