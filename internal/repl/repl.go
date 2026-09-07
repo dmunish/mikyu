@@ -151,7 +151,8 @@ func (s *replSession) handleDelete(args []string) {
 	}
 	name := args[1]
 	confirmFn := func() (bool, error) {
-		return confirm(fmt.Sprintf("Are you sure you want to delete queue %q?", name)), nil
+		tag := warnTagStyle.Render("[IRREVERSIBLE]")
+		return confirm(fmt.Sprintf("%s Are you sure you want to delete queue %q?", tag, name)), nil
 	}
 
 	executed, err := command.Delete(s.ctx, s.client, name, confirmFn)
@@ -353,13 +354,8 @@ func confirm(prompt string) bool {
 		s.Focused.Title = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Bold(true)
 		s.Blurred.Title = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
 
-		s.Focused.FocusedButton = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#EE427D")).
-			Bold(true).
-			Padding(0, 1)
-		s.Focused.BlurredButton = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245")).
-			Padding(0, 1)
+		s.Focused.FocusedButton = confirmFocusedButton
+		s.Focused.BlurredButton = confirmBlurredButton
 
 		return s
 	})

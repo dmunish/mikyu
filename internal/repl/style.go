@@ -70,6 +70,15 @@ var (
 				Foreground(lipgloss.Color("248")).
 				Underline(true)
 
+	confirmFocusedButton = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#EE427D")).
+				Bold(true).
+				Padding(0, 1)
+
+	confirmBlurredButton = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245")).
+				Padding(0, 1)
+
 	warnTagStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#d2235b")).
 			Bold(true)
