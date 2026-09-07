@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"strconv"
@@ -14,6 +13,7 @@ import (
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/dmunish/mikyu"
+	"github.com/dmunish/mikyu/internal/command"
 	"github.com/dmunish/mikyu/internal/daemon"
 )
 
@@ -116,7 +116,7 @@ func (s *replSession) dispatch(line string) bool {
 }
 
 func (s *replSession) handleList() {
-	queues, err := s.client.ListQueues(s.ctx)
+	queues, err := command.List(s.ctx, s.client)
 	if err != nil {
 		fmt.Println(errStyle.Render("Error: " + err.Error()))
 		return
@@ -137,7 +137,7 @@ func (s *replSession) handleCreate(args []string) {
 		return
 	}
 	name := args[1]
-	if err := s.client.CreateQueue(s.ctx, name); err != nil {
+	if err := command.Create(s.ctx, s.client, name); err != nil {
 		fmt.Println(errStyle.Render("Error: " + err.Error()))
 		return
 	}
@@ -150,12 +150,17 @@ func (s *replSession) handleDelete(args []string) {
 		return
 	}
 	name := args[1]
-	if !confirm(fmt.Sprintf("Are you sure you want to delete queue %q?", name)) {
-		fmt.Println("Cancelled.")
+	confirmFn := func() (bool, error) {
+		return confirm(fmt.Sprintf("Are you sure you want to delete queue %q?", name)), nil
+	}
+
+	executed, err := command.Delete(s.ctx, s.client, name, confirmFn)
+	if err != nil {
+		fmt.Println(errStyle.Render("Error: " + err.Error()))
 		return
 	}
-	if err := s.client.DeleteQueue(s.ctx, name); err != nil {
-		fmt.Println(errStyle.Render("Error: " + err.Error()))
+	if !executed {
+		fmt.Println("Cancelled.")
 		return
 	}
 	fmt.Println(infoStyle.Render(fmt.Sprintf("● Queue %q deleted.", name)))
@@ -167,22 +172,12 @@ func (s *replSession) handleProduce(args []string) {
 		return
 	}
 	name, input := args[1], args[2]
-	payload, err := resolvePayload(input)
+	off, payloadLen, err := command.Produce(s.ctx, s.client, name, input)
 	if err != nil {
 		fmt.Println(errStyle.Render("Error: " + err.Error()))
 		return
 	}
-	q, err := s.client.LogQueue(name)
-	if err != nil {
-		fmt.Println(errStyle.Render("Error: " + err.Error()))
-		return
-	}
-	off, err := q.Produce(s.ctx, payload)
-	if err != nil {
-		fmt.Println(errStyle.Render("Error: " + err.Error()))
-		return
-	}
-	fmt.Println(infoStyle.Render(fmt.Sprintf("● Produced %d bytes to %q at offset %d", len(payload), name, off)))
+	fmt.Println(infoStyle.Render(fmt.Sprintf("● Produced %d bytes to %q at offset %d", payloadLen, name, off)))
 }
 
 func (s *replSession) handleRead(args []string) {
@@ -196,12 +191,7 @@ func (s *replSession) handleRead(args []string) {
 		fmt.Println(errStyle.Render("Invalid offset format"))
 		return
 	}
-	q, err := s.client.LogQueue(name)
-	if err != nil {
-		fmt.Println(errStyle.Render("Error: " + err.Error()))
-		return
-	}
-	msg, err := q.Read(s.ctx, off)
+	msg, err := command.Read(s.ctx, s.client, name, off)
 	if err != nil {
 		fmt.Println(errStyle.Render("Error: " + err.Error()))
 		return
@@ -220,27 +210,22 @@ func (s *replSession) handleTail(args []string) {
 	if len(args) >= 3 {
 		startOffset, _ = strconv.ParseUint(args[2], 10, 64)
 	}
-	q, err := s.client.LogQueue(name)
-	if err != nil {
-		fmt.Println(errStyle.Render("Error: " + err.Error()))
-		return
-	}
 
 	sigCtx, stopSig := signal.NotifyContext(s.ctx, os.Interrupt, syscall.SIGTERM)
 	defer stopSig()
 
 	fmt.Println(dimStyle.Render(fmt.Sprintf("Tailing %q from offset %d (Press Ctrl+C to stop stream)...", name, startOffset)))
-	for msg, err := range q.Tail(sigCtx, startOffset) {
-		if err != nil {
-			if sigCtx.Err() != nil {
-				fmt.Println(infoStyle.Render("\nStream stopped."))
-			} else {
-				fmt.Println(errStyle.Render("Stream error: " + err.Error()))
-			}
-			break
-		}
+	err := command.Tail(sigCtx, s.client, name, startOffset, func(msg mikyu.Message) error {
 		fmt.Printf("[%d] ID: %s | Time: %s | %s\n",
 			msg.Offset, msg.ID, msg.Timestamp.Format("15:04:05.000"), string(msg.Payload))
+		return nil
+	})
+	if err != nil {
+		if sigCtx.Err() != nil {
+			fmt.Println(infoStyle.Render("\nStream stopped."))
+		} else {
+			fmt.Println(errStyle.Render("Stream error: " + err.Error()))
+		}
 	}
 }
 
@@ -269,21 +254,24 @@ func (s *replSession) handleCompact(args []string) {
 		prompt = fmt.Sprintf("%s Truncate physical segments for queue %q?", tag, name)
 	}
 
-	if !confirm(prompt) {
-		fmt.Println("Cancelled.")
-		return
+	confirmFn := func() (bool, error) {
+		return confirm(prompt), nil
 	}
 
-	reclaimed, err := s.client.TruncateQueue(s.ctx, name, minOffset)
+	reclaimed, executed, err := command.Compact(s.ctx, s.client, name, minOffset, confirmFn)
 	if err != nil {
 		fmt.Println(errStyle.Render("Error: " + err.Error()))
+		return
+	}
+	if !executed {
+		fmt.Println("Cancelled.")
 		return
 	}
 	fmt.Println(infoStyle.Render(fmt.Sprintf("● Queue %q truncated (%d bytes reclaimed).", name, reclaimed)))
 }
 
 func (s *replSession) handleStats() {
-	st, err := s.client.Stats(s.ctx)
+	st, err := command.Stats(s.ctx, s.client)
 	if err != nil {
 		fmt.Println(errStyle.Render("Error: " + err.Error()))
 		return
@@ -292,12 +280,23 @@ func (s *replSession) handleStats() {
 }
 
 func (s *replSession) handleShutdown() bool {
-	if !confirm("Are you sure you want to shut down the daemon?") {
+	confirmFn := func() (bool, error) {
+		if confirm("Are you sure you want to shut down the daemon?") {
+			fmt.Println(infoStyle.Render("Sending shutdown command to daemon..."))
+			return true, nil
+		}
+		return false, nil
+	}
+
+	executed, err := command.Shutdown(s.target, confirmFn)
+	if err != nil {
+		fmt.Println(errStyle.Render("Error: " + err.Error()))
+		return false
+	}
+	if !executed {
 		fmt.Println("Cancelled.")
 		return false
 	}
-	fmt.Println(infoStyle.Render("Sending shutdown command to daemon..."))
-	_ = daemon.SendShutdownSignal(s.target)
 	fmt.Println("Daemon stopped. Exiting shell.")
 	return true
 }
@@ -333,13 +332,7 @@ func parseREPLArgs(line string) []string {
 }
 
 func resolvePayload(input string) ([]byte, error) {
-	if input == "-" {
-		return io.ReadAll(os.Stdin)
-	}
-	if strings.HasPrefix(input, "@") {
-		return os.ReadFile(strings.TrimPrefix(input, "@"))
-	}
-	return []byte(input), nil
+	return command.ResolvePayload(input)
 }
 
 func confirm(prompt string) bool {
