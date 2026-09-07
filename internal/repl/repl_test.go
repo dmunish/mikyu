@@ -1,12 +1,9 @@
 package repl
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestParseREPLArgs(t *testing.T) {
@@ -19,14 +16,10 @@ func TestParseREPLArgsEmptyQuotes(t *testing.T) {
 	assert.Equal(t, []string{"produce", "", "@file"}, args)
 }
 
-func TestResolvePayload(t *testing.T) {
-	payload, err := resolvePayload("hello")
-	assert.NoError(t, err)
-	assert.Equal(t, []byte("hello"), payload)
+func TestFormatHelpArgs(t *testing.T) {
+	formatted := formatHelpArgs("<queue> <msg>", 20)
+	assert.NotEmpty(t, formatted)
 
-	tmp := filepath.Join(t.TempDir(), "data.txt")
-	require.NoError(t, os.WriteFile(tmp, []byte("file content"), 0644))
-	payload, err = resolvePayload("@" + tmp)
-	assert.NoError(t, err)
-	assert.Equal(t, []byte("file content"), payload)
+	empty := formatHelpArgs("", 10)
+	assert.Equal(t, 10, len(empty))
 }

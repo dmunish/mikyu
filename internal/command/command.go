@@ -6,9 +6,80 @@ import (
 	"os"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/dmunish/mikyu"
 	"github.com/dmunish/mikyu/internal/daemon"
+	"golang.org/x/term"
 )
+
+// GetTerminalWidth returns the width of the active terminal window, checking stdout, stderr, and stdin descriptors.
+// Returns -1 if not connected to an interactive terminal.
+func GetTerminalWidth() int {
+	for _, fd := range []int{int(os.Stdout.Fd()), int(os.Stderr.Fd()), int(os.Stdin.Fd())} {
+		if term.IsTerminal(fd) {
+			w, _, err := term.GetSize(fd)
+			if err == nil && w > 0 {
+				return w
+			}
+		}
+	}
+	return -1
+}
+
+// FormatSingleLinePayload sanitizes raw payload bytes (escaping control characters like newlines and tabs,
+// and stripping non-printable characters) and truncates the string to fit availableWidth using visual cell count.
+// If availableWidth <= 0, no truncation is applied.
+func FormatSingleLinePayload(payload []byte, availableWidth int) string {
+	var sb strings.Builder
+	sb.Grow(len(payload))
+
+	str := string(payload)
+	for _, r := range str {
+		switch r {
+		case '\r':
+			sb.WriteString("\\r")
+		case '\n':
+			sb.WriteString("\\n")
+		case '\t':
+			sb.WriteString("\\t")
+		default:
+			if r < 32 || r == 127 {
+				continue
+			}
+			sb.WriteRune(r)
+		}
+	}
+	clean := sb.String()
+
+	if availableWidth <= 0 {
+		return clean
+	}
+
+	cleanWidth := lipgloss.Width(clean)
+	if cleanWidth <= availableWidth {
+		return clean
+	}
+
+	if availableWidth <= 3 {
+		dots := "..."
+		return dots[:max(0, availableWidth)]
+	}
+
+	targetWidth := availableWidth - 3
+	var truncated strings.Builder
+	currentWidth := 0
+
+	for _, r := range clean {
+		rw := lipgloss.Width(string(r))
+		if currentWidth+rw > targetWidth {
+			break
+		}
+		truncated.WriteRune(r)
+		currentWidth += rw
+	}
+	truncated.WriteString("...")
+	return truncated.String()
+}
 
 // ResolvePayload converts string input, @file paths, or stdin (-) into payload bytes.
 func ResolvePayload(input string) ([]byte, error) {

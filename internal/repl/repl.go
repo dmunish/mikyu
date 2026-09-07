@@ -216,8 +216,17 @@ func (s *replSession) handleTail(args []string) {
 
 	fmt.Println(dimStyle.Render(fmt.Sprintf("Tailing %q from offset %d (Press Ctrl+C to stop stream)...", name, startOffset)))
 	err := command.Tail(sigCtx, s.client, name, startOffset, func(msg mikyu.Message) error {
-		fmt.Printf("[%d] ID: %s | Time: %s | %s\n",
-			msg.Offset, msg.ID, msg.Timestamp.Format("15:04:05.000"), string(msg.Payload))
+		prefix := fmt.Sprintf("[%d] ID: %s | Time: %s | Payload: ",
+			msg.Offset, msg.ID, msg.Timestamp.Format("15:04:05.000"))
+
+		termWidth := command.GetTerminalWidth()
+		avail := -1
+		if termWidth > 0 {
+			avail = termWidth - lipgloss.Width(prefix)
+		}
+		payloadStr := command.FormatSingleLinePayload(msg.Payload, avail)
+
+		fmt.Printf("%s%s\n", prefix, payloadStr)
 		return nil
 	})
 	if err != nil {
@@ -329,10 +338,6 @@ func parseREPLArgs(line string) []string {
 		args = append(args, current.String())
 	}
 	return args
-}
-
-func resolvePayload(input string) ([]byte, error) {
-	return command.ResolvePayload(input)
 }
 
 func confirm(prompt string) bool {

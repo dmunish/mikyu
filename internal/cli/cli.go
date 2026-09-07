@@ -163,8 +163,16 @@ func handleTail(ctx context.Context, client mikyu.Client, args []string) {
 			os.Exit(2)
 		}
 	}
+
 	err := command.Tail(ctx, client, args[0], start, func(msg mikyu.Message) error {
-		fmt.Printf("offset=%d id=%s ts=%s payload=%s\n", msg.Offset, msg.ID, msg.Timestamp.Format(time.RFC3339Nano), string(msg.Payload))
+		prefix := fmt.Sprintf("offset=%d id=%s ts=%s payload=", msg.Offset, msg.ID, msg.Timestamp.Format(time.RFC3339Nano))
+		termWidth := command.GetTerminalWidth()
+		avail := -1
+		if termWidth > 0 {
+			avail = termWidth - len(prefix)
+		}
+		payloadStr := command.FormatSingleLinePayload(msg.Payload, avail)
+		fmt.Printf("%s%s\n", prefix, payloadStr)
 		return nil
 	})
 	if err != nil {
@@ -253,10 +261,6 @@ func handleShutdown(target string, args []string) {
 		return
 	}
 	fmt.Println("shutdown signal sent")
-}
-
-func resolvePayload(input string) ([]byte, error) {
-	return command.ResolvePayload(input)
 }
 
 func confirmCLI(prompt string, args []string) (bool, error) {
