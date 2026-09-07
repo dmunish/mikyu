@@ -24,7 +24,7 @@
 - **Reader safety**: A `publishedOffset` high-water mark is updated only after WAL disk sync completes (or immediately in async mode). Readers check against this value, preventing `io.EOF` errors during concurrent writes.
 - **WAL wake-token handling**: Wake channel draining occurs inside `flush()` under lock, preventing producer hangs from adaptive flushing.
 - **Manager lock contention**: `Stats()` uses `RLock()` and in-memory size counters, providing O(1) metrics retrieval.
-- **Duplicate client handles**: Double-checked locking in `LogQueue()` guarantees single-instance caching.
+- **Duplicate client handles**: Double-checked locking in `LogQueue()` guarantees single-instance caching across both embedded and remote clients.
 - **Zero-allocation encoding**: `encodeRecord` writes directly into pre-sized slices, achieving ~887 ns/op encoding latency.
 - **Double-buffered WAL flusher**: Steady-state allocations are eliminated (0 allocs/op, 3 B/op).
 - **Protocol frame efficiency**: `WriteFrame` retains expanded buffers, `ReadFrame` streams payloads directly, achieving a 90.7% latency reduction for 64 KB frames (38.5 µs → 3.5 µs) and zero extra heap allocations.
@@ -43,13 +43,20 @@ github.com/dmunish/mikyu/
 ├── go.sum
 ├── README.md
 │
-├── mikyu.go            # Top-level domain models & interfaces: Client, LogQueue, TaskQueue, Message, SystemStats
-├── options.go          # Functional configuration options for Client and Queue
+├── mikyu.go            # Top-level domain models, type aliases, and public Client interface
+├── options.go          # Re-exported functional configuration options from internal/client
 ├── typed.go            # Generic Typed[T] queue wrapper & Codec[T] interface
-├── embedded.go         # In-process embedded driver implementing Client, LogQueue, TaskQueue
-├── remote.go           # Connection-pooled TCP/IPC network driver implementing Client, LogQueue, TaskQueue
 │
 ├── internal/
+│   ├── client/         # Client driver implementations (embedded & remote)
+│   │   ├── embedded.go       # In-process embedded client
+│   │   ├── options.go        # Client/Queue configuration options & defaults
+│   │   └── remote.go         # Connection-pooled TCP/IPC network client
+│   │
+│   ├── command/        # Stateless command helpers used by CLI/REPL
+│   │   ├── command.go       # List, Create, Delete, Produce, Read, Tail, Stats, Compact, Shutdown
+│   │   └── command_test.go
+│   │
 │   ├── config/         # Declarative YAML & environment variable configuration manager
 │   │   └── config.go       # Default YAML template, goccy/go-yaml parsing, env overrides
 │   │
@@ -72,9 +79,13 @@ github.com/dmunish/mikyu/
 │   │   └── encrypt_other.go    # Fallback directory encryption for unsupported OSes
 │   │
 │   ├── logqueue/       # High-level log-oriented queue wrapper & consumer group tracking
+│   │   ├── api.go            # ClientLogQueue interface for upper layers
 │   │   ├── logqueue.go       # LogQueue struct implementing streaming, tailing, group semantics
-│   │   ├── group.go          # Group interface & implementation for offset tracking
+│   │   ├── group.go          # Group implementation wrapping group.Base
 │   │   └── retention.go      # Log retention policy & safe truncation floor calculation
+│   │
+│   ├── group/          # Shared consumer group high-watermark tracking
+│   │   └── group.go         # Base struct with Mark/Commit/Close lifecycle
 │   │
 │   ├── protocol/       # Binary wire format parser & opcode definitions
 │   │   ├── opcodes.go      # Wire opcodes, error codes, and target URI parser
@@ -124,7 +135,7 @@ github.com/dmunish/mikyu/
                             ┌───────────────────────┴───────────────────────┐
                             ▼                                               ▼
                [Embedded Execution Path]                       [Remote Connection Path]
-                  embeddedClient struct                           remoteClient struct
+                  internal/client/embedded.go                   internal/client/remote.go
                             │                                               │
                             │ (Direct in-process call)                      │ (Binary frame exchange)
                             ▼                                               ▼
@@ -143,6 +154,7 @@ github.com/dmunish/mikyu/
                                                                  │  internal/daemon  │
                                                                  │  internal/repl    │
                                                                  │  internal/cli     │
+                                                                 │  internal/command │
                                                                  │  cmd/mikyu        │
                                                                  └───────────────────┘
 ```
@@ -152,19 +164,21 @@ github.com/dmunish/mikyu/
 The design follows a clean separation of concerns, enabling maximum reuse across deployment modes:
 
 1. **Storage Engine (`internal/engine`)**: Low-level log storage, WAL, segments, indexes, and offsets. This layer is completely agnostic of transport or presentation.
-2. **Logical Queue Abstraction (`internal/logqueue`)**: Provides high-level `LogQueue` operations (Stream, Tail, Groups, Retention) on top of the `Storage` interface. This allows the same logic to be used by both embedded and remote backends.
+2. **Logical Queue Abstraction (`internal/logqueue`)**: Provides high-level `LogQueue` operations (Stream, Tail, Groups, Retention) on top of the `Storage` interface. The `api.go` file exports the `ClientLogQueue` interface for upper layers.
 3. **Retention Coordination (`internal/retention`)**: Provides a coordinator that calculates safe truncation floors from multiple drivers and instructs the engine to physically remove obsolete segments.
-4. **Deployment Runners**:
-   - **Embedded (in-process)**: `mikyu.Open()` creates an `engine.Manager` directly, wrapping queues with `logqueue`.
+4. **Consumer Group Abstraction (`internal/group`)**: Provides a concurrency-safe `Base` struct for high-watermark tracking, shared by embedded and remote group implementations.
+5. **Deployment Runners**:
+   - **Embedded (in-process)**: `mikyu.Open()` delegates to `client.NewEmbedded()`, which creates an `engine.Manager` directly, wrapping queues with `logqueue`.
    - **Daemon (network)**: `daemon.Run()` starts a `server.Server` which exposes the engine over IPC/TCP.
-5. **Access Layers**:
+6. **Access Layers**:
    - **SDK**: `mikyu.Dial()` returns a `Client` that communicates with the daemon via the wire protocol.
-   - **CLI/REPL**: Uses the SDK to perform user-facing operations, ensuring consistent behavior regardless of deployment mode.
+   - **Command Helpers (`internal/command`)**: Stateless functions used by both CLI and REPL for consistent user-facing operations.
+   - **CLI/REPL**: Uses the SDK and command helpers to perform user-facing operations.
 
 **Data Flow & Lifecycle:**
 
-1. **Embedded mode:** `mikyu.Open(dir, opts...)` creates an `engine.Manager` directly in-process. Client calls delegate to `engine.Queue` via `logqueue.LogQueue` wrappers without network/IPC overhead.
-2. **Remote mode:** `mikyu.Dial(target, opts...)` initializes a `remoteClient` managing a thread-safe connection pool (`chan *clientConn`). Each client operation acquires a connection, writes length-prefixed protocol frames, awaits the response frame, and returns the connection to the pool.
+1. **Embedded mode:** `mikyu.Open(dir, opts...)` calls `client.NewEmbedded()`, which creates an `engine.Manager` directly in-process. Client calls delegate to `engine.Queue` via `logqueue.LogQueue` wrappers without network/IPC overhead.
+2. **Remote mode:** `mikyu.Dial(target, opts...)` calls `client.NewRemote()`, which initializes a `remoteClient` managing a thread-safe connection pool (`chan *clientConn`). Each client operation acquires a connection, writes length-prefixed protocol frames, awaits the response frame, and returns the connection to the pool.
 3. **Daemon mode:** `daemon.Run(configPath)` loads `mikyu.yaml` configuration, instantiates `engine.Manager`, creates `server.Server`, and listens on target endpoints (TCP, Unix domain socket, or Windows named pipe). The daemon also reconciles declared queues on startup.
 
 ---
@@ -175,18 +189,18 @@ The design follows a clean separation of concerns, enabling maximum reuse across
 
 #### `mikyu.go`
 
-Defines public domain models and primary client/queue interfaces.
+Defines public domain models and primary client/queue interfaces, re-exporting internal types.
 
 ```go
 package mikyu
 
 import (
 	"context"
-	"errors"
 	"io"
 	"iter"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/client"
 	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/logqueue"
 )
@@ -210,25 +224,10 @@ type Task struct {
 }
 
 // LogQueue provides log-oriented operations (streaming, tailing, groups).
-type LogQueue interface {
-	Name() string
-	Produce(ctx context.Context, payload []byte) (uint64, error)
-	ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
-	Read(ctx context.Context, offset uint64) (Message, error)
-	ReadBatch(ctx context.Context, startOffset uint64, count int) ([]Message, error)
-	LastOffset(ctx context.Context) (uint64, error)
-	MinOffset(ctx context.Context) (uint64, error)
-	Truncate(ctx context.Context, minOffset uint64) (int64, error)
-	Stream(ctx context.Context, startOffset uint64) iter.Seq2[Message, error]
-	Tail(ctx context.Context, startOffset uint64) iter.Seq2[Message, error]
-	Group(name string) Group
-}
+type LogQueue = logqueue.ClientLogQueue
 
 // TaskQueue is a placeholder for future task semantics.
-type TaskQueue interface {
-	io.Closer
-	Name() string
-}
+type TaskQueue = client.TaskQueue
 
 // Client is the top-level interface for interacting with a Mikyu server.
 type Client interface {
@@ -242,14 +241,25 @@ type Client interface {
 	Stats(ctx context.Context) (SystemStats, error)
 }
 
-// Error variables re-exported from the engine.
+// Open creates an in-process Client.
+func Open(dir string, opts ...ClientOption) (Client, error) {
+	return client.NewEmbedded(dir, opts...)
+}
+
+// Dial creates a lazy remote Client for target.
+func Dial(target string, opts ...ClientOption) (Client, error) {
+	return client.NewRemote(target, opts...)
+}
+
+// Error variables re-exported from the engine/client layers.
 var (
 	ErrQueueExists      = engine.ErrQueueExists
 	ErrQueueNotFound    = engine.ErrQueueNotFound
 	ErrOffsetNotFound   = engine.ErrOffsetNotFound
 	ErrOffsetTruncated  = engine.ErrOffsetTruncated
 	ErrMessageTooLarge  = engine.ErrMessageTooLarge
-	ErrTaskNotSupported = errors.New("task queues are not yet supported")
+	ErrCorruptRecord    = engine.ErrCorruptRecord
+	ErrTaskNotSupported = client.ErrTaskNotSupported
 )
 
 type _ = iter.Seq2[Message, error]
@@ -257,29 +267,174 @@ type _ = iter.Seq2[Message, error]
 
 **Implementation Details:**
 
-- `Stream`: Returns an `iter.Seq2[Message, error]` iterator. Loops from `startOffset`, calling `Read()`. Terminates when `Read()` returns `ErrOffsetNotFound` or when context is canceled.
-- `Tail`: Returns an `iter.Seq2[Message, error]` iterator. Polls `LastOffset()` continuously; if `curr >= last`, sleeps for 5 milliseconds before re-checking. Yields records as they become available. The bound check is `offset < last` (not `<=`) and transient read errors (`ErrOffsetNotFound`, `ErrCorruptRecord`, `io.EOF`) are retried after a short sleep to handle in-flight WAL writes without terminating the stream.
-- `Group`: Tracks consumer high-water marks. `Mark` updates an internal `highWater` variable if `offset >= highWater`; the `highWater` is set to `offset + 1` (i.e., the next offset to be read). `Commit` persists `highWater` to the engine offset store. `Close` automatically invokes `Commit(context.Background())`.
+- `LogQueue` is now a type alias for `logqueue.ClientLogQueue`, which is the interface exported by the `logqueue` package. This prevents upper layers from importing engine details directly.
+- `Open` and `Dial` delegate to the `internal/client` package's `NewEmbedded` and `NewRemote` constructors.
+- Error variables are re-exported from both `engine` and `client` layers.
 
 #### `options.go`
 
-Configures client connection pools and per-queue limits via functional options.
+Re-exports configuration options from `internal/client` for backwards compatibility.
 
 ```go
-type ClientConfig struct {
+package mikyu
+
+import (
+	"crypto/tls"
+	"time"
+
+	"github.com/dmunish/mikyu/internal/client"
+)
+
+// ClientConfig is re-exported from the internal client package for backwards compatibility.
+type ClientConfig = client.Config
+
+// ClientOption configures a client.
+type ClientOption = client.Option
+
+// QueueConfig is re-exported from the internal client package for backwards compatibility.
+type QueueConfig = client.QueueConfig
+
+// QueueOption configures a queue.
+type QueueOption = client.QueueOption
+
+func DefaultClientConfig() ClientConfig {
+	return client.DefaultClientConfig()
+}
+
+func WithBatchSize(n int) ClientOption {
+	return client.WithBatchSize(n)
+}
+
+func WithMaxInterval(d time.Duration) ClientOption {
+	return client.WithMaxInterval(d)
+}
+
+// WithFlushInterval is an alias for WithMaxInterval.
+func WithFlushInterval(d time.Duration) ClientOption {
+	return client.WithFlushInterval(d)
+}
+
+func WithMinInterval(d time.Duration) ClientOption {
+	return client.WithMinInterval(d)
+}
+
+func WithMaxConns(n int) ClientOption {
+	return client.WithMaxConns(n)
+}
+
+func WithClientDirectoryEncryption(enabled bool) ClientOption {
+	return client.WithClientDirectoryEncryption(enabled)
+}
+
+func WithClientTLS(tlsConfig *tls.Config) ClientOption {
+	return client.WithClientTLS(tlsConfig)
+}
+
+func WithFsync(enabled bool) ClientOption {
+	return client.WithFsync(enabled)
+}
+
+func WithQueueBatchSize(n int) QueueOption {
+	return client.WithQueueBatchSize(n)
+}
+
+func WithQueueMaxInterval(d time.Duration) QueueOption {
+	return client.WithQueueMaxInterval(d)
+}
+
+func WithQueueMinInterval(d time.Duration) QueueOption {
+	return client.WithQueueMinInterval(d)
+}
+
+func WithMaxSegmentBytes(bytes int64) QueueOption {
+	return client.WithMaxSegmentBytes(bytes)
+}
+
+func WithMaxMessageBytes(bytes int64) QueueOption {
+	return client.WithMaxMessageBytes(bytes)
+}
+
+func WithMaxSegmentAge(age time.Duration) QueueOption {
+	return client.WithMaxSegmentAge(age)
+}
+
+func WithDirectoryEncryption(enabled bool) QueueOption {
+	return client.WithDirectoryEncryption(enabled)
+}
+
+func WithQueueFsync(enabled bool) QueueOption {
+	return client.WithQueueFsync(enabled)
+}
+```
+
+**Implementation Details:**
+
+- All types and functions are thin wrappers delegating to the `internal/client` package.
+- The `DefaultClientConfig()` returns `client.DefaultClientConfig()` with same defaults: `BatchSize: 256`, `MaxInterval: 10ms`, `MinInterval: 30us`, `MaxConns: 10`, `DefaultMaxSegmentBytes: 64 MiB`, `DefaultMaxMessageBytes: 1 MiB`, `DefaultMaxSegmentAge: 1h`, `Encrypted: false`, `Fsync: true`.
+
+#### `typed.go`
+
+Provides generic object serialization helpers over byte queues. (Unchanged.)
+
+---
+
+### Internal Client Module (`package client`)
+
+#### `options.go`
+
+Defines configuration structs and functional options for both client and queue.
+
+```go
+package client
+
+import (
+	"crypto/tls"
+	"time"
+)
+
+// Config controls client-wide defaults and remote connection behavior.
+type Config struct {
 	BatchSize   int
-	MaxInterval time.Duration // Maximum wait time before forcing WAL fsync
-	MinInterval time.Duration // Micro-linger window to group concurrent produces
+	MaxInterval time.Duration
+	MinInterval time.Duration
 	MaxConns    int
-	Fsync       bool          // If true, syncs to disk before ack. If false, accepts crash-loss window for performance
 
 	DefaultMaxSegmentBytes int64
 	DefaultMaxMessageBytes int64
 	DefaultMaxSegmentAge   time.Duration
 	Encrypted              bool
+	Fsync                  bool
 	TLSConfig              *tls.Config
 }
 
+// DefaultClientConfig returns the same defaults used by the original public API.
+func DefaultClientConfig() Config {
+	return Config{
+		BatchSize:              256,
+		MaxInterval:            10 * time.Millisecond,
+		MinInterval:            30 * time.Microsecond,
+		MaxConns:               10,
+		DefaultMaxSegmentBytes: 64 * 1024 * 1024,
+		DefaultMaxMessageBytes: 1 * 1024 * 1024,
+		DefaultMaxSegmentAge:   1 * time.Hour,
+		Encrypted:              false,
+		Fsync:                  true,
+	}
+}
+
+// Option configures a client.
+type Option func(*Config)
+
+func WithBatchSize(n int) Option { ... }
+func WithMaxInterval(d time.Duration) Option { ... }
+func WithFlushInterval(d time.Duration) Option { ... }
+func WithMinInterval(d time.Duration) Option { ... }
+func WithMaxConns(n int) Option { ... }
+func WithClientDirectoryEncryption(enabled bool) Option { ... }
+func WithClientTLS(tlsConfig *tls.Config) Option { ... }
+func WithFsync(enabled bool) Option { ... }
+
+// QueueConfig controls per-queue engine defaults.
 type QueueConfig struct {
 	BatchSize       int
 	MaxInterval     time.Duration
@@ -291,94 +446,103 @@ type QueueConfig struct {
 	Fsync           bool
 }
 
-func DefaultClientConfig() ClientConfig
-func WithBatchSize(n int) ClientOption
-func WithMaxInterval(d time.Duration) ClientOption
-func WithMinInterval(d time.Duration) ClientOption
-func WithFlushInterval(d time.Duration) ClientOption // Alias for WithMaxInterval
-func WithMaxConns(n int) ClientOption
-func WithClientDirectoryEncryption(enabled bool) ClientOption
-func WithClientTLS(tlsConfig *tls.Config) ClientOption
-func WithClientFsync(enabled bool) ClientOption
+// QueueOption configures a queue.
+type QueueOption func(*QueueConfig)
 
-// Queue options
-func WithQueueBatchSize(n int) QueueOption
-func WithQueueMaxInterval(d time.Duration) QueueOption
-func WithQueueMinInterval(d time.Duration) QueueOption
-func WithMaxSegmentBytes(bytes int64) QueueOption
-func WithMaxMessageBytes(bytes int64) QueueOption
-func WithMaxSegmentAge(age time.Duration) QueueOption
-func WithDirectoryEncryption(enabled bool) QueueOption
-func WithQueueFsync(enabled bool) QueueOption
+func WithQueueBatchSize(n int) QueueOption { ... }
+func WithQueueMaxInterval(d time.Duration) QueueOption { ... }
+func WithQueueMinInterval(d time.Duration) QueueOption { ... }
+func WithMaxSegmentBytes(bytes int64) QueueOption { ... }
+func WithMaxMessageBytes(bytes int64) QueueOption { ... }
+func WithMaxSegmentAge(age time.Duration) QueueOption { ... }
+func WithDirectoryEncryption(enabled bool) QueueOption { ... }
+func WithQueueFsync(enabled bool) QueueOption { ... }
 ```
 
 **Implementation Details:**
 
-- `DefaultClientConfig`: Defaults to `BatchSize: 256`, `MaxInterval: 10ms`, `MinInterval: 30us`, `MaxConns: 10`, `DefaultMaxSegmentBytes: 64 MiB`, `DefaultMaxMessageBytes: 1 MiB`, `DefaultMaxSegmentAge: 1h`, `Encrypted: false`, `Fsync: true`.
-- Option functions validate input parameters, ignoring non-positive values for integer/duration limits.
-
-#### `typed.go`
-
-Provides generic object serialization helpers over byte queues.
-
-```go
-type Codec[T any] struct {
-	Marshal   func(T) ([]byte, error)
-	Unmarshal func([]byte, *T) error
-}
-
-type Typed[T any] struct {
-	queue LogQueue
-	codec Codec[T]
-}
-
-func NewTyped[T any](q LogQueue, codec Codec[T]) *Typed[T]
-func (t *Typed[T]) Produce(ctx context.Context, val T) (uint64, error)
-func (t *Typed[T]) Read(ctx context.Context, offset uint64) (T, error)
-```
-
-**Implementation Details:**
-
-- `Produce`: Encodes `val` into bytes using `codec.Marshal` and delegates directly to `queue.Produce`.
-- `Read`: Calls `queue.Read`, unmarshals `msg.Payload` into a zero-initialized value `T` using `codec.Unmarshal`, and returns it.
+- All option functions validate input parameters, ignoring non-positive values for integer/duration limits.
+- `WithMinInterval` accepts `>= 0` to support explicitly disabling the micro-linger (0 or negative).
 
 #### `embedded.go`
 
-Directly wraps `internal/engine.Manager` for in-process log operations, using `internal/logqueue` for high-level queue semantics.
+Directly wraps `internal/engine.Manager` for in-process log operations.
 
 ```go
+package client
+
+import (
+	"context"
+	"errors"
+	"io"
+	"sync"
+
+	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/logqueue"
+)
+
+// TaskQueue is a placeholder for future task semantics.
+type TaskQueue interface {
+	io.Closer
+	Name() string
+}
+
+var ErrTaskNotSupported = errors.New("task queues are not yet supported")
+
 type embeddedClient struct {
 	mgr    *engine.Manager
 	queues map[string]*logqueue.LogQueue
 	tasks  map[string]TaskQueue // stub, unused
 	mu     sync.RWMutex
-	cfg    ClientConfig
+	cfg    Config
 	closed bool
 }
 
-func Open(dir string, opts ...ClientOption) (Client, error)
+func NewEmbedded(dir string, opts ...Option) (*embeddedClient, error) { ... }
 ```
 
 **Implementation Details:**
 
-- `Open`: Applies `ClientOption`s to `DefaultClientConfig()`, creates an `engine.Config`, and calls `engine.OpenManager(dir, engineCfg)`. Returns an `*embeddedClient`.
-- `CreateQueue`: Creates an `engine.Queue` via `mgr.CreateQueue(name, engineCfg)`, then wraps it in a `logqueue.NewLogQueue(name, storage)` and stores it in the `queues` map.
-- `LogQueue`: Uses double-checked locking to avoid duplicate instances under concurrent calls. First acquires `c.mu.RLock()` to check the map, and if not found, acquires `c.mu.Lock()` and re-verifies before creating a new wrapper. Returns an existing `*logqueue.LogQueue` or creates a new wrapper around an existing `engine.Storage` retrieved from the manager.
+- `NewEmbedded`: Applies `Option`s to `DefaultClientConfig()`, creates an `engine.Config` from the client config, and calls `engine.OpenManager(dir, engineCfg)`. Returns an `*embeddedClient`.
+- `CreateQueue`: Creates an `engine.Queue` via `mgr.CreateQueue(name, engineCfg)`, wraps it in a `logqueue.NewLogQueue(name, storage)`, and stores it in the `queues` map.
+- `LogQueue`: Uses double-checked locking. First acquires `c.mu.RLock()` to check the map, and if not found, acquires `c.mu.Lock()` and re-verifies before creating a new wrapper.
+- `getOrCreateLogQueue`: Returns an existing `*logqueue.LogQueue` or creates a new wrapper around an existing `engine.Storage` retrieved from the manager.
 - `TaskQueue`: Returns `ErrTaskNotSupported` (stub).
-- `TruncateQueue`: Retrieves the queue from the manager and calls `TruncateBefore(ctx, minOffset)`.
-- `embeddedClient`: Implements `Client`. Methods validate `ctx.Err()` prior to execution and forward calls to `mgr`.
+- `TruncateQueue`: Retrieves the queue from the manager and calls `q.Truncate(ctx, minOffset)`.
 - `Stats`: Calls `mgr.Stats()` and converts `engine.EngineStats` to `SystemStats`.
+- `Close`: Sets `closed` flag and calls `mgr.Close()`.
 
 #### `remote.go`
 
 Implements client and queue interfaces using connection-pooled IPC/TCP wire frame exchanges.
 
 ```go
+package client
+
+import (
+	"bufio"
+	"context"
+	"crypto/tls"
+	"errors"
+	"io"
+	"iter"
+	"net"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/group"
+	"github.com/dmunish/mikyu/internal/ipc"
+	"github.com/dmunish/mikyu/internal/logqueue"
+	"github.com/dmunish/mikyu/internal/protocol"
+)
+
 type remoteClient struct {
 	target   string
 	network  string
 	addr     string
-	cfg      ClientConfig
+	cfg      Config
 	pool     chan *clientConn
 	maxConns int
 	mu       sync.Mutex
@@ -390,98 +554,242 @@ type clientConn struct {
 	r    *bufio.Reader
 }
 
-func Dial(target string, opts ...ClientOption) (Client, error)
+func NewRemote(target string, opts ...Option) (*remoteClient, error) { ... }
 ```
 
 **Implementation Details:**
 
-- `Dial`: Parses `target` using `protocol.ParseTarget`. Allocates a buffered channel `pool` with capacity `cfg.MaxConns`.
+- `NewRemote`: Parses `target` using `protocol.ParseTarget`. Allocates a buffered channel `pool` with capacity `cfg.MaxConns`.
 - `acquire(ctx)`: Selects a `*clientConn` from `pool`. If pool is empty, executes `dialConn(ctx)`. Respects context timeout/cancellation.
-- `dialConn(ctx)`: Dials IPC target via `ipc.Dial(target)` if network is `unix` or `pipe`. For TCP, checks if `TLSConfig` is non-nil or URI starts with `tls://`/`tcps://`; if so, uses `tls.Dialer`, otherwise standard `net.Dialer`.
+- `dialConn(ctx)`: Dials IPC target via `ipc.DialContext` if network is `unix` or `pipe`. For TCP, checks if `TLSConfig` is non-nil; if so, uses `tls.Dialer`, otherwise standard `net.Dialer`.
 - `release(ch)`: Returns `ch` to `pool`. If `closed.Load()` is true or `pool` is full, closes underlying `ch.conn`.
 - `Close()`: Swaps `closed` atomic boolean to true and drains/closes all idle connections in `pool`.
-- `exchange(ctx, op, body)`: Acquires connection, sets write/read timeout deadline from `ctx`, calls `protocol.WriteFrame` and `protocol.ReadFrame`. If response opcode is `OpError`, decodes wire error via `decodeProtocolError` and returns corresponding Go error (`ErrQueueExists`, `ErrQueueNotFound`, `ErrOffsetNotFound`, `ErrOffsetTruncated`).
-- `remoteLogQueue`: Implements `LogQueue`. `Produce` writes `OpProduce` frame, `Read` writes `OpRead` frame, `LastOffset` writes `OpTail` frame, `Stream`/`Tail` use `iter.Seq2` with `q.Read` and `q.LastOffset`. `Tail` uses the same retry logic as the embedded version. `MinOffset` retrieves from `Stats` (per-queue stats) and `Truncate` calls `TruncateQueue` on the client.
-- `remoteGroup`: Uses `sync.Mutex` for thread-safe high-water offset tracking; `Commit` writes an `OpCommitOffset` binary frame to the connection.
+- `exchange(ctx, op, body)`: Acquires connection, sets write/read timeout deadline from `ctx`, calls `protocol.WriteFrame` and `protocol.ReadFrame`. If response opcode is `OpError`, decodes wire error via `decodeProtocolError` and returns corresponding Go error.
+- `remoteLogQueue`: Implements `LogQueue` via `ClientLogQueue` interface. `Produce` writes `OpProduce` frame, `Read` writes `OpRead` frame, `LastOffset` writes `OpTail` frame, `Stream`/`Tail` use `iter.Seq2` with retry logic.
+- `remoteGroup`: Uses `group.Base` for concurrency-safe high-water tracking; `Commit` writes an `OpCommitOffset` binary frame to the connection.
 
 ---
 
-### Internal Declarative Config Module (`package config`)
+### Internal Command Module (`package command`)
 
-#### `internal/config/config.go`
+#### `command.go`
 
-Parses YAML configurations using `goccy/go-yaml`, resolves config paths, auto-bootstraps missing config files, and applies environment variable overrides.
+Provides stateless helper functions used by both CLI and REPL.
 
 ```go
-const defaultConfigYAML = `# Mikyu Daemon Configuration
+package command
 
-server:
-  target: "tcp://127.0.0.1:7420" # Bind target (tcp://, unix://, or pipe://)
-  data_dir: "./data"             # Path for WAL log segments and offset store
+import (
+	"context"
+	"io"
+	"os"
+	"strings"
 
-engine:
-  batch_size: 256                # Max pending messages before triggering WAL fsync
-  max_interval: "10ms"           # Max wait time before forcing WAL fsync
-  min_interval: "30us"           # Micro-linger window to group concurrent produces
-  max_segment_bytes: 67108864    # 64 MiB: Max size per log segment before rolling
-  max_message_bytes: 1048576     # 1 MiB: Max payload size per produce call
-  max_segment_age: "1h"          # Max time before rolling inactive segment
-  encrypted: false               # Enable OS transparent directory encryption
-  fsync: true                    # Enable durable-before-ack semantics; set false for crash-loss window
+	"charm.land/lipgloss/v2"
+	"github.com/dmunish/mikyu"
+	"github.com/dmunish/mikyu/internal/daemon"
+	"golang.org/x/term"
+)
 
-queues: []                       # Declarative pre-created queues on startup
-`
+func GetTerminalWidth() int { ... }
+func FormatSingleLinePayload(payload []byte, availableWidth int) string { ... }
+func ResolvePayload(input string) ([]byte, error) { ... }
 
-type Config struct {
-	Server ServerConfig  `yaml:"server"`
-	Engine EngineConfig  `yaml:"engine"`
-	Queues []QueueConfig `yaml:"queues"`
-}
-
-type ServerConfig struct {
-	Target      string `yaml:"target"`
-	DataDir     string `yaml:"data_dir"`
-	TLSEnabled  bool   `yaml:"tls_enabled"`
-	TLSCertFile string `yaml:"tls_cert_file"`
-	TLSKeyFile  string `yaml:"tls_key_file"`
-}
-
-type EngineConfig struct {
-	BatchSize       int           `yaml:"batch_size"`
-	MaxInterval     time.Duration `yaml:"max_interval"`
-	MinInterval     time.Duration `yaml:"min_interval"`
-	MaxSegmentBytes int64         `yaml:"max_segment_bytes"`
-	MaxMessageBytes int64         `yaml:"max_message_bytes"`
-	MaxSegmentAge   time.Duration `yaml:"max_segment_age"`
-	Encrypted       bool          `yaml:"encrypted"`
-	Fsync           bool          `yaml:"fsync"`
-}
-
-type QueueConfig struct {
-	Name            string        `yaml:"name"`
-	BatchSize       int           `yaml:"batch_size,omitempty"`
-	MaxInterval     time.Duration `yaml:"max_interval,omitempty"`
-	MinInterval     time.Duration `yaml:"min_interval,omitempty"`
-	MaxSegmentBytes int64         `yaml:"max_segment_bytes,omitempty"`
-	MaxMessageBytes int64         `yaml:"max_message_bytes,omitempty"`
-	MaxSegmentAge   time.Duration `yaml:"max_segment_age,omitempty"`
-	Encrypted       *bool         `yaml:"encrypted,omitempty"`
-	Fsync           *bool         `yaml:"fsync,omitempty"`
-}
-
-func DefaultConfig() Config
-func Load(flagPath string) (*Config, string, error)
-func resolveOrBootstrapPath(flagPath string) (path string, bootstrapped bool, err error)
-func applyEnvOverrides(cfg *Config)
-func ToEngineConfig(e EngineConfig) engine.Config
-func ToQueueEngineConfig(defaults EngineConfig, q QueueConfig) engine.Config
+func List(ctx context.Context, client mikyu.Client) ([]string, error) { ... }
+func Create(ctx context.Context, client mikyu.Client, name string) error { ... }
+func Delete(ctx context.Context, client mikyu.Client, name string, confirmFn func() (bool, error)) (executed bool, err error) { ... }
+func Produce(ctx context.Context, client mikyu.Client, name string, input string) (offset uint64, payloadLen int, err error) { ... }
+func Read(ctx context.Context, client mikyu.Client, name string, offset uint64) (mikyu.Message, error) { ... }
+func Tail(ctx context.Context, client mikyu.Client, name string, startOffset uint64, onMessage func(msg mikyu.Message) error) error { ... }
+func Stats(ctx context.Context, client mikyu.Client) (mikyu.SystemStats, error) { ... }
+func Compact(ctx context.Context, client mikyu.Client, name string, minOffset uint64, confirmFn func() (bool, error)) (reclaimed int64, executed bool, err error) { ... }
+func Shutdown(target string, confirmFn func() (bool, error)) (executed bool, err error) { ... }
 ```
 
 **Implementation Details:**
 
-- `defaultConfigYAML`: Hardcoded string template containing default server target (`tcp://127.0.0.1:7420`), data directory (`./data`), engine defaults, and documented inline comments.
-- `Load(flagPath)`: Calls `resolveOrBootstrapPath`. If `flagPath` is empty, checks `./mikyu.yaml`, then `$XDG_CONFIG_HOME/mikyu/mikyu.yaml` (or system user config path). If no file exists, creates `mikyu.yaml` with `defaultConfigYAML` at user config path or `./mikyu.yaml`. Unmarshals YAML data into `Config` struct and executes `applyEnvOverrides(&cfg)`.
-- `applyEnvOverrides`: Overrides configuration fields if environment variables are present (`MIKYU_SERVER_TARGET`, `MIKYU_SERVER_DATA_DIR`, `MIKYU_ENGINE_BATCH_SIZE`, `MIKYU_ENGINE_MAX_INTERVAL`, `MIKYU_ENGINE_MIN_INTERVAL`, `MIKYU_ENGINE_MAX_SEGMENT_BYTES`, `MIKYU_ENGINE_MAX_MESSAGE_BYTES`, `MIKYU_ENGINE_MAX_SEGMENT_AGE`, `MIKYU_ENGINE_ENCRYPTED`, `MIKYU_ENGINE_FSYNC`). Also supports a legacy `MIKYU_ENGINE_FLUSH_INTERVAL` as a fallback for `max_interval`.
+- `GetTerminalWidth`: Checks stdout, stderr, stdin descriptors for interactive terminal and returns width or -1.
+- `FormatSingleLinePayload`: Escapes control characters, strips non-printable characters, truncates to fit available width using `lipgloss.Width`.
+- `ResolvePayload`: Handles `-` for stdin, `@file` for file reads, otherwise literal string.
+- `Delete`/`Compact`/`Shutdown`: Accept an optional `confirmFn` for interactive confirmation before executing destructive operations.
+- `Shutdown`: Delegates to `daemon.SendShutdownSignal`.
+
+---
+
+### Internal Log Queue Module (`package logqueue`)
+
+#### `api.go`
+
+Defines the `ClientLogQueue` interface exposed to upper layers.
+
+```go
+package logqueue
+
+import (
+	"context"
+	"iter"
+
+	"github.com/dmunish/mikyu/internal/engine"
+)
+
+// ClientLogQueue is the queue-driver interface exposed through the public
+// client API. The concrete LogQueue remains an implementation detail of this
+// package while the interface lets upper layers avoid importing engine details.
+type ClientLogQueue interface {
+	Name() string
+	Produce(ctx context.Context, payload []byte) (uint64, error)
+	ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
+	Read(ctx context.Context, offset uint64) (engine.Message, error)
+	ReadBatch(ctx context.Context, startOffset uint64, count int) ([]engine.Message, error)
+	LastOffset(ctx context.Context) (uint64, error)
+	MinOffset(ctx context.Context) (uint64, error)
+	Truncate(ctx context.Context, minOffset uint64) (int64, error)
+	Stream(ctx context.Context, startOffset uint64) iter.Seq2[engine.Message, error]
+	Tail(ctx context.Context, startOffset uint64) iter.Seq2[engine.Message, error]
+	Group(name string) Group
+}
+
+var _ ClientLogQueue = (*LogQueue)(nil)
+```
+
+**Implementation Details:**
+
+- This interface is the stable contract for `LogQueue` used by `mikyu.Client`. It adds `Truncate` and `MinOffset` methods beyond the original `LogQueue` interface, exposing retention/compaction operations.
+- The `LogQueue` struct in `logqueue.go` implements this interface.
+
+#### `logqueue.go`
+
+Provides a high-level wrapper around `engine.Storage` for log-oriented semantics and consumer group management.
+
+```go
+package logqueue
+
+import (
+	"context"
+	"errors"
+	"io"
+	"iter"
+	"sync"
+	"time"
+
+	"github.com/dmunish/mikyu/internal/engine"
+)
+
+var ErrNotSupported = errors.New("feature not supported")
+
+type LogQueue struct {
+	name    string
+	storage engine.Storage
+	policy  LogRetentionPolicy
+	mu      sync.RWMutex
+	groups  map[string]*queueGroup
+}
+
+func NewLogQueue(name string, storage engine.Storage) *LogQueue { ... }
+func (q *LogQueue) Name() string { ... }
+func (q *LogQueue) Produce(ctx context.Context, payload []byte) (uint64, error) { ... }
+func (q *LogQueue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error) { ... }
+func (q *LogQueue) Read(ctx context.Context, offset uint64) (engine.Message, error) { ... }
+func (q *LogQueue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([]engine.Message, error) { ... }
+func (q *LogQueue) LastOffset(ctx context.Context) (uint64, error) { ... }
+func (q *LogQueue) MinOffset(ctx context.Context) (uint64, error) { ... }
+func (q *LogQueue) Stream(ctx context.Context, startOffset uint64) iter.Seq2[engine.Message, error] { ... }
+func (q *LogQueue) Tail(ctx context.Context, startOffset uint64) iter.Seq2[engine.Message, error] { ... }
+func (q *LogQueue) Group(name string) Group { ... }
+func (q *LogQueue) CommitOffset(ctx context.Context, group string, offset uint64) error { ... }
+func (q *LogQueue) FetchOffset(ctx context.Context, group string) (uint64, error) { ... }
+func (q *LogQueue) Close() error { ... }
+```
+
+**Implementation Details:**
+
+- `Stream`: Returns an iterator that repeatedly calls `storage.Read` until `ErrOffsetNotFound` or context cancellation.
+- `Tail`: Returns an iterator that polls `storage.LastOffset()`; when `offset < last`, reads and yields messages; otherwise sleeps for 5ms. On transient errors, retries after a 5ms sleep.
+- `Group`: Returns or creates a `queueGroup` instance for the given name. The `queueGroup` wraps `group.Base` to provide high-water tracking and commits to storage.
+- `CommitOffset`/`FetchOffset`: Directly forward to the storage layer for durable group offsets.
+- `Close`: Returns nil (no cleanup needed; actual storage is closed by the manager).
+
+#### `group.go`
+
+Provides the `Group` interface and implementation wrapping `group.Base`.
+
+```go
+package logqueue
+
+import (
+	"context"
+	"io"
+
+	"github.com/dmunish/mikyu/internal/group"
+)
+
+// Group defines the consumer group offset tracking interface.
+type Group interface {
+	io.Closer
+	Name() string
+	Mark(offset uint64)
+	Commit(ctx context.Context) error
+	FetchOffset(ctx context.Context) (uint64, error)
+}
+
+type queueGroup struct {
+	group.Base
+	q *LogQueue
+}
+
+func newQueueGroup(q *LogQueue, name string) *queueGroup { ... }
+func (g *queueGroup) Name() string { ... }
+func (g *queueGroup) FetchOffset(ctx context.Context) (uint64, error) { ... }
+```
+
+**Implementation Details:**
+
+- `queueGroup` embeds `group.Base`, which provides thread-safe `Mark`, `Commit`, and `Close` methods.
+- `newQueueGroup` sets `Base.Name` to the group name and `Base.CommitFn` to delegate to `q.CommitOffset`.
+
+#### `retention.go`
+
+Defines log retention policy and safe truncation floor calculation. (Unchanged.)
+
+---
+
+### Internal Group Module (`package group`)
+
+#### `group.go`
+
+Provides the concurrency-safe base for consumer group high-watermark tracking.
+
+```go
+package group
+
+import (
+	"context"
+	"sync"
+)
+
+// CommitFunc persists a group's current high-watermark.
+type CommitFunc func(ctx context.Context, offset uint64) error
+
+// Base contains the concurrency-safe high-watermark and lifecycle state shared
+// by embedded and remote consumer groups.
+type Base struct {
+	Name      string
+	Mu        sync.Mutex
+	HighWater uint64
+	Closed    bool
+	CommitFn  CommitFunc
+}
+
+func (g *Base) Mark(offset uint64) { ... }
+func (g *Base) Commit(ctx context.Context) error { ... }
+func (g *Base) Close() error { ... }
+```
+
+**Implementation Details:**
+
+- `Mark`: Updates the internal high-water offset to `offset+1` if `offset >= HighWater`.
+- `Commit`: Locks `Mu`, reads `HighWater`, unlocks, and calls `CommitFn`.
+- `Close`: Idempotent; commits the final high-watermark before returning.
 
 ---
 
@@ -489,385 +797,31 @@ func ToQueueEngineConfig(defaults EngineConfig, q QueueConfig) engine.Config
 
 #### `storage.go`
 
-Defines the policy-agnostic storage interface implemented by `Queue`.
-
-```go
-type Storage interface {
-	Name() string
-	Append(ctx context.Context, payload []byte) (uint64, error)
-	AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
-	Read(ctx context.Context, offset uint64) (Message, error)
-	ReadBatch(ctx context.Context, start uint64, n int) ([]Message, error)
-	LastOffset() uint64
-	CommitOffset(ctx context.Context, group string, offset uint64) error
-	FetchOffset(ctx context.Context, group string) (uint64, error)
-
-	// Policy-agnostic maintenance & truncation primitives
-	MinOffset() uint64
-	Segments() []SegmentInfo
-	TruncateBefore(ctx context.Context, offset uint64) (reclaimedBytes int64, err error)
-}
-```
-
-**Implementation Details:**
-
-- `Storage` is the minimal interface required by `logqueue.LogQueue` to provide log-oriented operations. It abstracts the engine `Queue` implementation, allowing the `logqueue` package to be reusable across embedded and remote backends.
-- The added `MinOffset`, `Segments`, and `TruncateBefore` methods expose maintenance and compaction capabilities to higher layers (e.g., a future garbage collector or admin API).
-
-#### `index.go`
-
-Defines structures for in-memory and persisted segment indices.
-
-```go
-type indexEntry struct {
-	seg *segment
-	pos int64
-	len int64
-}
-
-type rawIndexEntry struct {
-	pos int64
-	len int64
-}
-```
-
-**Implementation Details:**
-
-- `indexEntry`: O(1) in-memory lookup record mapping a logical offset to a target segment, file byte offset (`pos`), and total record length (`len`). This struct is no longer used in `Queue`; it remains available for potential future use but the engine now uses binary search over segments.
-- `rawIndexEntry`: 16-byte on-disk structure stored in `.idx` segment files (8 bytes big-endian `pos`, 8 bytes big-endian `len`).
-
-#### `offsets.go`
-
-Provides durable consumer group offset tracking in a unified manager-level file.
-
-```go
-const managerOffsetFileName = "manager-offsets.dat"
-
-type OffsetStore struct {
-	mu                  sync.RWMutex
-	dir                 string
-	file                *os.File
-	w                   *bufio.Writer
-	offsets             map[string]uint64
-	appendsSinceCompact int
-}
-
-func openOffsetStore(dir string) (*OffsetStore, error)
-func (s *OffsetStore) Commit(queueName, group string, offset uint64) error
-func (s *OffsetStore) Fetch(queueName, group string) uint64
-func (s *OffsetStore) Close() error
-```
-
-**Implementation Details:**
-
-- `openOffsetStore`: Opens `manager-offsets.dat` with `O_RDWR|O_CREATE` permissions. Calls `recover()` to populate the in-memory `offsets` map.
-- `recover()`: Iteratively reads `[2-byte Key Length][Key Bytes ("queue:group")][8-byte Uint64 Offset]`. If an `io.EOF` or partial record is encountered, stops reading and retains valid state.
-- `Commit`: Takes write lock (`mu.Lock`), updates `offsets["queueName:group"]`, appends entry to `bufio.Writer`, flushes writer, and calls `file.Sync()` to ensure immediate disk durability. **Compaction:** After every 5,000 appends, `compactLocked()` rewrites the entire offset file to a temporary file, fsyncs, atomically renames, and reopens it. This bounds the file size to `O(active groups)` and keeps recovery fast.
-- `Fetch`: Takes read lock (`mu.RLock`), returns offset value from map (0 if not present).
-
-#### `cache.go`
-
-Provides a fixed-capacity ring buffer for the most recent messages, enabling ~100 ns/op tail reads with zero heap allocations.
-
-```go
-type ringCache struct {
-	mu    sync.RWMutex
-	slots []Message
-	mask  uint64
-}
-
-func newRingCache(capacity uint64) *ringCache
-func (r *ringCache) Put(msg Message)
-func (r *ringCache) Get(offset uint64) (Message, bool)
-func (r *ringCache) EvictBefore(minOffset uint64)
-```
-
-**Implementation Details:**
-
-- `newRingCache`: Allocates a slice of `capacity` `Message` values. The `mask` is `capacity - 1` (capacity must be a power of two).
-- `Put`: Stores a message at the slot indexed by `msg.Offset & mask` under write lock.
-- `Get`: Reads the slot under read lock and verifies the offset matches and the timestamp is non-zero before returning a hit.
-- `EvictBefore`: Iterates all slots and clears any message whose offset is strictly less than `minOffset`. This method is used by `TruncateBefore` to invalidate stale cache entries after physical segment deletion.
-- The default capacity is `defaultRingCacheCapacity = 16384`.
-
-#### `segment.go`
-
-Manages log files (`.log`), index files (`.idx`), pre-allocation, zero-copy `mmap` regions, and index recovery.
-
-```go
-type segment struct {
-	baseOff   uint64
-	logFile   *os.File
-	idxFile   *os.File
-	pos       int64
-	createdAt time.Time
-	mmapData  mmap.MMap
-	idxMMap   mmap.MMap // Memory-mapped index region for closed historical segment
-}
-
-func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, error)
-func (s *segment) enableMMap() error
-func (s *segment) writeIndex(pos, len int64) error
-func (s *segment) recover() ([]rawIndexEntry, error)
-func (s *segment) rebuild() ([]rawIndexEntry, error)
-func (s *segment) diskSize() int64
-func (s *segment) nextOffset() uint64
-func (s *segment) destroy() (int64, error)
-func (s *segment) Close() error
-```
-
-**Implementation Details:**
-
-- `openSegment`: Opens `%020d.log` and `%020d.idx` files. If log file size is zero, pre-allocates `preallocSize` bytes (dynamic based on the queue's `nextPreallocBytes` field) using `logFile.Truncate(preallocSize)`.
-- `enableMMap`: Maps log file into memory using `mmap.Map(logFile, mmap.RDONLY, 0)`. Called when a segment is closed after rolling to enable zero-copy read paths. Before mapping the index file, checks `idxFile.Stat().Size() > 0` to avoid Windows `CreateFileMapping` errors on zero-byte files. If size is zero, skips mapping `idxMMap`.
-- `writeIndex`: Encodes `pos` and `len` into 16 big-endian bytes and writes to `idxFile`.
-- `recover()`: Performs fast-path verification by reading the final 16-byte record in `idxFile`. If `lastPos + lastLen == logFileSize`, reads the index file in bulk. Otherwise, falls back to `rebuild()`.
-- `rebuild()`: Truncates `idxFile` to zero. Scans `logFile` sequentially from `pos = 0`, reading 4-byte record length prefixes and verifying CRC checksums via `decodeRecord`. Reconstructs valid `rawIndexEntry` slices, writes repaired index entries to `idxFile`, truncates `logFile` to the last valid position, and syncs `idxFile`.
-- `diskSize()`: Returns the combined size of the log and index files on disk.
-- `nextOffset()`: Computes the logical next offset as `baseOff + number_of_index_entries` (derived from the index file size or mapped index length). This is used by `Segments()` to report the boundary of a closed segment.
-- `destroy()`: Unmaps memory, closes file handles, and unlinks the log and index files. Returns the total freed bytes.
-- `Close()`: Trims the log file to the actually written size (`s.pos`) and syncs it, then unmaps any mapped regions and closes both file handles. This ensures that pre-allocated capacity is not left on disk after a clean shutdown.
-
-#### `compact.go`
-
-Provides segment metadata and logical truncation for safe physical compaction.
-
-```go
-type SegmentInfo struct {
-	BaseOffset uint64
-	NextOffset uint64
-	SizeBytes  int64
-	CreatedAt  time.Time
-	IsActive   bool
-}
-
-func (q *Queue) MinOffset() uint64
-func (q *Queue) Segments() []SegmentInfo
-func (q *Queue) TruncateBefore(ctx context.Context, targetOffset uint64) (reclaimedBytes int64, err error)
-```
-
-**Implementation Details:**
-
-- `MinOffset()`: Returns the lowest readable logical offset currently held in storage. This is initialized from the first segment's `baseOff` and updated after truncation.
-- `Segments()`: Returns metadata for each segment, including its base offset, next offset (boundary), physical size, creation time, and whether it is the active write segment. This information is useful for administrative tools and compaction decision-making.
-- `TruncateBefore(ctx, targetOffset)`: Locks the queue, then iterates through closed segments in order. For each closed segment whose `nextOffset <= targetOffset`, it calls `seg.destroy()` to unlink the files and accumulates the reclaimed bytes. It stops at the first segment that spans `targetOffset` (i.e., its records are not all below `targetOffset`) or at the active segment. After deletion, it updates `minOffset` to the new first segment's `baseOff` and evicts stale ring cache entries via `cache.EvictBefore`. Returns the total reclaimed bytes, or an error if a file deletion fails.
-
-#### `wal.go` & OS-Specific Sync Helpers
-
-Implements Write-Ahead Log flushing using dynamic dual-threshold batching, micro-linger grouping, and platform-optimal disk sync system calls. The WAL supports two modes controlled by the `Fsync` flag:
-
-- **Durable mode (`Fsync: true`):** Standard blocking path. Producers append to the WAL buffer, then wait on `sync.Cond` for the flusher to publish their sequence. The flusher performs `WriteAt` followed by `syncData` on the underlying file. This guarantees that once an offset is returned, the record is durable.
-- **Async mode (`Fsync: false`):** The producers write records directly to the segment file via an asynchronous channel (`asyncChan`) and immediately advance `publishedOffset`. The WAL's background goroutine drains the channel, writes the records, and updates the index. No `syncData` is performed, trading a small crash-loss window for significantly lower latency.
-
-The flusher runs in a dedicated goroutine and uses double-buffered swap to minimize lock hold time. Wake tokens are drained inside `flush()` to avoid producer hangs. The implementation uses `sync.Cond` to block producers until their pending records are published.
-
-For OS-specific sync, the following files provide platform-optimal implementations:
-
-- `sync_darwin.go`: Uses `unix.FcntlInt(fd, unix.F_FULLFSYNC, 0)` for maximum durability on macOS.
-- `sync_fdatasync.go`: Uses `unix.Fdatasync(fd)` on Linux and other POSIX systems.
-- `sync_windows.go`: Uses `file.Sync()` (FlushFileBuffers) on Windows.
-
-#### `manager.go`
-
-Manages multiple queues within a single data directory, handling lifecycle and aggregate statistics.
-
-```go
-type Manager struct {
-	mu      sync.RWMutex
-	dir     string
-	cfg     Config
-	queues  map[string]*Queue
-	offsets *OffsetStore
-}
-
-type EngineStats struct {
-	ActiveQueues int
-	TotalBytes   int64
-	Queues       map[string]QueueStats
-}
-
-type QueueStats struct {
-	MessageCount uint64
-	SegmentCount int
-	SizeBytes    int64
-	LastOffset   uint64
-	MinOffset    uint64
-}
-
-func OpenManager(dir string, cfg Config) (*Manager, error)
-func (m *Manager) CreateQueue(name string, opts ...Config) (Storage, error)
-func (m *Manager) GetQueue(name string) (Storage, error)
-func (m *Manager) ListQueues() []string
-func (m *Manager) DeleteQueue(name string) error
-func (m *Manager) Stats() EngineStats
-func (m *Manager) Close() error
-```
-
-**Implementation Details:**
-
-- `OpenManager`: Creates the data directory if not present, initializes the `OffsetStore`, scans for existing queue subdirectories, and opens each one via `openQueue`. If `cfg.Encrypted` is true, it bootstraps directory encryption.
-- `CreateQueue`: Checks for existence, optionally applies per-queue overrides, and opens a new `Queue` via `openQueue`.
-- `GetQueue`: Returns the `Storage` for an existing queue.
-- `ListQueues`: Returns the names of all active queues.
-- `DeleteQueue`: Closes the queue and removes its directory.
-- `Stats`: Aggregates per-queue statistics using in-memory counters under `RLock`. It iterates over each queue, reading `publishedOffset`, `len(q.segments)`, `q.nextOffset`, `q.minOffset`, and accumulates `seg.pos` for size.
-- `Close`: Closes all queues and the offset store.
+Defines the policy-agnostic storage interface implemented by `Queue`. (Unchanged.)
 
 #### `queue.go`
 
 Implements the `Storage` interface with log-structured append, zero-copy reads, segment rolling, WAL integration, and safe truncation.
 
-```go
-type Queue struct {
-	name              string
-	dir               string
-	cfg               Config
-	active            *segment
-	segments          []*segment
-	nextOffset        uint64
-	minOffset         uint64
-	publishedOffset   uint64
-	w                 *wal
-	offsets           *OffsetStore
-	cache             *ringCache
-	nextPreallocBytes int64
-	mu                sync.RWMutex
-}
+**Key Implementation Details (updated):**
 
-func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, error)
-func (q *Queue) Append(ctx context.Context, payload []byte) (uint64, error)
-func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
-func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error)
-func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, error)
-func (q *Queue) LastOffset() uint64
-func (q *Queue) CommitOffset(ctx context.Context, group string, offset uint64) error
-func (q *Queue) FetchOffset(ctx context.Context, group string) (uint64, error)
-func (q *Queue) Close() error
-```
+- `AppendBatch`: Handles both async (Fsync=false) and durable (Fsync=true) paths. The async path writes records directly to the segment file via an asynchronous channel and advances `publishedOffset` immediately.
+- `Read`: Checks the ring cache first, then locates the segment via binary search. Uses `readFromSegment` for both mmap and `ReadAt` paths.
+- `readFromSegment`: New helper method that reads from either mmap (closed segments) or `ReadAt` (active segments) and decodes the record.
+- `roll`: Rotates the active segment based on size or age, adjusts `nextPreallocBytes` dynamically, truncates the old segment to its written size, and enables mmap for zero-copy reads.
+- `loadSegments`: Scans the queue directory for log files, sorts them by base offset, and opens each via `openSegment`. Calls `recover()` on each segment to rebuild valid index entries.
 
-**Implementation Details:**
+#### `wal.go`
 
-- `openQueue`: Creates the queue directory, clamps initial preallocation to `MaxSegmentBytes`, loads existing segments via `loadSegments`, and initializes the WAL.
-- `AppendBatch`: Encodes each payload with `encodeRecord`, checks size limits, and either follows the async fast path (Fsync=false) or the synchronous durable path (Fsync=true). In async mode, messages are placed in the ring cache and `publishedOffset` is advanced immediately, then queued for background write. In durable mode, producers push to the WAL and wait for the flusher to publish.
-- `Read`: Checks the ring cache first; otherwise locates the segment via binary search and reads from the segment (mmap for closed segments, `ReadAt` for active). If the offset is below `minOffset`, returns `ErrOffsetTruncated`.
-- `ReadBatch`: Reads a contiguous range of offsets, preferring cache hits and falling back to segment reads. Handles segment boundary crossing and truncation errors.
-- `roll()`: Rotates the active segment based on size or age, adjusts `nextPreallocBytes` dynamically (doubling or halving based on fill duration), truncates the old segment to its written size, and enables mmap for zero-copy reads.
-- `loadSegments()`: Scans the queue directory for log files, sorts them by base offset, and opens each via `openSegment`. Calls `recover()` on each segment to rebuild valid index entries. Sets `minOffset` to the first segment's `baseOff`, and initializes `nextOffset`/`publishedOffset` from the last segment's record count. If no segments exist, creates an empty segment at offset 0.
-- `TruncateBefore` (implemented in `compact.go`): Physically deletes closed segments whose records are all below `targetOffset`, updating `minOffset` and evicting stale cache entries.
-- `CommitOffset` / `FetchOffset`: Delegate to the `OffsetStore`.
+Implements Write-Ahead Log flushing using dynamic dual-threshold batching, micro-linger grouping, and platform-optimal disk sync system calls. The WAL supports two modes controlled by the `Fsync` flag.
 
-#### `encode.go`
+**Key Implementation Details (updated):**
 
-Provides CRC32 record framing, decoding, and raw UUID v7 encoding.
-
-```go
-func encodeRecord(id uuid.UUID, ts time.Time, payload []byte) []byte
-func decodeRecord(buf []byte) (id string, ts time.Time, payload []byte, err error)
-```
-
-**Implementation Details:**
-
-- `encodeRecord`: Constructs a record of the form `[4B Body Length][4B CRC32][2B ID Length][16B Raw UUID][8B Unix Nanoseconds][Payload]`. CRC32 is computed over the bytes following the length field.
-- `decodeRecord`: Validates the CRC32 checksum, extracts the UUID and timestamp, and returns the payload. Returns `ErrCorruptRecord` on any mismatch or truncation.
-
----
-
-### Internal Log Queue Module (`package logqueue`)
-
-#### `logqueue.go`
-
-Provides a high-level wrapper around `engine.Storage` for log-oriented semantics and consumer group management.
-
-```go
-type LogQueue struct {
-	name    string
-	storage engine.Storage
-	policy  LogRetentionPolicy
-	mu      sync.RWMutex
-	groups  map[string]*group
-}
-
-func NewLogQueue(name string, storage engine.Storage) *LogQueue
-func (q *LogQueue) Name() string
-func (q *LogQueue) Produce(ctx context.Context, payload []byte) (uint64, error)
-func (q *LogQueue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
-func (q *LogQueue) Read(ctx context.Context, offset uint64) (engine.Message, error)
-func (q *LogQueue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([]engine.Message, error)
-func (q *LogQueue) LastOffset(ctx context.Context) (uint64, error)
-func (q *LogQueue) MinOffset(ctx context.Context) (uint64, error)
-func (q *LogQueue) Stream(ctx context.Context, startOffset uint64) iter.Seq2[engine.Message, error]
-func (q *LogQueue) Tail(ctx context.Context, startOffset uint64) iter.Seq2[engine.Message, error]
-func (q *LogQueue) Group(name string) Group
-func (q *LogQueue) CommitOffset(ctx context.Context, group string, offset uint64) error
-func (q *LogQueue) FetchOffset(ctx context.Context, group string) (uint64, error)
-func (q *LogQueue) Close() error
-```
-
-**Implementation Details:**
-
-- `NewLogQueue`: Initializes a `LogQueue` with an empty `groups` map and zero-value `policy`.
-- `Produce`/`ProduceBatch`: Delegate directly to `storage.Append`/`AppendBatch`.
-- `Read`/`ReadBatch`: Delegate to `storage.Read`/`ReadBatch`.
-- `LastOffset`: Returns `storage.LastOffset()` after validating context.
-- `MinOffset`: Returns `storage.MinOffset()` after validating context.
-- `Stream`: Returns an iterator that repeatedly calls `storage.Read` until `ErrOffsetNotFound` or context cancellation.
-- `Tail`: Returns an iterator that polls `storage.LastOffset()`; when `offset < last`, reads and yields messages; otherwise sleeps for 5ms. On transient errors, retries after a 5ms sleep.
-- `Group`: Returns or creates a `group` instance for the given name. The group tracks a high-water offset locally; `Commit` persists via `storage.CommitOffset`.
-- `CommitOffset`/`FetchOffset`: Directly forward to the storage layer for durable group offsets.
-- `Close`: Returns nil (no cleanup needed; actual storage is closed by the manager).
-
-#### `group.go`
-
-Provides the `Group` interface and implementation for offset tracking.
-
-```go
-type Group interface {
-	Name() string
-	Mark(offset uint64)
-	Commit(ctx context.Context) error
-	FetchOffset(ctx context.Context) (uint64, error)
-	Close() error
-}
-
-type group struct {
-	q         *LogQueue
-	name      string
-	mu        sync.Mutex
-	highWater uint64
-	closed    bool
-}
-```
-
-**Implementation Details:**
-
-- `Mark`: Updates the internal high-water offset to `offset+1` if `offset >= highWater`.
-- `Commit`: Writes the current `highWater` to the underlying storage via `storage.CommitOffset`.
-- `FetchOffset`: Retrieves the persisted offset from storage.
-- `Close`: Automatically commits if not already closed.
-
-#### `retention.go`
-
-Defines log retention policy and safe truncation floor calculation.
-
-```go
-type LogRetentionPolicy struct {
-	TTL time.Duration
-}
-
-func (q *LogQueue) SetRetentionPolicy(policy LogRetentionPolicy)
-func (q *LogQueue) RetentionPolicy() LogRetentionPolicy
-func (q *LogQueue) TruncateFloor(ctx context.Context) (uint64, error)
-func (q *LogQueue) Truncate(ctx context.Context, minOffset uint64) (int64, error)
-```
-
-**Implementation Details:**
-
-- `SetRetentionPolicy`: Updates the queue's policy under write lock.
-- `RetentionPolicy`: Returns the current policy under read lock.
-- `TruncateFloor`: Computes the minimum safe truncation offset as the minimum of:
-  - The minimum `highWater` across all consumer groups (i.e., the oldest unread offset);
-  - The `NextOffset` of the oldest segment whose age exceeds `TTL` (if `TTL > 0`), but never beyond the active segment.
-- `Truncate`: If `minOffset` is zero, calls `TruncateFloor` to auto-compute the floor; otherwise uses the given offset. Delegates to `storage.TruncateBefore`.
+- `asyncChan`: A buffered channel (`asyncChanBufferCap = 65536`) used for the Fsync=false fast path. Producers write entries to this channel and the flusher drains them, writes to the segment file, and updates the index.
+- `syncLoop`: Monitors `asyncChan`, `ticker.C`, `wake`, and `shutdown` channels. Handles both async and sync paths.
+- `drainAndFlushAsync`: Groups up to `BatchSize` async entries, writes them to the segment file, updates indices, and advances `publishedOffset`.
+- `pushBatch`: Supports batch produce operations for the durable path.
+- `flush`: Swaps staged buffers, writes data, syncs if `Fsync` is enabled, and broadcasts to waiting producers.
 
 ---
 
@@ -877,46 +831,14 @@ func (q *LogQueue) Truncate(ctx context.Context, minOffset uint64) (int64, error
 
 Defines wire opcodes, error codes, and target URI parsing.
 
-```go
-const (
-	OpCreateQueue  byte = 0x01
-	OpProduce      byte = 0x02
-	OpRead         byte = 0x03
-	OpTail         byte = 0x04
-	OpCommitOffset byte = 0x05
-	OpFetchOffset  byte = 0x06
-	OpProduceBatch byte = 0x07
-	OpReadBatch    byte = 0x08
-	OpListQueues   byte = 0x09
-	OpDeleteQueue  byte = 0x0A
-	OpStats        byte = 0x0B
-	OpShutdown     byte = 0x0C
-	OpTruncate     byte = 0x11
-	OpError        byte = 0xFF
-)
+**Key Implementation Details (updated):**
 
-const (
-	ErrCodeUnknown         byte = 0x01
-	ErrCodeQueueNotFound   byte = 0x02
-	ErrCodeQueueExists     byte = 0x03
-	ErrCodeOffsetNotFound  byte = 0x04
-	ErrCodeOffsetTruncated byte = 0x05
-)
-
-func EncodeError(code byte, msg string) []byte
-func DecodeError(body []byte) (code byte, msg string)
-func ParseTarget(target string) (network string, addr string, err error)
-```
-
-**Implementation Details:**
-
-- `EncodeError`: Produces a byte slice of `[code][msg bytes]`.
-- `DecodeError`: Extracts the code and message string from the response body.
+- Added `OpTruncate byte = 0x11` opcode.
 - `ParseTarget`: Supports `unix://`, `pipe://`, `tcp://` schemes, or bare `host:port` (treated as TCP). Returns network and address components.
 
 #### `frames.go` and `bytes.go`
 
-See original spec; they implement length-prefixed framing and bounds-checked binary readers.
+(Unchanged.)
 
 ---
 
@@ -924,30 +846,24 @@ See original spec; they implement length-prefixed framing and bounds-checked bin
 
 #### `server.go`
 
-Listener loop, worker goroutines, and graceful `Stop()`. (Unchanged from original spec.)
+**Key Implementation Details (updated):**
+
+- Added `getOrCreateLogQueue` method with double-checked locking to prevent duplicate queue wrappers under concurrent requests.
+- `serveConn` uses `bufio.Reader` for frame decoding and delegates to `dispatch`.
 
 #### `handlers.go`
 
-Maps wire opcodes to internal engine operations.
+**Key Implementation Details (updated):**
 
-**Implementation Details:**
-
-- `dispatch`: Routes incoming opcodes to the corresponding handler. Handlers for `OpCreateQueue`, `OpProduce`, `OpProduceBatch`, `OpRead`, `OpReadBatch`, `OpTail`, `OpCommitOffset`, `OpFetchOffset`, `OpListQueues`, `OpDeleteQueue`, `OpStats`, `OpTruncate`, and `OpShutdown`.
-- `handleTruncate`: Parses queue name and min offset, retrieves the queue from the manager, calls `storage.TruncateBefore(ctx, minOffset)`, and returns the reclaimed bytes count.
+- All handlers call `s.getOrCreateLogQueue(string(name))` instead of directly accessing `s.mgr`.
+- `handleTruncate`: Parses queue name and min offset, calls `q.Truncate(ctx, minOffset)`, returns reclaimed bytes count.
 - `handleShutdown`: Signals the server to stop gracefully.
-- Error responses are encoded via `opErr` which uses `protocol.EncodeError` with appropriate error codes.
-
-#### `tls.go`
-
-TLS 1.3 helper & self-signed ECDSA cert generator. (Unchanged.)
 
 ---
 
 ### Internal IPC Module (`package ipc`)
 
-#### `ipc.go`
-
-Unix Domain Socket and Windows Named Pipe helpers. (Unchanged.)
+(Unchanged.)
 
 ---
 
@@ -955,11 +871,12 @@ Unix Domain Socket and Windows Named Pipe helpers. (Unchanged.)
 
 #### `daemon.go`
 
-Daemon lifecycle management and socket probing. (Unchanged, but includes `EnsureDaemonRunning`, `IsDaemonAlive`, `SendShutdownSignal`.)
+**Key Implementation Details (updated):**
 
-#### `detach_unix.go` / `detach_windows.go`
-
-OS-specific detachment. (Unchanged.)
+- `Run(configPath)`: Loads config, creates `engine.Manager`, reconciles declared queues, starts `server.Server`, and waits for signals or server shutdown.
+- `EnsureDaemonRunning(target)`: Checks if daemon is alive; if not, spawns a detached background daemon and waits up to 3 seconds for it to come online.
+- `IsDaemonAlive(target)`: Attempts to connect to target with a 150ms timeout.
+- `SendShutdownSignal(target)`: Sends an `OpShutdown` frame to the daemon.
 
 ---
 
@@ -967,40 +884,7 @@ OS-specific detachment. (Unchanged.)
 
 #### `coordinator.go`
 
-Provides automatic retention arbitration across multiple queues and consumption drivers.
-
-```go
-type DriverProvider interface {
-	TruncateFloor(ctx context.Context) (uint64, error)
-}
-
-type QueueTarget struct {
-	Name    string
-	Storage engine.Storage
-	Drivers []DriverProvider
-}
-
-type Coordinator struct {
-	mu       sync.RWMutex
-	targets  map[string]*QueueTarget
-	interval time.Duration
-}
-
-func NewCoordinator(interval time.Duration) *Coordinator
-func (c *Coordinator) RegisterTarget(target *QueueTarget)
-func (c *Coordinator) UnregisterTarget(name string)
-func (c *Coordinator) ReconcileQueue(ctx context.Context, name string) (int64, error)
-func (c *Coordinator) ReconcileAll(ctx context.Context) map[string]int64
-func (c *Coordinator) Start(ctx context.Context)
-```
-
-**Implementation Details:**
-
-- `NewCoordinator`: Initializes with a default interval of 30 seconds if not provided.
-- `RegisterTarget`/`UnregisterTarget`: Manage a map of queue names to `QueueTarget`.
-- `ReconcileQueue`: For a given queue, calculates the minimum safe truncation floor across all associated `DriverProvider`s and calls `storage.TruncateBefore` with that floor. Returns reclaimed bytes.
-- `ReconcileAll`: Iterates all registered targets and calls `ReconcileQueue` on each.
-- `Start`: Runs a background loop that calls `ReconcileAll` at the configured interval until the context is canceled.
+(Unchanged.)
 
 ---
 
@@ -1008,52 +892,15 @@ func (c *Coordinator) Start(ctx context.Context)
 
 #### `repl.go`
 
-Interactive REPL session shell and command loop.
+**Key Implementation Details (updated):**
 
-```go
-type replSession struct {
-	client mikyu.Client
-	target string
-	ctx    context.Context
-}
-
-func RunREPL(target string)
-```
-
-**Implementation Details:**
-
-- `RunREPL`: Ensures daemon is running, dials the client, clears the screen, prints the banner, then enters a command loop.
-- `dispatch`: Parses the input line into arguments and switches on the command name. Supported commands:
-  - `exit`, `quit`: exit the shell.
-  - `help`: prints command reference.
-  - `list`: lists queues.
-  - `create <queue>`: creates a queue.
-  - `delete <queue>`: deletes a queue with confirmation.
-  - `produce <queue> <msg|@file|->`: produces a message; supports file payloads (`@file`) and stdin (`-`).
-  - `read <queue> <offset>`: reads a message at a specific offset.
-  - `tail <queue> [start_offset]`: tails messages continuously (Ctrl+C to stop).
-  - `stats`: shows engine stats.
-  - `compact <queue> [min_offset]`: truncates physical log segments with confirmation.
-  - `shutdown`: sends shutdown signal to daemon.
-- `parseREPLArgs`: A simple tokenizer that respects double quotes for arguments containing spaces.
-- `resolvePayload`: Resolves payload input: `-` reads from stdin, `@file` reads from file, otherwise returns the literal string.
-- `confirm`: Uses a `huh.Confirm` form to prompt for yes/no, styled with Lipgloss.
+- Uses `internal/command` package for all operations (List, Create, Delete, Produce, Read, Tail, Stats, Compact, Shutdown).
+- `handleShutdown` delegates to `command.Shutdown`.
+- `confirm` uses `huh.Confirm` form styled with Lipgloss.
 
 #### `style.go`
 
-Lipgloss-styled ASCII banner and command table.
-
-**Implementation Details:**
-
-- `mikyuASCII`: Multi-line ASCII art of the "mikyu" logo.
-- `logoGradient`: An array of colors used to gradient the logo lines (from orange to purple).
-- Various Lipgloss styles for prompt, errors, info, dim, confirm arrow, command table formatting, and connection status.
-- `PrintREPLBanner(target)`: Renders the banner with the gradient logo, tagline, command table, quickstart hint, and connection status.
-- `formatHelpArgs`: Formats command arguments with proper styling and alignment.
-
-#### `vt_other.go` / `vt_windows.go`
-
-Virtual terminal setup: on Windows enables ANSI escape sequences; on other OSes it's a no-op.
+(Unchanged.)
 
 ---
 
@@ -1061,30 +908,24 @@ Virtual terminal setup: on Windows enables ANSI escape sequences; on other OSes 
 
 #### `cli.go`
 
-Stateless one-shot CLI handler.
+**Key Implementation Details (updated):**
 
-```go
-func RunCLI(target string, args []string)
-```
-
-**Implementation Details:**
-
-- `RunCLI`: Ensures daemon is running, dials the client, then dispatches based on the first argument.
-- Supported subcommands: `list`, `create`, `delete`, `produce`, `read`, `tail`, `stats`, `compact`, `shutdown`.
-- `handleProduce`: Resolves payload (file or stdin), produces to the specified queue, and prints the assigned offset.
-- `handleRead`: Reads a message at the given offset and prints it in a structured format.
-- `handleTail`: Streams messages continuously from a queue.
-- `handleCompact`: Executes truncation with optional `-y`/`--yes` flag to skip confirmation.
-- `handleShutdown`: Sends shutdown signal with confirmation unless `-y` is provided.
-- `confirmCLI`: Prompts for yes/no on a terminal; if non-interactive, requires `-y` flag.
-- `resolvePayload`: Handles `-` for stdin, `@file` for file read, otherwise literal string.
-- `isTerminal`: Checks if stdin is a character device.
+- Uses `internal/command` package for all operations.
+- `RunCLI(target, args)`: Ensures daemon is running, dials the client, then dispatches based on the first argument.
+- Supports subcommands: `list`, `create`, `delete`, `produce`, `read`, `tail`, `stats`, `compact`, `shutdown`.
+- `confirmCLI`: Prompts for yes/no on a terminal; if non-interactive, requires `-y`/`--yes` flag.
 
 ---
 
 ### Entrypoint (`cmd/mikyu/main.go`)
 
-Subcommand router (daemon, shell, cli, default). (Unchanged.)
+**Key Implementation Details (updated):**
+
+- No arguments: Runs REPL with default target.
+- `daemon` / `server`: Runs daemon with optional config path.
+- `shell` / `repl`: Runs REPL with default target.
+- `cli`: Runs CLI with arguments after `cli`.
+- Default: Runs CLI with all arguments.
 
 ---
 
@@ -1106,15 +947,17 @@ Subcommand router (daemon, shell, cli, default). (Unchanged.)
 - The ring cache is a read/write lock-protected structure with atomic slot reads.
 - The remote client uses a channel-based connection pool with context-aware acquire/release.
 - The retention coordinator runs a background loop, protected by an `RWMutex` on its target map.
+- The `group.Base` uses a mutex for high-watermark updates, shared across embedded and remote implementations.
 
 ---
 
 ## 7. Error Handling
 
 - All public methods return `context.Context` errors when canceled.
-- Engine errors are re-exported as package-level variables (`ErrQueueExists`, `ErrQueueNotFound`, `ErrOffsetNotFound`, `ErrOffsetTruncated`, `ErrMessageTooLarge`).
+- Engine errors are re-exported as package-level variables (`ErrQueueExists`, `ErrQueueNotFound`, `ErrOffsetNotFound`, `ErrOffsetTruncated`, `ErrMessageTooLarge`, `ErrCorruptRecord`).
 - Protocol errors are encoded with specific error codes and decoded on the client side into the correct Go error.
 - The REPL and CLI render errors in a styled red format.
+- `internal/command` functions propagate errors for consistent handling across UI layers.
 
 ---
 

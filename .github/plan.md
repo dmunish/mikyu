@@ -1,35 +1,40 @@
 # Mikyu Revised Architecture Plan
 
-This document lays out the refactored architecture for Mikyu, incorporating the twin‑driver design (log and task), unified public API, strict separation of concerns, policy-agnostic storage compaction, and preparation for future metrics/logging and cross‑language SDKs. The access modes (CLI, REPL, TUI) are moved into dedicated `internal` packages, leaving `cmd/mikyu` as a thin entry point.
+This document lays out the refactored architecture for Mikyu, reflecting the current codebase refactor (split into `internal/client`, `internal/command`, `internal/group`, `internal/retention`, `internal/logqueue`, etc.) while mapping out the execution plan for the upcoming twin-driver design (`internal/taskqueue`), metrics, and interactive access modes.
 
 ---
 
 ## 1. Layered Architecture Overview
 
-
-
 ```text
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  Access Modes (CLI, REPL, TUI, GUI) – each in its own internal package  │
+│  Access Modes (CLI, REPL, TUI) – internal/cli, internal/repl, etc.      │
+├─────────────────────────────────────────────────────────────────────────┤
+│  Shared Command Helpers (internal/command)                              │
+│  - List, Create, Delete, Produce, Read, Tail, Stats, Compact, Shutdown  │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  Public Client API (github.com/dmunish/mikyu)                           │
 │  - Client, LogQueue, TaskQueue, Group, Message, Task, etc.              │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  Consumption Drivers (internal/logqueue, internal/taskqueue)            │
-│  - LogDriver: streaming, consumer groups, TTL retention                 │
-│  - TaskDriver: visibility, retries, DLQ, checkpoints, compaction        │
+│  Client Drivers (internal/client)                                       │
+│  - embeddedClient (in-process manager wrapper)                          │
+│  - remoteClient (connection-pooled TCP/IPC wire frame exchanges)        │
+├─────────────────────────────────────────────────────────────────────────┤
+│  Consumption Drivers & Coordination                                     │
+│  - LogDriver (internal/logqueue) & Shared Consumer Group (internal/group)│
+│  - Retention Coordinator (internal/retention)                           │
+│  - TaskDriver (planned: internal/taskqueue)                             │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  Core Engine (internal/engine)                                          │
-│  - Storage Interface, Truncation Primitives, Manager, Queue             │
+│  - Storage Interface, WAL Flusher, Segments, Index, Offsets, Compact    │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  Infrastructure (future: internal/metrics, internal/logstore)           │
-│  - Cross-cutting: metrics registry, crash-safe logging                  │
-│  - Wired via interfaces, no hot-path impact                             │
+│  Infrastructure & Protocol (internal/protocol, internal/server, ipc)   │
+│  - Length-prefixed binary frames, TCP/IPC listeners, TLS 1.3            │
 └─────────────────────────────────────────────────────────────────────────┘
 
 ```
 
-The public API sits at the top, accessible both to access modes and to external SDKs. Internal packages are layered: drivers depend on the engine, the server/protocol layer orchestrates, and infrastructure modules are dependencies injected via interfaces.
+The public root package `mikyu` serves as the thin API contract, delegating implementation to `internal/client`. Internal packages are strictly layered: client drivers depend on `internal/engine` or `internal/protocol`, high-level consumption behaviors are modularized into `internal/logqueue` and `internal/taskqueue`, and shared command execution logic is centralized in `internal/command`.
 
 ---
 
@@ -41,98 +46,125 @@ github.com/dmunish/mikyu/
 ├── go.sum
 ├── README.md
 │
-├── mikyu.go                  # Public types: Client, LogQueue, TaskQueue, Group, Message, Task
-├── options.go                # ClientOption, QueueOption, TaskOption, etc.
-├── typed.go                  # Generic Typed[T] wrapper (works with LogQueue)
-├── embedded.go               # embeddedClient: implements Client using engine + drivers
-├── remote.go                 # remoteClient: implements Client via protocol frames
+├── mikyu.go                  # Public types & re-exports: Client, LogQueue, TaskQueue, Group, Message
+├── options.go                # Public configuration option wrappers delegating to internal/client
+├── typed.go                  # Generic Typed[T] wrapper & Codec[T] interface
 │
 ├── internal/
-│   ├── config/               # YAML config, env overrides
-│   │   └── config.go
+│   ├── client/               # Client driver implementations
+│   │   ├── embedded.go       # In-process embedded client wrapping engine.Manager
+│   │   ├── options.go        # Client & Queue functional options & defaults
+│   │   └── remote.go         # Connection-pooled TCP/IPC client using wire protocol
 │   │
-│   ├── engine/               # Pure storage engine (no consumption semantics)
-│   │   ├── storage.go        # Storage interface (Append, Read, TruncateBefore, MinOffset)
-│   │   ├── manager.go        # Manager: open/create queues, lifecycle
-│   │   ├── queue.go          # Queue: concrete implementation of Storage & TruncateBefore
-│   │   ├── wal.go            # WAL flusher (async, batched)
-│   │   ├── segment.go        # Log segment management, mmap, unmap/unlink helpers
-│   │   ├── index.go          # In-memory + on-disk index entries
-│   │   ├── offsets.go        # Offset store for consumer groups
-│   │   ├── retention.go      # RetentionCoordinator floor manager
-│   │   ├── encode.go         # Record framing, CRC32, UUID v7
-│   │   ├── encrypt_*.go      # OS-specific directory encryption
-│   │   └── sync_*.go         # OS-specific sync helpers
+│   ├── command/              # Shared stateless command runners for CLI/REPL
+│   │   ├── command.go        # List, Create, Delete, Produce, Read, Tail, Stats, Compact, Shutdown
+│   │   └── command_test.go
 │   │
-│   ├── logqueue/             # Log driver (streaming)
-│   │   ├── logqueue.go       # LogQueue struct, implements log-side API
-│   │   ├── group.go          # Consumer group implementation
-│   │   ├── retention.go      # TTL and consumer group offset evaluation
-│   │   └── message.go        # Message type (public equivalent)
+│   ├── config/               # Declarative YAML config & environment variable manager
+│   │   └── config.go         # goccy/go-yaml parsing, auto-bootstrapping, env overrides
 │   │
-│   ├── taskqueue/            # Task driver (visibility, retries, DLQ)
-│   │   ├── taskqueue.go      # TaskQueue struct, implements task-side API
+│   ├── engine/               # Low-level storage engine & WAL
+│   │   ├── storage.go        # Storage interface (Append, Read, TruncateBefore, MinOffset, Segments)
+│   │   ├── manager.go        # Multi-queue engine manager & lifecycle
+│   │   ├── queue.go          # Concrete log storage, zero-copy read paths, rolling logic
+│   │   ├── wal.go            # WAL flusher with dynamic dual-threshold batching & sync.Cond
+│   │   ├── segment.go        # Active file I/O, mmap handling, unmap/unlink helpers
+│   │   ├── index.go          # Fixed-width 16-byte index structures
+│   │   ├── offsets.go        # Compacted consumer group offset store
+│   │   ├── compact.go        # Engine compaction & floor adjustment (MinOffset, TruncateBefore)
+│   │   ├── encode.go         # Record framing, CRC32, raw UUID v7 handling
+│   │   ├── cache.go          # In-memory ring cache for recent messages (fast tail reads)
+│   │   ├── sync_*.go         # OS-specific disk sync flushes (F_FULLFSYNC, fdatasync, Sync)
+│   │   └── encrypt_*.go      # Kernel-level directory encryption (fscrypt, EFS)
+│   │
+│   ├── logqueue/             # Log consumption driver
+│   │   ├── api.go            # ClientLogQueue interface
+│   │   ├── logqueue.go       # LogQueue struct implementing streaming, tailing, groups
+│   │   ├── group.go          # Consumer group wrapper around group.Base
+│   │   └── retention.go      # Log retention evaluation & safe floor calculation
+│   │
+│   ├── taskqueue/            # Planned Task driver (visibility, retries, DLQ)
+│   │   ├── taskqueue.go      # TaskQueue struct implementing task-side API
 │   │   ├── task.go           # Task type and options
-│   │   ├── scheduler.go      # In-memory scheduling, retry logic
-│   │   ├── checkpoint.go     # Snapshot/checkpoint for fast boot & safe truncation offset
-│   │   └── compaction.go     # Computes safe truncation offset from active task map
+│   │   ├── scheduler.go      # In-memory scheduling & retry logic
+│   │   ├── checkpoint.go     # Task state snapshot checkpointing
+│   │   └── compaction.go     # Safe truncation offset calculation for active tasks
 │   │
-│   ├── protocol/             # Wire protocol (versioned)
-│   │   ├── opcodes.go        # Opcodes for log + task operations
-│   │   ├── frames.go         # Length-prefixed frame reader/writer
-│   │   ├── bytes.go          # Bounds-checked binary helpers
-│   │   └── errors.go         # Wire error encoding/decoding
+│   ├── group/                # Shared consumer group state
+│   │   └── group.go          # Base struct with thread-safe high-watermark tracking
+│   │
+│   ├── retention/            # Cross-driver retention arbitration
+│   │   └── coordinator.go   # Coordinator arbitrating truncation floors across drivers
+│   │
+│   ├── protocol/             # Wire protocol definition
+│   │   ├── opcodes.go        # Opcodes (0x01-0x0C log, 0x0D-0x10 task, 0x11 truncate), error codes, URI parser
+│   │   ├── frames.go         # Length-prefixed binary frame reader & pooled writer
+│   │   └── bytes.go          # Bounds-checked binary helpers
 │   │
 │   ├── server/               # Network server (TCP/IPC/TLS)
-│   │   ├── server.go         # Listener loop, graceful stop
-│   │   ├── handlers.go       # Dispatch opcodes to engine/drivers
-│   │   └── tls.go            # TLS config, self-signed certs
+│   │   ├── server.go         # Listener loop, connection workers, graceful stop
+│   │   ├── handlers.go       # Opcode handlers mapping requests to engine/drivers
+│   │   └── tls.go            # TLS 1.3 setup & self-signed cert generator
 │   │
-│   ├── ipc/                  # Local IPC (unix sockets, windows pipes)
-│   │   └── ipc.go
+│   ├── ipc/                  # Local IPC transports
+│   │   └── ipc.go            # Unix domain sockets & Windows named pipes
 │   │
-│   ├── cli/                  # Stateless one-shot commands (list, produce, read, ...)
-│   │   ├── cli.go
-│   │   └── helpers.go        # Confirm prompts, payload resolution
+│   ├── daemon/               # Background daemon process manager
+│   │   ├── daemon.go         # Run(), EnsureDaemonRunning(), IsDaemonAlive(), SendShutdownSignal()
+│   │   └── detach_*.go       # OS-specific background process detachment
+│   │
+│   ├── cli/                  # Stateless CLI operator
+│   │   └── cli.go            # CLI subcommand router invoking internal/command
 │   │
 │   ├── repl/                 # Interactive REPL shell
-│   │   ├── repl.go           # REPL loop, command dispatch
-│   │   ├── banner.go         # Lipgloss banner and styles
-│   │   ├── autospawn.go      # Ensure daemon running, spawn if needed
-│   │   └── vt_*.go           # Terminal setup (Windows vs other)
+│   │   ├── repl.go           # Interactive command loop invoking internal/command
+│   │   ├── style.go          # Lipgloss ASCII banner & table styling
+│   │   └── vt_*.go           # Terminal ANSI setup
 │   │
-│   ├── daemon/               # Background server daemon
-│   │   ├── daemon.go         # Run function: config load, engine, server, signals
-│   │   └── detach_*.go       # OS-specific process detachment
+│   ├── tui/                  # Future interactive TUI dashboard
+│   │   └── tui.go            # (planned)
 │   │
-│   ├── tui/                  # Interactive dashboard (future)
-│   │   └── tui.go            # Placeholder for TUI logic
-│   │
-│   ├── metrics/              # Future: metrics registry, collectors, snapshots
+│   ├── metrics/              # Future metrics registry & collectors
 │   │   └── metrics.go        # (planned)
 │   │
-│   └── logstore/             # Future: crash-safe logging
+│   └── logstore/             # Future crash-safe logging store
 │       └── logstore.go       # (planned)
 │
 └── cmd/
     └── mikyu/
-        └── main.go           # Thin entry point: flags, subcommand routing
+        └── main.go           # Single-binary entry point & subcommand router
 
 ```
 
 ---
 
-## 3. Public API (Root Package `mikyu`)
+## 3. Public API (`package mikyu`)
 
-### Types
+The root `mikyu` package exports domain models and delegates execution to `internal/client`:
 
 ```go
-type Message struct {
-    Offset    uint64
-    ID        string
-    Timestamp time.Time
-    Payload   []byte
-}
+package mikyu
+
+import (
+    "context"
+    "io"
+    "iter"
+    "time"
+
+    "github.com/dmunish/mikyu/internal/client"
+    "github.com/dmunish/mikyu/internal/engine"
+    "github.com/dmunish/mikyu/internal/logqueue"
+)
+
+// Re-exported engine types
+type Message = engine.Message
+type SystemStats = engine.EngineStats
+type QueueStats = engine.QueueStats
+
+// Re-exported driver interfaces
+type Group = logqueue.Group
+type LogQueue = logqueue.ClientLogQueue
+type TaskQueue = client.TaskQueue
 
 type Task struct {
     ID          string
@@ -143,80 +175,48 @@ type Task struct {
     ScheduledAt time.Time
 }
 
-type SystemStats struct {
-    ActiveQueues int
-    TotalBytes   int64
-    Queues       map[string]QueueStats
-}
-
-type QueueStats struct {
-    MessageCount uint64
-    SegmentCount int
-    SizeBytes    int64
-    LastOffset   uint64
-    MinOffset    uint64
-}
-
-```
-
-### Client Interface
-
-```go
 type Client interface {
     io.Closer
-
-    // Queue management
     CreateQueue(ctx context.Context, name string, opts ...QueueOption) error
-    DeleteQueue(ctx context.Context, name string) error
-    ListQueues(ctx context.Context) ([]string, error)
-    Stats(ctx context.Context) (SystemStats, error)
-
-    // Driver access
     LogQueue(name string) (LogQueue, error)
     TaskQueue(name string) (TaskQueue, error)
+    ListQueues(ctx context.Context) ([]string, error)
+    DeleteQueue(ctx context.Context, name string) error
+    TruncateQueue(ctx context.Context, name string, minOffset uint64) (int64, error)
+    Stats(ctx context.Context) (SystemStats, error)
+}
+
+func Open(dir string, opts ...ClientOption) (Client, error) {
+    return client.NewEmbedded(dir, opts...)
+}
+
+func Dial(target string, opts ...ClientOption) (Client, error) {
+    return client.NewRemote(target, opts...)
 }
 
 ```
 
 ---
 
-## 4. Internal APIs & Policy-Agnostic Storage
+## 4. Internal Architecture & Storage Contracts
 
+### 4.1 Storage Engine Interface (`internal/engine`)
 
-
-### 4.1 Engine (`internal/engine`)
-
-
-
-The engine exposes policy-agnostic storage and truncation primitives. It does not decide *when* to delete segments; it executes deletion when instructed by driver drivers or the retention manager.
+The engine provides policy-agnostic storage and truncation primitives. It executes physical segment deletion when instructed by drivers or the retention coordinator.
 
 ```go
-type Record struct {
-    Offset    uint64
-    ID        uuid.UUID
-    Timestamp time.Time
-    Payload   []byte
-}
-
-type SegmentInfo struct {
-    BaseOffset uint64
-    NextOffset uint64
-    SizeBytes  int64
-    CreatedAt  time.Time
-    IsActive   bool
-}
-
 type Storage interface {
     Append(ctx context.Context, payload []byte) (offset uint64, err error)
-    Read(ctx context.Context, offset uint64) (Record, error)
-    ReadBatch(ctx context.Context, start uint64, n int) ([]Record, error)
+    AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
+    Read(ctx context.Context, offset uint64) (Message, error)
+    ReadBatch(ctx context.Context, start uint64, n int) ([]Message, error)
     LastOffset() uint64
-    
-    // Low-level consumer offset persistence
+
+    // Consumer offset persistence
     CommitOffset(ctx context.Context, queueName, group string, offset uint64) error
     FetchOffset(ctx context.Context, queueName, group string) (uint64, error)
 
-    // Policy-agnostic maintenance & truncation primitives
+    // Maintenance & Truncation
     MinOffset() uint64
     Segments() []SegmentInfo
     TruncateBefore(ctx context.Context, offset uint64) (reclaimedBytes int64, err error)
@@ -226,45 +226,39 @@ type Storage interface {
 
 #### `TruncateBefore(offset)` Execution Flow:
 
-1. Closes file descriptors and unmaps `mmap` regions for closed log segments where `segment.NextOffset <= offset`.
-2. Unlinks physical `.log` and `.idx` files from the filesystem.
-3. Advances the logical engine floor (`MinOffset`).
-4. Rejects subsequent `Read()` calls for offsets lower than `MinOffset()` with `ErrOffsetTruncated`.
+1. Identifies closed segments where `segment.NextOffset <= offset`.
+2. Unmaps `mmap` regions and closes active file descriptors for matched segments.
+3. Removes physical `.log` and `.idx` files from disk.
+4. Advances logical engine `MinOffset`.
+5. Evicts stale records from the ring cache.
 
 ---
 
-### 4.2 Driver-Level Segment Metadata & Compaction Logic
-
-`engine.Storage` maintains physical segment state, while higher-level drivers compute semantic deletion eligibility.
+### 4.2 Consumption Drivers & Compaction Logic
 
 #### Log Queue Driver (`internal/logqueue`)
 
+* Evaluates `segment.CreatedAt` from `Storage.Segments()` against configured TTL.
+* Queries active consumer group high-watermarks for $O_{\text{min\_consumer}}$.
+* Computes truncation target: $\min(\text{TTL\_Offset}, O_{\text{min\_consumer}})$.
 
+#### Task Queue Driver (`internal/taskqueue` - Planned)
 
-* **TTL Evaluation:** Compares `segment.CreatedAt` from `Storage.Segments()` against the configured log message time-to-live.
-* **Consumer Group High-Water Floor:** Queries all active consumer groups for the minimum active offset ($O_{\text{min\_consumer}}$).
-* **Compaction Trigger:** Requests truncation up to $\min(\text{TTL\_Offset}, O_{\text{min\_consumer}})$.
-
-#### Task Queue Driver (`internal/taskqueue`)
-
-
-
-* **Active Task Tracking:** Maintains an in-memory lookup map of active (un-ACKed) tasks to their creation log offsets.
-* **Segment Zero-Count Identification:** A closed segment spanning range `[BaseOffset, NextOffset)` is eligible for removal when no active task references an offset in that range.
-* **Checkpoints (`checkpoint.go`):** Periodically writes a snapshot of all un-ACKed tasks to a separate checkpoint file. Once a checkpoint at offset $C$ is durably written, event log entries prior to $C$ for fully ACKed tasks are obsolete.
-* **Compaction Trigger:** Calculates the lowest offset required by active tasks or the latest checkpoint ($O_{\text{active\_tasks}}$) and invokes `Storage.TruncateBefore(O_{\text{active\_tasks}})$`.
+* Tracks active, un-ACKed tasks and their original log offsets in memory.
+* Snapshot Checkpoints (`checkpoint.go`): Writes periodic snapshots of active task states.
+* Computes safe truncation offset ($O_{\text{active\_tasks}}$) from un-ACKed tasks and the latest checkpoint.
 
 ---
 
-### 4.3 Retention Reconciliation
+### 4.3 Retention Coordination (`internal/retention`)
 
-When a queue is accessed concurrently as both a `TaskQueue` and a `LogQueue`, drivers could issue conflicting truncation requests.
+The retention coordinator prevents data loss when a queue is used by multiple driver semantics:
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│                   Retention Coordinator                         │
+│              Retention Coordinator (coordinator.go)            │
 ├─────────────────────────────────────────────────────────────────┤
-│ Calculates effective truncation floor:                          │
+│ Effective Truncation Floor:                                     │
 │                                                                 │
 │ TruncateFloor = min( TargetOffset,                              │
 │                      min(O_consumer_groups),                    │
@@ -279,48 +273,43 @@ When a queue is accessed concurrently as both a `TaskQueue` and a `LogQueue`, dr
 
 ```
 
-1. **Floor Enforcement:** The effective truncation offset is restricted by the lowest active reader:
+---
 
-$$\text{TruncateOffset}_{\text{effective}} = \min\left(\text{TargetOffset}, \min(O_{\text{consumer\_groups}}), \min(O_{\text{active\_tasks}})\right)$$
+### 4.4 Wire Protocol & Access Layer
 
-2. **Truncation Fail-Safe:** If task compaction attempts to truncate past an active `LogQueue` consumer group, truncation clamps to $O_{\text{consumer\_groups}}$. If strict task-priority deletion is configured in `mikyu.yaml`, any log consumer that falls behind a truncated floor receives `ErrOffsetTruncated` and resets to `Storage.MinOffset()`.
+* **Protocol Opcodes (`internal/protocol`)**:
+* Log Operations: `0x01`–`0x0C`
+* Planned Task Operations: `OpTaskEnqueue = 0x0D`, `OpTaskDequeue = 0x0E`, `OpTaskAck = 0x0F`, `OpTaskFail = 0x10`
+* System Operations: `OpTruncate = 0x11`, `OpShutdown = 0x12`
+
+
+* **Shared Command Logic (`internal/command`)**: Both `internal/cli` and `internal/repl` execute operations via `command.go`, guaranteeing consistent execution, payload parsing (`@file`, `-`, raw string), and terminal formatting.
 
 ---
 
-### 4.4 Protocol (`internal/protocol`)
+## 5. Migration Status & Roadmap Execution Plan
 
+### Phase 1: Client & Engine Refactoring
 
+* [x] Split client implementations into `internal/client` (`embedded.go`, `remote.go`, `options.go`).
+* [x] Implement policy-agnostic storage compaction (`compact.go`) with `TruncateBefore`, `MinOffset`, and `Segments`.
+* [x] Isolate consumer group tracking base into `internal/group`.
 
-Task operation wire opcodes starting at `0x0D`:
+### Phase 2: Driver & Coordination Layer
 
-* `OpTaskEnqueue = 0x0D`
+* [x] Isolate log driver interface and operations in `internal/logqueue`.
+* [x] Build `internal/retention` coordinator for arbitrating truncation floors.
+* [x] Centralize user command execution in `internal/command`.
 
-* `OpTaskDequeue = 0x0E`
+### Phase 3: Task Driver Implementation (Next Milestone)
 
-* `OpTaskAck     = 0x0F`
+* [ ] Create `internal/taskqueue` driver package.
+* [ ] Implement in-memory task scheduler with visibility timeout and retry mechanisms.
+* [ ] Build periodic state checkpointing (`checkpoint.go`) and task compaction floor calculation.
+* [ ] Allocate wire opcodes `0x0D`–`0x10` in `internal/protocol` and add handlers to `internal/server`.
+* [ ] Wire `Client.TaskQueue(name)` in `internal/client/embedded.go` and `internal/client/remote.go`.
 
-* `OpTaskFail    = 0x10`
+### Phase 4: Observability & TUI
 
-
-Existing log opcodes (`0x01`–`0x0C`) and binary framing structure remain unchanged.
-
----
-
-### 4.5 Access Modes & Entry Point
-
-
-
-Access modes (`internal/cli`, `internal/repl`, `internal/daemon`, `internal/tui`) each expose an explicit `Run` entrypoint. Command-line flags are parsed explicitly via `flag.Parse()` inside command runners. `cmd/mikyu/main.go` remains a thin subcommand router.
-
----
-
-## 5. Migration & Execution Plan
-
-
-
-1. **Extract `Storage` Interface & Truncation Primitives**: Add `TruncateBefore`, `MinOffset`, and `Segments` to `internal/engine/storage.go` and implement file unlinking/unmapping in `internal/engine/queue.go`.
-2. **Implement `logqueue` Driver**: Wrap `Storage` and integrate consumer group tracking with TTL evaluation.
-3. **Implement `taskqueue` Driver & Checkpoints**: Build in-memory task state tracking, periodic snapshot checkpointing, and safe truncation calculation.
-4. **Build Retention Coordinator**: Implement truncation floor calculation across active drivers.
-5. **Update Public Client & Wire Protocol**: Expose `LogQueue` and `TaskQueue` on `mikyu.Client`, allocate opcodes `0x0D`–`0x10`, and update `typed.go`.
-6. **Relocate Access Modes**: Move CLI, REPL, Daemon, and TUI into dedicated `internal/` packages with explicit flag parsing.
+* [ ] Build `internal/metrics` registry and collectors.
+* [ ] Build `internal/tui` dashboard using Lipgloss/Bubbletea.
