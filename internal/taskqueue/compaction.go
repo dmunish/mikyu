@@ -23,8 +23,8 @@ func (q *TaskQueue) TruncateFloor(ctx context.Context) (uint64, error) {
 			floor = state.task.offset
 		}
 	}
-	for _, task := range q.dlq {
-		if task.offset < floor {
+	for id, task := range q.dlq {
+		if _, ok := q.dlqUncheckpointed[id]; ok && task.offset < floor {
 			floor = task.offset
 		}
 	}

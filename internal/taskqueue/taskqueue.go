@@ -18,12 +18,13 @@ type TaskQueue struct {
 	name    string
 	storage engine.Storage
 
-	mu       sync.Mutex
-	active   map[string]*taskState
-	dlq      map[string]Task
-	schedule scheduleHeap
-	sequence uint64
-	scanNext uint64
+	mu                sync.Mutex
+	active            map[string]*taskState
+	dlq               map[string]Task
+	dlqUncheckpointed map[string]struct{}
+	schedule          scheduleHeap
+	sequence          uint64
+	scanNext          uint64
 
 	checkpointOffset uint64
 	dirty            uint64
@@ -41,7 +42,15 @@ func NewTaskQueue(name string, storage engine.Storage) (*TaskQueue, error) {
 	if storage == nil {
 		return nil, engine.ErrQueueNotFound
 	}
-	q := &TaskQueue{name: name, storage: storage, active: make(map[string]*taskState), dlq: make(map[string]Task), notify: make(chan struct{}), stopCh: make(chan struct{})}
+	q := &TaskQueue{
+		name:              name,
+		storage:           storage,
+		active:            make(map[string]*taskState),
+		dlq:               make(map[string]Task),
+		dlqUncheckpointed: make(map[string]struct{}),
+		notify:            make(chan struct{}),
+		stopCh:            make(chan struct{}),
+	}
 	heap.Init(&q.schedule)
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -215,6 +224,7 @@ func (q *TaskQueue) Fail(ctx context.Context, task Task, opts ...FailOption) err
 			return err
 		}
 		q.dlq[state.task.ID] = cloneTask(state.task)
+		q.dlqUncheckpointed[state.task.ID] = struct{}{}
 		delete(q.active, state.task.ID)
 		q.dirty++
 		q.broadcastLocked()
@@ -314,6 +324,7 @@ func (q *TaskQueue) AckDeadLetter(ctx context.Context, task Task) error {
 		return err
 	}
 	delete(q.dlq, task.ID)
+	delete(q.dlqUncheckpointed, task.ID)
 	q.dirty++
 	return nil
 }
@@ -386,6 +397,7 @@ func (q *TaskQueue) takeDueLocked(ctx context.Context, now time.Time) (*taskStat
 				return nil, time.Time{}, false, err
 			}
 			q.dlq[state.task.ID] = cloneTask(state.task)
+			q.dlqUncheckpointed[state.task.ID] = struct{}{}
 			delete(q.active, state.task.ID)
 			q.dirty++
 			q.broadcastLocked()
@@ -420,7 +432,7 @@ func (q *TaskQueue) validateLeaseLocked(task Task) (*taskState, error) {
 	if state.task.Visibility.IsZero() || !time.Now().Before(state.task.Visibility) {
 		return nil, ErrTaskStale
 	}
-	if state.task.offset != task.offset || state.task.Attempts != task.Attempts || !state.task.Visibility.Equal(task.Visibility) || state.task.DeliveryID != task.DeliveryID || task.DeliveryID == "" {
+	if state.task.offset != task.offset || state.task.Attempts != task.Attempts || state.task.DeliveryID != task.DeliveryID || task.DeliveryID == "" {
 		return nil, ErrTaskStale
 	}
 	return state, nil

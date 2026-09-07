@@ -13,15 +13,16 @@ import (
 var taskRecordMagic = [8]byte{'M', 'I', 'K', 'Y', 'U', 'T', 'Q', 1}
 
 const (
-	recordTask          byte = 1
-	recordCPStart       byte = 2
-	recordCPChunk       byte = 3
-	recordCPCommit      byte = 4
-	recordDLQ           byte = 5
-	recordDLQAck        byte = 6
-	checkpointVersion        = 2
-	maxCheckpointChunks      = 1 << 20
-	maxCheckpointBytes       = 512 << 20
+	recordTask                 byte  = 1
+	recordCPStart              byte  = 2
+	recordCPChunk              byte  = 3
+	recordCPCommit             byte  = 4
+	recordDLQ                  byte  = 5
+	recordDLQAck               byte  = 6
+	checkpointVersion                = 2
+	maxCheckpointChunks              = 1 << 20
+	maxCheckpointBytes               = 512 << 20
+	checkpointChunkHeaderBytes int64 = 8 + 1 + 4 + 4
 )
 
 type checkpointCommit struct {
@@ -404,11 +405,21 @@ func (q *TaskQueue) checkpointLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	storagePayloadLimit := q.storage.MaxAppendPayloadBytes()
+	if storagePayloadLimit <= checkpointChunkHeaderBytes {
+		return engine.ErrRecordTooLarge
+	}
+
+	maxChunkBytes := int64(checkpointChunkBytes)
+	if storagePayloadLimit-checkpointChunkHeaderBytes < maxChunkBytes {
+		maxChunkBytes = storagePayloadLimit - checkpointChunkHeaderBytes
+	}
+
 	var total uint32
 	for len(snapshot) > 0 {
-		chunkLen := checkpointChunkBytes
-		if len(snapshot) < chunkLen {
-			chunkLen = len(snapshot)
+		chunkLen := len(snapshot)
+		if int64(chunkLen) > maxChunkBytes {
+			chunkLen = int(maxChunkBytes)
 		}
 		if _, err := q.storage.Append(ctx, encodeCheckpointChunk(total, snapshot[:chunkLen])); err != nil {
 			return err
@@ -431,6 +442,9 @@ func (q *TaskQueue) checkpointLocked(ctx context.Context) error {
 	}
 	q.checkpointOffset = startOffset
 	q.scanNext = commitOffset + 1
+	for id := range q.dlqUncheckpointed {
+		delete(q.dlqUncheckpointed, id)
+	}
 	q.dirty = 0
 	return nil
 }
@@ -513,6 +527,7 @@ func (q *TaskQueue) loadCheckpointLocked(ctx context.Context) (bool, error) {
 		for id, task := range dlq {
 			q.dlq[id] = task
 		}
+		clear(q.dlqUncheckpointed)
 		q.checkpointOffset = commit.startOffset
 		q.scanNext = off + 1
 		return true, nil
