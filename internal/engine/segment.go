@@ -197,11 +197,18 @@ func (s *segment) rebuild() ([]rawIndexEntry, error) {
 	}
 
 	s.pos = pos
-	_ = s.idxFile.Sync()
+	// Truncate the log file to remove any torn/written-beyond-last-valid bytes
+	if err := s.logFile.Truncate(s.pos); err != nil {
+		return nil, err
+	}
+	if err := s.logFile.Sync(); err != nil {
+		return nil, err
+	}
+	if err := s.idxFile.Sync(); err != nil {
+		return nil, err
+	}
 	return entries, nil
 }
-
-// Add these methods to internal/engine/segment.go
 
 func (s *segment) diskSize() int64 {
 	var total int64
