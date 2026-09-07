@@ -11,13 +11,14 @@ import (
 )
 
 type segment struct {
-	baseOff   uint64
-	logFile   *os.File
-	idxFile   *os.File
-	pos       int64
-	createdAt time.Time
-	mmapData  mmap.MMap
-	idxMMap   mmap.MMap // Memory-mapped index region for closed historical segment
+	baseOff      uint64
+	logFile      *os.File
+	idxFile      *os.File
+	pos          int64
+	preallocSize int64
+	createdAt    time.Time
+	mmapData     mmap.MMap
+	idxMMap      mmap.MMap // Memory-mapped index region for closed historical segment
 }
 
 func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, error) {
@@ -45,10 +46,11 @@ func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, erro
 	}
 
 	return &segment{
-		baseOff:   baseOff,
-		logFile:   logFile,
-		idxFile:   idxFile,
-		createdAt: createdAt,
+		baseOff:      baseOff,
+		logFile:      logFile,
+		idxFile:      idxFile,
+		preallocSize: preallocSize,
+		createdAt:    createdAt,
 	}, nil
 }
 
@@ -200,6 +202,10 @@ func (s *segment) rebuild() ([]rawIndexEntry, error) {
 	// Truncate the log file to remove any torn/written-beyond-last-valid bytes
 	if err := s.logFile.Truncate(s.pos); err != nil {
 		return nil, err
+	}
+	// Restore preallocated capacity if active segment contains fewer bytes than prealloc target
+	if s.preallocSize > s.pos {
+		_ = s.logFile.Truncate(s.preallocSize)
 	}
 	if err := s.logFile.Sync(); err != nil {
 		return nil, err
