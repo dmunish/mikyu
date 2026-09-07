@@ -18,21 +18,21 @@ const mikyuASCII = `
 `
 
 var logoGradient = []color.Color{
-	lipgloss.Color("#FFB200"),
-	lipgloss.Color("#FF8300"),
-	lipgloss.Color("#EE427D"),
-	lipgloss.Color("#DC00F9"),
-	lipgloss.Color("#A100FF"),
-	lipgloss.Color("#6F1FEF"),
+	lipgloss.Color("#ffc279"),
+	lipgloss.Color("#ff8851"),
+	lipgloss.Color("#f84f44"),
+	lipgloss.Color("#d2235b"),
+	lipgloss.Color("#a01270"),
+	lipgloss.Color("#68116c"),
 }
 
 var (
-	accentColor  = lipgloss.Color("#FFB200")
+	accentColor  = lipgloss.Color("#ffc279")
 	promptStyle  = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
 	infoStyle    = lipgloss.NewStyle().Foreground(accentColor)
 	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
 	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	confirmArrow = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE427D")).Bold(true).Render(">")
+	confirmArrow = lipgloss.NewStyle().Foreground(lipgloss.Color("#d2235b")).Bold(true).Render(">")
 )
 
 var (
@@ -54,14 +54,14 @@ var (
 			Foreground(lipgloss.Color("243"))
 
 	cmdReqArgStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#EE427D"))
+			Foreground(lipgloss.Color("#d2235b"))
 
 	tryLabelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("255")). // White
 			Bold(true)
 
 	tryCmdStyle = lipgloss.NewStyle().
-			Foreground(accentColor)
+			Foreground(lipgloss.Color("#ffc279"))
 
 	statusStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241"))
@@ -71,7 +71,7 @@ var (
 				Underline(true)
 
 	warnTagStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#EE427D")).
+			Foreground(lipgloss.Color("#d2235b")).
 			Bold(true)
 )
 
@@ -93,7 +93,7 @@ func PrintREPLBanner(target string) {
 				Render(line))
 	}
 	logo := strings.Join(logoLines, "\n")
-	tagline := taglineStyle.Render("High-performance, low-footprint log-based message queue")
+	tagline := taglineStyle.Render("High-performance, low-footprint message queue")
 
 	header := lipgloss.NewStyle().MarginTop(1).MarginLeft(2).
 		Render(lipgloss.JoinVertical(lipgloss.Left, logo, tagline))
