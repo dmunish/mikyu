@@ -32,7 +32,7 @@ var (
 	infoStyle    = lipgloss.NewStyle().Foreground(accentColor)
 	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
 	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	confirmArrow = lipgloss.NewStyle().Foreground(lipgloss.Color("#d2235b")).Bold(true).Render(">")
+	confirmArrow = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE427D")).Bold(true).Render(">")
 )
 
 var (
@@ -54,7 +54,7 @@ var (
 			Foreground(lipgloss.Color("243"))
 
 	cmdReqArgStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#d2235b"))
+			Foreground(lipgloss.Color("#EE427D"))
 
 	tryLabelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("255")). // White
@@ -80,7 +80,7 @@ var (
 				Padding(0, 1)
 
 	warnTagStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#d2235b")).
+			Foreground(lipgloss.Color("#EE427D")).
 			Bold(true)
 )
 
