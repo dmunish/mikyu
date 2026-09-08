@@ -177,7 +177,7 @@ func (c *remoteClient) ListQueues(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	names := make([]string, 0, count)
-	for i := uint32(0); i < count; i++ {
+	for range count {
 		name, err := r.ReadBytes()
 		if err != nil {
 			return nil, err
@@ -298,7 +298,7 @@ func (q *remoteLogQueue) ProduceBatch(ctx context.Context, payloads [][]byte) ([
 		return nil, err
 	}
 	offsets := make([]uint64, count)
-	for i := uint32(0); i < count; i++ {
+	for i := range count {
 		off, err := r.ReadU64()
 		if err != nil {
 			return nil, err
@@ -356,7 +356,7 @@ func (q *remoteLogQueue) ReadBatch(ctx context.Context, startOffset uint64, coun
 		return nil, err
 	}
 	msgs := make([]engine.Message, 0, n)
-	for i := uint32(0); i < n; i++ {
+	for range n {
 		off, _ := r.ReadU64()
 		idBytes, _ := r.ReadBytes()
 		tsNano, _ := r.ReadU64()

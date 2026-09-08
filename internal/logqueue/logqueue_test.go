@@ -38,13 +38,13 @@ func TestLogQueueTailContinuous(t *testing.T) {
 	}()
 
 	const totalMsgs = 5
-	for i := 0; i < totalMsgs; i++ {
+	for i := range totalMsgs {
 		time.Sleep(20 * time.Millisecond)
 		_, err := lq.Produce(ctx, fmt.Appendf(nil, "msg-%d", i))
 		require.NoError(t, err)
 	}
 
-	for i := 0; i < totalMsgs; i++ {
+	for i := range totalMsgs {
 		select {
 		case val := <-received:
 			assert.Equal(t, fmt.Sprintf("msg-%d", i), val)

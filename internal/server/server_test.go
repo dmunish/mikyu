@@ -47,7 +47,7 @@ func TestServerQueueHandleCaching(t *testing.T) {
 
 	const goroutines = 32
 	results := make(chan any, goroutines)
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			q, err := srv.getOrCreateLogQueue("cached")
 			if err != nil {
@@ -58,7 +58,7 @@ func TestServerQueueHandleCaching(t *testing.T) {
 		}()
 	}
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		value := <-results
 		if err, ok := value.(error); ok {
 			t.Fatalf("getOrCreateLogQueue failed: %v", err)

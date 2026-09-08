@@ -106,10 +106,7 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, 
 	}
 
 	// Clamp initial pre-allocation size to MaxSegmentBytes
-	initialPrealloc := int64(minSegmentPrealloc)
-	if initialPrealloc > cfg.MaxSegmentBytes {
-		initialPrealloc = cfg.MaxSegmentBytes
-	}
+	initialPrealloc := min(int64(minSegmentPrealloc), cfg.MaxSegmentBytes)
 
 	q := &Queue{
 		name:              name,
@@ -235,16 +232,10 @@ func (q *Queue) roll() error {
 		fillDuration := time.Since(q.active.createdAt)
 
 		// Max cap is the lesser of maxSegmentPrealloc (256MB) and q.cfg.MaxSegmentBytes
-		maxCap := q.cfg.MaxSegmentBytes
-		if maxCap > maxSegmentPrealloc {
-			maxCap = maxSegmentPrealloc
-		}
+		maxCap := min(q.cfg.MaxSegmentBytes, maxSegmentPrealloc)
 
 		// Min cap is the lesser of minSegmentPrealloc (8MB) and q.cfg.MaxSegmentBytes
-		minCap := int64(minSegmentPrealloc)
-		if minCap > q.cfg.MaxSegmentBytes {
-			minCap = q.cfg.MaxSegmentBytes
-		}
+		minCap := min(int64(minSegmentPrealloc), q.cfg.MaxSegmentBytes)
 
 		if fillDuration < fastFillThreshold {
 			q.nextPreallocBytes *= 2
@@ -283,10 +274,7 @@ func (q *Queue) roll() error {
 }
 
 func (q *Queue) MaxAppendPayloadBytes() int64 {
-	maxPayload := q.cfg.MaxSegmentBytes - int64(minRecordSize)
-	if q.cfg.MaxMessageBytes < maxPayload {
-		maxPayload = q.cfg.MaxMessageBytes
-	}
+	maxPayload := min(q.cfg.MaxMessageBytes, q.cfg.MaxSegmentBytes-int64(minRecordSize))
 	if maxPayload < 0 {
 		return 0
 	}
@@ -519,10 +507,7 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 		return nil, ErrOffsetNotFound
 	}
 
-	end := start + uint64(n)
-	if end > total {
-		end = total
-	}
+	end := min(start+uint64(n), total)
 
 	count := int(end - start)
 	msgs := make([]Message, 0, count)

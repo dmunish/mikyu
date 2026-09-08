@@ -34,7 +34,7 @@ func TestReadFrameZeroLength(t *testing.T) {
 func TestWriteFramePoolReuse(t *testing.T) {
 	var buf bytes.Buffer
 	payload := []byte("reuse")
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		buf.Reset()
 		err := WriteFrame(&buf, OpStats, payload)
 		require.NoError(t, err)

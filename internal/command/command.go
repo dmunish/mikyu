@@ -86,8 +86,8 @@ func ResolvePayload(input string) ([]byte, error) {
 	if input == "-" {
 		return io.ReadAll(os.Stdin)
 	}
-	if strings.HasPrefix(input, "@") {
-		path := strings.TrimPrefix(input, "@")
+	if after, ok := strings.CutPrefix(input, "@"); ok {
+		path := after
 		return os.ReadFile(path)
 	}
 	return []byte(input), nil

@@ -51,7 +51,7 @@ func TestCompact_BasicTruncationAndMetadata(t *testing.T) {
 	var offsets []uint64
 
 	// Write 20 messages to cross multiple segment rolls
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		off, err := q.Append(ctx, payload)
 		if err != nil {
 			t.Fatalf("Append failed at %d: %v", i, err)
@@ -115,7 +115,7 @@ func TestCompact_ReadAndReadBatchErrOffsetTruncated(t *testing.T) {
 	q, _ := newTestQueue(t, 256)
 
 	// Write 15 records
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		_, err := q.Append(ctx, fmt.Appendf(nil, "payload-%d", i))
 		if err != nil {
 			t.Fatalf("Append failed: %v", err)
@@ -166,7 +166,7 @@ func TestCompact_ActiveSegmentProtection(t *testing.T) {
 	ctx := context.Background()
 	q, _ := newTestQueue(t, 1024*1024) // 1MB segment size (single active segment)
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		_, _ = q.Append(ctx, []byte("active-segment-data"))
 	}
 
@@ -200,7 +200,7 @@ func TestCompact_RingCacheEviction(t *testing.T) {
 	q, _ := newTestQueue(t, 256)
 
 	// Fill queue so payloads are in both ring cache and disk segments
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		_, _ = q.Append(ctx, fmt.Appendf(nil, "cache-test-%d", i))
 	}
 
@@ -244,7 +244,7 @@ func TestCompact_CrashRecoveryAfterTruncation(t *testing.T) {
 		t.Fatalf("openQueue failed: %v", err)
 	}
 
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		_, _ = q.Append(ctx, []byte("crash-recovery-payload"))
 	}
 
@@ -298,7 +298,7 @@ func TestCompact_ConcurrentAppendsReadsTruncates(t *testing.T) {
 	)
 
 	// Producer Goroutines
-	for p := 0; p < 4; p++ {
+	for p := range 4 {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
@@ -320,7 +320,7 @@ func TestCompact_ConcurrentAppendsReadsTruncates(t *testing.T) {
 	}
 
 	// Consumer Batch Reader Goroutines
-	for c := 0; c < 4; c++ {
+	for c := range 4 {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
@@ -341,9 +341,7 @@ func TestCompact_ConcurrentAppendsReadsTruncates(t *testing.T) {
 	}
 
 	// Compactor Goroutine
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for !stopSignal.Load() {
 			time.Sleep(10 * time.Millisecond)
 			lastOff := q.LastOffset()
@@ -357,7 +355,7 @@ func TestCompact_ConcurrentAppendsReadsTruncates(t *testing.T) {
 				}
 			}
 		}
-	}()
+	})
 
 	// Run for 2.5 seconds under load
 	time.Sleep(2500 * time.Millisecond)

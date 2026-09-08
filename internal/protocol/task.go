@@ -105,7 +105,7 @@ func DecodeTaskList(r *Reader) ([]taskqueue.Task, error) {
 		return nil, taskqueue.ErrInvalidTask
 	}
 	tasks := make([]taskqueue.Task, 0, count)
-	for i := uint32(0); i < count; i++ {
+	for range count {
 		task, err := DecodeTask(r)
 		if err != nil {
 			return nil, err

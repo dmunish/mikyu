@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"maps"
 	"sort"
 	"time"
 
@@ -281,7 +282,7 @@ func decodeSnapshot(data []byte) ([]taskState, map[string]Task, error) {
 	}
 	states := make([]taskState, 0, count)
 	seen := make(map[string]struct{}, count)
-	for i := uint32(0); i < count; i++ {
+	for range count {
 		offset, err := r.readU64()
 		if err != nil {
 			return nil, nil, ErrCheckpointCorrupt
@@ -344,7 +345,7 @@ func decodeSnapshot(data []byte) ([]taskState, map[string]Task, error) {
 		return nil, nil, ErrCheckpointCorrupt
 	}
 	dlq := make(map[string]Task, dlqCount)
-	for i := uint32(0); i < dlqCount; i++ {
+	for range dlqCount {
 		offset, err := r.readU64()
 		if err != nil {
 			return nil, nil, ErrCheckpointCorrupt
@@ -410,10 +411,7 @@ func (q *TaskQueue) checkpointLocked(ctx context.Context) error {
 		return engine.ErrRecordTooLarge
 	}
 
-	maxChunkBytes := int64(checkpointChunkBytes)
-	if storagePayloadLimit-checkpointChunkHeaderBytes < maxChunkBytes {
-		maxChunkBytes = storagePayloadLimit - checkpointChunkHeaderBytes
-	}
+	maxChunkBytes := min(storagePayloadLimit-checkpointChunkHeaderBytes, int64(checkpointChunkBytes))
 
 	var total uint32
 	for len(snapshot) > 0 {
@@ -524,9 +522,7 @@ func (q *TaskQueue) loadCheckpointLocked(ctx context.Context) (bool, error) {
 			q.active[state.task.ID] = state
 			q.pushScheduleLocked(state)
 		}
-		for id, task := range dlq {
-			q.dlq[id] = task
-		}
+		maps.Copy(q.dlq, dlq)
 		clear(q.dlqUncheckpointed)
 		q.checkpointOffset = commit.startOffset
 		q.scanNext = off + 1

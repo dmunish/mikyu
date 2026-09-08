@@ -87,13 +87,13 @@ func TestQueueProduceConcurrentBatch(t *testing.T) {
 	var wg sync.WaitGroup
 	errCh := make(chan error, goroutines*batches)
 
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			for b := 0; b < batches; b++ {
+			for b := range batches {
 				payloads := make([][]byte, msgsPerBatch)
-				for i := 0; i < msgsPerBatch; i++ {
+				for i := range msgsPerBatch {
 					payloads[i] = fmt.Appendf(nil, "g%d-b%d-m%d", g, b, i)
 				}
 				offsets, err := q.AppendBatch(ctx, payloads)
@@ -116,7 +116,7 @@ func TestQueueProduceConcurrentBatch(t *testing.T) {
 
 	total := int(q.LastOffset())
 	assert.Equal(t, goroutines*batches*msgsPerBatch, total)
-	for i := 0; i < total; i++ {
+	for i := range total {
 		_, err := q.Read(ctx, uint64(i))
 		require.NoError(t, err)
 	}
@@ -141,12 +141,12 @@ func TestQueueRolling(t *testing.T) {
 	defer q.Close()
 
 	ctx := context.Background()
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		_, err := q.Append(ctx, fmt.Appendf(nil, "message-%d", i))
 		require.NoError(t, err)
 	}
 	assert.GreaterOrEqual(t, len(q.segments), 2)
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		msg, err := q.Read(ctx, uint64(i))
 		require.NoError(t, err)
 		assert.Equal(t, fmt.Sprintf("message-%d", i), string(msg.Payload))
@@ -171,13 +171,13 @@ func TestQueueProduceConcurrentBatchExactOffsets(t *testing.T) {
 	var wg sync.WaitGroup
 	errCh := make(chan error, goroutines*batches)
 
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			for b := 0; b < batches; b++ {
+			for b := range batches {
 				payloads := make([][]byte, msgsPerBatch)
-				for i := 0; i < msgsPerBatch; i++ {
+				for i := range msgsPerBatch {
 					payload := fmt.Sprintf("g%d-b%d-m%d", g, b, i)
 					payloads[i] = []byte(payload)
 				}
@@ -260,7 +260,7 @@ func TestQueueUngracefulCrashRecovery(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		_, err := q.Append(ctx, fmt.Appendf(nil, "msg-%d", i))
 		require.NoError(t, err)
 	}
@@ -277,7 +277,7 @@ func TestQueueUngracefulCrashRecovery(t *testing.T) {
 	defer recoveredQueue.Close()
 
 	assert.Equal(t, uint64(5), recoveredQueue.LastOffset())
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		msg, err := recoveredQueue.Read(ctx, uint64(i))
 		require.NoError(t, err)
 		assert.Equal(t, fmt.Sprintf("msg-%d", i), string(msg.Payload))
@@ -298,11 +298,11 @@ func TestQueueConcurrentProduceDuringRoll(t *testing.T) {
 	const msgsPerRoutine = 20
 	var wg sync.WaitGroup
 
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			for i := 0; i < msgsPerRoutine; i++ {
+			for i := range msgsPerRoutine {
 				_, err := q.Append(ctx, fmt.Appendf(nil, "g%d-m%d", g, i))
 				assert.NoError(t, err)
 			}
@@ -314,7 +314,7 @@ func TestQueueConcurrentProduceDuringRoll(t *testing.T) {
 	assert.Equal(t, totalMsgs, q.LastOffset())
 	assert.GreaterOrEqual(t, len(q.segments), 2)
 
-	for i := uint64(0); i < totalMsgs; i++ {
+	for i := range totalMsgs {
 		_, err := q.Read(ctx, i)
 		require.NoError(t, err, "offset %d failed to read after concurrent roll", i)
 	}
@@ -331,7 +331,7 @@ func TestQueueReadUsesMMapOnRolledSegments(t *testing.T) {
 
 	ctx := context.Background()
 	payload := []byte("0123456789")
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_, err := q.Append(ctx, payload)
 		require.NoError(t, err)
 	}
@@ -360,11 +360,11 @@ func TestQueueConcurrentIndexDiskOrdering(t *testing.T) {
 	const msgsPerRoutine = 50
 	var wg sync.WaitGroup
 
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			for i := 0; i < msgsPerRoutine; i++ {
+			for range msgsPerRoutine {
 				_, err := q.Append(ctx, []byte("payload"))
 				assert.NoError(t, err)
 			}

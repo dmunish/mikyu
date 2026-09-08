@@ -97,7 +97,7 @@ func (s *Server) handleProduceBatch(ctx context.Context, body []byte) (byte, []b
 	name, _ := r.ReadBytes()
 	count, _ := r.ReadU32()
 	payloads := make([][]byte, count)
-	for i := uint32(0); i < count; i++ {
+	for i := range count {
 		payloads[i], _ = r.ReadBytes()
 	}
 	q, err := s.getOrCreateLogQueue(string(name))

@@ -85,11 +85,11 @@ func TestManagerStatsConcurrent(t *testing.T) {
 	const ops = 50
 
 	// Concurrent producers & readers
-	for i := 0; i < workers; i++ {
+	for i := range workers {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < ops; j++ {
+			for range ops {
 				off, err := q.Append(ctx, []byte("data"))
 				assert.NoError(t, err)
 				_, _ = q.Read(ctx, off)
@@ -98,15 +98,13 @@ func TestManagerStatsConcurrent(t *testing.T) {
 	}
 
 	// Concurrent stats readers
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < ops; j++ {
+	for range 4 {
+		wg.Go(func() {
+			for range ops {
 				st := mgr.Stats()
 				assert.GreaterOrEqual(t, st.ActiveQueues, 1)
 			}
-		}()
+		})
 	}
 
 	wg.Wait()

@@ -159,10 +159,7 @@ func (q *TaskQueue) Dequeue(ctx context.Context) (Task, error) {
 			}
 			continue
 		}
-		d := time.Until(waitUntil)
-		if d < 0 {
-			d = 0
-		}
+		d := max(time.Until(waitUntil), 0)
 		timer := time.NewTimer(d)
 		select {
 		case <-ctx.Done():

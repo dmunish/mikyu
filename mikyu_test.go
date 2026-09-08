@@ -81,7 +81,7 @@ func TestEmbeddedClientConcurrentLogQueue(t *testing.T) {
 	var wg sync.WaitGroup
 	queues := make([]mikyu.LogQueue, goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -170,7 +170,7 @@ func TestEmbeddedTaskQueueStableHandle(t *testing.T) {
 	const n = 16
 	queues := make([]mikyu.TaskQueue, n)
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

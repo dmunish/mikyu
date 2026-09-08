@@ -65,14 +65,14 @@ func DecodeError(body []byte) (code byte, msg string) {
 // ParseTarget converts target strings like "tcp://127.0.0.1:7420", "unix:///tmp/mikyu.sock",
 // or "pipe://./pipe/mikyu" into network and address components for net.Dial/Listen.
 func ParseTarget(target string) (network string, addr string, err error) {
-	if strings.HasPrefix(target, "unix://") {
-		return "unix", strings.TrimPrefix(target, "unix://"), nil
+	if after, ok := strings.CutPrefix(target, "unix://"); ok {
+		return "unix", after, nil
 	}
-	if strings.HasPrefix(target, "pipe://") {
-		return "pipe", strings.TrimPrefix(target, "pipe://"), nil
+	if after, ok := strings.CutPrefix(target, "pipe://"); ok {
+		return "pipe", after, nil
 	}
-	if strings.HasPrefix(target, "tcp://") {
-		return "tcp", strings.TrimPrefix(target, "tcp://"), nil
+	if after, ok := strings.CutPrefix(target, "tcp://"); ok {
+		return "tcp", after, nil
 	}
 	// No scheme: treat as tcp host:port
 	if !strings.Contains(target, "://") {

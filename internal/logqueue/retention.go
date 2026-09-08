@@ -70,10 +70,7 @@ func (q *LogQueue) TruncateFloor(ctx context.Context) (uint64, error) {
 		}
 	}
 
-	floor := consumerFloor
-	if ttlFloor > floor {
-		floor = ttlFloor
-	}
+	floor := max(ttlFloor, consumerFloor)
 
 	return floor, nil
 }

@@ -23,7 +23,7 @@ func TestLogQueue_TruncateFloor_ConsumerGroups(t *testing.T) {
 	ctx := context.Background()
 
 	// Produce 20 messages to cross segment boundaries
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		_, err := lq.Produce(ctx, []byte("retention-payload-1234567890"))
 		require.NoError(t, err)
 	}
@@ -59,7 +59,7 @@ func TestLogQueue_TruncateExecution(t *testing.T) {
 	lq := logqueue.NewLogQueue("truncate-exec-test", storage)
 	ctx := context.Background()
 
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		_, err := lq.Produce(ctx, []byte("retention-payload-1234567890"))
 		require.NoError(t, err)
 	}

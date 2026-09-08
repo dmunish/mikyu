@@ -129,11 +129,11 @@ func TestWALConcurrentPush(t *testing.T) {
 	const msgs = 100
 	var wg sync.WaitGroup
 	errCh := make(chan error, goroutines)
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			for i := 0; i < msgs; i++ {
+			for i := range msgs {
 				payload := []byte{byte(g), byte(i)}
 				seq, _, err := w.push(payload, int64(g*msgs+i))
 				if err != nil {
