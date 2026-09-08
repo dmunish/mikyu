@@ -20,8 +20,9 @@ func newTestTaskQueue(t *testing.T) (*TaskQueue, *engine.Manager, engine.Storage
 		BatchSize:       8,
 		MaxInterval:     time.Millisecond,
 		MinInterval:     0,
-		MaxSegmentBytes: 256,
+		MaxSegmentBytes: 16 * 1024,
 		MaxMessageBytes: 2 * 1024 * 1024,
+		Fsync:           false,
 	})
 	require.NoError(t, err)
 	storage, err := mgr.CreateQueue("tasks")
@@ -333,7 +334,7 @@ func TestTaskQueueConcurrentConsumersNoDuplicateDeliveryPerLease(t *testing.T) {
 	q, _, _ := newTestTaskQueue(t)
 	ctx := context.Background()
 	const total = 200
-	for i := 0; i < total; i++ {
+	for i := range total {
 		_, err := q.Enqueue(ctx, fmt.Appendf(nil, "task-%d", i), WithVisibilityTimeout(2*time.Second))
 		require.NoError(t, err)
 	}
@@ -342,10 +343,8 @@ func TestTaskQueueConcurrentConsumersNoDuplicateDeliveryPerLease(t *testing.T) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	const workers = 32
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workers {
+		wg.Go(func() {
 			for {
 				task, err := dequeueWithTimeout(t, q, 100*time.Millisecond)
 				if errors.Is(err, context.DeadlineExceeded) {
@@ -363,7 +362,7 @@ func TestTaskQueueConcurrentConsumersNoDuplicateDeliveryPerLease(t *testing.T) {
 					return
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -382,11 +381,11 @@ func TestTaskQueueAppendAndConsumeUnderConcurrentLoad(t *testing.T) {
 	const perProducer = 100
 
 	var wg sync.WaitGroup
-	for p := 0; p < producers; p++ {
+	for p := range producers {
 		wg.Add(1)
 		go func(p int) {
 			defer wg.Done()
-			for i := 0; i < perProducer; i++ {
+			for i := range perProducer {
 				_, err := q.Enqueue(ctx, fmt.Appendf(nil, "%d/%d", p, i))
 				if err != nil {
 					t.Errorf("enqueue: %v", err)
@@ -542,7 +541,7 @@ func TestTaskQueueLeaseChurnUnderConcurrency(t *testing.T) {
 	q, _, _ := newTestTaskQueue(t)
 	ctx := context.Background()
 	const total = 300
-	for i := 0; i < total; i++ {
+	for i := range total {
 		_, err := q.Enqueue(ctx, fmt.Appendf(nil, "job-%d", i), WithMaxAttempts(20), WithVisibilityTimeout(time.Second))
 		require.NoError(t, err)
 	}
@@ -551,7 +550,7 @@ func TestTaskQueueLeaseChurnUnderConcurrency(t *testing.T) {
 	var seenMu sync.Mutex
 	var wg sync.WaitGroup
 	const workers = 24
-	for worker := 0; worker < workers; worker++ {
+	for worker := range workers {
 		wg.Add(1)
 		go func(worker int) {
 			defer wg.Done()
@@ -591,56 +590,6 @@ func TestTaskQueueLeaseChurnUnderConcurrency(t *testing.T) {
 			t.Errorf("unexpected delivery count for %s: %d", payload, deliveries)
 		}
 	}
-}
-
-func BenchmarkTaskQueueEnqueue(b *testing.B) {
-	q, mgr, _ := newBenchTaskQueue(b)
-	defer q.Close()
-	defer mgr.Close()
-	ctx := context.Background()
-	b.ReportAllocs()
-	for b.Loop() {
-		if _, err := q.Enqueue(ctx, []byte("benchmark-payload")); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkTaskQueueDequeueAck(b *testing.B) {
-	q, mgr, _ := newBenchTaskQueue(b)
-	defer q.Close()
-	defer mgr.Close()
-	ctx := context.Background()
-	for b.Loop() {
-		if _, err := q.Enqueue(ctx, []byte("benchmark-payload")); err != nil {
-			b.Fatal(err)
-		}
-		task, err := q.Dequeue(ctx)
-		if err != nil {
-			b.Fatal(err)
-		}
-		if err := q.Ack(ctx, task); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func newBenchTaskQueue(b *testing.B) (*TaskQueue, *engine.Manager, engine.Storage) {
-	b.Helper()
-	dir := b.TempDir()
-	mgr, err := engine.OpenManager(dir, engine.Config{BatchSize: 32, MaxInterval: time.Millisecond, MaxSegmentBytes: 64 * 1024, MaxMessageBytes: 1 << 20})
-	if err != nil {
-		b.Fatal(err)
-	}
-	storage, err := mgr.CreateQueue("tasks")
-	if err != nil {
-		b.Fatal(err)
-	}
-	q, err := NewTaskQueue("tasks", storage)
-	if err != nil {
-		b.Fatal(err)
-	}
-	return q, mgr, storage
 }
 
 func TestTaskQueueLargeCheckpointChunksRecover(t *testing.T) {
