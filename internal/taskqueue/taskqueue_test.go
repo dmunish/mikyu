@@ -698,3 +698,61 @@ func TestTaskQueueDeadLetterRetainsOriginalFloorUntilCheckpoint(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, cp, floor)
 }
+
+func TestTaskQueueByIDLifecycle(t *testing.T) {
+	q, _, _ := newTestTaskQueue(t)
+	ctx := context.Background()
+
+	created, err := q.Enqueue(ctx, []byte("by-id"), WithMaxAttempts(3), WithVisibilityTimeout(time.Second))
+	require.NoError(t, err)
+
+	leased, err := q.Dequeue(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, created.ID, leased.ID)
+
+	require.NoError(t, q.AckID(ctx, created.ID))
+
+	_, err = q.DequeueNow(ctx)
+	assert.ErrorIs(t, err, ErrTaskNotAvailable)
+}
+
+func TestTaskQueueFailByID(t *testing.T) {
+	q, _, _ := newTestTaskQueue(t)
+	ctx := context.Background()
+
+	_, err := q.Enqueue(ctx, []byte("fail-by-id"), WithMaxAttempts(3), WithVisibilityTimeout(time.Second))
+	require.NoError(t, err)
+
+	leased, err := q.Dequeue(ctx)
+	require.NoError(t, err)
+
+	require.NoError(t, q.FailID(ctx, leased.ID, WithRetryAfter(0)))
+
+	redelivered, err := q.Dequeue(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, leased.ID, redelivered.ID)
+	assert.Equal(t, uint32(2), redelivered.Attempts)
+}
+
+func TestTaskQueueAckDeadLetterByID(t *testing.T) {
+	q, _, _ := newTestTaskQueue(t)
+	ctx := context.Background()
+
+	task, err := q.Enqueue(ctx, []byte("dead-by-id"), WithMaxAttempts(1), WithVisibilityTimeout(time.Second))
+	require.NoError(t, err)
+
+	leased, err := q.Dequeue(ctx)
+	require.NoError(t, err)
+
+	require.NoError(t, q.FailID(ctx, leased.ID, WithRetryAfter(0)))
+
+	dls, err := q.DeadLetters(ctx)
+	require.NoError(t, err)
+	require.Len(t, dls, 1)
+
+	require.NoError(t, q.AckDeadLetterID(ctx, task.ID))
+
+	dls, err = q.DeadLetters(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, dls)
+}

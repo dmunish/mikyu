@@ -55,4 +55,9 @@ func TestTaskOpcodesAllocatedContiguously(t *testing.T) {
 	assert.Equal(t, byte(0x12), OpTaskExtend)
 	assert.Equal(t, byte(0x13), OpTaskDeadLetters)
 	assert.Equal(t, byte(0x14), OpTaskDeadLetterAck)
+
+	assert.Equal(t, byte(0x15), OpTaskAckByID)
+	assert.Equal(t, byte(0x16), OpTaskFailByID)
+	assert.Equal(t, byte(0x17), OpTaskExtendByID)
+	assert.Equal(t, byte(0x18), OpTaskDeadLetterAckByID)
 }

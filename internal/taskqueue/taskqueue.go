@@ -199,6 +199,35 @@ func (q *TaskQueue) Ack(ctx context.Context, task Task) error {
 	return nil
 }
 
+func (q *TaskQueue) AckID(ctx context.Context, taskID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if q.closed || q.closing {
+		return ErrTaskClosed
+	}
+
+	if err := q.refreshLocked(ctx); err != nil {
+		return err
+	}
+
+	state, err := q.currentLeaseLocked(taskID)
+	if err != nil {
+		return err
+	}
+
+	delete(q.active, state.task.ID)
+	q.dirty++
+	q.broadcastLocked()
+	q.pruneScheduleLocked()
+
+	return nil
+}
+
 func (q *TaskQueue) Fail(ctx context.Context, task Task, opts ...FailOption) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -240,6 +269,59 @@ func (q *TaskQueue) Fail(ctx context.Context, task Task, opts ...FailOption) err
 	return nil
 }
 
+func (q *TaskQueue) FailID(ctx context.Context, taskID string, opts ...FailOption) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if q.closed || q.closing {
+		return ErrTaskClosed
+	}
+
+	if err := q.refreshLocked(ctx); err != nil {
+		return err
+	}
+
+	state, err := q.currentLeaseLocked(taskID)
+	if err != nil {
+		return err
+	}
+
+	delay := ResolveFailOptions(state.task, opts...)
+
+	if state.task.Attempts >= state.task.MaxAttempts {
+		if _, err := q.storage.Append(ctx, encodeDeadLetterRecord(state.task)); err != nil {
+			return err
+		}
+
+		q.dlq[state.task.ID] = cloneTask(state.task)
+		q.dlqUncheckpointed[state.task.ID] = struct{}{}
+
+		delete(q.active, state.task.ID)
+		q.dirty++
+		q.broadcastLocked()
+		q.pruneScheduleLocked()
+
+		return nil
+	}
+
+	state.inFlight = false
+	state.task.Visibility = time.Time{}
+	state.task.DeliveryID = ""
+	state.nextAt = time.Now().Add(delay)
+	state.version++
+
+	q.pushScheduleLocked(state)
+	q.dirty++
+	q.broadcastLocked()
+	q.pruneScheduleLocked()
+
+	return nil
+}
+
 // Extend renews the current delivery lease without incrementing Attempts.
 // The timeout is measured from the time of the call. If the requested deadline
 // is earlier than the current lease, Extend is a no-op and succeeds.
@@ -271,6 +353,45 @@ func (q *TaskQueue) Extend(ctx context.Context, task Task, timeout time.Duration
 		q.broadcastLocked()
 		q.pruneScheduleLocked()
 	}
+	return nil
+}
+
+func (q *TaskQueue) ExtendID(ctx context.Context, taskID string, timeout time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if timeout <= 0 {
+		return ErrInvalidTask
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if q.closed || q.closing {
+		return ErrTaskClosed
+	}
+
+	if err := q.refreshLocked(ctx); err != nil {
+		return err
+	}
+
+	state, err := q.currentLeaseLocked(taskID)
+	if err != nil {
+		return err
+	}
+
+	deadline := time.Now().Add(timeout)
+	if deadline.After(state.task.Visibility) {
+		state.task.Visibility = deadline
+		state.version++
+
+		q.pushScheduleLocked(state)
+		q.dirty++
+		q.broadcastLocked()
+		q.pruneScheduleLocked()
+	}
+
 	return nil
 }
 
@@ -326,6 +447,42 @@ func (q *TaskQueue) AckDeadLetter(ctx context.Context, task Task) error {
 	return nil
 }
 
+func (q *TaskQueue) AckDeadLetterID(ctx context.Context, taskID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if taskID == "" {
+		return ErrInvalidTask
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if q.closed || q.closing {
+		return ErrTaskClosed
+	}
+
+	if err := q.refreshLocked(ctx); err != nil {
+		return err
+	}
+
+	current, ok := q.dlq[taskID]
+	if !ok {
+		return ErrDeadLetterNotFound
+	}
+
+	if _, err := q.storage.Append(ctx, encodeDeadLetterAck(current)); err != nil {
+		return err
+	}
+
+	delete(q.dlq, current.ID)
+	delete(q.dlqUncheckpointed, current.ID)
+	q.dirty++
+
+	return nil
+}
+
 func (q *TaskQueue) Close() error {
 	q.mu.Lock()
 	if q.closed {
@@ -368,6 +525,27 @@ func (q *TaskQueue) checkpointLoop() {
 			q.mu.Unlock()
 		}
 	}
+}
+
+func (q *TaskQueue) currentLeaseLocked(taskID string) (*taskState, error) {
+	if taskID == "" {
+		return nil, ErrInvalidTask
+	}
+
+	state, ok := q.active[taskID]
+	if !ok {
+		return nil, ErrTaskNotFound
+	}
+
+	if !state.inFlight {
+		return nil, ErrTaskNotInflight
+	}
+
+	if state.task.Visibility.IsZero() || !time.Now().Before(state.task.Visibility) {
+		return nil, ErrTaskStale
+	}
+
+	return state, nil
 }
 
 func (q *TaskQueue) takeDueLocked(ctx context.Context, now time.Time) (*taskState, time.Time, bool, error) {
@@ -435,8 +613,17 @@ func (q *TaskQueue) validateLeaseLocked(task Task) (*taskState, error) {
 	return state, nil
 }
 
-func (q *TaskQueue) broadcastLocked() { old := q.notify; q.notify = make(chan struct{}); close(old) }
-func cloneTask(t Task) Task           { t.Payload = bytes.Clone(t.Payload); return t }
+func (q *TaskQueue) broadcastLocked() {
+	old := q.notify
+	q.notify = make(chan struct{})
+	close(old)
+}
+
+func cloneTask(t Task) Task {
+	t.Payload = bytes.Clone(t.Payload)
+	return t
+}
+
 func drainTimer(t *time.Timer) {
 	select {
 	case <-t.C:

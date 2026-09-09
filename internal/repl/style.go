@@ -72,6 +72,22 @@ var (
 	confirmBlurredButton = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Padding(0, 1)
 )
 
+var (
+	successStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
+	warnStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
+
+	taskCardBorderStyle = lipgloss.NewStyle().
+				Border(lipgloss.NormalBorder()).
+				Padding(0, 1)
+
+	taskKeyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	taskValueStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
+	taskLeaseStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	taskPendingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	taskExpiredStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	taskDeadStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+)
+
 func PrintREPLBanner(target string) {
 	var b strings.Builder
 

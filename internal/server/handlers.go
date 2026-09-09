@@ -53,6 +53,14 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byt
 		respOp, respBody = s.handleTruncate(ctx, body)
 	case protocol.OpShutdown:
 		return protocol.OpShutdown, nil, true
+	case protocol.OpTaskAckByID:
+		respOp, respBody = s.handleTaskAckByID(ctx, body)
+	case protocol.OpTaskFailByID:
+		respOp, respBody = s.handleTaskFailByID(ctx, body)
+	case protocol.OpTaskExtendByID:
+		respOp, respBody = s.handleTaskExtendByID(ctx, body)
+	case protocol.OpTaskDeadLetterAckByID:
+		respOp, respBody = s.handleTaskDeadLetterAckByID(ctx, body)
 	default:
 		respOp, respBody = opErr(protocol.ErrCodeUnknown, "unknown opcode")
 	}
@@ -442,6 +450,26 @@ func (s *Server) handleTaskAck(ctx context.Context, body []byte) (byte, []byte) 
 	return protocol.OpTaskAck, nil
 }
 
+func (s *Server) handleTaskAckByID(ctx context.Context, body []byte) (byte, []byte) {
+	r := protocol.NewReader(body)
+
+	queue, taskID, err := protocol.DecodeTaskID(r)
+	if err != nil {
+		return opErr(protocol.ErrCodeInvalidTask, err.Error())
+	}
+
+	q, err := s.getOrCreateTaskQueue(queue)
+	if err != nil {
+		return taskErr(err)
+	}
+
+	if err := q.AckID(ctx, taskID); err != nil {
+		return taskErr(err)
+	}
+
+	return protocol.OpTaskAckByID, nil
+}
+
 func (s *Server) handleTaskFail(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
 	name, err := r.ReadBytes()
@@ -466,6 +494,41 @@ func (s *Server) handleTaskFail(ctx context.Context, body []byte) (byte, []byte)
 	return protocol.OpTaskFail, nil
 }
 
+func (s *Server) handleTaskFailByID(ctx context.Context, body []byte) (byte, []byte) {
+	r := protocol.NewReader(body)
+
+	queue, taskID, err := protocol.DecodeTaskID(r)
+	if err != nil {
+		return opErr(protocol.ErrCodeInvalidTask, err.Error())
+	}
+
+	hasRetryRaw, err := r.ReadU32()
+	if err != nil {
+		return opErr(protocol.ErrCodeInvalidTask, err.Error())
+	}
+
+	retryRaw, err := r.ReadU64()
+	if err != nil {
+		return opErr(protocol.ErrCodeInvalidTask, err.Error())
+	}
+
+	q, err := s.getOrCreateTaskQueue(queue)
+	if err != nil {
+		return taskErr(err)
+	}
+
+	var opts []taskqueue.FailOption
+	if hasRetryRaw != 0 {
+		opts = append(opts, taskqueue.WithRetryAfter(time.Duration(int64(retryRaw))))
+	}
+
+	if err := q.FailID(ctx, taskID, opts...); err != nil {
+		return taskErr(err)
+	}
+
+	return protocol.OpTaskFailByID, nil
+}
+
 func (s *Server) handleTaskExtend(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
 	name, err := r.ReadBytes()
@@ -488,6 +551,31 @@ func (s *Server) handleTaskExtend(ctx context.Context, body []byte) (byte, []byt
 		return taskErr(err)
 	}
 	return protocol.OpTaskExtend, nil
+}
+
+func (s *Server) handleTaskExtendByID(ctx context.Context, body []byte) (byte, []byte) {
+	r := protocol.NewReader(body)
+
+	queue, taskID, err := protocol.DecodeTaskID(r)
+	if err != nil {
+		return opErr(protocol.ErrCodeInvalidTask, err.Error())
+	}
+
+	timeoutRaw, err := r.ReadU64()
+	if err != nil {
+		return opErr(protocol.ErrCodeInvalidTask, err.Error())
+	}
+
+	q, err := s.getOrCreateTaskQueue(queue)
+	if err != nil {
+		return taskErr(err)
+	}
+
+	if err := q.ExtendID(ctx, taskID, time.Duration(int64(timeoutRaw))); err != nil {
+		return taskErr(err)
+	}
+
+	return protocol.OpTaskExtendByID, nil
 }
 
 func (s *Server) handleTaskDeadLetters(ctx context.Context, body []byte) (byte, []byte) {
@@ -527,4 +615,24 @@ func (s *Server) handleTaskDeadLetterAck(ctx context.Context, body []byte) (byte
 		return taskErr(err)
 	}
 	return protocol.OpTaskDeadLetterAck, nil
+}
+
+func (s *Server) handleTaskDeadLetterAckByID(ctx context.Context, body []byte) (byte, []byte) {
+	r := protocol.NewReader(body)
+
+	queue, taskID, err := protocol.DecodeTaskID(r)
+	if err != nil {
+		return opErr(protocol.ErrCodeInvalidTask, err.Error())
+	}
+
+	q, err := s.getOrCreateTaskQueue(queue)
+	if err != nil {
+		return taskErr(err)
+	}
+
+	if err := q.AckDeadLetterID(ctx, taskID); err != nil {
+		return taskErr(err)
+	}
+
+	return protocol.OpTaskDeadLetterAckByID, nil
 }

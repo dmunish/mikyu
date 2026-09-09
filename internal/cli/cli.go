@@ -51,6 +51,22 @@ func RunCLI(target string, args []string) {
 		handleTruncate(ctx, client, args[1:])
 	case "shutdown":
 		handleShutdown(target, args[1:])
+
+	case "publish":
+		handlePublish(ctx, client, args[1:])
+	case "pop":
+		handlePop(ctx, client, args[1:])
+	case "ack":
+		handleAck(ctx, client, args[1:])
+	case "nack":
+		handleNack(ctx, client, args[1:])
+	case "extend":
+		handleExtend(ctx, client, args[1:])
+	case "dlq":
+		handleDLQ(ctx, client, args[1:])
+	case "dlq-ack":
+		handleDLQAck(ctx, client, args[1:])
+
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
 		printUsage()
@@ -59,8 +75,31 @@ func RunCLI(target string, args []string) {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, "Usage: mikyu <command> [args]\n")
-	fmt.Fprintf(os.Stderr, "Commands: list, create, delete, produce, read, tail, stats, truncate, shutdown\n")
+	fmt.Fprintf(os.Stderr, "Usage: mikyu <command> [args]\n\n")
+
+	fmt.Fprintf(os.Stderr, "Log Commands:\n")
+	fmt.Fprintf(os.Stderr, "  list\n")
+	fmt.Fprintf(os.Stderr, "  create <queue>\n")
+	fmt.Fprintf(os.Stderr, "  delete <queue>\n")
+	fmt.Fprintf(os.Stderr, "  produce <queue> <payload|@file|->\n")
+	fmt.Fprintf(os.Stderr, "  read <queue> <offset>\n")
+	fmt.Fprintf(os.Stderr, "  tail <queue> [offset]\n")
+	fmt.Fprintf(os.Stderr, "  stats\n")
+	fmt.Fprintf(os.Stderr, "  truncate <queue> [offset]\n")
+	fmt.Fprintf(os.Stderr, "\n")
+
+	fmt.Fprintf(os.Stderr, "Task Commands:\n")
+	fmt.Fprintf(os.Stderr, "  publish <queue> <payload|@file|-> [--visibility 30s] [--max-attempts 5]\n")
+	fmt.Fprintf(os.Stderr, "  pop <queue> [--timeout 30s]\n")
+	fmt.Fprintf(os.Stderr, "  ack <queue> <task_id>\n")
+	fmt.Fprintf(os.Stderr, "  nack <queue> <task_id> [--retry-after 5s]\n")
+	fmt.Fprintf(os.Stderr, "  extend <queue> <task_id> <timeout>\n")
+	fmt.Fprintf(os.Stderr, "  dlq <queue>\n")
+	fmt.Fprintf(os.Stderr, "  dlq-ack <queue> <task_id>\n")
+	fmt.Fprintf(os.Stderr, "\n")
+
+	fmt.Fprintf(os.Stderr, "Admin Commands:\n")
+	fmt.Fprintf(os.Stderr, "  shutdown\n")
 }
 
 func handleList(ctx context.Context, client mikyu.Client) {

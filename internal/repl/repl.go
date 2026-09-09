@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,6 +22,10 @@ type replSession struct {
 	client mikyu.Client
 	target string
 	ctx    context.Context
+
+	activeQueue   string
+	lastTaskQueue string
+	lastTaskID    string
 }
 
 // RunREPL starts the interactive REPL session with full TUI styling.
@@ -48,7 +53,8 @@ func RunREPL(target string) {
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
-		fmt.Print(promptStyle.Render("mikyu> "))
+		fmt.Print(sess.prompt())
+
 		if !scanner.Scan() {
 			if err := scanner.Err(); err != nil {
 				fmt.Println(errStyle.Render(fmt.Sprintf("\nInput read error: %v", err)))
@@ -84,6 +90,9 @@ func (s *replSession) dispatch(line string) bool {
 	case "list":
 		s.handleList()
 
+	case "use":
+		s.handleUse(args)
+
 	case "create":
 		s.handleCreate(args)
 
@@ -105,6 +114,27 @@ func (s *replSession) dispatch(line string) bool {
 	case "truncate":
 		s.handleTruncate(args)
 
+	case "publish":
+		s.handlePublish(args[1:])
+
+	case "pop":
+		s.handlePop(args[1:])
+
+	case "ack":
+		s.handleAck(args[1:])
+
+	case "nack":
+		s.handleNack(args[1:])
+
+	case "extend":
+		s.handleExtend(args[1:])
+
+	case "dlq":
+		s.handleDLQ(args[1:])
+
+	case "dlq-ack":
+		s.handleDLQAck(args[1:])
+
 	case "shutdown":
 		return s.handleShutdown()
 
@@ -113,6 +143,41 @@ func (s *replSession) dispatch(line string) bool {
 	}
 
 	return false
+}
+
+func (s *replSession) handleUse(args []string) {
+	if len(args) < 2 {
+		if s.activeQueue == "" {
+			fmt.Println(dimStyle.Render("No active queue. Use: use <queue>"))
+		} else {
+			fmt.Println(infoStyle.Render(fmt.Sprintf("Active queue: %s", s.activeQueue)))
+		}
+		return
+	}
+
+	name := args[1]
+
+	if name == "-" || name == "none" {
+		s.activeQueue = ""
+		fmt.Println(infoStyle.Render("Cleared active queue."))
+		return
+	}
+
+	queues, err := command.List(s.ctx, s.client)
+	if err != nil {
+		fmt.Println(errStyle.Render("Error: " + err.Error()))
+		return
+	}
+
+	found := slices.Contains(queues, name)
+
+	if !found {
+		fmt.Println(errStyle.Render(fmt.Sprintf("Queue %q not found.", name)))
+		return
+	}
+
+	s.activeQueue = name
+	fmt.Println(infoStyle.Render(fmt.Sprintf("● Active queue set to %q.", name)))
 }
 
 func (s *replSession) handleList() {
@@ -402,37 +467,75 @@ func confirm(prompt string) bool {
 
 func printREPLHelp() {
 	var b strings.Builder
-	b.WriteString("\n")
-	b.WriteString(infoStyle.Render("  Available Commands:"))
-	b.WriteString("\n\n")
 
-	commands := []struct {
+	b.WriteString("\n")
+	b.WriteString(infoStyle.Render("  Commit Log Commands:"))
+	b.WriteString("\n")
+
+	writeHelpCommands(&b, []struct {
 		cmd  string
 		arg  string
 		desc string
 	}{
-		{"list", "", "List all active queues"},
-		{"create", "<queue>", "Create a new queue"},
-		{"delete", "<queue>", "Delete a queue and its stored records"},
-		{"produce", "<q> <msg|@f>", "Produce text, file payload (@file), or stdin (-)"},
-		{"read", "<queue> <off>", "Read record at specific logical offset"},
-		{"tail", "<queue> [off]", "Stream live records continuously"},
-		{"stats", "", "Display engine storage metrics"},
-		{"truncate", "<q> [off]", "Truncate physical log segments before offset"},
-		{"shutdown", "", "Stop the background daemon process"},
-		{"exit / quit", "", "Exit the REPL shell"},
-	}
+		{"produce", "<q> <msg|@f|->", "Append record to write-ahead log"},
+		{"read", "<q> <off>", "Read record at specific logical offset"},
+		{"tail", "<q> [off]", "Stream live log records continuously"},
+	})
 
-	for _, c := range commands {
+	b.WriteString("\n")
+	b.WriteString(infoStyle.Render("  Message Broker Commands:"))
+	b.WriteString("\n")
+
+	writeHelpCommands(&b, []struct {
+		cmd  string
+		arg  string
+		desc string
+	}{
+		{"publish", "<q> <msg|@f|->", "Enqueue task into work pool"},
+		{"pop", "<q> [--timeout 30s]", "Claim next available task lease"},
+		{"ack", "<q> <task_id>", "Acknowledge task completion"},
+		{"nack", "<q> <task_id>", "Release task lease back to pool"},
+		{"extend", "<q> <task_id> <timeout>", "Extend task lease"},
+		{"dlq", "<q>", "List dead-letter tasks"},
+		{"dlq-ack", "<q> <task_id>", "Remove dead-letter task"},
+	})
+
+	b.WriteString("\n")
+	b.WriteString(infoStyle.Render("  Admin Commands:"))
+	b.WriteString("\n")
+
+	writeHelpCommands(&b, []struct {
+		cmd  string
+		arg  string
+		desc string
+	}{
+		{"use", "<q>", "Set active session queue context"},
+		{"create", "<q>", "Create a new queue"},
+		{"list", "", "List active queues"},
+		{"stats", "", "Display storage, segments & throughput"},
+		{"delete", "<q>", "Delete queue index and storage segments"},
+		{"truncate", "<q> [off]", "Truncate physical log segments"},
+		{"shutdown", "", "Stop background daemon process"},
+		{"exit / quit", "", "Close the interactive shell"},
+	})
+
+	b.WriteString("\n")
+	fmt.Print(b.String())
+}
+
+func writeHelpCommands(b *strings.Builder, cmds []struct {
+	cmd  string
+	arg  string
+	desc string
+}) {
+	for _, c := range cmds {
 		prefix := cmdPrefixStyle.Render("  $ ")
 		name := cmdNameStyle.Render(fmt.Sprintf("%-12s", c.cmd))
-		argsFormatted := formatHelpArgs(c.arg, 18)
+		argsFormatted := formatHelpArgs(c.arg, 24)
 		desc := cmdDescStyle.Render(c.desc)
 
 		b.WriteString(fmt.Sprintf("%s%s %s %s\n", prefix, name, argsFormatted, desc))
 	}
-	b.WriteString("\n")
-	fmt.Print(b.String())
 }
 
 func formatHelpArgs(raw string, width int) string {
@@ -461,4 +564,11 @@ func formatHelpArgs(raw string, width int) string {
 		sb.WriteString(strings.Repeat(" ", width-visibleLen))
 	}
 	return sb.String()
+}
+
+func (s *replSession) prompt() string {
+	if s.activeQueue != "" {
+		return promptStyle.Render(fmt.Sprintf("mikyu (%s)> ", s.activeQueue))
+	}
+	return promptStyle.Render("mikyu> ")
 }

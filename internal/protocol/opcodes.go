@@ -27,7 +27,13 @@ const (
 	OpShutdown          byte = 0x0C
 	OpTaskDeadLetters   byte = 0x13
 	OpTaskDeadLetterAck byte = 0x14
-	OpError             byte = 0xFF
+
+	OpTaskAckByID           byte = 0x15
+	OpTaskFailByID          byte = 0x16
+	OpTaskExtendByID        byte = 0x17
+	OpTaskDeadLetterAckByID byte = 0x18
+
+	OpError byte = 0xFF
 )
 
 const (

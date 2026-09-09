@@ -114,3 +114,28 @@ func DecodeTaskList(r *Reader) ([]taskqueue.Task, error) {
 	}
 	return tasks, nil
 }
+
+// EncodeTaskID serializes a queue + task-id request.
+func EncodeTaskID(b *Buffer, queue, taskID string) {
+	b.WriteBytes([]byte(queue))
+	b.WriteBytes([]byte(taskID))
+}
+
+// DecodeTaskID parses a queue + task-id request.
+func DecodeTaskID(r *Reader) (queue string, taskID string, err error) {
+	q, err := r.ReadBytes()
+	if err != nil {
+		return "", "", taskqueue.ErrInvalidTask
+	}
+
+	id, err := r.ReadBytes()
+	if err != nil {
+		return "", "", taskqueue.ErrInvalidTask
+	}
+
+	if len(q) == 0 || len(id) == 0 {
+		return "", "", taskqueue.ErrInvalidTask
+	}
+
+	return string(q), string(id), nil
+}

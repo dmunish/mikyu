@@ -661,6 +661,14 @@ func (q *remoteTaskQueue) Ack(ctx context.Context, task taskqueue.Task) error {
 	return err
 }
 
+func (q *remoteTaskQueue) AckID(ctx context.Context, taskID string) error {
+	var b protocol.Buffer
+	protocol.EncodeTaskID(&b, q.name, taskID)
+
+	_, err := q.client.exchange(ctx, protocol.OpTaskAckByID, b.Bytes())
+	return err
+}
+
 func (q *remoteTaskQueue) Fail(ctx context.Context, task taskqueue.Task, opts ...taskqueue.FailOption) error {
 	delay := taskqueue.ResolveFailOptions(task, opts...)
 	var b protocol.Buffer
@@ -668,6 +676,23 @@ func (q *remoteTaskQueue) Fail(ctx context.Context, task taskqueue.Task, opts ..
 	protocol.EncodeTask(&b, task)
 	b.WriteU64(uint64(int64(delay)))
 	_, err := q.client.exchange(ctx, protocol.OpTaskFail, b.Bytes())
+	return err
+}
+
+func (q *remoteTaskQueue) FailID(ctx context.Context, taskID string, opts ...taskqueue.FailOption) error {
+	var b protocol.Buffer
+	protocol.EncodeTaskID(&b, q.name, taskID)
+
+	if len(opts) == 0 {
+		b.WriteU32(0)
+		b.WriteU64(0)
+	} else {
+		delay := taskqueue.ResolveFailOptions(taskqueue.Task{}, opts...)
+		b.WriteU32(1)
+		b.WriteU64(uint64(int64(delay)))
+	}
+
+	_, err := q.client.exchange(ctx, protocol.OpTaskFailByID, b.Bytes())
 	return err
 }
 
@@ -680,6 +705,19 @@ func (q *remoteTaskQueue) Extend(ctx context.Context, task taskqueue.Task, timeo
 	protocol.EncodeTask(&b, task)
 	b.WriteU64(uint64(int64(timeout)))
 	_, err := q.client.exchange(ctx, protocol.OpTaskExtend, b.Bytes())
+	return err
+}
+
+func (q *remoteTaskQueue) ExtendID(ctx context.Context, taskID string, timeout time.Duration) error {
+	if timeout <= 0 {
+		return taskqueue.ErrInvalidTask
+	}
+
+	var b protocol.Buffer
+	protocol.EncodeTaskID(&b, q.name, taskID)
+	b.WriteU64(uint64(int64(timeout)))
+
+	_, err := q.client.exchange(ctx, protocol.OpTaskExtendByID, b.Bytes())
 	return err
 }
 
@@ -699,6 +737,14 @@ func (q *remoteTaskQueue) AckDeadLetter(ctx context.Context, task taskqueue.Task
 	b.WriteBytes([]byte(q.name))
 	protocol.EncodeTask(&b, task)
 	_, err := q.client.exchange(ctx, protocol.OpTaskDeadLetterAck, b.Bytes())
+	return err
+}
+
+func (q *remoteTaskQueue) AckDeadLetterID(ctx context.Context, taskID string) error {
+	var b protocol.Buffer
+	protocol.EncodeTaskID(&b, q.name, taskID)
+
+	_, err := q.client.exchange(ctx, protocol.OpTaskDeadLetterAckByID, b.Bytes())
 	return err
 }
 

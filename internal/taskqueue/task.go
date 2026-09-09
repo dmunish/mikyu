@@ -53,14 +53,24 @@ func (t Task) OriginalOffset() uint64 { return t.offset }
 type ClientTaskQueue interface {
 	Close() error
 	Name() string
+
 	Enqueue(ctx context.Context, payload []byte, opts ...TaskOption) (Task, error)
 	Dequeue(ctx context.Context) (Task, error)
+
 	Ack(ctx context.Context, task Task) error
 	Fail(ctx context.Context, task Task, opts ...FailOption) error
+
 	// Extend renews the current delivery lease. It never creates a new delivery.
 	Extend(ctx context.Context, task Task, timeout time.Duration) error
+
 	DeadLetters(ctx context.Context) ([]Task, error)
 	AckDeadLetter(ctx context.Context, task Task) error
+
+	// By-ID convenience APIs for stateless human/admin clients (ergonomic, but less strict)
+	AckID(ctx context.Context, taskID string) error
+	FailID(ctx context.Context, taskID string, opts ...FailOption) error
+	ExtendID(ctx context.Context, taskID string, timeout time.Duration) error
+	AckDeadLetterID(ctx context.Context, taskID string) error
 }
 
 // TaskOption configures a task at enqueue time.
