@@ -87,6 +87,3 @@ func WithDirectoryEncryption(enabled bool) QueueOption {
 func WithQueueFsync(enabled bool) QueueOption {
 	return client.WithQueueFsync(enabled)
 }
-
-
-

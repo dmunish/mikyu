@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -26,6 +27,7 @@ var (
 	ErrMessageTooLarge = errors.New("message payload exceeds maximum allowed size")
 	ErrRecordTooLarge  = errors.New("record size exceeds max segment size")
 	ErrOffsetTruncated = errors.New("offset has been truncated from storage")
+	ErrQueueClosed     = errors.New("queue is closed")
 )
 
 // Message is the internal engine‑level message representation.
@@ -86,6 +88,7 @@ type Queue struct {
 	offsets           *OffsetStore
 	cache             *ringCache
 	nextPreallocBytes int64
+	closed            bool
 	mu                sync.RWMutex
 }
 
@@ -290,150 +293,190 @@ func (q *Queue) Append(ctx context.Context, payload []byte) (uint64, error) {
 }
 
 // AppendBatch implements Storage.AppendBatch.
+// A WAL write is never allowed to straddle a segment roll: each staged sub-batch
+// belongs entirely to one segment, preserving contiguous WriteAt semantics.
 func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	n := len(payloads)
-	if n == 0 {
+	if len(payloads) == 0 {
 		return nil, nil
 	}
 
-	var (
+	type stagedBatch struct {
+		w         *wal
+		seg       *segment
 		recs      [][]byte
 		positions []int64
 		recLens   []int64
-		segments  []*segment
 		offsets   []uint64
 		ids       []uuid.UUID
-	)
-
-	// Stack-allocate fixed arrays for single-element batches (e.g. delegated from Append)
-	// to prevent escaping slice headers to the heap.
-	if n == 1 {
-		var (
-			rBuf [1][]byte
-			pBuf [1]int64
-			lBuf [1]int64
-			sBuf [1]*segment
-			oBuf [1]uint64
-			iBuf [1]uuid.UUID
-		)
-		recs = rBuf[:1]
-		positions = pBuf[:1]
-		recLens = lBuf[:1]
-		segments = sBuf[:1]
-		offsets = oBuf[:1]
-		ids = iBuf[:1]
-	} else {
-		recs = make([][]byte, n)
-		positions = make([]int64, n)
-		recLens = make([]int64, n)
-		segments = make([]*segment, n)
-		offsets = make([]uint64, n)
-		ids = make([]uuid.UUID, n)
+		totalLen  int64
+		startIdx  int
 	}
 
-	ts := time.Now()
-
 	q.mu.Lock()
-	var batchTotalLen int64
-	for i, p := range payloads {
-		if int64(len(p)) > q.cfg.MaxMessageBytes {
+	if q.closed || q.active == nil || q.w == nil {
+		q.mu.Unlock()
+		return nil, ErrQueueClosed
+	}
+	if err := q.w.currentError(); err != nil {
+		q.mu.Unlock()
+		return nil, err
+	}
+
+	offsets := make([]uint64, len(payloads))
+	ids := make([]uuid.UUID, len(payloads))
+	recs := make([][]byte, len(payloads))
+	recLens := make([]int64, len(payloads))
+
+	// Prepare records up-front while the queue is locked, but do not mutate queue
+	// positions until a complete per-segment group is ready to commit.
+	ts := time.Now()
+	for i, payload := range payloads {
+		if int64(len(payload)) > q.cfg.MaxMessageBytes {
 			q.mu.Unlock()
 			return nil, ErrMessageTooLarge
 		}
 		id := uuid.NewV7()
-		ids[i] = id
-		rec := encodeRecord(id, ts, p)
+		rec := encodeRecord(id, ts, payload)
 		recLen := int64(len(rec))
-
 		if recLen > q.cfg.MaxSegmentBytes {
 			q.mu.Unlock()
 			return nil, ErrRecordTooLarge
 		}
-		if q.active.pos+batchTotalLen+recLen > q.cfg.MaxSegmentBytes || time.Since(q.active.createdAt) > q.cfg.MaxSegmentAge {
+		ids[i], recs[i], recLens[i] = id, rec, recLen
+	}
+
+	commitSync := func(b *stagedBatch) (int64, bool, error) {
+		seq, wake, err := b.w.pushBatch(b.recs, b.positions)
+		if err != nil {
+			return 0, false, err
+		}
+		b.seg.pos += b.totalLen
+		for i := range b.recs {
+			if err := b.seg.writeIndexAt(int64(b.offsets[i]-b.seg.baseOff)*rawIndexEntrySize, b.positions[i], b.recLens[i]); err != nil {
+				b.w.setError(err)
+				return 0, false, err
+			}
+		}
+		return seq, wake, nil
+	}
+
+	commitAsync := func(b *stagedBatch) error {
+		for i, rec := range b.recs {
+			q.cache.Put(Message{
+				Offset:    b.offsets[i],
+				ID:        b.ids[i].String(),
+				Timestamp: ts,
+				Payload:   bytes.Clone(payloads[b.startIdx+i]),
+			})
+			b.w.asyncChan <- asyncEntry{seg: b.seg, rec: rec, pos: b.positions[i], recLen: b.recLens[i], offset: b.offsets[i]}
+		}
+		b.seg.pos += b.totalLen
+		last := b.offsets[len(b.offsets)-1]
+		if last+1 > q.publishedOffset {
+			q.publishedOffset = last + 1
+		}
+		return nil
+	}
+
+	var staged stagedBatch
+	reset := func(start int) {
+		staged = stagedBatch{w: q.w, seg: q.active, startIdx: start}
+	}
+	reset(0)
+
+	for i := range payloads {
+		recLen := recLens[i]
+		rollRequired := q.active.pos+staged.totalLen+recLen > q.cfg.MaxSegmentBytes || time.Since(q.active.createdAt) > q.cfg.MaxSegmentAge
+		if rollRequired {
+			if len(staged.recs) == 0 {
+				// An old/aged active segment may already be unable to accept the next
+				// record. Roll before staging the record so every group fits entirely
+				// inside one segment.
+				if err := q.roll(); err != nil {
+					q.mu.Unlock()
+					return nil, err
+				}
+				reset(i)
+				rollRequired = false
+			}
+		}
+		if rollRequired {
+			if !q.cfg.Fsync {
+				if err := commitAsync(&staged); err != nil {
+					q.mu.Unlock()
+					return nil, err
+				}
+			} else {
+				seq, wake, err := commitSync(&staged)
+				if err != nil {
+					q.mu.Unlock()
+					return nil, err
+				}
+				q.mu.Unlock()
+				if wake {
+					select {
+					case staged.w.wake <- struct{}{}:
+					default:
+					}
+				}
+				if err := staged.w.wait(seq); err != nil {
+					return nil, err
+				}
+				q.mu.Lock()
+				if q.closed {
+					q.mu.Unlock()
+					return nil, ErrQueueClosed
+				}
+			}
 			if err := q.roll(); err != nil {
 				q.mu.Unlock()
 				return nil, err
 			}
-			batchTotalLen = 0
+			reset(i)
 		}
 
-		positions[i] = q.active.pos + batchTotalLen
-		recLens[i] = recLen
-		recs[i] = rec
-		segments[i] = q.active
-		offsets[i] = q.nextOffset
+		staged.recs = append(staged.recs, recs[i])
+		staged.recLens = append(staged.recLens, recLens[i])
+		staged.positions = append(staged.positions, q.active.pos+staged.totalLen)
+		staged.offsets = append(staged.offsets, q.nextOffset)
+		staged.ids = append(staged.ids, ids[i])
+		staged.totalLen += recLen
 		q.nextOffset++
-		batchTotalLen += recLen
+		offsets[i] = q.nextOffset - 1
 	}
 
-	// --- ASYNC FAST PATH (Fsync: false) ---
 	if !q.cfg.Fsync {
-		for i, p := range payloads {
-			msg := Message{
-				Offset:    offsets[i],
-				ID:        ids[i].String(),
-				Timestamp: ts,
-				Payload:   p,
-			}
-			q.cache.Put(msg)
+		if err := commitAsync(&staged); err != nil {
+			q.mu.Unlock()
+			return nil, err
 		}
-		q.active.pos += batchTotalLen
-		lastOff := offsets[len(offsets)-1]
-		if lastOff+1 > q.publishedOffset {
-			q.publishedOffset = lastOff + 1
-		}
-		asyncCh := q.w.asyncChan // Capture under q.mu lock to prevent data race with q.roll()
 		q.mu.Unlock()
-
-		for i := range payloads {
-			asyncCh <- asyncEntry{
-				seg:    segments[i],
-				rec:    recs[i],
-				pos:    positions[i],
-				recLen: recLens[i],
-				offset: offsets[i],
-			}
-		}
 		return offsets, nil
 	}
 
-	// --- DURABLE SYNCHRONOUS PATH (Fsync: true) ---
-	seq, wake, err := q.w.pushBatch(recs, positions)
+	seq, wake, err := commitSync(&staged)
 	if err != nil {
 		q.mu.Unlock()
 		return nil, err
 	}
-
-	q.active.pos += batchTotalLen
-
-	for i, recLen := range recLens {
-		pos := positions[i]
-		seg := segments[i]
-		_ = seg.writeIndex(pos, recLen)
-	}
 	q.mu.Unlock()
-
 	if wake {
 		select {
-		case q.w.wake <- struct{}{}:
+		case staged.w.wake <- struct{}{}:
 		default:
 		}
 	}
-
-	if err := q.w.wait(seq); err != nil {
+	if err := staged.w.wait(seq); err != nil {
 		return nil, err
 	}
-
 	q.mu.Lock()
-	lastOff := offsets[len(offsets)-1]
-	if lastOff+1 > q.publishedOffset {
-		q.publishedOffset = lastOff + 1
+	if last := offsets[len(offsets)-1]; last+1 > q.publishedOffset {
+		q.publishedOffset = last + 1
 	}
 	q.mu.Unlock()
-
 	return offsets, nil
 }
 
@@ -466,6 +509,13 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 		return Message{}, err
 	}
 
+	q.mu.RLock()
+	closed := q.closed
+	q.mu.RUnlock()
+	if closed {
+		return Message{}, ErrQueueClosed
+	}
+
 	if offset < q.MinOffset() {
 		return Message{}, ErrOffsetTruncated
 	}
@@ -494,6 +544,10 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 	}
 
 	q.mu.RLock()
+	if q.closed {
+		q.mu.RUnlock()
+		return nil, ErrQueueClosed
+	}
 	minOff := q.minOffset
 	total := q.nextOffset
 	q.mu.RUnlock()
@@ -571,6 +625,12 @@ func (q *Queue) CommitOffset(ctx context.Context, group string, offset uint64) e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	q.mu.RLock()
+	closed := q.closed
+	q.mu.RUnlock()
+	if closed {
+		return ErrQueueClosed
+	}
 	if q.offsets == nil {
 		return ErrQueueNotFound
 	}
@@ -582,6 +642,12 @@ func (q *Queue) FetchOffset(ctx context.Context, group string) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+	q.mu.RLock()
+	closed := q.closed
+	q.mu.RUnlock()
+	if closed {
+		return 0, ErrQueueClosed
+	}
 	if q.offsets == nil {
 		return 0, ErrQueueNotFound
 	}
@@ -592,6 +658,9 @@ func (q *Queue) FetchOffset(ctx context.Context, group string) (uint64, error) {
 func (q *Queue) Close() error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if q.closed {
+		return nil
+	}
 
 	var firstErr error
 	if q.w != nil {
@@ -604,5 +673,6 @@ func (q *Queue) Close() error {
 			firstErr = err
 		}
 	}
+	q.closed = true
 	return firstErr
 }

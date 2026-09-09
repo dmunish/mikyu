@@ -28,6 +28,7 @@ type remoteClient struct {
 	cfg      Config
 	pool     chan *clientConn
 	maxConns int
+	connSem  chan struct{}
 	mu       sync.Mutex
 	closed   atomic.Bool
 }
@@ -54,6 +55,7 @@ func NewRemote(target string, opts ...Option) (*remoteClient, error) {
 		cfg:      cfg,
 		pool:     make(chan *clientConn, cfg.MaxConns),
 		maxConns: cfg.MaxConns,
+		connSem:  make(chan struct{}, cfg.MaxConns),
 	}
 	return c, nil
 }
@@ -62,10 +64,22 @@ func (c *remoteClient) acquire(ctx context.Context) (*clientConn, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	case c.connSem <- struct{}{}:
+	}
+
+	select {
+	case <-ctx.Done():
+		<-c.connSem
+		return nil, ctx.Err()
 	case ch := <-c.pool:
 		return ch, nil
 	default:
-		return c.dialConn(ctx)
+		ch, err := c.dialConn(ctx)
+		if err != nil {
+			<-c.connSem
+			return nil, err
+		}
+		return ch, nil
 	}
 }
 
@@ -89,6 +103,7 @@ func (c *remoteClient) dialConn(ctx context.Context) (*clientConn, error) {
 }
 
 func (c *remoteClient) release(ch *clientConn) {
+	defer func() { <-c.connSem }()
 	if ch == nil {
 		return
 	}
@@ -152,8 +167,39 @@ func (c *remoteClient) exchange(ctx context.Context, op byte, body []byte) ([]by
 }
 
 func (c *remoteClient) CreateQueue(ctx context.Context, name string, opts ...QueueOption) error {
-	body := protocol.Buffer{}
+	cfg := QueueConfig{
+		BatchSize:       c.cfg.BatchSize,
+		MaxInterval:     c.cfg.MaxInterval,
+		MinInterval:     c.cfg.MinInterval,
+		MaxSegmentBytes: c.cfg.DefaultMaxSegmentBytes,
+		MaxMessageBytes: c.cfg.DefaultMaxMessageBytes,
+		MaxSegmentAge:   c.cfg.DefaultMaxSegmentAge,
+		Encrypted:       c.cfg.Encrypted,
+		Fsync:           c.cfg.Fsync,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	var body protocol.Buffer
 	body.WriteBytes([]byte(name))
+	body.WriteU32(uint32(cfg.BatchSize))
+	body.WriteU64(uint64(cfg.MaxInterval))
+	body.WriteU64(uint64(cfg.MinInterval))
+	body.WriteU64(uint64(cfg.MaxSegmentBytes))
+	body.WriteU64(uint64(cfg.MaxMessageBytes))
+	body.WriteU64(uint64(cfg.MaxSegmentAge))
+	if cfg.Encrypted {
+		body.WriteU32(1)
+	} else {
+		body.WriteU32(0)
+	}
+	if cfg.Fsync {
+		body.WriteU32(1)
+	} else {
+		body.WriteU32(0)
+	}
 	_, err := c.exchange(ctx, protocol.OpCreateQueue, body.Bytes())
 	return err
 }
@@ -224,11 +270,42 @@ func (c *remoteClient) Stats(ctx context.Context) (engine.EngineStats, error) {
 	if err != nil {
 		return engine.EngineStats{}, err
 	}
-	return engine.EngineStats{
-		ActiveQueues: int(active),
-		TotalBytes:   int64(totalBytes),
-		Queues:       make(map[string]engine.QueueStats),
-	}, nil
+	count, err := r.ReadU32()
+	if err != nil {
+		return engine.EngineStats{}, err
+	}
+	if count > 65536 {
+		return engine.EngineStats{}, errors.New("too many queue stats")
+	}
+	queues := make(map[string]engine.QueueStats, count)
+	for range count {
+		name, err := r.ReadBytes()
+		if err != nil {
+			return engine.EngineStats{}, err
+		}
+		msgCount, err := r.ReadU64()
+		if err != nil {
+			return engine.EngineStats{}, err
+		}
+		segCount, err := r.ReadU32()
+		if err != nil {
+			return engine.EngineStats{}, err
+		}
+		size, err := r.ReadU64()
+		if err != nil {
+			return engine.EngineStats{}, err
+		}
+		last, err := r.ReadU64()
+		if err != nil {
+			return engine.EngineStats{}, err
+		}
+		minOff, err := r.ReadU64()
+		if err != nil {
+			return engine.EngineStats{}, err
+		}
+		queues[string(name)] = engine.QueueStats{MessageCount: msgCount, SegmentCount: int(segCount), SizeBytes: int64(size), LastOffset: last, MinOffset: minOff}
+	}
+	return engine.EngineStats{ActiveQueues: int(active), TotalBytes: int64(totalBytes), Queues: queues}, nil
 }
 
 func decodeProtocolError(code byte, msg string) error {

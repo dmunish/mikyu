@@ -91,7 +91,9 @@ func (w *wal) syncLoop() {
 func (w *wal) shutdownFlush() {
 	w.drainRemainingAsync()
 	w.flush()
-	_ = syncData(w.file) // Always force physical disk sync on shutdown
+	if err := syncData(w.file); err != nil {
+		w.setError(err)
+	}
 }
 
 func (w *wal) push(rec []byte, pos int64) (seq int64, wake bool, err error) {
@@ -138,6 +140,12 @@ func (w *wal) wait(seq int64) error {
 	for w.published <= seq && w.err == nil {
 		w.cond.Wait()
 	}
+	return w.err
+}
+
+func (w *wal) currentError() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	return w.err
 }
 
@@ -207,7 +215,6 @@ func (w *wal) flush() {
 func (w *wal) drainAndFlushAsync(first asyncEntry) {
 	entries := []asyncEntry{first}
 
-	// Drain up to BatchSize entries from the channel without blocking
 	for len(entries) < w.cfg.BatchSize {
 		select {
 		case entry := <-w.asyncChan:
@@ -218,28 +225,47 @@ func (w *wal) drainAndFlushAsync(first asyncEntry) {
 	}
 
 WRITE:
-	var maxSuccessfulOff uint64
-	var hasSuccess bool
+	w.mu.Lock()
+	failed := w.err
+	published := uint64(w.published)
+	w.mu.Unlock()
+	if failed != nil {
+		return
+	}
 
 	for _, e := range entries {
-		if _, err := e.seg.logFile.WriteAt(e.rec, e.pos); err == nil {
-			idxPos := int64(e.offset-e.seg.baseOff) * rawIndexEntrySize
-			if err := e.seg.writeIndexAt(idxPos, e.pos, e.recLen); err == nil {
-				if !hasSuccess || e.offset > maxSuccessfulOff {
-					maxSuccessfulOff = e.offset
-					hasSuccess = true
-				}
-			}
+		if _, err := e.seg.logFile.WriteAt(e.rec, e.pos); err != nil {
+			w.setError(err)
+			return
+		}
+		idxPos := int64(e.offset-e.seg.baseOff) * rawIndexEntrySize
+		if err := e.seg.writeIndexAt(idxPos, e.pos, e.recLen); err != nil {
+			w.setError(err)
+			return
+		}
+		if e.offset == published {
+			published++
 		}
 	}
 
-	if hasSuccess {
-		w.mu.Lock()
-		if int64(maxSuccessfulOff+1) > w.published {
-			w.published = int64(maxSuccessfulOff + 1)
-		}
-		w.mu.Unlock()
+	w.mu.Lock()
+	if published > uint64(w.published) {
+		w.published = int64(published)
 	}
+	w.cond.Broadcast()
+	w.mu.Unlock()
+}
+
+func (w *wal) setError(err error) {
+	if err == nil {
+		return
+	}
+	w.mu.Lock()
+	if w.err == nil {
+		w.err = err
+	}
+	w.cond.Broadcast()
+	w.mu.Unlock()
 }
 
 func (w *wal) drainRemainingAsync() {

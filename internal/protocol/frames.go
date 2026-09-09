@@ -8,6 +8,8 @@ import (
 	"sync"
 )
 
+const MaxFrameBytes uint32 = 256 << 20
+
 var framePool = sync.Pool{
 	New: func() any {
 		b := make([]byte, 32*1024)
@@ -35,6 +37,9 @@ func ReadFrame(r *bufio.Reader) (op byte, payload []byte, err error) {
 	if length == 0 {
 		return 0, nil, errors.New("zero-length frame")
 	}
+	if length > MaxFrameBytes {
+		return 0, nil, errors.New("frame exceeds maximum size")
+	}
 
 	var opBuf [1]byte
 	if _, err := io.ReadFull(r, opBuf[:]); err != nil {
@@ -56,6 +61,9 @@ func ReadFrame(r *bufio.Reader) (op byte, payload []byte, err error) {
 
 // WriteFrame writes an opcode and payload using a pooled buffer, preserving enlarged buffers.
 func WriteFrame(w io.Writer, op byte, payload []byte) error {
+	if len(payload) > int(MaxFrameBytes-1) {
+		return errors.New("frame exceeds maximum size")
+	}
 	total := uint32(1 + len(payload))
 
 	bufPtr := framePool.Get().(*[]byte)

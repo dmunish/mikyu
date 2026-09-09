@@ -2,6 +2,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -33,7 +34,7 @@ func Run(configPath string) error {
 	// Reconcile declared queues.
 	for _, qc := range cfg.Queues {
 		qCfg := config.ToQueueEngineConfig(cfg.Engine, qc)
-		if _, err := mgr.CreateQueue(qc.Name, qCfg); err != nil {
+		if _, err := mgr.CreateQueue(qc.Name, qCfg); err != nil && !errors.Is(err, engine.ErrQueueExists) {
 			return fmt.Errorf("reconcile queue %q: %w", qc.Name, err)
 		}
 	}

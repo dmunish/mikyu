@@ -3,6 +3,7 @@ package protocol
 import (
 	"bufio"
 	"bytes"
+	"encoding/binary"
 	"io"
 	"testing"
 
@@ -62,4 +63,14 @@ func BenchmarkWriteFrame(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
+}
+
+func TestReadFrameRejectsOversizedFrame(t *testing.T) {
+	var buf bytes.Buffer
+	var hdr [4]byte
+	binary.BigEndian.PutUint32(hdr[:], MaxFrameBytes+1)
+	buf.Write(hdr[:])
+	r := bufio.NewReader(&buf)
+	_, _, err := ReadFrame(r)
+	assert.Error(t, err)
 }

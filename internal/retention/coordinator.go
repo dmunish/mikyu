@@ -2,6 +2,7 @@ package retention
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 
@@ -18,6 +19,7 @@ type QueueTarget struct {
 	Name    string
 	Storage engine.Storage
 	Drivers []DriverProvider
+	mu      sync.Mutex
 }
 
 // Coordinator arbitrates retention truncation across queues and drivers.
@@ -38,53 +40,126 @@ func NewCoordinator(interval time.Duration) *Coordinator {
 	}
 }
 
-// RegisterTarget registers a queue and its associated consumption drivers.
+// RegisterTarget registers or replaces the complete driver set for a queue.
 func (c *Coordinator) RegisterTarget(target *QueueTarget) {
+	if target == nil || target.Name == "" || target.Storage == nil {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.targets[target.Name] = target
 }
 
+// RegisterDriver adds a driver to a queue's retention target. Registration is
+// idempotent by driver identity for the normal pointer-backed drivers used by
+// Mikyu, while keeping the coordinator independent of their concrete types.
+func (c *Coordinator) RegisterDriver(name string, storage engine.Storage, driver DriverProvider) {
+	if name == "" || storage == nil || driver == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	target := c.targets[name]
+	if target == nil {
+		target = &QueueTarget{Name: name, Storage: storage}
+		c.targets[name] = target
+	}
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	if target.Storage == nil {
+		target.Storage = storage
+	}
+	if slices.Contains(target.Drivers, driver) {
+		return
+	}
+	target.Drivers = append(target.Drivers, driver)
+}
+
+// UnregisterDriver removes a driver from a queue's retention target.
+func (c *Coordinator) UnregisterDriver(name string, driver DriverProvider) {
+	if name == "" || driver == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	target := c.targets[name]
+	if target == nil {
+		return
+	}
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	for i, existing := range target.Drivers {
+		if existing == driver {
+			target.Drivers = append(target.Drivers[:i], target.Drivers[i+1:]...)
+			break
+		}
+	}
+	if len(target.Drivers) == 0 {
+		delete(c.targets, name)
+	}
+}
+
 // UnregisterTarget removes a queue target from the coordinator.
 func (c *Coordinator) UnregisterTarget(name string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	target := c.targets[name]
+	if target == nil {
+		c.mu.Unlock()
+		return
+	}
+	target.mu.Lock()
 	delete(c.targets, name)
+	target.mu.Unlock()
+	c.mu.Unlock()
 }
 
-// ReconcileQueue calculates min(driver.TruncateFloor) across all drivers
-// for a single queue and instructs engine.Storage to truncate.
+// ReconcileQueue calculates the maximum currently safe truncation floor and
+// applies it. It is the policy-driven/default maintenance operation.
 func (c *Coordinator) ReconcileQueue(ctx context.Context, name string) (int64, error) {
+	return c.ReconcileQueueAt(ctx, name, 0)
+}
+
+// ReconcileQueueAt enforces a caller-requested truncation floor without ever
+// exceeding the floor that all registered drivers agree is safe. A zero
+// requested floor means "use the computed safe floor".
+func (c *Coordinator) ReconcileQueueAt(ctx context.Context, name string, requested uint64) (int64, error) {
 	c.mu.RLock()
 	target, ok := c.targets[name]
 	c.mu.RUnlock()
+	if !ok || target == nil {
+		return 0, nil
+	}
 
-	if !ok || target == nil || target.Storage == nil || len(target.Drivers) == 0 {
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	if target.Storage == nil || len(target.Drivers) == 0 {
 		return 0, nil
 	}
 
 	var (
-		effectiveFloor uint64
-		hasFloor       bool
+		safeFloor uint64
+		hasFloor  bool
 	)
-
 	for _, driver := range target.Drivers {
 		floor, err := driver.TruncateFloor(ctx)
 		if err != nil {
 			return 0, err
 		}
-		// Pick the minimum safe floor across all drivers
-		if !hasFloor || floor < effectiveFloor {
-			effectiveFloor = floor
+		if !hasFloor || floor < safeFloor {
+			safeFloor = floor
 			hasFloor = true
 		}
 	}
 
-	if !hasFloor || effectiveFloor == 0 {
+	if !hasFloor || safeFloor == 0 {
 		return 0, nil
 	}
-
-	return target.Storage.TruncateBefore(ctx, effectiveFloor)
+	if requested > 0 && requested < safeFloor {
+		safeFloor = requested
+	}
+	return target.Storage.TruncateBefore(ctx, safeFloor)
 }
 
 // ReconcileAll executes retention arbitration on all registered queue targets.

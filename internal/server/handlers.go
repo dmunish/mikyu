@@ -65,7 +65,29 @@ func (s *Server) handleCreateQueue(body []byte) (byte, []byte) {
 	if err != nil {
 		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
-	_, err = s.mgr.CreateQueue(string(name))
+
+	cfg := engine.Config{}
+	if batch, err := r.ReadU32(); err == nil {
+		cfg.BatchSize = int(batch)
+		maxInterval, e1 := r.ReadU64()
+		minInterval, e2 := r.ReadU64()
+		maxSeg, e3 := r.ReadU64()
+		maxMsg, e4 := r.ReadU64()
+		maxAge, e5 := r.ReadU64()
+		encrypted, e6 := r.ReadU32()
+		fsync, e7 := r.ReadU32()
+		if e1 != nil || e2 != nil || e3 != nil || e4 != nil || e5 != nil || e6 != nil || e7 != nil {
+			return opErr(protocol.ErrCodeUnknown, "invalid queue configuration")
+		}
+		cfg.MaxInterval = time.Duration(maxInterval)
+		cfg.MinInterval = time.Duration(minInterval)
+		cfg.MaxSegmentBytes = int64(maxSeg)
+		cfg.MaxMessageBytes = int64(maxMsg)
+		cfg.MaxSegmentAge = time.Duration(maxAge)
+		cfg.Encrypted = encrypted != 0
+		cfg.Fsync = fsync != 0
+	}
+	_, err = s.mgr.CreateQueue(string(name), cfg)
 	if err != nil {
 		if errors.Is(err, engine.ErrQueueExists) {
 			return opErr(protocol.ErrCodeQueueExists, err.Error())
@@ -95,7 +117,10 @@ func (s *Server) handleProduce(ctx context.Context, body []byte) (byte, []byte) 
 func (s *Server) handleProduceBatch(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
 	name, _ := r.ReadBytes()
-	count, _ := r.ReadU32()
+	count, err := r.ReadU32()
+	if err != nil || count > 65536 {
+		return opErr(protocol.ErrCodeUnknown, "invalid batch count")
+	}
 	payloads := make([][]byte, count)
 	for i := range count {
 		payloads[i], _ = r.ReadBytes()
@@ -146,7 +171,10 @@ func (s *Server) handleReadBatch(ctx context.Context, body []byte) (byte, []byte
 	r := protocol.NewReader(body)
 	name, _ := r.ReadBytes()
 	start, _ := r.ReadU64()
-	count, _ := r.ReadU32()
+	count, err := r.ReadU32()
+	if err != nil || count > 65536 {
+		return opErr(protocol.ErrCodeUnknown, "invalid batch count")
+	}
 	q, err := s.getOrCreateLogQueue(string(name))
 	if err != nil {
 		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
@@ -239,6 +267,7 @@ func (s *Server) handleDeleteQueue(body []byte) (byte, []byte) {
 		_ = tq.Close()
 	}
 	delete(s.tasks, string(name))
+	s.retention.UnregisterTarget(string(name))
 	if err := s.mgr.DeleteQueue(string(name)); err != nil {
 		s.mu.Unlock()
 
@@ -266,8 +295,15 @@ func (s *Server) handleTruncate(ctx context.Context, body []byte) (byte, []byte)
 		}
 		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
+	_ = q // The log driver is also registered with the retention coordinator.
 
-	reclaimed, err := q.Truncate(ctx, minOffset)
+	// Materialize the task driver for manual truncation so durable task state
+	// is included even after a daemon restart before a task client connects.
+	if _, err := s.getOrCreateTaskQueue(string(name)); err != nil && !errors.Is(err, engine.ErrQueueNotFound) {
+		return taskErr(err)
+	}
+
+	reclaimed, err := s.retention.ReconcileQueueAt(ctx, string(name), minOffset)
 	if err != nil {
 		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
@@ -282,6 +318,15 @@ func (s *Server) handleStats() (byte, []byte) {
 	buf := protocol.Buffer{}
 	buf.WriteU32(uint32(st.ActiveQueues))
 	buf.WriteU64(uint64(st.TotalBytes))
+	buf.WriteU32(uint32(len(st.Queues)))
+	for name, qs := range st.Queues {
+		buf.WriteBytes([]byte(name))
+		buf.WriteU64(qs.MessageCount)
+		buf.WriteU32(uint32(qs.SegmentCount))
+		buf.WriteU64(uint64(qs.SizeBytes))
+		buf.WriteU64(qs.LastOffset)
+		buf.WriteU64(qs.MinOffset)
+	}
 	return protocol.OpStats, buf.Bytes()
 }
 

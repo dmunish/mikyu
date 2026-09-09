@@ -8,6 +8,7 @@ import (
 
 	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/logqueue"
+	"github.com/dmunish/mikyu/internal/retention"
 	"github.com/dmunish/mikyu/internal/taskqueue"
 )
 
@@ -25,6 +26,10 @@ type embeddedClient struct {
 	mu     sync.RWMutex
 	cfg    Config
 	closed bool
+
+	retention       *retention.Coordinator
+	retentionCancel context.CancelFunc
+	retentionWG     sync.WaitGroup
 }
 
 // NewEmbedded creates an in-process client.
@@ -42,18 +47,26 @@ func NewEmbedded(dir string, opts ...Option) (*embeddedClient, error) {
 		MaxMessageBytes: cfg.DefaultMaxMessageBytes,
 		MaxSegmentAge:   cfg.DefaultMaxSegmentAge,
 		Encrypted:       cfg.Encrypted,
+		Fsync:           cfg.Fsync,
 	}
 
 	mgr, err := engine.OpenManager(dir, engineCfg)
 	if err != nil {
 		return nil, err
 	}
-	return &embeddedClient{
-		mgr:    mgr,
-		queues: make(map[string]*logqueue.LogQueue),
-		tasks:  make(map[string]TaskQueue),
-		cfg:    cfg,
-	}, nil
+	retentionCtx, retentionCancel := context.WithCancel(context.Background())
+	c := &embeddedClient{
+		mgr:             mgr,
+		queues:          make(map[string]*logqueue.LogQueue),
+		tasks:           make(map[string]TaskQueue),
+		cfg:             cfg,
+		retention:       retention.NewCoordinator(0),
+		retentionCancel: retentionCancel,
+	}
+	c.retentionWG.Go(func() {
+		c.retention.Start(retentionCtx)
+	})
+	return c, nil
 }
 
 // CreateQueue creates a new log queue.
@@ -70,6 +83,7 @@ func (c *embeddedClient) CreateQueue(ctx context.Context, name string, opts ...Q
 		MaxMessageBytes: c.cfg.DefaultMaxMessageBytes,
 		MaxSegmentAge:   c.cfg.DefaultMaxSegmentAge,
 		Encrypted:       c.cfg.Encrypted,
+		Fsync:           c.cfg.Fsync,
 	}
 	for _, opt := range opts {
 		opt(&qCfg)
@@ -83,6 +97,7 @@ func (c *embeddedClient) CreateQueue(ctx context.Context, name string, opts ...Q
 		MaxMessageBytes: qCfg.MaxMessageBytes,
 		MaxSegmentAge:   qCfg.MaxSegmentAge,
 		Encrypted:       qCfg.Encrypted,
+		Fsync:           qCfg.Fsync,
 	}
 
 	storage, err := c.mgr.CreateQueue(name, engineCfg)
@@ -93,6 +108,7 @@ func (c *embeddedClient) CreateQueue(ctx context.Context, name string, opts ...Q
 	c.mu.Lock()
 	c.queues[name] = lq
 	c.mu.Unlock()
+	c.retention.RegisterDriver(name, storage, lq)
 	return nil
 }
 
@@ -122,6 +138,7 @@ func (c *embeddedClient) getOrCreateLogQueue(name string) (*logqueue.LogQueue, e
 	}
 	c.queues[name] = lq
 	c.mu.Unlock()
+	c.retention.RegisterDriver(name, storage, lq)
 	return lq, nil
 }
 
@@ -140,6 +157,7 @@ func (c *embeddedClient) TaskQueue(name string) (TaskQueue, error) {
 		return nil, err
 	}
 	c.tasks[name] = tq
+	c.retention.RegisterDriver(name, storage, tq)
 	return tq, nil
 }
 
@@ -163,6 +181,7 @@ func (c *embeddedClient) DeleteQueue(ctx context.Context, name string) error {
 	}
 	delete(c.queues, name)
 	c.mu.Unlock()
+	c.retention.UnregisterTarget(name)
 	return c.mgr.DeleteQueue(name)
 }
 
@@ -171,11 +190,17 @@ func (c *embeddedClient) TruncateQueue(ctx context.Context, name string, minOffs
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	q, err := c.getOrCreateLogQueue(name)
-	if err != nil {
+	if _, err := c.getOrCreateLogQueue(name); err != nil {
 		return 0, err
 	}
-	return q.Truncate(ctx, minOffset)
+	// Manual truncation is an irreversible operation. Materialize the task
+	// driver first so durable task state from a previous process lifetime is
+	// included in the retention floor even when no task client is currently
+	// active.
+	if _, err := c.TaskQueue(name); err != nil {
+		return 0, err
+	}
+	return c.retention.ReconcileQueueAt(ctx, name, minOffset)
 }
 
 // Stats returns engine statistics.
@@ -209,6 +234,12 @@ func (c *embeddedClient) Close() error {
 		return nil
 	}
 	c.closed = true
+	if c.retentionCancel != nil {
+		c.retentionCancel()
+	}
+	c.mu.Unlock()
+	c.retentionWG.Wait()
+	c.mu.Lock()
 	var firstErr error
 	for name, tq := range c.tasks {
 		if err := tq.Close(); err != nil && firstErr == nil {

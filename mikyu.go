@@ -81,6 +81,7 @@ var (
 	ErrOffsetNotFound   = engine.ErrOffsetNotFound
 	ErrOffsetTruncated  = engine.ErrOffsetTruncated
 	ErrMessageTooLarge  = engine.ErrMessageTooLarge
+	ErrQueueClosed      = engine.ErrQueueClosed
 	ErrCorruptRecord    = engine.ErrCorruptRecord
 	ErrTaskNotSupported = client.ErrTaskNotSupported
 )

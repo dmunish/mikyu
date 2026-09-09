@@ -12,6 +12,7 @@ import (
 	"github.com/dmunish/mikyu/internal/ipc"
 	"github.com/dmunish/mikyu/internal/logqueue"
 	"github.com/dmunish/mikyu/internal/protocol"
+	"github.com/dmunish/mikyu/internal/retention"
 	"github.com/dmunish/mikyu/internal/taskqueue"
 )
 
@@ -25,6 +26,10 @@ type Server struct {
 	mu        sync.RWMutex
 	stopCh    chan struct{}
 	doneCh    chan struct{}
+
+	retention       *retention.Coordinator
+	retentionCancel context.CancelFunc
+	retentionWG     sync.WaitGroup
 }
 
 type ServerOption func(*Server)
@@ -32,15 +37,21 @@ type ServerOption func(*Server)
 // New creates a new Server instance backed by the provided Manager.
 func New(mgr *engine.Manager, opts ...ServerOption) *Server {
 	s := &Server{
-		mgr:    mgr,
-		queues: make(map[string]*logqueue.LogQueue),
-		tasks:  make(map[string]*taskqueue.TaskQueue),
-		stopCh: make(chan struct{}),
-		doneCh: make(chan struct{}),
+		mgr:       mgr,
+		queues:    make(map[string]*logqueue.LogQueue),
+		tasks:     make(map[string]*taskqueue.TaskQueue),
+		stopCh:    make(chan struct{}),
+		doneCh:    make(chan struct{}),
+		retention: retention.NewCoordinator(0),
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
+	retentionCtx, cancel := context.WithCancel(context.Background())
+	s.retentionCancel = cancel
+	s.retentionWG.Go(func() {
+		s.retention.Start(retentionCtx)
+	})
 	return s
 }
 
@@ -74,6 +85,7 @@ func (s *Server) getOrCreateLogQueue(name string) (*logqueue.LogQueue, error) {
 
 	q = logqueue.NewLogQueue(name, storage)
 	s.queues[name] = q
+	s.retention.RegisterDriver(name, storage, q)
 	return q, nil
 }
 
@@ -101,6 +113,7 @@ func (s *Server) getOrCreateTaskQueue(name string) (*taskqueue.TaskQueue, error)
 		return nil, err
 	}
 	s.tasks[name] = q
+	s.retention.RegisterDriver(name, storage, q)
 	return q, nil
 }
 
@@ -177,6 +190,10 @@ func (s *Server) Stop() {
 		close(s.doneCh)
 	}
 	s.mu.Unlock()
+	if s.retentionCancel != nil {
+		s.retentionCancel()
+	}
+	s.retentionWG.Wait()
 	s.closeTaskQueues()
 }
 
@@ -198,9 +215,8 @@ func (s *Server) serveConn(conn net.Conn) {
 
 		if shouldShutdown {
 			go func() {
-				s.closeTaskQueues()
-				_ = s.mgr.Close()
 				s.Stop()
+				_ = s.mgr.Close()
 			}()
 			return
 		}

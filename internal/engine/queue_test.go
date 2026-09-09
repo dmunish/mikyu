@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -211,6 +214,94 @@ func TestQueueProduceConcurrentBatchExactOffsets(t *testing.T) {
 	assert.Equal(t, goroutines*batches*msgsPerBatch, len(expectedOffsets))
 }
 
+func TestQueueAsyncWriteFailureStopsSubsequentAppends(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openOffsetStore(dir)
+	require.NoError(t, err)
+	defer store.Close()
+
+	q, err := openQueue(dir, "async-error", Config{Fsync: false, BatchSize: 1, MaxInterval: time.Millisecond}, store)
+	require.NoError(t, err)
+	defer q.Close()
+	q.mu.RLock()
+	file := q.active.logFile
+	q.mu.RUnlock()
+	require.NoError(t, file.Close())
+
+	_, err = q.Append(context.Background(), []byte("first"))
+	require.NoError(t, err, "buffered mode accepts the write before the async failure is observed")
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if err := q.w.currentError(); err != nil {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	require.Error(t, q.w.currentError())
+	_, err = q.Append(context.Background(), []byte("second"))
+	assert.Error(t, err)
+}
+
+func TestQueueOperationsAfterCloseReturnErrQueueClosed(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openOffsetStore(dir)
+	require.NoError(t, err)
+	defer store.Close()
+
+	q, err := openQueue(dir, "closed", Config{}, store)
+	require.NoError(t, err)
+	require.NoError(t, q.Close())
+
+	_, err = q.Append(context.Background(), []byte("x"))
+	assert.ErrorIs(t, err, ErrQueueClosed)
+	_, err = q.Read(context.Background(), 0)
+	assert.ErrorIs(t, err, ErrQueueClosed)
+}
+
+func TestQueueAppendBatchAcrossSegmentRoll(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openOffsetStore(dir)
+	require.NoError(t, err)
+	defer store.Close()
+
+	q, err := openQueue(dir, "batch-roll", Config{
+		MaxSegmentBytes: 256,
+		MaxMessageBytes: 128,
+		BatchSize:       8,
+		MaxInterval:     time.Millisecond,
+		Fsync:           true,
+	}, store)
+	require.NoError(t, err)
+
+	payloads := make([][]byte, 20)
+	for i := range payloads {
+		payloads[i] = fmt.Appendf(nil, "payload-%02d-xxxxxxxxxxxxxxxxxxxxxxxx", i)
+	}
+	offsets, err := q.AppendBatch(context.Background(), payloads)
+	require.NoError(t, err)
+	assert.Len(t, offsets, len(payloads))
+	assert.GreaterOrEqual(t, len(q.Segments()), 2)
+	for i, off := range offsets {
+		msg, err := q.Read(context.Background(), off)
+		require.NoError(t, err)
+		assert.Equal(t, payloads[i], msg.Payload)
+	}
+	require.NoError(t, q.Close())
+
+	store2, err := openOffsetStore(dir)
+	require.NoError(t, err)
+	defer store2.Close()
+	q2, err := openQueue(dir, "batch-roll", Config{}, store2)
+	require.NoError(t, err)
+	defer q2.Close()
+	for i, off := range offsets {
+		msg, err := q2.Read(context.Background(), off)
+		require.NoError(t, err)
+		assert.Equal(t, payloads[i], msg.Payload)
+	}
+}
+
 func TestQueueProduceMessageTooLarge(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := openOffsetStore(dir)
@@ -281,6 +372,103 @@ func TestQueueUngracefulCrashRecovery(t *testing.T) {
 		msg, err := recoveredQueue.Read(ctx, uint64(i))
 		require.NoError(t, err)
 		assert.Equal(t, fmt.Sprintf("msg-%d", i), string(msg.Payload))
+	}
+}
+
+// TestQueueRealCrashRecovery runs a child process that performs durable appends,
+// then kills the process without allowing Queue.Close to run. The parent opens
+// the same queue and verifies every append that had already completed before
+// the crash remains readable in order.
+func TestQueueRealCrashRecovery(t *testing.T) {
+	if os.Getenv("MIKYU_CRASH_HELPER") == "1" {
+		t.Helper()
+		dir := os.Getenv("MIKYU_CRASH_DIR")
+		marker := os.Getenv("MIKYU_CRASH_MARKER")
+		store, err := openOffsetStore(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q, err := openQueue(dir, "real-crash", Config{
+			BatchSize:       64,
+			MaxInterval:     10 * time.Millisecond,
+			MaxSegmentBytes: 1024,
+			MaxMessageBytes: 64,
+			Fsync:           true,
+		}, store)
+		if err != nil {
+			_ = store.Close()
+			t.Fatal(err)
+		}
+		defer func() { _ = q.Close(); _ = store.Close() }()
+		for i := range 2_000 {
+			payload := fmt.Appendf(nil, "msg-%06d", i)
+			if _, err := q.Append(context.Background(), payload); err != nil {
+				t.Fatal(err)
+			}
+			if (i+1)%100 == 0 {
+				if err := os.WriteFile(marker, []byte(strconv.Itoa(i+1)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		return
+	}
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "progress")
+	cmd := exec.Command(os.Args[0], "-test.run", "^TestQueueRealCrashRecovery$")
+	cmd.Env = append(os.Environ(),
+		"MIKYU_CRASH_HELPER=1",
+		"MIKYU_CRASH_DIR="+dir,
+		"MIKYU_CRASH_MARKER="+marker,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	var completed int
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(marker)
+		if err == nil {
+			completed, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+			if completed >= 500 {
+				break
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if completed < 500 {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("child did not reach durable progress marker; completed=%d", completed)
+	}
+
+	// Kill the child abruptly: no Queue.Close, WAL stop, segment trim, or
+	// manager cleanup is allowed to run.
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+
+	store, err := openOffsetStore(dir)
+	require.NoError(t, err)
+	defer store.Close()
+	q, err := openQueue(dir, "real-crash", Config{
+		BatchSize:       8,
+		MaxInterval:     2 * time.Millisecond,
+		MaxSegmentBytes: 128,
+		MaxMessageBytes: 64,
+		Fsync:           true,
+	}, store)
+	require.NoError(t, err)
+	defer q.Close()
+
+	require.GreaterOrEqual(t, q.LastOffset(), uint64(completed), "all completed durable appends must survive the crash")
+	for i := 0; i < completed; i++ {
+		msg, err := q.Read(context.Background(), uint64(i))
+		require.NoError(t, err, "offset %d after crash recovery", i)
+		require.Equal(t, fmt.Sprintf("msg-%06d", i), string(msg.Payload))
 	}
 }
 
