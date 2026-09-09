@@ -167,8 +167,8 @@ func Stats(ctx context.Context, client mikyu.Client) (mikyu.SystemStats, error) 
 	return client.Stats(ctx)
 }
 
-// Compact truncates physical log segments for a queue before minOffset. If confirmFn is provided, truncation occurs only if confirmFn returns true.
-func Compact(ctx context.Context, client mikyu.Client, name string, minOffset uint64, confirmFn func() (bool, error)) (reclaimed int64, executed bool, err error) {
+// Truncate truncates physical log segments for a queue before minOffset. If confirmFn is provided, truncation occurs only if confirmFn returns true.
+func Truncate(ctx context.Context, client mikyu.Client, name string, minOffset uint64, confirmFn func() (bool, error)) (reclaimed int64, executed bool, err error) {
 	if confirmFn != nil {
 		ok, err := confirmFn()
 		if err != nil || !ok {

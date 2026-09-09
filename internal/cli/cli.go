@@ -47,8 +47,8 @@ func RunCLI(target string, args []string) {
 		handleTail(ctx, client, args[1:])
 	case "stats":
 		handleStats(ctx, client)
-	case "compact", "truncate":
-		handleCompact(ctx, client, args[1:])
+	case "truncate":
+		handleTruncate(ctx, client, args[1:])
 	case "shutdown":
 		handleShutdown(target, args[1:])
 	default:
@@ -60,7 +60,7 @@ func RunCLI(target string, args []string) {
 
 func printUsage() {
 	fmt.Fprintf(os.Stderr, "Usage: mikyu <command> [args]\n")
-	fmt.Fprintf(os.Stderr, "Commands: list, create, delete, produce, read, tail, stats, compact, shutdown\n")
+	fmt.Fprintf(os.Stderr, "Commands: list, create, delete, produce, read, tail, stats, truncate, shutdown\n")
 }
 
 func handleList(ctx context.Context, client mikyu.Client) {
@@ -181,9 +181,9 @@ func handleTail(ctx context.Context, client mikyu.Client, args []string) {
 	}
 }
 
-func handleCompact(ctx context.Context, client mikyu.Client, args []string) {
+func handleTruncate(ctx context.Context, client mikyu.Client, args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: mikyu compact <queue> [min-offset] [-y]")
+		fmt.Fprintln(os.Stderr, "usage: mikyu truncate <queue> [min-offset] [-y]")
 		os.Exit(2)
 	}
 	name := args[0]
@@ -211,7 +211,7 @@ func handleCompact(ctx context.Context, client mikyu.Client, args []string) {
 		}
 	}
 
-	reclaimed, executed, err := command.Compact(ctx, client, name, minOffset, confirmFn)
+	reclaimed, executed, err := command.Truncate(ctx, client, name, minOffset, confirmFn)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

@@ -102,8 +102,8 @@ func (s *replSession) dispatch(line string) bool {
 	case "stats":
 		s.handleStats()
 
-	case "compact", "truncate":
-		s.handleCompact(args)
+	case "truncate":
+		s.handleTruncate(args)
 
 	case "shutdown":
 		return s.handleShutdown()
@@ -239,9 +239,9 @@ func (s *replSession) handleTail(args []string) {
 	}
 }
 
-func (s *replSession) handleCompact(args []string) {
+func (s *replSession) handleTruncate(args []string) {
 	if len(args) < 2 {
-		fmt.Println(errStyle.Render("Usage: compact <queue_name> [min_offset]"))
+		fmt.Println(errStyle.Render("Usage: truncate <queue_name> [min_offset]"))
 		return
 	}
 	name := args[1]
@@ -268,7 +268,7 @@ func (s *replSession) handleCompact(args []string) {
 		return confirm(prompt), nil
 	}
 
-	reclaimed, executed, err := command.Compact(s.ctx, s.client, name, minOffset, confirmFn)
+	reclaimed, executed, err := command.Truncate(s.ctx, s.client, name, minOffset, confirmFn)
 	if err != nil {
 		fmt.Println(errStyle.Render("Error: " + err.Error()))
 		return
@@ -396,7 +396,7 @@ func printREPLHelp() {
 		{"read", "<queue> <off>", "Read record at specific logical offset"},
 		{"tail", "<queue> [off]", "Stream live records continuously"},
 		{"stats", "", "Display engine storage metrics"},
-		{"compact / truncate", "<q> [off]", "Truncate physical log segments before offset"},
+		{"truncate", "<q> [off]", "Truncate physical log segments before offset"},
 		{"shutdown", "", "Stop the background daemon process"},
 		{"exit / quit", "", "Exit the REPL shell"},
 	}

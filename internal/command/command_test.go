@@ -68,8 +68,8 @@ func TestCommandLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, st.ActiveQueues)
 
-	// 7. Compact with confirmation (canceled)
-	reclaimed, executed, err := command.Compact(ctx, client, "events", 0, func() (bool, error) {
+	// 7. Truncate with confirmation (canceled)
+	reclaimed, executed, err := command.Truncate(ctx, client, "events", 0, func() (bool, error) {
 		return false, nil
 	})
 	require.NoError(t, err)
