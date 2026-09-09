@@ -197,8 +197,7 @@ func (s *replSession) handleRead(args []string) {
 		fmt.Println(errStyle.Render("Error: " + err.Error()))
 		return
 	}
-	fmt.Printf("[%d] ID: %s | Time: %s | Payload: %s\n",
-		msg.Offset, msg.ID, msg.Timestamp.Format("15:04:05.000"), string(msg.Payload))
+	fmt.Println(formatRecord(msg))
 }
 
 func (s *replSession) handleTail(args []string) {
@@ -215,24 +214,21 @@ func (s *replSession) handleTail(args []string) {
 	sigCtx, stopSig := signal.NotifyContext(s.ctx, os.Interrupt, syscall.SIGTERM)
 	defer stopSig()
 
-	fmt.Println(dimStyle.Render(fmt.Sprintf("Tailing %q from offset %d (Press Ctrl+C to stop stream)...", name, startOffset)))
+	statusText := dimStyle.Render(fmt.Sprintf("Tailing %q from offset %d (Press Ctrl+C to stop stream)...", name, startOffset))
+	fmt.Print(statusText)
+
 	err := command.Tail(sigCtx, s.client, name, startOffset, func(msg mikyu.Message) error {
-		prefix := fmt.Sprintf("[%d] ID: %s | Time: %s | Payload: ",
-			msg.Offset, msg.ID, msg.Timestamp.Format("15:04:05.000"))
-
-		termWidth := command.GetTerminalWidth()
-		avail := -1
-		if termWidth > 0 {
-			avail = termWidth - lipgloss.Width(prefix)
-		}
-		payloadStr := command.FormatSingleLinePayload(msg.Payload, avail)
-
-		fmt.Printf("%s%s\n", prefix, payloadStr)
+		fmt.Print("\r\x1b[2K")
+		fmt.Println(formatRecord(msg))
+		fmt.Print(statusText)
 		return nil
 	})
+
+	fmt.Print("\r\x1b[2K")
+
 	if err != nil {
 		if sigCtx.Err() != nil {
-			fmt.Println(infoStyle.Render("\nStream stopped."))
+			fmt.Println(infoStyle.Render("Stream stopped."))
 		} else {
 			fmt.Println(errStyle.Render("Stream error: " + err.Error()))
 		}
@@ -309,6 +305,32 @@ func (s *replSession) handleShutdown() bool {
 	}
 	fmt.Println("Daemon stopped. Exiting shell.")
 	return true
+}
+
+func formatRecord(msg mikyu.Message) string {
+	offsetStr := recordOffsetStyle.Render(fmt.Sprintf("[%d]", msg.Offset))
+	divider := recordDividerStyle.Render("|")
+
+	idLabel := recordHeaderStyle.Render("ID:")
+	idVal := recordValueStyle.Render(msg.ID)
+
+	timeLabel := recordHeaderStyle.Render("Time:")
+	timeVal := recordValueStyle.Render(msg.Timestamp.Format("15:04:05.000"))
+
+	payloadLabel := recordHeaderStyle.Render("Payload:")
+
+	prefixRaw := fmt.Sprintf("[%d] ID: %s | Time: %s | Payload: ",
+		msg.Offset, msg.ID, msg.Timestamp.Format("15:04:05.000"))
+
+	termWidth := command.GetTerminalWidth()
+	avail := -1
+	if termWidth > 0 {
+		avail = termWidth - lipgloss.Width(prefixRaw)
+	}
+	payloadStr := recordValueStyle.Render(command.FormatSingleLinePayload(msg.Payload, avail))
+
+	return fmt.Sprintf("%s %s %s %s %s %s %s %s %s",
+		offsetStr, idLabel, idVal, divider, timeLabel, timeVal, divider, payloadLabel, payloadStr)
 }
 
 func parseREPLArgs(line string) []string {

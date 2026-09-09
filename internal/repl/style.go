@@ -36,7 +36,15 @@ var (
 	infoStyle    = lipgloss.NewStyle().Foreground(accentColor)
 	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
 	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-	warnTagStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE427D")).Bold(true)
+	warnTagStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ee427d")).Bold(true)
+)
+
+// Record Output (read & tail)
+var (
+	recordOffsetStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	recordDividerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	recordHeaderStyle  = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+	recordValueStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
 )
 
 // Header & Quickstart Banner
@@ -53,14 +61,14 @@ var (
 	cmdPrefixStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 	cmdNameStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Bold(true)
 	cmdArgStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	cmdReqArgStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE427D"))
+	cmdReqArgStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ee427d"))
 	cmdDescStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 )
 
 // Confirmation Prompts
 var (
-	confirmArrow         = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE427D")).Bold(true).Render(">")
-	confirmFocusedButton = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE427D")).Bold(true).Padding(0, 1)
+	confirmArrow         = lipgloss.NewStyle().Foreground(lipgloss.Color("#ee427d")).Bold(true).Render(">")
+	confirmFocusedButton = lipgloss.NewStyle().Foreground(lipgloss.Color("#ee427d")).Bold(true).Padding(0, 1)
 	confirmBlurredButton = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Padding(0, 1)
 )
 
@@ -104,7 +112,7 @@ func PrintREPLBanner(target string) {
 	}
 
 	for _, c := range commands {
-		prefix := cmdPrefixStyle.Render("  $ ")
+		prefix := cmdPrefixStyle.Bold(true).Render("  > ")
 		name := cmdNameStyle.Render(fmt.Sprintf("%-8s", c.cmd))
 		arg := cmdArgStyle.Render(fmt.Sprintf("%-16s", c.arg))
 		desc := cmdDescStyle.Render(c.desc)
@@ -121,7 +129,7 @@ func PrintREPLBanner(target string) {
 
 	// 4. Connection Status Footer
 	statusText := statusStyle.Render("Connected to daemon at ")
-	statusTarget := statusTargetStyle.Render(target)
+	statusTarget := statusTargetStyle.Render(target) + "\x1b[24m"
 	b.WriteString(fmt.Sprintf("  %s%s\n\n", statusText, statusTarget))
 
 	fmt.Print(b.String())
