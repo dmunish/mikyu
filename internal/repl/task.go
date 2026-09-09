@@ -70,7 +70,7 @@ func (s *replSession) handlePublish(args []string) {
 		return
 	}
 
-	fmt.Println(infoStyle.Render(fmt.Sprintf(
+	fmt.Println(successStyle.Render(fmt.Sprintf(
 		"● Published task %s to %q (%d bytes)",
 		shortID(task.ID),
 		queue,
@@ -133,7 +133,7 @@ func (s *replSession) handleAck(args []string) {
 		return
 	}
 
-	fmt.Println(successStyle.Render(fmt.Sprintf("✓ Acknowledged task %s", shortID(taskID))))
+	fmt.Println(successStyle.Render(fmt.Sprintf("● Acknowledged task %s", shortID(taskID))))
 }
 
 func (s *replSession) handleNack(args []string) {
@@ -166,7 +166,7 @@ func (s *replSession) handleNack(args []string) {
 		return
 	}
 
-	fmt.Println(warnStyle.Render(fmt.Sprintf("↻ Released task %s", shortID(taskID))))
+	fmt.Println(warnStyle.Render(fmt.Sprintf("● Released task %s", shortID(taskID))))
 }
 
 func (s *replSession) handleExtend(args []string) {
@@ -213,7 +213,7 @@ func (s *replSession) handleExtend(args []string) {
 		return
 	}
 
-	fmt.Println(infoStyle.Render(fmt.Sprintf("⏳ Extended lease for task %s", shortID(taskID))))
+	fmt.Println(infoStyle.Render(fmt.Sprintf("● Extended lease for task %s", shortID(taskID))))
 }
 
 func (s *replSession) handleDLQ(args []string) {
@@ -253,7 +253,7 @@ func (s *replSession) handleDLQAck(args []string) {
 		return
 	}
 
-	fmt.Println(successStyle.Render(fmt.Sprintf("✓ Removed dead-letter task %s", shortID(taskID))))
+	fmt.Println(successStyle.Render(fmt.Sprintf("● Removed dead-letter task %s", shortID(taskID))))
 }
 
 func renderTaskCard(task mikyu.Task) string {

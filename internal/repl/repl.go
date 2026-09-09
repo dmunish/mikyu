@@ -177,7 +177,7 @@ func (s *replSession) handleUse(args []string) {
 	}
 
 	s.activeQueue = name
-	fmt.Println(infoStyle.Render(fmt.Sprintf("● Active queue set to %q.", name)))
+	fmt.Println(successStyle.Render(fmt.Sprintf("● Active queue set to %q.", name)))
 }
 
 func (s *replSession) handleList() {
@@ -191,8 +191,9 @@ func (s *replSession) handleList() {
 		return
 	}
 	fmt.Println(infoStyle.Render("Queues:"))
+	bullet := infoStyle.Render("●")
 	for _, q := range queues {
-		fmt.Println(infoStyle.Render(fmt.Sprintf("  ● %s", q)))
+		fmt.Printf("  %s %s\n", bullet, queueNameStyle.Render(q))
 	}
 }
 
@@ -206,7 +207,7 @@ func (s *replSession) handleCreate(args []string) {
 		fmt.Println(errStyle.Render("Error: " + err.Error()))
 		return
 	}
-	fmt.Println(infoStyle.Render(fmt.Sprintf("● Queue %q created.", name)))
+	fmt.Println(successStyle.Render(fmt.Sprintf("● Queue %q created.", name)))
 }
 
 func (s *replSession) handleDelete(args []string) {
@@ -229,7 +230,7 @@ func (s *replSession) handleDelete(args []string) {
 		fmt.Println("Cancelled.")
 		return
 	}
-	fmt.Println(infoStyle.Render(fmt.Sprintf("● Queue %q deleted.", name)))
+	fmt.Println(successStyle.Render(fmt.Sprintf("● Queue %q deleted.", name)))
 }
 
 func (s *replSession) handleProduce(args []string) {
@@ -243,7 +244,7 @@ func (s *replSession) handleProduce(args []string) {
 		fmt.Println(errStyle.Render("Error: " + err.Error()))
 		return
 	}
-	fmt.Println(infoStyle.Render(fmt.Sprintf("● Produced %d bytes to %q at offset %d", payloadLen, name, off)))
+	fmt.Println(successStyle.Render(fmt.Sprintf("● Produced %d bytes to %q at offset %d", payloadLen, name, off)))
 }
 
 func (s *replSession) handleRead(args []string) {
@@ -338,7 +339,7 @@ func (s *replSession) handleTruncate(args []string) {
 		fmt.Println("Cancelled.")
 		return
 	}
-	fmt.Println(infoStyle.Render(fmt.Sprintf("● Queue %q truncated (%d bytes reclaimed).", name, reclaimed)))
+	fmt.Println(successStyle.Render(fmt.Sprintf("● Queue %q truncated (%d bytes reclaimed).", name, reclaimed)))
 }
 
 func (s *replSession) handleStats() {
@@ -493,11 +494,11 @@ func printREPLHelp() {
 	}{
 		{"publish", "<q> <msg|@f|->", "Enqueue task into work pool"},
 		{"pop", "<q> [--timeout 30s]", "Claim next available task lease"},
-		{"ack", "<q> <task_id>", "Acknowledge task completion"},
-		{"nack", "<q> <task_id>", "Release task lease back to pool"},
-		{"extend", "<q> <task_id> <timeout>", "Extend task lease"},
+		{"ack", "<q> <id>", "Acknowledge task completion"},
+		{"nack", "<q> <id>", "Release task lease back to pool"},
+		{"extend", "<q> <id> <timeout>", "Extend task lease"},
 		{"dlq", "<q>", "List dead-letter tasks"},
-		{"dlq-ack", "<q> <task_id>", "Remove dead-letter task"},
+		{"dlq-ack", "<q> <id>", "Remove dead-letter task"},
 	})
 
 	b.WriteString("\n")
@@ -529,7 +530,7 @@ func writeHelpCommands(b *strings.Builder, cmds []struct {
 	desc string
 }) {
 	for _, c := range cmds {
-		prefix := cmdPrefixStyle.Render("  $ ")
+		prefix := cmdPrefixStyle.Render("  > ")
 		name := cmdNameStyle.Render(fmt.Sprintf("%-12s", c.cmd))
 		argsFormatted := formatHelpArgs(c.arg, 24)
 		desc := cmdDescStyle.Render(c.desc)

@@ -32,11 +32,14 @@ var (
 
 // General Output & Messages
 var (
-	promptStyle  = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
-	infoStyle    = lipgloss.NewStyle().Foreground(accentColor)
-	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
-	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-	warnTagStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ee427d")).Bold(true)
+	promptStyle    = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+	infoStyle      = lipgloss.NewStyle().Foreground(accentColor)
+	successStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
+	errStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	dimStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	warnStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
+	warnTagStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#ee427d")).Bold(true)
+	queueNameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
 )
 
 // Record Output (read & tail)
@@ -73,9 +76,6 @@ var (
 )
 
 var (
-	successStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
-	warnStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
-
 	taskCardBorderStyle = lipgloss.NewStyle().
 				Border(lipgloss.NormalBorder()).
 				Padding(0, 1)
@@ -114,26 +114,26 @@ func PrintREPLBanner(target string) {
 	b.WriteString(header)
 	b.WriteString("\n\n")
 
-	// 2. Command Reference Table
+	// 2. Command Reference Table — essential commands for first-time onboarding
 	commands := []struct {
 		cmd  string
 		arg  string
 		desc string
 	}{
-		{"produce", "<queue> <msg>", "Produce text or file payload (@file)"},
-		{"read", "<queue> <offset>", "Read record at logical offset"},
-		{"list", "", "List all active queues"},
-		{"stats", "", "Display storage & throughput metrics"},
-		{"help", "", "Show all commands"},
+		{"create", "<queue>", "Create a new queue"},
+		{"produce", "<queue> <msg>", "Append record to write-ahead log"},
+		{"publish", "<queue> <msg>", "Enqueue task into work pool"},
+		{"pop", "[queue]", "Claim next available task lease"},
+		{"help", "", "Show all available commands"},
 	}
 
 	for _, c := range commands {
-		prefix := cmdPrefixStyle.Bold(true).Render("  > ")
-		name := cmdNameStyle.Render(fmt.Sprintf("%-8s", c.cmd))
-		arg := cmdArgStyle.Render(fmt.Sprintf("%-16s", c.arg))
+		prefix := cmdPrefixStyle.Render("  > ")
+		name := cmdNameStyle.Render(fmt.Sprintf("%-10s", c.cmd))
+		argsFormatted := formatHelpArgs(c.arg, 18)
 		desc := cmdDescStyle.Render(c.desc)
 
-		b.WriteString(fmt.Sprintf("%s%s %s %s\n", prefix, name, arg, desc))
+		b.WriteString(fmt.Sprintf("%s%s %s %s\n", prefix, name, argsFormatted, desc))
 	}
 
 	b.WriteString("\n")
