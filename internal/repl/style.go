@@ -17,71 +17,51 @@ const mikyuASCII = `
 ╚═╝     ╚═╝╚═╝╚═╝  ╚═╝   ╚═╝    ╚═════╝
 `
 
-var logoGradient = []color.Color{
-	lipgloss.Color("#ffc279"),
-	lipgloss.Color("#ff8851"),
-	lipgloss.Color("#f84f44"),
-	lipgloss.Color("#d2235b"),
-	lipgloss.Color("#a01270"),
-	lipgloss.Color("#68116c"),
-}
-
+// Palette & Colors
 var (
-	accentColor  = lipgloss.Color("#ffc279")
+	logoGradient = []color.Color{
+		lipgloss.Color("#ffc279"),
+		lipgloss.Color("#ff8851"),
+		lipgloss.Color("#f84f44"),
+		lipgloss.Color("#d2235b"),
+		lipgloss.Color("#a01270"),
+		lipgloss.Color("#68116c"),
+	}
+	accentColor = lipgloss.Color("#ffc279")
+)
+
+// General Output & Messages
+var (
 	promptStyle  = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
 	infoStyle    = lipgloss.NewStyle().Foreground(accentColor)
 	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
-	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	confirmArrow = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE427D")).Bold(true).Render(">")
+	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	warnTagStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE427D")).Bold(true)
 )
 
+// Header & Quickstart Banner
 var (
-	taglineStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("243")). // Subtle gray
-			MarginBottom(1)
+	taglineStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("243")).MarginBottom(1)
+	tryLabelStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Bold(true)
+	tryCmdStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffc279"))
+	statusStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	statusTargetStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("248")).Underline(true)
+)
 
-	cmdPrefixStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240"))
+// Command Table & Help
+var (
+	cmdPrefixStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	cmdNameStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Bold(true)
+	cmdArgStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	cmdReqArgStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE427D"))
+	cmdDescStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+)
 
-	cmdNameStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("255")). // White
-			Bold(true)
-
-	cmdArgStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245"))
-
-	cmdDescStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("243"))
-
-	cmdReqArgStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#EE427D"))
-
-	tryLabelStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("255")). // White
-			Bold(true)
-
-	tryCmdStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#ffc279"))
-
-	statusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241"))
-
-	statusTargetStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("248")).
-				Underline(true)
-
-	confirmFocusedButton = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#EE427D")).
-				Bold(true).
-				Padding(0, 1)
-
-	confirmBlurredButton = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("245")).
-				Padding(0, 1)
-
-	warnTagStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#EE427D")).
-			Bold(true)
+// Confirmation Prompts
+var (
+	confirmArrow         = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE427D")).Bold(true).Render(">")
+	confirmFocusedButton = lipgloss.NewStyle().Foreground(lipgloss.Color("#EE427D")).Bold(true).Padding(0, 1)
+	confirmBlurredButton = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Padding(0, 1)
 )
 
 func PrintREPLBanner(target string) {
