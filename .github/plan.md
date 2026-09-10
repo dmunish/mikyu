@@ -1,315 +1,278 @@
-# Mikyu Revised Architecture Plan
+# Phased Refactor Plan
 
-This document lays out the refactored architecture for Mikyu, reflecting the current codebase refactor (split into `internal/client`, `internal/command`, `internal/group`, `internal/retention`, `internal/logqueue`, etc.) while mapping out the execution plan for the upcoming twin-driver design (`internal/taskqueue`), metrics, and interactive access modes.
+## North Star
 
----
+By the end, the repo should look like this from thirty thousand feet:
 
-## 1. Layered Architecture Overview
+- `internal/` has an obvious visual hierarchy that mirrors the dependency graph.
+- Every package has one job, and every file within a package has one role.
+- The public `mikyu` package is unchanged and stays small.
+- The wire protocol has no knowledge of the task driver.
+- Embedded and daemon modes share a single local-node core.
+- The layering is enforced by CI, not by convention.
+- Performance is guarded by benchmarks that fail the build on regression.
 
-```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Access Modes (CLI, REPL, TUI) – internal/cli, internal/repl, etc.      │
-├─────────────────────────────────────────────────────────────────────────┤
-│  Shared Command Helpers (internal/command)                              │
-│  - List, Create, Delete, Produce, Read, Tail, Stats, Compact, Shutdown  │
-├─────────────────────────────────────────────────────────────────────────┤
-│  Public Client API (github.com/dmunish/mikyu)                           │
-│  - Client, LogQueue, TaskQueue, Group, Message, Task, etc.              │
-├─────────────────────────────────────────────────────────────────────────┤
-│  Client Drivers (internal/client)                                       │
-│  - embeddedClient (in-process manager wrapper)                          │
-│  - remoteClient (connection-pooled TCP/IPC wire frame exchanges)        │
-├─────────────────────────────────────────────────────────────────────────┤
-│  Consumption Drivers & Coordination                                     │
-│  - LogDriver (internal/logqueue) & Shared Consumer Group (internal/group)│
-│  - Retention Coordinator (internal/retention)                           │
-│  - TaskDriver (planned: internal/taskqueue)                             │
-├─────────────────────────────────────────────────────────────────────────┤
-│  Core Engine (internal/engine)                                          │
-│  - Storage Interface, WAL Flusher, Segments, Index, Offsets, Compact    │
-├─────────────────────────────────────────────────────────────────────────┤
-│  Infrastructure & Protocol (internal/protocol, internal/server, ipc)   │
-│  - Length-prefixed binary frames, TCP/IPC listeners, TLS 1.3            │
-└─────────────────────────────────────────────────────────────────────────┘
-
-```
-
-The public root package `mikyu` serves as the thin API contract, delegating implementation to `internal/client`. Internal packages are strictly layered: client drivers depend on `internal/engine` or `internal/protocol`, high-level consumption behaviors are modularized into `internal/logqueue` and `internal/taskqueue`, and shared command execution logic is centralized in `internal/command`.
+And it should read like Kubernetes or etcd in structure, but with the kind of architectural clarity those repos often sacrifice to history.
 
 ---
 
-## 2. Revised Directory Tree
+## Sequencing Rationale
 
-```text
-github.com/dmunish/mikyu/
-├── go.mod
-├── go.sum
-├── README.md
-│
-├── mikyu.go                  # Public types & re-exports: Client, LogQueue, TaskQueue, Group, Message
-├── options.go                # Public configuration option wrappers delegating to internal/client
-├── typed.go                  # Generic Typed[T] wrapper & Codec[T] interface
-│
-├── internal/
-│   ├── client/               # Client driver implementations
-│   │   ├── embedded.go       # In-process embedded client wrapping engine.Manager
-│   │   ├── options.go        # Client & Queue functional options & defaults
-│   │   └── remote.go         # Connection-pooled TCP/IPC client using wire protocol
-│   │
-│   ├── command/              # Shared stateless command runners for CLI/REPL
-│   │   ├── command.go        # List, Create, Delete, Produce, Read, Tail, Stats, Compact, Shutdown
-│   │   └── command_test.go
-│   │
-│   ├── config/               # Declarative YAML config & environment variable manager
-│   │   └── config.go         # goccy/go-yaml parsing, auto-bootstrapping, env overrides
-│   │
-│   ├── engine/               # Low-level storage engine & WAL
-│   │   ├── storage.go        # Storage interface (Append, Read, TruncateBefore, MinOffset, Segments)
-│   │   ├── manager.go        # Multi-queue engine manager & lifecycle
-│   │   ├── queue.go          # Concrete log storage, zero-copy read paths, rolling logic
-│   │   ├── wal.go            # WAL flusher with dynamic dual-threshold batching & sync.Cond
-│   │   ├── segment.go        # Active file I/O, mmap handling, unmap/unlink helpers
-│   │   ├── index.go          # Fixed-width 16-byte index structures
-│   │   ├── offsets.go        # Compacted consumer group offset store
-│   │   ├── compact.go        # Engine compaction & floor adjustment (MinOffset, TruncateBefore)
-│   │   ├── encode.go         # Record framing, CRC32, raw UUID v7 handling
-│   │   ├── cache.go          # In-memory ring cache for recent messages (fast tail reads)
-│   │   ├── sync_*.go         # OS-specific disk sync flushes (F_FULLFSYNC, fdatasync, Sync)
-│   │   └── encrypt_*.go      # Kernel-level directory encryption (fscrypt, EFS)
-│   │
-│   ├── logqueue/             # Log consumption driver
-│   │   ├── api.go            # ClientLogQueue interface
-│   │   ├── logqueue.go       # LogQueue struct implementing streaming, tailing, groups
-│   │   ├── group.go          # Consumer group wrapper around group.Base
-│   │   └── retention.go      # Log retention evaluation & safe floor calculation
-│   │
-│   ├── taskqueue/            # Planned Task driver (visibility, retries, DLQ)
-│   │   ├── taskqueue.go      # TaskQueue struct implementing task-side API
-│   │   ├── task.go           # Task type and options
-│   │   ├── scheduler.go      # In-memory scheduling & retry logic
-│   │   ├── checkpoint.go     # Task state snapshot checkpointing
-│   │   └── compaction.go     # Safe truncation offset calculation for active tasks
-│   │
-│   ├── group/                # Shared consumer group state
-│   │   └── group.go          # Base struct with thread-safe high-watermark tracking
-│   │
-│   ├── retention/            # Cross-driver retention arbitration
-│   │   └── coordinator.go   # Coordinator arbitrating truncation floors across drivers
-│   │
-│   ├── protocol/             # Wire protocol definition
-│   │   ├── opcodes.go        # Opcodes (0x01-0x0C log, 0x0D-0x10 task, 0x11 truncate), error codes, URI parser
-│   │   ├── frames.go         # Length-prefixed binary frame reader & pooled writer
-│   │   └── bytes.go          # Bounds-checked binary helpers
-│   │
-│   ├── server/               # Network server (TCP/IPC/TLS)
-│   │   ├── server.go         # Listener loop, connection workers, graceful stop
-│   │   ├── handlers.go       # Opcode handlers mapping requests to engine/drivers
-│   │   └── tls.go            # TLS 1.3 setup & self-signed cert generator
-│   │
-│   ├── ipc/                  # Local IPC transports
-│   │   └── ipc.go            # Unix domain sockets & Windows named pipes
-│   │
-│   ├── daemon/               # Background daemon process manager
-│   │   ├── daemon.go         # Run(), EnsureDaemonRunning(), IsDaemonAlive(), SendShutdownSignal()
-│   │   └── detach_*.go       # OS-specific background process detachment
-│   │
-│   ├── cli/                  # Stateless CLI operator
-│   │   └── cli.go            # CLI subcommand router invoking internal/command
-│   │
-│   ├── repl/                 # Interactive REPL shell
-│   │   ├── repl.go           # Interactive command loop invoking internal/command
-│   │   ├── style.go          # Lipgloss ASCII banner & table styling
-│   │   └── vt_*.go           # Terminal ANSI setup
-│   │
-│   ├── tui/                  # Future interactive TUI dashboard
-│   │   └── tui.go            # (planned)
-│   │
-│   ├── metrics/              # Future metrics registry & collectors
-│   │   └── metrics.go        # (planned)
-│   │
-│   └── logstore/             # Future crash-safe logging store
-│       └── logstore.go       # (planned)
-│
-└── cmd/
-    └── mikyu/
-        └── main.go           # Single-binary entry point & subcommand router
+The plan is ordered so that:
 
-```
+1. Each phase is independently valuable — you can stop at any phase and have a strictly better repo.
+2. Zero-behavior-change work comes before logic-touching work.
+3. The layout is settled *before* it is enforced.
+4. Hot paths (Enqueue, Dequeue, Ack, append, read) are touched as late as possible, with benchmarks as the gate.
+
+Nothing in Phases 1–6 changes the exported `mikyu` API or the wire protocol. If any phase does, that is a bug in the phase.
 
 ---
 
-## 3. Public API (`package mikyu`)
+## Phase 0 — Baselines and guardrails (1–2 days)
 
-The root `mikyu` package exports domain models and delegates execution to `internal/client`:
+**Goal:** make every later phase measurable and reversible.
+
+- Capture `go test ./...` coverage per package. Note any package below 70%.
+- Run `go test -bench=. -benchmem` under `-tags bench` and commit the output to `bench/baseline.txt`. Treat it as the reference.
+- Freeze `mikyu`'s exported surface: `go doc github.com/dmunish/mikyu > api/contract.txt` and commit it. Add a CI step that diffs against it.
+- Record current import graph: `go list -deps ./... | sort -u > arch/imports.txt` (or use `go mod graph`).
+- Add `goleak.VerifyTestMain` to any remaining test packages that don't have it. You already do in `engine` and `mikyu`; extend to `taskqueue`, `server`, `client`.
+
+**Exit criteria:** you can prove, per package, that a refactor did not change coverage, benchmarks, or API.
+
+---
+
+## Phase 1 — Mechanical file splits (2–3 days)
+
+**Goal:** decompose grab-bag files into role files. No logic change.
+
+Split these files along role lines, keeping package and symbol names identical:
+
+- `internal/engine/queue.go` →
+  `config.go`, `errors.go`, `queue.go` (struct + constructor + lifecycle), `append.go`, `read.go`, `segment_management.go` (roll, loadSegments).
+- `internal/server/handlers.go` →
+  `dispatch.go`, `log_handlers.go`, `task_handlers.go`, `admin_handlers.go`, `errors.go` (taskErr, opErr).
+- `internal/taskqueue/taskqueue.go` →
+  `taskqueue.go` (struct, constructor, Close), `enqueue.go`, `dequeue.go`, `ack.go`, `fail.go`, `extend.go`, `dlq.go`, `registry.go` (validateLeaseLocked, currentLeaseLocked, takeDueLocked).
+- `internal/client/remote.go` →
+  `remote.go` (client), `remote_logqueue.go`, `remote_taskqueue.go`, `remote_group.go`, `errors.go` (decodeProtocolError, isRetryable).
+- `internal/client/embedded.go` →
+  `embedded.go`, `embedded_queues.go` (getOrCreateLogQueue, TaskQueue).
+
+**Verification:**
+- `git diff -M` should show only moves and package-line additions.
+- All tests, all benchmarks, all API snapshots unchanged.
+- `gofmt -l ./internal` clean.
+
+**Risk:** near zero. This is the warmup.
+
+---
+
+## Phase 2 — Collapse dual-path duplication (3–5 days)
+
+**Goal:** one internal implementation per semantic operation, regardless of how the caller identifies the lease.
+
+In `taskqueue`, introduce a lease reference:
 
 ```go
-package mikyu
-
-import (
-    "context"
-    "io"
-    "iter"
-    "time"
-
-    "github.com/dmunish/mikyu/internal/client"
-    "github.com/dmunish/mikyu/internal/engine"
-    "github.com/dmunish/mikyu/internal/logqueue"
-)
-
-// Re-exported engine types
-type Message = engine.Message
-type SystemStats = engine.EngineStats
-type QueueStats = engine.QueueStats
-
-// Re-exported driver interfaces
-type Group = logqueue.Group
-type LogQueue = logqueue.ClientLogQueue
-type TaskQueue = client.TaskQueue
-
-type Task struct {
-    ID          string
-    Payload     []byte
-    Attempts    uint32
-    MaxAttempts uint32
-    Visibility  time.Time
-    ScheduledAt time.Time
+type leaseRef struct {
+    ID         string
+    Offset     uint64
+    Attempts   uint32
+    DeliveryID string
+    strict     bool
 }
-
-type Client interface {
-    io.Closer
-    CreateQueue(ctx context.Context, name string, opts ...QueueOption) error
-    LogQueue(name string) (LogQueue, error)
-    TaskQueue(name string) (TaskQueue, error)
-    ListQueues(ctx context.Context) ([]string, error)
-    DeleteQueue(ctx context.Context, name string) error
-    TruncateQueue(ctx context.Context, name string, minOffset uint64) (int64, error)
-    Stats(ctx context.Context) (SystemStats, error)
-}
-
-func Open(dir string, opts ...ClientOption) (Client, error) {
-    return client.NewEmbedded(dir, opts...)
-}
-
-func Dial(target string, opts ...ClientOption) (Client, error) {
-    return client.NewRemote(target, opts...)
-}
-
 ```
+
+Then unify:
+
+- `Ack` / `AckID` → `ackLocked(ctx, ref)`
+- `Fail` / `FailID` → `failLocked(ctx, ref, opts)`
+- `Extend` / `ExtendID` → `extendLocked(ctx, ref, timeout)`
+- `AckDeadLetter` / `AckDeadLetterID` → `ackDeadLetterLocked(ctx, ref)`
+
+`validateLeaseLocked` and `currentLeaseLocked` become a single `resolveLeaseLocked(ctx, ref)` that either strict-matches or resolves the current lease by ID.
+
+Mirror this in:
+- `server/handlers.go`: one task handler that decodes an optional lease body.
+- `client/remote.go`: one remote method that builds the correct opcode from the ref shape.
+
+**Verification:**
+- Every existing test in `taskqueue`, `server`, `client` passes.
+- Benchmarks `BenchmarkTaskQueueDequeueAck` and `BenchmarkTaskQueueEnqueue` within 2% of baseline.
+- No new allocations in the hot path — check with `-benchmem`.
+
+**Risk:** moderate. The atomicity of refresh + validate + mutate + broadcast + prune must be preserved exactly. Review the diff line-by-line against the original.
 
 ---
 
-## 4. Internal Architecture & Storage Contracts
+## Phase 3 — Decouple `protocol` from `taskqueue` (1–2 days)
 
-### 4.1 Storage Engine Interface (`internal/engine`)
+**Goal:** the wire layer knows nothing about the driver layer.
 
-The engine provides policy-agnostic storage and truncation primitives. It executes physical segment deletion when instructed by drivers or the retention coordinator.
+- Introduce `protocol.Task` as a plain DTO (id, payload, attempts, maxAttempts, visibility, scheduledAt, deliveryID, offset).
+- Move `EncodeTask` / `DecodeTask` to operate on `protocol.Task`.
+- Convert at the server boundary: `protocol.Task` ⇄ `taskqueue.Task`.
+- `protocol/task.go` no longer imports `taskqueue`.
+
+**Verification:**
+- `go list -deps ./internal/protocol` contains no `internal/queue/*` or `internal/engine`.
+- Wire round-trip tests unchanged.
+
+**Risk:** low. This is a type-boundary change, not a semantic one.
+
+---
+
+## Phase 4 — Shared local node registry (4–6 days)
+
+**Goal:** embed and daemon share one core; only the transport differs.
+
+Extract `internal/node` (or `internal/registry`):
 
 ```go
-type Storage interface {
-    Append(ctx context.Context, payload []byte) (offset uint64, err error)
-    AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
-    Read(ctx context.Context, offset uint64) (Message, error)
-    ReadBatch(ctx context.Context, start uint64, n int) ([]Message, error)
-    LastOffset() uint64
-
-    // Consumer offset persistence
-    CommitOffset(ctx context.Context, queueName, group string, offset uint64) error
-    FetchOffset(ctx context.Context, queueName, group string) (uint64, error)
-
-    // Maintenance & Truncation
-    MinOffset() uint64
-    Segments() []SegmentInfo
-    TruncateBefore(ctx context.Context, offset uint64) (reclaimedBytes int64, err error)
+type Node struct {
+    mgr       *engine.Manager
+    retention *retention.Coordinator
+    logQueues map[string]*logqueue.LogQueue
+    taskQueues map[string]*taskqueue.TaskQueue
+    mu        sync.RWMutex
 }
 
+func (n *Node) LogQueue(name string) (*logqueue.LogQueue, error)
+func (n *Node) TaskQueue(name string) (*taskqueue.TaskQueue, error)
+func (n *Node) DeleteQueue(ctx, name) error
+func (n *Node) TruncateQueue(ctx, name, minOffset) (int64, error)
+func (n *Node) Close() error
 ```
 
-#### `TruncateBefore(offset)` Execution Flow:
+Then:
+- `embeddedClient` becomes a thin wrapper around `*node.Node`.
+- `server.Server` becomes a thin wrapper around `*node.Node` plus a listener and protocol dispatch.
+- `retention` registration happens inside `Node`, once.
 
-1. Identifies closed segments where `segment.NextOffset <= offset`.
-2. Unmaps `mmap` regions and closes active file descriptors for matched segments.
-3. Removes physical `.log` and `.idx` files from disk.
-4. Advances logical engine `MinOffset`.
-5. Evicts stale records from the ring cache.
+**Verification:**
+- `TestEmbeddedRetentionCoordinatesLogAndTaskDrivers` passes unchanged.
+- `TestServerQueueHandleCaching` and `TestTaskQueueHandleCaching` pass unchanged.
+- The same test suite now drives both modes through `Node`.
 
----
-
-### 4.2 Consumption Drivers & Compaction Logic
-
-#### Log Queue Driver (`internal/logqueue`)
-
-* Evaluates `segment.CreatedAt` from `Storage.Segments()` against configured TTL.
-* Queries active consumer group high-watermarks for $O_{\text{min\_consumer}}$.
-* Computes truncation target: $\min(\text{TTL\_Offset}, O_{\text{min\_consumer}})$.
-
-#### Task Queue Driver (`internal/taskqueue` - Planned)
-
-* Tracks active, un-ACKed tasks and their original log offsets in memory.
-* Snapshot Checkpoints (`checkpoint.go`): Writes periodic snapshots of active task states.
-* Computes safe truncation offset ($O_{\text{active\_tasks}}$) from un-ACKed tasks and the latest checkpoint.
+**Risk:** moderate-to-high. Watch for import cycles — `Node` must sit *below* `server` and *above* `engine` in the layer ordering. It cannot know about `protocol`.
 
 ---
 
-### 4.3 Retention Coordination (`internal/retention`)
+## Phase 5 — Directory regroup (1–2 days)
 
-The retention coordinator prevents data loss when a queue is used by multiple driver semantics:
+**Goal:** the layout shows the layering.
 
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│              Retention Coordinator (coordinator.go)            │
-├─────────────────────────────────────────────────────────────────┤
-│ Effective Truncation Floor:                                     │
-│                                                                 │
-│ TruncateFloor = min( TargetOffset,                              │
-│                      min(O_consumer_groups),                    │
-│                      min(O_active_tasks) )                      │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │
-                               │ TruncateBefore(TruncateFloor)
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                       engine.Storage                            │
-└─────────────────────────────────────────────────────────────────┘
+Move to:
 
 ```
+internal/
+├── engine/
+├── queue/
+│   ├── logqueue/
+│   ├── taskqueue/
+│   ├── group/
+│   └── retention/
+├── transport/
+│   ├── protocol/
+│   └── ipc/
+├── node/
+├── client/
+├── server/
+├── daemon/
+├── config/
+└── ui/
+    ├── cli/
+    ├── repl/
+    └── command/
+```
+
+Keep leaf package names identical (`package logqueue`, not `package log`). Directory churn only; no symbol churn.
+
+**Verification:**
+- `go build ./...`, `go test ./...`, `go vet ./...` all clean.
+- `mikyu`'s public import path unchanged.
+- Public API snapshot unchanged.
+
+**Risk:** low but tedious. Do it in one commit; a partial move is worse than no move.
 
 ---
 
-### 4.4 Wire Protocol & Access Layer
+## Phase 6 — Layering enforcement (1 day)
 
-* **Protocol Opcodes (`internal/protocol`)**:
-* Log Operations: `0x01`–`0x0C`
-* Planned Task Operations: `OpTaskEnqueue = 0x0D`, `OpTaskDequeue = 0x0E`, `OpTaskAck = 0x0F`, `OpTaskFail = 0x10`
-* System Operations: `OpTruncate = 0x11`, `OpShutdown = 0x12`
+**Goal:** the layering stops being a suggestion.
 
+Add `go-arch-lint` (or `depguard` via `golangci-lint`) with rules that mirror Phase 5:
 
-* **Shared Command Logic (`internal/command`)**: Both `internal/cli` and `internal/repl` execute operations via `command.go`, guaranteeing consistent execution, payload parsing (`@file`, `-`, raw string), and terminal formatting.
+- `internal/engine/**` may not import any other `internal/**`.
+- `internal/queue/**` may import `internal/engine` only.
+- `internal/transport/**` may import nothing above `internal/engine`.
+- `internal/node/**` may import `engine`, `queue/**`, `retention`.
+- `internal/client/**`, `internal/server/**`, `internal/daemon/**` may import everything below them, not each other.
+- `internal/ui/**` may import `internal/client`, `internal/command`, and nothing else internal.
+
+CI fails on violation.
+
+**Verification:** introduce a deliberate violation, confirm CI fails, revert.
+
+**Risk:** none.
 
 ---
 
-## 5. Migration Status & Roadmap Execution Plan
+## Phase 7 — Dual-mode symmetry completion (3–5 days)
 
-### Phase 1: Client & Engine Refactoring
+**Goal:** embedded and remote feel like the same product.
 
-* [x] Split client implementations into `internal/client` (`embedded.go`, `remote.go`, `options.go`).
-* [x] Implement policy-agnostic storage compaction (`compact.go`) with `TruncateBefore`, `MinOffset`, and `Segments`.
-* [x] Isolate consumer group tracking base into `internal/group`.
+- Add a long-poll `OpTaskDequeue` variant (with timeout) so `remoteTaskQueue.Dequeue` stops polling every 10ms.
+- Make `LogQueue(name)` and `TaskQueue(name)` uniform: both should return a stable handle and validate existence eagerly (or lazily, but consistently).
+- Align the public surface of `LogQueue` and `TaskQueue` — both as interfaces, both with documented differences where the domain genuinely differs.
+- Ensure `remoteLogQueue.Group` and the embedded equivalent behave identically under commit failure.
 
-### Phase 2: Driver & Coordination Layer
+**Verification:**
+- Run the existing embedded test suite against a remote client in-process. They should both pass.
+- Add a CI job that spins up a real daemon and runs a subset of `mikyu` tests through `Dial`.
 
-* [x] Isolate log driver interface and operations in `internal/logqueue`.
-* [x] Build `internal/retention` coordinator for arbitrating truncation floors.
-* [x] Centralize user command execution in `internal/command`.
+**Risk:** moderate. This is the only phase that may add public API surface. Additions only, never removals.
 
-### Phase 3: Task Driver Implementation (Next Milestone)
+---
 
-* [ ] Create `internal/taskqueue` driver package.
-* [ ] Implement in-memory task scheduler with visibility timeout and retry mechanisms.
-* [ ] Build periodic state checkpointing (`checkpoint.go`) and task compaction floor calculation.
-* [ ] Allocate wire opcodes `0x0D`–`0x10` in `internal/protocol` and add handlers to `internal/server`.
-* [ ] Wire `Client.TaskQueue(name)` in `internal/client/embedded.go` and `internal/client/remote.go`.
+## Phase 8 — Masterclass polish (ongoing)
 
-### Phase 4: Observability & TUI
+**Goal:** the repo reads like a reference implementation.
 
-* [ ] Build `internal/metrics` registry and collectors.
-* [ ] Build `internal/tui` dashboard using Lipgloss/Bubbletea.
+- `doc.go` in every package: one paragraph stating role and invariants.
+- Godoc on every exported symbol, including invariants and concurrency guarantees.
+- Runnable `Example*` tests in `mikyu` for every public flow.
+- `ARCHITECTURE.md` describing the layer model, with the diagram from Phase 5.
+- `CONTRIBUTING.md` stating the layering rules and the benchmark gate.
+- CI gates:
+  - arch lint
+  - API contract diff
+  - benchmark regression >5%
+  - coverage floor per package
+  - `goleak` on all test binaries
+- Replace any remaining `errors.New` in the hot path with `errors.Is`-compatible sentinels.
+
+---
+
+## What this plan deliberately does not do
+
+- It does not rename `engine`, `logqueue`, `taskqueue`, or any exported symbol.
+- It does not introduce generics beyond what already exists (`Typed`, `Codec`).
+- It does not split `engine` into multiple packages. `engine` is coherent; keep it whole.
+- It does not add a plugin system, a middleware chain, or a metrics façade. Those are features, not architecture.
+- It does not chase etcd's or Prometheus's layout wholesale. They have layers of history you don't.
+
+---
+
+## Definition of done
+
+- `ls internal/` communicates the layer model without a README.
+- Every file has a single role you can name in one sentence.
+- `taskqueue` has exactly one implementation of Ack, Fail, Extend, AckDeadLetter.
+- `protocol` does not import any driver.
+- `embeddedClient` and `server.Server` share one local-node core.
+- The public API diff against `api/contract.txt` in Phase 0 is empty except for Phase 7 additions.
+- Benchmarks are within 5% of baseline.
+- CI fails on any of the above being violated.
