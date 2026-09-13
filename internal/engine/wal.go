@@ -37,28 +37,30 @@ type wal struct {
 	published   int64
 	err         error
 
-	asyncChan chan asyncEntry // Lock-free channel for fsync: false fast-path
-	wake      chan struct{}
-	shutdown  chan struct{}
-	done      chan struct{}
-	stopOnce  sync.Once
+	asyncChan     chan asyncEntry // Lock-free channel for fsync: false fast-path
+	wake          chan struct{}
+	configChanged chan struct{}
+	shutdown      chan struct{}
+	done          chan struct{}
+	stopOnce      sync.Once
 }
 
 func newWAL(f *os.File, cfg Config, startOffset int64) *wal {
 	initCap := cfg.BatchSize * 1024
 	w := &wal{
-		file:        f,
-		cfg:         cfg.withDefaults(),
-		published:   startOffset,
-		pushed:      startOffset,
-		buf:         make([]byte, 0, initCap),
-		pending:     make([]pendingEntry, 0, cfg.BatchSize),
-		swapBuf:     make([]byte, 0, initCap),
-		swapPending: make([]pendingEntry, 0, cfg.BatchSize),
-		asyncChan:   make(chan asyncEntry, asyncChanBufferCap),
-		wake:        make(chan struct{}, 1),
-		shutdown:    make(chan struct{}),
-		done:        make(chan struct{}),
+		file:          f,
+		cfg:           cfg.withDefaults(),
+		published:     startOffset,
+		pushed:        startOffset,
+		buf:           make([]byte, 0, initCap),
+		pending:       make([]pendingEntry, 0, cfg.BatchSize),
+		swapBuf:       make([]byte, 0, initCap),
+		swapPending:   make([]pendingEntry, 0, cfg.BatchSize),
+		asyncChan:     make(chan asyncEntry, asyncChanBufferCap),
+		wake:          make(chan struct{}, 1),
+		configChanged: make(chan struct{}, 1),
+		shutdown:      make(chan struct{}),
+		done:          make(chan struct{}),
 	}
 	w.cond = sync.NewCond(&w.mu)
 	return w
@@ -70,8 +72,12 @@ func (w *wal) start() {
 
 func (w *wal) syncLoop() {
 	defer close(w.done)
-	ticker := time.NewTicker(w.cfg.MaxInterval)
-	defer ticker.Stop()
+
+	w.mu.Lock()
+	interval := w.cfg.MaxInterval
+	w.mu.Unlock()
+
+	ticker := time.NewTicker(interval)
 
 	for {
 		select {
@@ -81,10 +87,30 @@ func (w *wal) syncLoop() {
 			w.flush()
 		case <-w.wake:
 			w.adaptiveFlush()
+		case <-w.configChanged:
+			ticker.Stop()
+			w.mu.Lock()
+			interval = w.cfg.MaxInterval
+			w.mu.Unlock()
+			ticker = time.NewTicker(interval)
 		case <-w.shutdown:
+			ticker.Stop()
 			w.shutdownFlush()
 			return
 		}
+	}
+}
+
+// UpdateConfig swaps the WAL's batching and timing parameters.
+func (w *wal) UpdateConfig(batchSize int, maxInterval, minInterval time.Duration) {
+	w.mu.Lock()
+	w.cfg.BatchSize = batchSize
+	w.cfg.MaxInterval = maxInterval
+	w.cfg.MinInterval = minInterval
+	w.mu.Unlock()
+	select {
+	case w.configChanged <- struct{}{}:
+	default:
 	}
 }
 
@@ -152,14 +178,16 @@ func (w *wal) currentError() error {
 func (w *wal) adaptiveFlush() {
 	w.mu.Lock()
 	n := len(w.pending)
+	batchSize := w.cfg.BatchSize
+	minInterval := w.cfg.MinInterval
 	w.mu.Unlock()
 
 	if n == 0 {
 		return
 	}
 
-	if n < w.cfg.BatchSize && w.cfg.MinInterval > 0 {
-		time.Sleep(w.cfg.MinInterval)
+	if n < batchSize && minInterval > 0 {
+		time.Sleep(minInterval)
 	}
 
 	w.flush()
@@ -175,6 +203,7 @@ func (w *wal) flush() {
 	// Swap staged buffers with pre-allocated swap buffers
 	data := w.buf
 	entries := w.pending
+	fsync := w.cfg.Fsync
 
 	w.buf = w.swapBuf[:0]
 	w.pending = w.swapPending[:0]
@@ -190,8 +219,7 @@ func (w *wal) flush() {
 	var writeErr error
 	if _, err := w.file.WriteAt(data, entries[0].pos); err != nil {
 		writeErr = err
-	} else if w.cfg.Fsync {
-		// Only execute physical disk sync if Fsync is enabled
+	} else if fsync {
 		if err := syncData(w.file); err != nil {
 			writeErr = err
 		}
@@ -213,9 +241,13 @@ func (w *wal) flush() {
 }
 
 func (w *wal) drainAndFlushAsync(first asyncEntry) {
+	w.mu.Lock()
+	batchSize := w.cfg.BatchSize
+	w.mu.Unlock()
+
 	entries := []asyncEntry{first}
 
-	for len(entries) < w.cfg.BatchSize {
+	for len(entries) < batchSize {
 		select {
 		case entry := <-w.asyncChan:
 			entries = append(entries, entry)

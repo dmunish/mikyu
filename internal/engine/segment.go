@@ -2,9 +2,10 @@ package engine
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/edsrzf/mmap-go"
@@ -12,6 +13,9 @@ import (
 
 type segment struct {
 	baseOff      uint64
+	dir          string // directory containing this segment's files
+	logName      string // .log file name, relative to dir
+	idxName      string // .idx file name, relative to dir
 	logFile      *os.File
 	idxFile      *os.File
 	pos          int64
@@ -21,11 +25,20 @@ type segment struct {
 	idxMMap      mmap.MMap // Memory-mapped index region for closed historical segment
 }
 
+// openSegment creates or opens the segment files for baseOff inside dir.
+// The files are opened through an os.Root scoped to dir, so segment paths
+// can never escape the queue directory.
 func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, error) {
-	logPath := filepath.Join(dir, fmt.Sprintf("%020d.log", baseOff))
-	idxPath := filepath.Join(dir, fmt.Sprintf("%020d.idx", baseOff))
+	logName := fmt.Sprintf("%020d.log", baseOff)
+	idxName := fmt.Sprintf("%020d.idx", baseOff)
 
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_RDWR, 0o644)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+
+	logFile, err := root.OpenFile(logName, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +47,7 @@ func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, erro
 		_ = logFile.Truncate(preallocSize)
 	}
 
-	idxFile, err := os.OpenFile(idxPath, os.O_CREATE|os.O_RDWR, 0o644)
+	idxFile, err := root.OpenFile(idxName, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		_ = logFile.Close()
 		return nil, err
@@ -47,6 +60,9 @@ func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, erro
 
 	return &segment{
 		baseOff:      baseOff,
+		dir:          dir,
+		logName:      logName,
+		idxName:      idxName,
 		logFile:      logFile,
 		idxFile:      idxFile,
 		preallocSize: preallocSize,
@@ -55,10 +71,19 @@ func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, erro
 }
 
 // Map the segment into read-only memory once closed for production zero-copy reads.
+// The extra open handles are obtained through an os.Root scoped to the segment
+// directory because the segment's own handles may have been opened relative to
+// a root (see openSegment).
 func (s *segment) enableMMap() error {
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+
 	if s.mmapData == nil {
 		if info, err := s.logFile.Stat(); err == nil && info.Size() > 0 {
-			mf, err := os.Open(s.logFile.Name())
+			mf, err := root.Open(s.logName)
 			if err != nil {
 				return err
 			}
@@ -72,7 +97,7 @@ func (s *segment) enableMMap() error {
 	}
 	if s.idxMMap == nil {
 		if info, err := s.idxFile.Stat(); err == nil && info.Size() > 0 {
-			mf, err := os.Open(s.idxFile.Name())
+			mf, err := root.Open(s.idxName)
 			if err != nil {
 				return err
 			}
@@ -243,23 +268,67 @@ func (s *segment) nextOffset() uint64 {
 	return s.baseOff
 }
 
-func (s *segment) destroy() (int64, error) {
-	logPath := s.logFile.Name()
-	idxPath := s.idxFile.Name()
+// lastTimestamp returns the timestamp of the segment's newest record. ok is
+// false when the segment holds no records or its tail cannot be read.
+func (s *segment) lastTimestamp() (time.Time, bool) {
+	count := 0
+	if len(s.idxMMap) > 0 {
+		count = len(s.idxMMap) / rawIndexEntrySize
+	} else if s.idxFile != nil {
+		if info, err := s.idxFile.Stat(); err == nil {
+			count = int(info.Size() / rawIndexEntrySize)
+		}
+	}
+	if count == 0 {
+		return time.Time{}, false
+	}
 
+	idxPos := int64(count-1) * rawIndexEntrySize
+	var buf [rawIndexEntrySize]byte
+	if len(s.idxMMap) >= int(idxPos+rawIndexEntrySize) {
+		copy(buf[:], s.idxMMap[idxPos:idxPos+rawIndexEntrySize])
+	} else if _, err := s.idxFile.ReadAt(buf[:], idxPos); err != nil {
+		return time.Time{}, false
+	}
+	entry := UnmarshalRawIndexEntry(buf[:])
+	if entry.len < minRecordSize {
+		return time.Time{}, false
+	}
+
+	rec := make([]byte, entry.len)
+	if len(s.mmapData) >= int(entry.pos+entry.len) {
+		copy(rec, s.mmapData[entry.pos:entry.pos+entry.len])
+	} else if _, err := s.logFile.ReadAt(rec, entry.pos); err != nil {
+		return time.Time{}, false
+	}
+	_, ts, _, err := decodeRecord(rec[recordLengthSize:])
+	if err != nil {
+		return time.Time{}, false
+	}
+	return ts, true
+}
+
+func (s *segment) destroy() (int64, error) {
 	freed := s.diskSize()
 
 	// 1. First unmap memory regions and close file handles
 	_ = s.Close()
 
-	// 2. Unlink physical files from disk
-	err1 := os.Remove(logPath)
-	err2 := os.Remove(idxPath)
+	// 2. Unlink physical files through an os.Root scoped to the segment
+	// directory so no path can escape it.
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return freed, err
+	}
+	defer root.Close()
 
-	if err1 != nil && !os.IsNotExist(err1) {
+	err1 := root.Remove(s.logName)
+	err2 := root.Remove(s.idxName)
+
+	if err1 != nil && !errors.Is(err1, fs.ErrNotExist) {
 		return freed, err1
 	}
-	if err2 != nil && !os.IsNotExist(err2) {
+	if err2 != nil && !errors.Is(err2, fs.ErrNotExist) {
 		return freed, err2
 	}
 	return freed, nil

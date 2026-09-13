@@ -1,0 +1,76 @@
+package protocol
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/binary"
+	"io"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestWriteReadFrame(t *testing.T) {
+	var buf bytes.Buffer
+	payload := []byte("hello")
+	err := WriteFrame(&buf, OpAppend, payload)
+	require.NoError(t, err)
+
+	r := bufio.NewReader(&buf)
+	op, data, err := ReadFrame(r)
+	require.NoError(t, err)
+	assert.Equal(t, OpAppend, op)
+	assert.Equal(t, payload, data)
+}
+
+func TestReadFrameZeroLength(t *testing.T) {
+	var buf bytes.Buffer
+	buf.Write([]byte{0, 0, 0, 0})
+	r := bufio.NewReader(&buf)
+	_, _, err := ReadFrame(r)
+	assert.Error(t, err)
+}
+
+func TestWriteFramePoolReuse(t *testing.T) {
+	var buf bytes.Buffer
+	payload := []byte("reuse")
+	for range 100 {
+		buf.Reset()
+		err := WriteFrame(&buf, OpInfo, payload)
+		require.NoError(t, err)
+	}
+}
+
+func TestWriteFrameEmptyPayload(t *testing.T) {
+	var buf bytes.Buffer
+	err := WriteFrame(&buf, OpShutdown, nil)
+	require.NoError(t, err)
+	r := bufio.NewReader(&buf)
+	op, data, err := ReadFrame(r)
+	require.NoError(t, err)
+	assert.Equal(t, OpShutdown, op)
+	assert.Empty(t, data)
+}
+
+func BenchmarkWriteFrame(b *testing.B) {
+	payload := make([]byte, 64*1024) // 64 KB frame
+
+	b.ReportAllocs()
+
+	for b.Loop() {
+		if err := WriteFrame(io.Discard, OpAppend, payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestReadFrameRejectsOversizedFrame(t *testing.T) {
+	var buf bytes.Buffer
+	var hdr [4]byte
+	binary.BigEndian.PutUint32(hdr[:], MaxFrameBytes+1)
+	buf.Write(hdr[:])
+	r := bufio.NewReader(&buf)
+	_, _, err := ReadFrame(r)
+	assert.Error(t, err)
+}

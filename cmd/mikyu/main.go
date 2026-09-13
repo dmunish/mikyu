@@ -1,44 +1,53 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
-	"github.com/dmunish/mikyu/internal/cli"
 	"github.com/dmunish/mikyu/internal/daemon"
-	"github.com/dmunish/mikyu/internal/repl"
+	"github.com/dmunish/mikyu/internal/ui/cli"
+	"github.com/dmunish/mikyu/internal/ui/repl"
 )
 
 const defaultTarget = "tcp://127.0.0.1:7420"
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	err := run(os.Args[1:])
+	if err != nil && !errors.Is(err, daemon.ErrUsage) {
+		// ErrUsage details (with usage text) were already written to stderr
+		// by the failing command; everything else gets the standard line.
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+	}
+	os.Exit(exitCode(err))
+}
+
+// exitCode maps run's result to a process exit code: 0 success, 1 general
+// error, 2 command-line usage error (Unix convention).
+func exitCode(err error) int {
+	switch {
+	case err == nil:
+		return 0
+	case errors.Is(err, daemon.ErrUsage):
+		return 2
+	default:
+		return 1
 	}
 }
 
 func run(args []string) error {
 	if len(args) == 0 {
-		repl.RunREPL(defaultTarget)
-		return nil
+		return repl.RunREPL(defaultTarget, nil)
 	}
 
 	switch args[0] {
 	case "daemon", "server":
-		configPath := ""
-		if len(args) > 1 {
-			configPath = args[1]
-		}
-		return daemon.Run(configPath)
+		return daemon.Run(args[1:])
 	case "shell", "repl":
-		repl.RunREPL(defaultTarget)
-		return nil
+		return repl.RunREPL(defaultTarget, args[1:])
 	case "cli":
-		cli.RunCLI(defaultTarget, args[1:])
-		return nil
+		return cli.RunCLI(defaultTarget, args[1:])
 	default:
-		cli.RunCLI(defaultTarget, args)
-		return nil
+		return cli.RunCLI(defaultTarget, args)
 	}
 }

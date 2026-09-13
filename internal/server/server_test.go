@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dmunish/mikyu/internal/engine"
-	"github.com/dmunish/mikyu/internal/logqueue"
-	"github.com/dmunish/mikyu/internal/protocol"
+	"github.com/dmunish/mikyu/internal/node"
+	"github.com/dmunish/mikyu/internal/queue/logqueue"
+	"github.com/dmunish/mikyu/internal/spec"
+	"github.com/dmunish/mikyu/internal/transport/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,14 +31,15 @@ func testWithTimeout(t *testing.T, timeout time.Duration) {
 
 func TestServerQueueHandleCaching(t *testing.T) {
 	dir := t.TempDir()
-	mgr, err := engine.OpenManager(dir, engine.Config{})
+	n, release, err := node.Acquire(dir, spec.Spec{})
 	require.NoError(t, err)
-	defer mgr.Close()
+	defer func() { _ = release() }()
 
-	_, err = mgr.CreateQueue("cached")
+	_, err = n.Manager().CreateQueue("cached")
 	require.NoError(t, err)
 
-	srv := New(mgr)
+	srv := New(n)
+	defer srv.Stop()
 	first, err := srv.getOrCreateLogQueue("cached")
 	require.NoError(t, err)
 
@@ -72,11 +74,11 @@ func TestServerQueueHandleCaching(t *testing.T) {
 func TestServerListenAndServe(t *testing.T) {
 	testWithTimeout(t, 2*time.Second)
 	dir := t.TempDir()
-	mgr, err := engine.OpenManager(dir, engine.Config{})
+	n, release, err := node.Acquire(dir, spec.Spec{})
 	require.NoError(t, err)
-	defer mgr.Close()
+	defer func() { _ = release() }()
 
-	srv := New(mgr)
+	srv := New(n)
 	// Use ListenAndServe so srv.listener is set and Stop() can close it.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -91,7 +93,7 @@ func TestServerListenAndServe(t *testing.T) {
 	defer conn.Close()
 
 	// Send a harmless op (e.g., OpListQueues) to verify the server responds,
-	// but do NOT send OpShutdown, which would trigger async mgr.Close().
+	// but do NOT send OpShutdown, which would trigger an async node.Close().
 	err = protocol.WriteFrame(conn, protocol.OpListQueues, nil)
 	require.NoError(t, err)
 
@@ -104,9 +106,11 @@ func TestServerListenAndServe(t *testing.T) {
 func TestServerServeClosesOnStop(t *testing.T) {
 	testWithTimeout(t, 2*time.Second)
 	dir := t.TempDir()
-	mgr, _ := engine.OpenManager(dir, engine.Config{})
-	defer mgr.Close()
-	srv := New(mgr)
+	n, release, _ := node.Acquire(dir, spec.Spec{})
+	defer func() { _ = release() }()
+	srv := New(n)
+	defer srv.Stop()
+
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	srv.listener = ln
 	go srv.Serve(ln)
@@ -120,14 +124,14 @@ func TestServerServeClosesOnStop(t *testing.T) {
 func TestServerTLSHandshake(t *testing.T) {
 	testWithTimeout(t, 2*time.Second)
 	dir := t.TempDir()
-	mgr, err := engine.OpenManager(dir, engine.Config{})
+	n, release, err := node.Acquire(dir, spec.Spec{})
 	require.NoError(t, err)
-	defer mgr.Close()
+	defer func() { _ = release() }()
 
 	tlsCfg, err := DefaultTLSConfig("", "")
 	require.NoError(t, err)
 
-	srv := New(mgr, WithTLS(tlsCfg))
+	srv := New(n, WithTLS(tlsCfg))
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	tlsLn := tls.NewListener(ln, tlsCfg)

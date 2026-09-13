@@ -5,20 +5,19 @@ import (
 	"encoding/binary"
 	"io"
 	"os"
-	"path/filepath"
 	"sync"
 )
 
 const (
 	managerOffsetFileName   = "manager-offsets.dat"
+	managerOffsetTmpName    = "manager-offsets.dat.tmp"
 	compactAppendsThreshold = 5000
 )
 
 // OffsetStore is a manager-level offset persistence store.
-// A single file tracks consumer group offsets across all queues to avoid inode exhaustion.
 type OffsetStore struct {
 	mu                  sync.RWMutex
-	dir                 string
+	root                *os.Root
 	file                *os.File
 	w                   *bufio.Writer
 	offsets             map[string]uint64
@@ -26,19 +25,24 @@ type OffsetStore struct {
 }
 
 func openOffsetStore(dir string) (*OffsetStore, error) {
-	path := filepath.Join(dir, managerOffsetFileName)
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, err
 	}
+	f, err := root.OpenFile(managerOffsetFileName, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
 	s := &OffsetStore{
-		dir:     dir,
+		root:    root,
 		file:    f,
 		w:       bufio.NewWriter(f),
 		offsets: make(map[string]uint64),
 	}
 	if err := s.recover(); err != nil {
 		_ = f.Close()
+		_ = root.Close()
 		return nil, err
 	}
 	return s, nil
@@ -67,8 +71,7 @@ func (s *OffsetStore) recover() error {
 }
 
 func (s *OffsetStore) compactLocked() error {
-	tmpPath := filepath.Join(s.dir, "manager-offsets.dat.tmp")
-	f, err := os.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
+	f, err := s.root.OpenFile(managerOffsetTmpName, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
@@ -96,12 +99,12 @@ func (s *OffsetStore) compactLocked() error {
 	_ = f.Close()
 	_ = s.file.Close()
 
-	targetPath := filepath.Join(s.dir, managerOffsetFileName)
-	if err := os.Rename(tmpPath, targetPath); err != nil {
+	// A rename through the root replaces the existing target file.
+	if err := s.root.Rename(managerOffsetTmpName, managerOffsetFileName); err != nil {
 		return err
 	}
 
-	newFile, err := os.OpenFile(targetPath, os.O_RDWR|os.O_APPEND, 0o644)
+	newFile, err := s.root.OpenFile(managerOffsetFileName, os.O_RDWR|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
@@ -156,6 +159,21 @@ func (s *OffsetStore) Fetch(queueName, group string) uint64 {
 func (s *OffsetStore) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_ = s.w.Flush()
-	return s.file.Close()
+
+	var err error
+	if s.file != nil {
+		if s.w != nil {
+			_ = s.w.Flush()
+		}
+		err = s.file.Close()
+		s.file = nil
+		s.w = nil
+	}
+	if s.root != nil {
+		if rerr := s.root.Close(); err == nil {
+			err = rerr
+		}
+		s.root = nil
+	}
+	return err
 }

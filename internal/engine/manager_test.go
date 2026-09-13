@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"context"
 	"sync"
 	"testing"
 	"time"
@@ -12,7 +11,7 @@ import (
 
 func TestManagerCreateGetDelete(t *testing.T) {
 	dir := t.TempDir()
-	mgr, err := OpenManager(dir, Config{})
+	mgr, err := OpenManager(dir, Config{}, nil)
 	require.NoError(t, err)
 	defer mgr.Close()
 
@@ -36,14 +35,28 @@ func TestManagerCreateGetDelete(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestManagerRejectsEscape(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := OpenManager(dir, Config{}, nil)
+	require.NoError(t, err)
+	defer mgr.Close()
+
+	_, err = mgr.CreateQueue("../escape", Config{})
+	require.Error(t, err)
+
+	// A queue can only be deleted when it exists, so escaping removal names
+	// are rejected as not-found before ever reaching the filesystem.
+	require.Error(t, mgr.DeleteQueue("../../outside"))
+}
+
 func TestManagerStats(t *testing.T) {
 	dir := t.TempDir()
-	mgr, _ := OpenManager(dir, Config{})
+	mgr, _ := OpenManager(dir, Config{}, nil)
 	defer mgr.Close()
 
 	_, _ = mgr.CreateQueue("q1")
 	_, _ = mgr.CreateQueue("q2")
-	stats := mgr.Stats()
+	stats := mgr.EngineStats()
 	assert.Equal(t, 2, stats.ActiveQueues)
 	assert.Contains(t, stats.Queues, "q1")
 	assert.Contains(t, stats.Queues, "q2")
@@ -51,11 +64,11 @@ func TestManagerStats(t *testing.T) {
 
 func TestManagerRestoresQueuesOnOpen(t *testing.T) {
 	dir := t.TempDir()
-	mgr, _ := OpenManager(dir, Config{})
+	mgr, _ := OpenManager(dir, Config{}, nil)
 	_, _ = mgr.CreateQueue("existing")
 	_ = mgr.Close()
 
-	mgr2, err := OpenManager(dir, Config{})
+	mgr2, err := OpenManager(dir, Config{}, nil)
 	require.NoError(t, err)
 	defer mgr2.Close()
 	_, err = mgr2.GetQueue("existing")
@@ -64,7 +77,7 @@ func TestManagerRestoresQueuesOnOpen(t *testing.T) {
 
 func TestManagerCloseCleansUp(t *testing.T) {
 	dir := t.TempDir()
-	mgr, _ := OpenManager(dir, Config{})
+	mgr, _ := OpenManager(dir, Config{}, nil)
 	_, _ = mgr.CreateQueue("q")
 	err := mgr.Close()
 	assert.NoError(t, err)
@@ -72,14 +85,14 @@ func TestManagerCloseCleansUp(t *testing.T) {
 
 func TestManagerStatsConcurrent(t *testing.T) {
 	dir := t.TempDir()
-	mgr, err := OpenManager(dir, Config{BatchSize: 10, MaxInterval: time.Millisecond})
+	mgr, err := OpenManager(dir, Config{BatchSize: 10, MaxInterval: time.Millisecond}, nil)
 	require.NoError(t, err)
 	defer mgr.Close()
 
 	q, err := mgr.CreateQueue("concurrent-stats")
 	require.NoError(t, err)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	var wg sync.WaitGroup
 	const workers = 8
 	const ops = 50
@@ -101,7 +114,7 @@ func TestManagerStatsConcurrent(t *testing.T) {
 	for range 4 {
 		wg.Go(func() {
 			for range ops {
-				st := mgr.Stats()
+				st := mgr.EngineStats()
 				assert.GreaterOrEqual(t, st.ActiveQueues, 1)
 			}
 		})

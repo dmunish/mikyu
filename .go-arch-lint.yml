@@ -1,0 +1,101 @@
+# go-arch-lint rules for Mikyu — reconcile.md Phase F.1.
+#
+# spec and engine are the two bottoms; spec has zero internal deps.
+# transport imports nothing internal below itself; protocol is pure DTOs.
+# node never touches protocol/server/client. client and server never import
+# each other. daemon is the only package wiring server. ui/* reaches the
+# world only through the root `mikyu` facade, client, command, daemon, spec.
+#
+# enginetest is deliberately absent from every mayDependOn list: it is a
+# test-only package (see excludeFiles), and nothing in production code may
+# import it — engine, queue drivers, and node tests use it via _test.go files,
+# which this linter does not gate.
+
+version: 3
+
+allow:
+  depOnAnyVendor: true   # stdlib and go.mod deps are unconstrained
+  deepScan: false        # package-level layering only, no AST method scan
+
+exclude:
+  - .agents          # vendored skill examples, not project code (go tooling skips dot-dirs too)
+
+excludeFiles:
+  - ".*_test\\.go$"
+
+components:
+  spec:       { in: internal/spec }
+  engine:     { in: internal/engine }
+  enginetest: { in: internal/enginetest }
+  protocol:   { in: internal/transport/protocol }
+  ipc:        { in: internal/transport/ipc }
+  group:      { in: internal/queue/group }
+  logqueue:   { in: internal/queue/logqueue }
+  taskqueue:  { in: internal/queue/taskqueue }
+  retention:  { in: internal/queue/retention }
+  node:       { in: internal/node }
+  client:     { in: internal/client }
+  server:     { in: internal/server }
+  config:     { in: internal/config }
+  daemon:     { in: internal/daemon }
+  mikyu:      { in: "." }          # root facade package
+  audit:      { in: internal/audit }
+  command:    { in: internal/ui/command }
+  cli:        { in: internal/ui/cli }
+  repl:       { in: internal/ui/repl }
+  cmd:        { in: cmd/mikyu }    # the CLI binary main
+
+deps:
+  # ---- bottoms ---- (anyVendorDeps: stdlib allowed, no internal deps)
+  spec:
+    anyVendorDeps: true
+  engine:
+    anyVendorDeps: true
+  protocol:
+    anyVendorDeps: true
+  group:
+    anyVendorDeps: true
+  enginetest:
+    mayDependOn: [engine]          # in-memory Storage for driver tests only
+
+  # ---- transport ----
+  ipc:
+    mayDependOn: [protocol]
+
+  # ---- drivers over engine ----
+  logqueue:
+    mayDependOn: [engine, group]
+  taskqueue:
+    mayDependOn: [engine]
+  retention:
+    mayDependOn: [engine]
+
+  # ---- node: registry, pool, driver cache, retention wiring ----
+  node:
+    mayDependOn: [spec, engine, logqueue, taskqueue, retention]
+
+  # ---- remote/embedded adapters; client and server never meet ----
+  client:
+    mayDependOn: [spec, engine, node, group, logqueue, taskqueue, ipc, protocol]
+  server:
+    mayDependOn: [spec, engine, node, logqueue, taskqueue, ipc, protocol]
+
+  # ---- configuration and process entry ----
+  config:
+    mayDependOn: [spec]
+  daemon:
+    mayDependOn: [spec, config, engine, node, server, protocol]
+
+  # ---- user surface ----
+  mikyu:
+    mayDependOn: [spec, client, engine, node, logqueue, taskqueue]
+  audit:
+    anyVendorDeps: true
+  command:
+    mayDependOn: [mikyu, client, daemon, spec]
+  cli:
+    mayDependOn: [mikyu, client, daemon, command, spec]
+  repl:
+    mayDependOn: [mikyu, client, daemon, command, spec]
+  cmd:
+    mayDependOn: [mikyu, daemon, cli, repl]

@@ -19,13 +19,13 @@ func NewTyped[T any](q LogQueue, codec Codec[T]) *Typed[T] {
 	return &Typed[T]{queue: q, codec: codec}
 }
 
-// Produce marshals and produces a value.
-func (t *Typed[T]) Produce(ctx context.Context, val T) (uint64, error) {
+// Append marshals and appends a value.
+func (t *Typed[T]) Append(ctx context.Context, val T) (uint64, error) {
 	payload, err := t.codec.Marshal(val)
 	if err != nil {
 		return 0, err
 	}
-	return t.queue.Produce(ctx, payload)
+	return t.queue.Append(ctx, payload)
 }
 
 // Read reads and unmarshals a value at offset.

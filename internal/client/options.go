@@ -2,169 +2,170 @@ package client
 
 import (
 	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"os"
 	"time"
+
+	"github.com/dmunish/mikyu/internal/spec"
 )
 
-// Config controls client-wide defaults and remote connection behavior.
-type Config struct {
-	BatchSize   int
-	MaxInterval time.Duration
-	MinInterval time.Duration
-
-	MaxConns int
-
-	DefaultMaxSegmentBytes int64
-	DefaultMaxMessageBytes int64
-	DefaultMaxSegmentAge   time.Duration
-	Encrypted              bool
-	Fsync                  bool
-	TLSConfig              *tls.Config
+// SessionConfig carries client-wide defaults and remote connection behavior.
+type SessionConfig struct {
+	Spec        spec.Spec
+	Target      string
+	DataDir     string
+	MaxConns    int
+	TLSEnabled  bool
+	TLSCertFile string
+	TLSKeyFile  string
 }
 
-// DefaultClientConfig returns the same defaults used by the original public API.
-func DefaultClientConfig() Config {
-	return Config{
-		BatchSize:              256,
-		MaxInterval:            10 * time.Millisecond,
-		MinInterval:            30 * time.Microsecond,
-		MaxConns:               10,
-		DefaultMaxSegmentBytes: 64 * 1024 * 1024,
-		DefaultMaxMessageBytes: 1 * 1024 * 1024,
-		DefaultMaxSegmentAge:   1 * time.Hour,
-		Encrypted:              false,
-		Fsync:                  true,
-	}
+// DefaultSessionConfig returns the built-in connection defaults.
+func DefaultSessionConfig() SessionConfig {
+	return SessionConfig{MaxConns: 10}
 }
 
 // Option configures a client.
-type Option func(*Config)
+type Option func(*SessionConfig)
 
-func WithBatchSize(n int) Option {
-	return func(c *Config) {
-		if n > 0 {
-			c.BatchSize = n
-		}
-	}
+// WithSessionSpec replaces the session-default spec inherited by new queues.
+func WithSessionSpec(s spec.Spec) Option {
+	return func(c *SessionConfig) { c.Spec = s }
 }
 
-func WithMaxInterval(d time.Duration) Option {
-	return func(c *Config) {
-		if d > 0 {
-			c.MaxInterval = d
-		}
-	}
+// WithTarget sets the remote target to dial.
+func WithTarget(target string) Option {
+	return func(c *SessionConfig) { c.Target = target }
 }
 
-// WithFlushInterval is an alias for WithMaxInterval.
-func WithFlushInterval(d time.Duration) Option {
-	return WithMaxInterval(d)
+// WithDataDir sets the directory an embedded client opens.
+func WithDataDir(dir string) Option {
+	return func(c *SessionConfig) { c.DataDir = dir }
 }
 
-func WithMinInterval(d time.Duration) Option {
-	return func(c *Config) {
-		if d >= 0 {
-			c.MinInterval = d
-		}
-	}
-}
-
+// WithMaxConns caps the remote connection pool.
 func WithMaxConns(n int) Option {
-	return func(c *Config) {
+	return func(c *SessionConfig) {
 		if n > 0 {
 			c.MaxConns = n
 		}
 	}
 }
 
-func WithClientDirectoryEncryption(enabled bool) Option {
-	return func(c *Config) {
-		c.Encrypted = enabled
+// WithTLSEnabled turns on TLS for remote tcp:// connections.
+func WithTLSEnabled(enabled bool) Option {
+	return func(c *SessionConfig) { c.TLSEnabled = enabled }
+}
+
+// WithTLSCertFile sets the client certificate presented to a TLS server.
+func WithTLSCertFile(path string) Option {
+	return func(c *SessionConfig) { c.TLSCertFile = path }
+}
+
+// WithTLSKeyFile sets the private key matching the client certificate.
+func WithTLSKeyFile(path string) Option {
+	return func(c *SessionConfig) { c.TLSKeyFile = path }
+}
+
+// TLSConfig builds the TLS configuration, or nil when TLS is disabled; the cert pair authenticates this client and is trusted as the server's root.
+func (c SessionConfig) TLSConfig() (*tls.Config, error) {
+	if !c.TLSEnabled {
+		return nil, nil
 	}
-}
-
-func WithClientTLS(tlsConfig *tls.Config) Option {
-	return func(c *Config) {
-		c.TLSConfig = tlsConfig
+	if c.TLSCertFile == "" || c.TLSKeyFile == "" {
+		return nil, errors.New("tls_enabled needs tls_cert_file and tls_key_file")
 	}
-}
-
-func WithFsync(enabled bool) Option {
-	return func(c *Config) {
-		c.Fsync = enabled
+	pair, err := tls.LoadX509KeyPair(c.TLSCertFile, c.TLSKeyFile)
+	if err != nil {
+		return nil, err
 	}
+	pem, err := os.ReadFile(c.TLSCertFile)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("no certificate found in %s", c.TLSCertFile)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{pair},
+		RootCAs:      pool,
+		MinVersion:   tls.VersionTLS13,
+	}, nil
 }
 
-// QueueConfig controls per-queue engine defaults.
-type QueueConfig struct {
-	BatchSize       int
-	MaxInterval     time.Duration
-	MinInterval     time.Duration
-	MaxSegmentBytes int64
-	MaxMessageBytes int64
-	MaxSegmentAge   time.Duration
-	Encrypted       bool
-	Fsync           bool
+// QueueOption sets one field of a queue's spec; each option names its field, so the result is sparse by construction.
+type QueueOption func(*spec.Spec)
+
+// WithBatchSize sets the max pending appends before a WAL flush.
+func WithBatchSize(n int) QueueOption {
+	return func(s *spec.Spec) { s.Engine.BatchSize = new(n) }
 }
 
-// QueueOption configures a queue.
-type QueueOption func(*QueueConfig)
+// WithMaxInterval sets the max delay forcing a WAL flush.
+func WithMaxInterval(d time.Duration) QueueOption {
+	return func(s *spec.Spec) { s.Engine.MaxInterval = new(spec.Duration(d)) }
+}
 
-func WithQueueBatchSize(n int) QueueOption {
-	return func(c *QueueConfig) {
-		if n > 0 {
-			c.BatchSize = n
+// WithMinInterval sets the micro-linger window grouping concurrent appends.
+func WithMinInterval(d time.Duration) QueueOption {
+	return func(s *spec.Spec) { s.Engine.MinInterval = new(spec.Duration(d)) }
+}
+
+// WithSegmentSize sets the bytes at which a segment rolls (create-only).
+func WithSegmentSize(b int64) QueueOption {
+	return func(s *spec.Spec) { s.Engine.SegmentSize = new(b) }
+}
+
+// WithMaxMessageBytes sets the producer payload contract (create-only).
+func WithMaxMessageBytes(b int64) QueueOption {
+	return func(s *spec.Spec) { s.Engine.MaxMessageBytes = new(b) }
+}
+
+// WithSegmentAge sets the age at which an inactive segment rolls.
+func WithSegmentAge(d time.Duration) QueueOption {
+	return func(s *spec.Spec) { s.Engine.SegmentAge = new(spec.Duration(d)) }
+}
+
+// WithEncrypted enables OS transparent directory encryption (create-only).
+func WithEncrypted(enabled bool) QueueOption {
+	return func(s *spec.Spec) { s.Engine.Encrypted = new(enabled) }
+}
+
+// WithFsync selects physical-disk durability on produce (create-only).
+func WithFsync(enabled bool) QueueOption {
+	return func(s *spec.Spec) { s.Engine.Fsync = new(enabled) }
+}
+
+// WithRetentionAge deletes records older than d, capped by consumer lag.
+func WithRetentionAge(d time.Duration) QueueOption {
+	return func(s *spec.Spec) { s.Retention.Age = new(spec.Duration(d)) }
+}
+
+// WithRetentionBytes caps on-disk size, dropping whole oldest segments.
+func WithRetentionBytes(b int64) QueueOption {
+	return func(s *spec.Spec) { s.Retention.Bytes = new(b) }
+}
+
+// WithDefaultVisibility sets the queue's fallback lease for optionless enqueues.
+func WithDefaultVisibility(d time.Duration) QueueOption {
+	return func(s *spec.Spec) { s.Task.DefaultVisibility = new(spec.Duration(d)) }
+}
+
+// WithDefaultMaxAttempts sets the queue's fallback retry budget.
+func WithDefaultMaxAttempts(n uint32) QueueOption {
+	return func(s *spec.Spec) { s.Task.DefaultMaxAttempts = new(n) }
+}
+
+// applyQueueOptions folds options into a sparse spec.
+func applyQueueOptions(opts []QueueOption) spec.Spec {
+	var s spec.Spec
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&s)
 		}
 	}
-}
-
-func WithQueueMaxInterval(d time.Duration) QueueOption {
-	return func(c *QueueConfig) {
-		if d > 0 {
-			c.MaxInterval = d
-		}
-	}
-}
-
-func WithQueueMinInterval(d time.Duration) QueueOption {
-	return func(c *QueueConfig) {
-		if d >= 0 {
-			c.MinInterval = d
-		}
-	}
-}
-
-func WithMaxSegmentBytes(bytes int64) QueueOption {
-	return func(c *QueueConfig) {
-		if bytes > 0 {
-			c.MaxSegmentBytes = bytes
-		}
-	}
-}
-
-func WithMaxMessageBytes(bytes int64) QueueOption {
-	return func(c *QueueConfig) {
-		if bytes > 0 {
-			c.MaxMessageBytes = bytes
-		}
-	}
-}
-
-func WithMaxSegmentAge(age time.Duration) QueueOption {
-	return func(c *QueueConfig) {
-		if age > 0 {
-			c.MaxSegmentAge = age
-		}
-	}
-}
-
-func WithDirectoryEncryption(enabled bool) QueueOption {
-	return func(c *QueueConfig) {
-		c.Encrypted = enabled
-	}
-}
-
-func WithQueueFsync(enabled bool) QueueOption {
-	return func(c *QueueConfig) {
-		c.Fsync = enabled
-	}
+	return s
 }

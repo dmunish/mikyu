@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,64 +15,125 @@ func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	assert.Equal(t, "tcp://127.0.0.1:7420", cfg.Server.Target)
 	assert.Equal(t, "./data", cfg.Server.DataDir)
-	assert.Equal(t, 256, cfg.Engine.BatchSize)
-	assert.Equal(t, 10*time.Millisecond, cfg.Engine.MaxInterval)
-	assert.Equal(t, 30*time.Microsecond, cfg.Engine.MinInterval)
-	assert.Equal(t, int64(64*1024*1024), cfg.Engine.MaxSegmentBytes)
+	assert.Equal(t, 10, cfg.Server.MaxConns)
+	assert.Equal(t, spec.Spec{}, cfg.Defaults)
+	assert.Empty(t, cfg.Queues)
 }
 
-func TestLoadBootstrapConfig(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfgPath := filepath.Join(tmpDir, "mikyu.yaml")
-	os.WriteFile(cfgPath, []byte(`
+func TestLoadDefaultsAndQueues(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "mikyu.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(`
 server:
   target: "tcp://127.0.0.1:9999"
-engine:
-  batch_size: 100
-`), 0644)
+  max_conns: 4
+defaults:
+  engine:
+    batch_size: 100
+  retention:
+    age: "72h"
+queues:
+  payments:
+    engine:
+      fsync: false
+`), 0o644))
 
 	cfg, path, err := Load(cfgPath)
 	require.NoError(t, err)
-	assert.Equal(t, "tcp://127.0.0.1:9999", cfg.Server.Target)
-	assert.Equal(t, 100, cfg.Engine.BatchSize)
 	assert.Equal(t, cfgPath, path)
+	assert.Equal(t, "tcp://127.0.0.1:9999", cfg.Server.Target)
+	assert.Equal(t, 4, cfg.Server.MaxConns)
+
+	require.NotNil(t, cfg.Defaults.Engine.BatchSize)
+	assert.Equal(t, 100, *cfg.Defaults.Engine.BatchSize)
+	require.NotNil(t, cfg.Defaults.Retention.Age)
+	assert.Equal(t, 72*time.Hour, cfg.Defaults.Retention.Age.Duration())
+
+	payments, ok := cfg.Queues["payments"]
+	require.True(t, ok)
+	require.NotNil(t, payments.Engine.Fsync)
+	assert.False(t, *payments.Engine.Fsync)
+	// The queue entry is sparse: unset fields inherit the session layer.
+	assert.Nil(t, payments.Engine.BatchSize)
 }
 
 func TestLoadAutoBootstrapWhenMissing(t *testing.T) {
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", t.TempDir())
-	defer os.Setenv("HOME", oldHome)
+	tmp := t.TempDir()
+	t.Chdir(tmp)
+	t.Setenv("APPDATA", filepath.Join(tmp, "appdata"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "xdg"))
+	t.Setenv("HOME", filepath.Join(tmp, "home"))
 
 	cfg, path, err := Load("")
 	require.NoError(t, err)
 	assert.NotEmpty(t, path)
 	assert.NotNil(t, cfg)
+	assert.Equal(t, 256, *cfg.Defaults.Engine.BatchSize)
 }
 
 func TestEnvOverrides(t *testing.T) {
-	oldVal := os.Getenv("MIKYU_SERVER_TARGET")
-	os.Setenv("MIKYU_SERVER_TARGET", "tcp://0.0.0.0:1234")
-	defer os.Setenv("MIKYU_SERVER_TARGET", oldVal)
+	t.Setenv("MIKYU_TARGET", "tcp://0.0.0.0:1234")
+	t.Setenv("MIKYU_BATCH_SIZE", "150")
 
 	cfg := DefaultConfig()
-	applyEnvOverrides(&cfg)
+	require.NoError(t, applyEnvOverrides(&cfg))
 	assert.Equal(t, "tcp://0.0.0.0:1234", cfg.Server.Target)
+	require.NotNil(t, cfg.Defaults.Engine.BatchSize)
+	assert.Equal(t, 150, *cfg.Defaults.Engine.BatchSize)
 }
 
-func TestToQueueEngineConfig(t *testing.T) {
-	defaults := EngineConfig{
-		BatchSize:       100,
-		MaxInterval:     5 * time.Millisecond,
-		MinInterval:     20 * time.Microsecond,
-		MaxSegmentBytes: 1024,
+func TestLegacyEnvVarsHardError(t *testing.T) {
+	t.Setenv("MIKYU_ENGINE_BATCH_SIZE", "150")
+
+	cfg := DefaultConfig()
+	err := applyEnvOverrides(&cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MIKYU_ENGINE_BATCH_SIZE")
+	assert.Contains(t, err.Error(), "MIKYU_BATCH_SIZE")
+}
+
+func TestConfigOldKeyHardError(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "mikyu.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("engine:\n  max_segment_bytes: 1024\n"), 0o644))
+
+	_, _, err := Load(cfgPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max_segment_bytes")
+	assert.Contains(t, err.Error(), "segment_size")
+}
+
+// Every session-layer parameter in spec.Table must be reachable from its env var.
+func TestConfigEnvOverridesFromTable(t *testing.T) {
+	values := map[string]string{
+		"target":        "tcp://10.0.0.1:7000",
+		"data_dir":      "D:/mikyu-data",
+		"tls_enabled":   "true",
+		"tls_cert_file": "cert.pem",
+		"tls_key_file":  "key.pem",
+		"max_conns":     "7",
 	}
-	q := QueueConfig{
-		MinInterval:     50 * time.Microsecond,
-		MaxSegmentBytes: 2048,
+	for _, p := range spec.Params(spec.LayerSession) {
+		t.Run(p.Key, func(t *testing.T) {
+			t.Setenv(p.EnvName, values[p.Key])
+
+			cfg := DefaultConfig()
+			require.NoError(t, applyEnvOverrides(&cfg))
+
+			switch p.Key {
+			case "target":
+				assert.Equal(t, values["target"], cfg.Server.Target)
+			case "data_dir":
+				assert.Equal(t, values["data_dir"], cfg.Server.DataDir)
+			case "tls_enabled":
+				assert.True(t, cfg.Server.TLSEnabled)
+			case "tls_cert_file":
+				assert.Equal(t, values["tls_cert_file"], cfg.Server.TLSCertFile)
+			case "tls_key_file":
+				assert.Equal(t, values["tls_key_file"], cfg.Server.TLSKeyFile)
+			case "max_conns":
+				assert.Equal(t, 7, cfg.Server.MaxConns)
+			default:
+				t.Fatalf("session parameter %q has no assertion", p.Key)
+			}
+		})
 	}
-	cfg := ToQueueEngineConfig(defaults, q)
-	assert.Equal(t, 100, cfg.BatchSize)                   // inherited
-	assert.Equal(t, 5*time.Millisecond, cfg.MaxInterval)  // inherited
-	assert.Equal(t, 50*time.Microsecond, cfg.MinInterval) // overridden
-	assert.Equal(t, int64(2048), cfg.MaxSegmentBytes)     // overridden
 }

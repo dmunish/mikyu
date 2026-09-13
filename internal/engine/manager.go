@@ -1,14 +1,16 @@
 package engine
 
 import (
+	"maps"
 	"os"
-	"path/filepath"
+	"slices"
 	"sync"
 )
 
 type Manager struct {
 	mu      sync.RWMutex
 	dir     string
+	root    *os.Root
 	cfg     Config
 	queues  map[string]*Queue
 	offsets *OffsetStore
@@ -29,7 +31,7 @@ type QueueStats struct {
 }
 
 // OpenManager creates a Manager and loads existing queues.
-func OpenManager(dir string, cfg Config) (*Manager, error) {
+func OpenManager(dir string, cfg Config, perQueue map[string]Config) (*Manager, error) {
 	cfg = cfg.withDefaults()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -37,21 +39,26 @@ func OpenManager(dir string, cfg Config) (*Manager, error) {
 	if cfg.Encrypted {
 		_ = EnsureDirectoryEncrypted(dir)
 	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
 	store, err := openOffsetStore(dir)
 	if err != nil {
+		_ = root.Close()
 		return nil, err
 	}
 	m := &Manager{
 		dir:     dir,
+		root:    root,
 		cfg:     cfg,
 		queues:  make(map[string]*Queue),
 		offsets: store,
 	}
 
-	// Load existing queue subdirectories.
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		_ = store.Close()
+		_ = m.Close()
 		return nil, err
 	}
 
@@ -60,9 +67,13 @@ func OpenManager(dir string, cfg Config) (*Manager, error) {
 			continue
 		}
 		name := e.Name()
-		q, err := openQueue(dir, name, cfg, store)
+		qCfg := cfg
+		if override, ok := perQueue[name]; ok {
+			qCfg = override
+		}
+		q, err := openQueue(dir, name, qCfg, store)
 		if err != nil {
-			_ = m.Close() // Clean up open queues and offset store on failure
+			_ = m.Close()
 			return nil, err
 		}
 		m.queues[name] = q
@@ -106,12 +117,7 @@ func (m *Manager) GetQueue(name string) (Storage, error) {
 func (m *Manager) ListQueues() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
-	names := make([]string, 0, len(m.queues))
-	for name := range m.queues {
-		names = append(names, name)
-	}
-	return names
+	return slices.Sorted(maps.Keys(m.queues))
 }
 
 // DeleteQueue closes and removes a queue and its data.
@@ -127,11 +133,11 @@ func (m *Manager) DeleteQueue(name string) error {
 		return err
 	}
 	delete(m.queues, name)
-	return os.RemoveAll(filepath.Join(m.dir, name))
+	return m.root.RemoveAll(name)
 }
 
-// Stats returns aggregate engine statistics.
-func (m *Manager) Stats() EngineStats {
+// EngineStats returns aggregate engine statistics.
+func (m *Manager) EngineStats() EngineStats {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -177,10 +183,18 @@ func (m *Manager) Close() error {
 			firstErr = err
 		}
 	}
+	m.queues = make(map[string]*Queue)
 	if m.offsets != nil {
 		if err := m.offsets.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
+		m.offsets = nil
+	}
+	if m.root != nil {
+		if err := m.root.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		m.root = nil
 	}
 	return firstErr
 }

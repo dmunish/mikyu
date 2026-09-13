@@ -1,61 +1,132 @@
 package server
 
 import (
-	"context"
+	"bytes"
 	"testing"
 
-	"github.com/dmunish/mikyu/internal/engine"
-	"github.com/dmunish/mikyu/internal/protocol"
+	"github.com/dmunish/mikyu/internal/node"
+	"github.com/dmunish/mikyu/internal/spec"
+	"github.com/dmunish/mikyu/internal/transport/protocol"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestHandleCreateQueue(t *testing.T) {
-	mgr, _ := engine.OpenManager(t.TempDir(), engine.Config{})
-	defer mgr.Close()
-	srv := New(mgr)
+// createFrame builds a spec-bearing CreateQueue request:
+// bytes(name) u16 specVersion bytes(json).
+func createFrame(t *testing.T, name string, sp spec.Spec) []byte {
+	t.Helper()
+	data, err := spec.EncodeSpec(sp)
+	require.NoError(t, err)
+	var b protocol.Buffer
+	b.WriteBytes([]byte(name))
+	b.WriteU16(spec.CurrentSpecVersion)
+	b.WriteBytes(data)
+	return b.Bytes()
+}
 
-	var buf protocol.Buffer
-	buf.WriteBytes([]byte("newqueue"))
-	respOp, respBody := srv.handleCreateQueue(buf.Bytes())
+func TestHandleCreateQueue(t *testing.T) {
+	n, release, _ := node.Acquire(t.TempDir(), spec.Spec{})
+	defer func() { _ = release() }()
+	srv := New(n)
+	defer srv.Stop()
+
+	respOp, respBody := srv.handleCreateQueue(t.Context(), createFrame(t, "newqueue", spec.Spec{}))
 	assert.Equal(t, protocol.OpCreateQueue, respOp)
 	assert.Nil(t, respBody)
 }
 
-func TestHandleProduceErrors(t *testing.T) {
-	mgr, _ := engine.OpenManager(t.TempDir(), engine.Config{})
-	defer mgr.Close()
-	srv := New(mgr)
+func TestSpecVersionTooNew(t *testing.T) {
+	n, release, _ := node.Acquire(t.TempDir(), spec.Spec{})
+	defer func() { _ = release() }()
+	srv := New(n)
+	defer srv.Stop()
+
+	var b protocol.Buffer
+	b.WriteBytes([]byte("newqueue"))
+	b.WriteU16(spec.CurrentSpecVersion + 1)
+	b.WriteBytes([]byte("{}"))
+	respOp, respBody := srv.handleCreateQueue(t.Context(), b.Bytes())
+	assert.Equal(t, protocol.OpError, respOp)
+	code, msg := protocol.DecodeError(respBody)
+	assert.Equal(t, protocol.ErrCodeSpecTooNew, code)
+	assert.Contains(t, msg, "spec")
+}
+
+func TestSpecPayloadTooLarge(t *testing.T) {
+	n, release, _ := node.Acquire(t.TempDir(), spec.Spec{})
+	defer func() { _ = release() }()
+	srv := New(n)
+	defer srv.Stop()
+
+	// A 2 MiB payload is inside the frame limit but far beyond
+	// spec.MaxSpecPayload; the size guard must fire before JSON parsing.
+	var b protocol.Buffer
+	b.WriteBytes([]byte("newqueue"))
+	b.WriteU16(spec.CurrentSpecVersion)
+	b.WriteBytes(bytes.Repeat([]byte{'a'}, 2<<20))
+	respOp, respBody := srv.handleCreateQueue(t.Context(), b.Bytes())
+	assert.Equal(t, protocol.OpError, respOp)
+	code, _ := protocol.DecodeError(respBody)
+	assert.Equal(t, protocol.ErrCodeSpecTooLarge, code)
+}
+
+func TestHandleUpdateQueueRejectsImmutableField(t *testing.T) {
+	n, release, _ := node.Acquire(t.TempDir(), spec.Spec{})
+	defer func() { _ = release() }()
+	err := n.CreateQueue(t.Context(), "q", spec.Spec{})
+	require.NoError(t, err)
+	srv := New(n)
+	defer srv.Stop()
+
+	var b protocol.Buffer
+	b.WriteBytes([]byte("q"))
+	b.WriteU16(spec.CurrentSpecVersion)
+	b.WriteBytes([]byte(`{"engine":{"segment_size":128}}`))
+	respOp, respBody := srv.handleUpdateQueue(t.Context(), b.Bytes())
+	assert.Equal(t, protocol.OpError, respOp)
+	code, msg := protocol.DecodeError(respBody)
+	assert.Equal(t, protocol.ErrCodeImmutableField, code)
+	assert.Contains(t, msg, "segment_size")
+}
+
+func TestHandleAppendErrors(t *testing.T) {
+	n, release, _ := node.Acquire(t.TempDir(), spec.Spec{})
+	defer func() { _ = release() }()
+	srv := New(n)
+	defer srv.Stop()
 
 	var b protocol.Buffer
 	b.WriteBytes([]byte("nonexistent"))
 	b.WriteBytes([]byte("data"))
-	respOp, respBody := srv.handleProduce(context.Background(), b.Bytes())
+	respOp, respBody := srv.handleAppend(t.Context(), b.Bytes())
 	assert.Equal(t, protocol.OpError, respOp)
 	code, _ := protocol.DecodeError(respBody)
 	assert.Equal(t, protocol.ErrCodeQueueNotFound, code)
 }
 
 func TestHandleReadOffsetNotFound(t *testing.T) {
-	mgr, _ := engine.OpenManager(t.TempDir(), engine.Config{})
-	defer mgr.Close()
-	srv := New(mgr)
-	_, _ = mgr.CreateQueue("q")
+	n, release, _ := node.Acquire(t.TempDir(), spec.Spec{})
+	defer func() { _ = release() }()
+	srv := New(n)
+	defer srv.Stop()
+	_, _ = n.Manager().CreateQueue("q")
 
 	var b protocol.Buffer
 	b.WriteBytes([]byte("q"))
 	b.WriteU64(5)
-	respOp, respBody := srv.handleRead(context.Background(), b.Bytes())
+	respOp, respBody := srv.handleRead(t.Context(), b.Bytes())
 	assert.Equal(t, protocol.OpError, respOp)
 	code, _ := protocol.DecodeError(respBody)
 	assert.Equal(t, protocol.ErrCodeOffsetNotFound, code)
 }
 
 func TestHandleListQueues(t *testing.T) {
-	mgr, _ := engine.OpenManager(t.TempDir(), engine.Config{})
-	defer mgr.Close()
-	srv := New(mgr)
-	_, _ = mgr.CreateQueue("q1")
-	_, _ = mgr.CreateQueue("q2")
+	n, release, _ := node.Acquire(t.TempDir(), spec.Spec{})
+	defer func() { _ = release() }()
+	srv := New(n)
+	defer srv.Stop()
+	_, _ = n.Manager().CreateQueue("q1")
+	_, _ = n.Manager().CreateQueue("q2")
 
 	respOp, respBody := srv.handleListQueues()
 	assert.Equal(t, protocol.OpListQueues, respOp)

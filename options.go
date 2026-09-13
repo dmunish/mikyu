@@ -1,89 +1,90 @@
 package mikyu
 
 import (
-	"crypto/tls"
 	"time"
 
 	"github.com/dmunish/mikyu/internal/client"
+	"github.com/dmunish/mikyu/internal/queue/taskqueue"
 )
 
-// ClientConfig is re-exported from the internal client package for backwards compatibility.
-type ClientConfig = client.Config
-
-// ClientOption configures a client.
+// ClientOption configures Open or Dial.
 type ClientOption = client.Option
 
-// QueueConfig is re-exported from the internal client package for backwards compatibility.
-type QueueConfig = client.QueueConfig
-
-// QueueOption configures a queue.
+// QueueOption sets one field of a queue's spec, so patches stay sparse.
 type QueueOption = client.QueueOption
 
-func DefaultClientConfig() ClientConfig {
-	return client.DefaultClientConfig()
-}
+// EnqueueOption configures a task at enqueue time.
+type EnqueueOption = taskqueue.EnqueueOption
 
-func WithBatchSize(n int) ClientOption {
-	return client.WithBatchSize(n)
-}
+// NackOption configures a retry after a nacked delivery.
+type NackOption = taskqueue.NackOption
 
-func WithMaxInterval(d time.Duration) ClientOption {
-	return client.WithMaxInterval(d)
-}
+// WithSessionSpec sets the session defaults inherited by new queues; callers on
+// one data directory must pass identical defaults.
+func WithSessionSpec(s Spec) ClientOption { return client.WithSessionSpec(s) }
 
-// WithFlushInterval is an alias for WithMaxInterval.
-func WithFlushInterval(d time.Duration) ClientOption {
-	return client.WithFlushInterval(d)
-}
+// WithTarget sets the remote target to dial.
+func WithTarget(target string) ClientOption { return client.WithTarget(target) }
 
-func WithMinInterval(d time.Duration) ClientOption {
-	return client.WithMinInterval(d)
-}
+// WithDataDir sets the directory an embedded client opens.
+func WithDataDir(dir string) ClientOption { return client.WithDataDir(dir) }
 
-func WithMaxConns(n int) ClientOption {
-	return client.WithMaxConns(n)
-}
+// WithMaxConns caps the remote connection pool.
+func WithMaxConns(n int) ClientOption { return client.WithMaxConns(n) }
 
-func WithClientDirectoryEncryption(enabled bool) ClientOption {
-	return client.WithClientDirectoryEncryption(enabled)
-}
+// WithTLSEnabled turns on TLS for remote tcp:// connections.
+func WithTLSEnabled(enabled bool) ClientOption { return client.WithTLSEnabled(enabled) }
 
-func WithClientTLS(tlsConfig *tls.Config) ClientOption {
-	return client.WithClientTLS(tlsConfig)
-}
+// WithTLSCertFile sets the client certificate presented to a TLS server.
+func WithTLSCertFile(path string) ClientOption { return client.WithTLSCertFile(path) }
 
-func WithFsync(enabled bool) ClientOption {
-	return client.WithFsync(enabled)
-}
+// WithTLSKeyFile sets the private key matching the client certificate.
+func WithTLSKeyFile(path string) ClientOption { return client.WithTLSKeyFile(path) }
 
-func WithQueueBatchSize(n int) QueueOption {
-	return client.WithQueueBatchSize(n)
-}
+// WithBatchSize sets the max pending appends before a WAL flush.
+func WithBatchSize(n int) QueueOption { return client.WithBatchSize(n) }
 
-func WithQueueMaxInterval(d time.Duration) QueueOption {
-	return client.WithQueueMaxInterval(d)
-}
+// WithMaxInterval sets the max delay forcing a WAL flush.
+func WithMaxInterval(d time.Duration) QueueOption { return client.WithMaxInterval(d) }
 
-func WithQueueMinInterval(d time.Duration) QueueOption {
-	return client.WithQueueMinInterval(d)
-}
+// WithMinInterval sets the micro-linger window grouping concurrent appends.
+func WithMinInterval(d time.Duration) QueueOption { return client.WithMinInterval(d) }
 
-func WithMaxSegmentBytes(bytes int64) QueueOption {
-	return client.WithMaxSegmentBytes(bytes)
-}
+// WithSegmentSize sets the bytes at which a log segment rolls (create-only).
+func WithSegmentSize(b int64) QueueOption { return client.WithSegmentSize(b) }
 
-func WithMaxMessageBytes(bytes int64) QueueOption {
-	return client.WithMaxMessageBytes(bytes)
-}
+// WithMaxMessageBytes sets the producer payload contract (create-only).
+func WithMaxMessageBytes(b int64) QueueOption { return client.WithMaxMessageBytes(b) }
 
-func WithMaxSegmentAge(age time.Duration) QueueOption {
-	return client.WithMaxSegmentAge(age)
-}
+// WithSegmentAge sets the age at which an inactive segment rolls.
+func WithSegmentAge(d time.Duration) QueueOption { return client.WithSegmentAge(d) }
 
-func WithDirectoryEncryption(enabled bool) QueueOption {
-	return client.WithDirectoryEncryption(enabled)
-}
+// WithEncrypted enables OS transparent directory encryption (create-only).
+func WithEncrypted(enabled bool) QueueOption { return client.WithEncrypted(enabled) }
 
-func WithQueueFsync(enabled bool) QueueOption {
-	return client.WithQueueFsync(enabled)
-}
+// WithFsync selects physical-disk durability on produce (create-only).
+func WithFsync(enabled bool) QueueOption { return client.WithFsync(enabled) }
+
+// WithRetentionAge deletes records older than d, capped by consumer lag.
+func WithRetentionAge(d time.Duration) QueueOption { return client.WithRetentionAge(d) }
+
+// WithRetentionBytes caps on-disk size, dropping whole oldest segments.
+func WithRetentionBytes(b int64) QueueOption { return client.WithRetentionBytes(b) }
+
+// WithDefaultVisibility sets the queue's fallback lease for optionless enqueues.
+func WithDefaultVisibility(d time.Duration) QueueOption { return client.WithDefaultVisibility(d) }
+
+// WithDefaultMaxAttempts sets the queue's fallback retry budget.
+func WithDefaultMaxAttempts(n uint32) QueueOption { return client.WithDefaultMaxAttempts(n) }
+
+// WithVisibility sets how long a dequeued task stays leased.
+func WithVisibility(d time.Duration) EnqueueOption { return taskqueue.WithVisibility(d) }
+
+// WithMaxAttempts sets the maximum number of deliveries before dead-lettering.
+func WithMaxAttempts(n uint32) EnqueueOption { return taskqueue.WithMaxAttempts(n) }
+
+// WithScheduledAt delays the first delivery until the supplied time.
+func WithScheduledAt(at time.Time) EnqueueOption { return taskqueue.WithScheduledAt(at) }
+
+// WithRetryAfter overrides the retry delay for a nacked task.
+func WithRetryAfter(d time.Duration) NackOption { return taskqueue.WithRetryAfter(d) }

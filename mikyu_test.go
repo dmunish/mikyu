@@ -2,11 +2,14 @@ package mikyu_test
 
 import (
 	"context"
+	"net"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/dmunish/mikyu"
+	"github.com/dmunish/mikyu/internal/node"
+	"github.com/dmunish/mikyu/internal/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
@@ -22,22 +25,22 @@ func TestEmbeddedClientLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	defer client.Close()
 
-	err = client.CreateQueue(context.Background(), "test")
+	err = client.CreateQueue(t.Context(), "test")
 	require.NoError(t, err)
 
 	q, err := client.LogQueue("test")
 	require.NoError(t, err)
 	assert.Equal(t, "test", q.Name())
 
-	off, err := q.Produce(context.Background(), []byte("hello"))
+	off, err := q.Append(t.Context(), []byte("hello"))
 	require.NoError(t, err)
 	assert.Equal(t, uint64(0), off)
 
-	msg, err := q.Read(context.Background(), off)
+	msg, err := q.Read(t.Context(), off)
 	require.NoError(t, err)
 	assert.Equal(t, "hello", string(msg.Payload))
 
-	stats, err := client.Stats(context.Background())
+	stats, err := client.Info(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, 1, stats.ActiveQueues)
 }
@@ -47,9 +50,9 @@ func TestEmbeddedClientDuplicateQueue(t *testing.T) {
 	client, _ := mikyu.Open(dir)
 	defer client.Close()
 
-	err := client.CreateQueue(context.Background(), "dup")
+	err := client.CreateQueue(t.Context(), "dup")
 	require.NoError(t, err)
-	err = client.CreateQueue(context.Background(), "dup")
+	err = client.CreateQueue(t.Context(), "dup")
 	assert.Error(t, err)
 }
 
@@ -58,10 +61,10 @@ func TestEmbeddedClientDeleteQueue(t *testing.T) {
 	client, _ := mikyu.Open(dir)
 	defer client.Close()
 
-	err := client.CreateQueue(context.Background(), "temp")
+	err := client.CreateQueue(t.Context(), "temp")
 	require.NoError(t, err)
 
-	err = client.DeleteQueue(context.Background(), "temp")
+	err = client.DeleteQueue(t.Context(), "temp")
 	require.NoError(t, err)
 
 	_, err = client.LogQueue("temp")
@@ -74,7 +77,7 @@ func TestEmbeddedClientConcurrentLogQueue(t *testing.T) {
 	require.NoError(t, err)
 	defer client.Close()
 
-	err = client.CreateQueue(context.TODO(), "concurrent-q")
+	err = client.CreateQueue(t.Context(), "concurrent-q")
 	require.NoError(t, err)
 
 	const goroutines = 10
@@ -106,7 +109,7 @@ func TestRemoteClientDialInvalid(t *testing.T) {
 	defer client.Close()
 
 	// But operations must fail because there's no server.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	_, err = client.ListQueues(ctx)
 	assert.Error(t, err)
@@ -117,7 +120,7 @@ func TestTypedQueue(t *testing.T) {
 	client, _ := mikyu.Open(dir)
 	defer client.Close()
 
-	err := client.CreateQueue(context.Background(), "typed")
+	err := client.CreateQueue(t.Context(), "typed")
 	require.NoError(t, err)
 
 	q, err := client.LogQueue("typed")
@@ -136,9 +139,9 @@ func TestTypedQueue(t *testing.T) {
 		},
 	}
 	tq := mikyu.NewTyped(q, codec)
-	_, err = tq.Produce(context.Background(), Item{Name: "test"})
+	_, err = tq.Append(t.Context(), Item{Name: "test"})
 	require.NoError(t, err)
-	item, err := tq.Read(context.Background(), 0)
+	item, err := tq.Read(t.Context(), 0)
 	require.NoError(t, err)
 	assert.Equal(t, "test", item.Name)
 }
@@ -148,24 +151,24 @@ func TestEmbeddedTaskQueueLifecycle(t *testing.T) {
 	client, err := mikyu.Open(dir)
 	require.NoError(t, err)
 	defer client.Close()
-	require.NoError(t, client.CreateQueue(context.Background(), "tasks"))
+	require.NoError(t, client.CreateQueue(t.Context(), "tasks"))
 
 	q, err := client.TaskQueue("tasks")
 	require.NoError(t, err)
-	task, err := q.Enqueue(context.Background(), []byte("hello"), mikyu.WithMaxAttempts(2), mikyu.WithVisibilityTimeout(time.Second))
+	task, err := q.Enqueue(t.Context(), []byte("hello"), mikyu.WithMaxAttempts(2), mikyu.WithVisibility(time.Second))
 	require.NoError(t, err)
-	got, err := q.Dequeue(context.Background())
+	got, err := q.Dequeue(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, task.ID, got.ID)
 	assert.Equal(t, uint32(1), got.Attempts)
-	require.NoError(t, q.Ack(context.Background(), got))
+	require.NoError(t, q.Ack(t.Context(), got))
 }
 
 func TestEmbeddedTaskQueueStableHandle(t *testing.T) {
 	client, err := mikyu.Open(t.TempDir())
 	require.NoError(t, err)
 	defer client.Close()
-	require.NoError(t, client.CreateQueue(context.Background(), "tasks"))
+	require.NoError(t, client.CreateQueue(t.Context(), "tasks"))
 
 	const n = 16
 	queues := make([]mikyu.TaskQueue, n)
@@ -183,4 +186,75 @@ func TestEmbeddedTaskQueueStableHandle(t *testing.T) {
 	for i := 1; i < n; i++ {
 		assert.Equal(t, queues[0], queues[i])
 	}
+}
+
+// newTestServer starts a live server over loopback with empty session defaults
+// and returns its dial target.
+func newTestServer(t *testing.T) string {
+	t.Helper()
+	n, release, err := node.Acquire(t.TempDir(), mikyu.Spec{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = release() })
+
+	srv := server.New(n)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go srv.Serve(ln)
+	t.Cleanup(srv.Stop)
+	return "tcp://" + ln.Addr().String()
+}
+
+func TestEmbeddedUpdateQueueImmutable(t *testing.T) {
+	client, err := mikyu.Open(t.TempDir())
+	require.NoError(t, err)
+	defer client.Close()
+	require.NoError(t, client.CreateQueue(t.Context(), "q"))
+
+	err = client.UpdateQueue(t.Context(), "q", mikyu.WithSegmentSize(128))
+	require.ErrorIs(t, err, mikyu.ErrImmutableField)
+	assert.Contains(t, err.Error(), "segment_size")
+}
+
+func TestRemoteUpdateQueueImmutable(t *testing.T) {
+	client, err := mikyu.Dial(newTestServer(t))
+	require.NoError(t, err)
+	defer client.Close()
+	require.NoError(t, client.CreateQueue(t.Context(), "q"))
+
+	err = client.UpdateQueue(t.Context(), "q", mikyu.WithSegmentSize(128))
+	require.ErrorIs(t, err, mikyu.ErrImmutableField)
+	assert.Contains(t, err.Error(), "segment_size")
+}
+
+func TestOpenDefaultsMismatch(t *testing.T) {
+	dir := t.TempDir()
+	first, err := mikyu.Open(dir, mikyu.WithSessionSpec(mikyu.Spec{
+		Engine: mikyu.EngineSpec{BatchSize: new(7)},
+	}))
+	require.NoError(t, err)
+	defer first.Close()
+
+	_, err = mikyu.Open(dir, mikyu.WithSessionSpec(mikyu.Spec{
+		Engine: mikyu.EngineSpec{BatchSize: new(8)},
+	}))
+	require.ErrorIs(t, err, mikyu.ErrSessionDefaultsMismatch)
+}
+
+func TestOpenDefaultsMatchSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	session := mikyu.WithSessionSpec(mikyu.Spec{Engine: mikyu.EngineSpec{BatchSize: new(7)}})
+
+	first, err := mikyu.Open(dir, session)
+	require.NoError(t, err)
+	defer first.Close()
+	second, err := mikyu.Open(dir, session)
+	require.NoError(t, err)
+	defer second.Close()
+
+	// Both handles reach the same shared node.
+	require.NoError(t, second.CreateQueue(t.Context(), "shared"))
+	names, err := first.ListQueues(t.Context())
+	require.NoError(t, err)
+	assert.Contains(t, names, "shared")
 }

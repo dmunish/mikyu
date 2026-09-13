@@ -49,8 +49,73 @@ func (q *Queue) Segments() []SegmentInfo {
 	return infos
 }
 
-// TruncateBefore safely unmaps and unlinks closed physical log segments whose
-// record offsets fall strictly below targetOffset.
+// FloorOlderThan implements Storage.FloorOlderThan.
+func (q *Queue) FloorOlderThan(ctx context.Context, olderThan time.Time) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	if q.closed {
+		return 0, ErrQueueClosed
+	}
+
+	floor := q.minOffset
+	for i, seg := range q.segments {
+		if seg == q.active {
+			break
+		}
+		ts, ok := seg.lastTimestamp()
+		if !ok || !ts.Before(olderThan) {
+			break
+		}
+		floor = segmentNextOffset(q.segments, i)
+	}
+	return floor, nil
+}
+
+// FloorForSize implements Storage.FloorForSize.
+func (q *Queue) FloorForSize(ctx context.Context, maxBytes int64) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	if q.closed {
+		return 0, ErrQueueClosed
+	}
+	if maxBytes <= 0 {
+		return q.minOffset, nil
+	}
+
+	var total int64
+	for _, seg := range q.segments {
+		total += seg.diskSize()
+	}
+
+	floor := q.minOffset
+	for i, seg := range q.segments {
+		if seg == q.active || total <= maxBytes {
+			break
+		}
+		total -= seg.diskSize()
+		floor = segmentNextOffset(q.segments, i)
+	}
+	return floor, nil
+}
+
+// segmentNextOffset returns the base offset of the segment following index i,
+// or the segment's own next offset if it is the last.
+func segmentNextOffset(segments []*segment, i int) uint64 {
+	if i+1 < len(segments) {
+		return segments[i+1].baseOff
+	}
+	return segments[i].nextOffset()
+}
+
+// TruncateBefore safely unmaps and unlinks closed physical log segments whose record offsets fall strictly below targetOffset.
 func (q *Queue) TruncateBefore(ctx context.Context, targetOffset uint64) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err

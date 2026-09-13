@@ -8,50 +8,35 @@ import (
 	"net"
 	"sync"
 
-	"github.com/dmunish/mikyu/internal/engine"
-	"github.com/dmunish/mikyu/internal/ipc"
-	"github.com/dmunish/mikyu/internal/logqueue"
-	"github.com/dmunish/mikyu/internal/protocol"
-	"github.com/dmunish/mikyu/internal/retention"
-	"github.com/dmunish/mikyu/internal/taskqueue"
+	"github.com/dmunish/mikyu/internal/node"
+	"github.com/dmunish/mikyu/internal/queue/logqueue"
+	"github.com/dmunish/mikyu/internal/queue/taskqueue"
+	"github.com/dmunish/mikyu/internal/transport/ipc"
+	"github.com/dmunish/mikyu/internal/transport/protocol"
 )
 
-// Server accepts client connections and dispatches wire protocol frames to internal/engine.
+// Server accepts client connections and dispatches wire protocol frames to a local node.Node.
 type Server struct {
-	mgr       *engine.Manager
+	node      *node.Node
 	listener  net.Listener
 	tlsConfig *tls.Config
-	queues    map[string]*logqueue.LogQueue
-	tasks     map[string]*taskqueue.TaskQueue
-	mu        sync.RWMutex
+	mu        sync.Mutex
 	stopCh    chan struct{}
 	doneCh    chan struct{}
-
-	retention       *retention.Coordinator
-	retentionCancel context.CancelFunc
-	retentionWG     sync.WaitGroup
 }
 
 type ServerOption func(*Server)
 
-// New creates a new Server instance backed by the provided Manager.
-func New(mgr *engine.Manager, opts ...ServerOption) *Server {
+// New creates a new Server instance backed by the provided Node.
+func New(n *node.Node, opts ...ServerOption) *Server {
 	s := &Server{
-		mgr:       mgr,
-		queues:    make(map[string]*logqueue.LogQueue),
-		tasks:     make(map[string]*taskqueue.TaskQueue),
-		stopCh:    make(chan struct{}),
-		doneCh:    make(chan struct{}),
-		retention: retention.NewCoordinator(0),
+		node:   n,
+		stopCh: make(chan struct{}),
+		doneCh: make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
-	retentionCtx, cancel := context.WithCancel(context.Background())
-	s.retentionCancel = cancel
-	s.retentionWG.Go(func() {
-		s.retention.Start(retentionCtx)
-	})
 	return s
 }
 
@@ -61,69 +46,15 @@ func WithTLS(tlsConfig *tls.Config) ServerOption {
 	}
 }
 
-// getOrCreateLogQueue returns the stable server-side handle for name.
-// The fast path only takes a read lock; construction is serialized and uses
-// double-checking so concurrent requests cannot create duplicate handles.
+// getOrCreateLogQueue returns the stable server-side handle for name. The
+// cache and retention registration live in the node.
 func (s *Server) getOrCreateLogQueue(name string) (*logqueue.LogQueue, error) {
-	s.mu.RLock()
-	q, ok := s.queues[name]
-	s.mu.RUnlock()
-	if ok {
-		return q, nil
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if q, ok := s.queues[name]; ok {
-		return q, nil
-	}
-
-	storage, err := s.mgr.GetQueue(name)
-	if err != nil {
-		return nil, err
-	}
-
-	q = logqueue.NewLogQueue(name, storage)
-	s.queues[name] = q
-	s.retention.RegisterDriver(name, storage, q)
-	return q, nil
+	return s.node.LogQueue(name)
 }
 
 // getOrCreateTaskQueue returns the stable server-side task handle for name.
 func (s *Server) getOrCreateTaskQueue(name string) (*taskqueue.TaskQueue, error) {
-	s.mu.RLock()
-	q, ok := s.tasks[name]
-	s.mu.RUnlock()
-	if ok {
-		return q, nil
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if q, ok := s.tasks[name]; ok {
-		return q, nil
-	}
-
-	storage, err := s.mgr.GetQueue(name)
-	if err != nil {
-		return nil, err
-	}
-	q, err = taskqueue.NewTaskQueue(name, storage)
-	if err != nil {
-		return nil, err
-	}
-	s.tasks[name] = q
-	s.retention.RegisterDriver(name, storage, q)
-	return q, nil
-}
-
-func (s *Server) closeTaskQueues() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for name, q := range s.tasks {
-		_ = q.Close()
-		delete(s.tasks, name)
-	}
+	return s.node.TaskQueue(name)
 }
 
 // ListenAndServe binds to target (e.g. "tcp://:7420", "unix:///tmp/mikyu.sock") and serves incoming requests.
@@ -176,6 +107,7 @@ func (s *Server) Done() <-chan struct{} {
 	return s.doneCh
 }
 
+// Stop closes the listener and wakes any Serve loop.
 func (s *Server) Stop() {
 	s.mu.Lock()
 	select {
@@ -190,35 +122,52 @@ func (s *Server) Stop() {
 		close(s.doneCh)
 	}
 	s.mu.Unlock()
-	if s.retentionCancel != nil {
-		s.retentionCancel()
-	}
-	s.retentionWG.Wait()
-	s.closeTaskQueues()
 }
 
 func (s *Server) serveConn(conn net.Conn) {
-	defer conn.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+
 	r := bufio.NewReader(conn)
-	ctx := context.Background()
+	reqCh := make(chan request) // unbuffered: one frame of lookahead, natural backpressure
 
-	for {
-		op, body, err := protocol.ReadFrame(r)
-		if err != nil {
-			return
+	var readerWG sync.WaitGroup
+	readerWG.Add(1)
+	go func() {
+		defer readerWG.Done()
+		defer close(reqCh)
+		defer cancel() // a dead reader must wake a handler parked on a long-poll
+		var buf []byte
+		for {
+			op, body, next, err := protocol.ReadFrameInto(r, buf)
+			buf = next
+			if err != nil {
+				return
+			}
+			select {
+			case reqCh <- request{op: op, body: body}:
+			case <-ctx.Done():
+				return
+			}
 		}
+	}()
 
-		respOp, respBody, shouldShutdown := s.dispatch(ctx, op, body)
+	for req := range reqCh {
+		respOp, respBody, shouldShutdown := s.dispatch(ctx, req.op, req.body)
 		if err := protocol.WriteFrame(conn, respOp, respBody); err != nil {
-			return
+			break
 		}
-
 		if shouldShutdown {
-			go func() {
-				s.Stop()
-				_ = s.mgr.Close()
-			}()
-			return
+			go s.Stop()
+			break
 		}
 	}
+
+	cancel()
+	_ = conn.Close()
+	readerWG.Wait()
+}
+
+type request struct {
+	op   byte
+	body []byte
 }

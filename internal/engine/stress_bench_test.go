@@ -3,7 +3,6 @@
 package engine
 
 import (
-	"context"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -45,7 +44,7 @@ func BenchmarkProduceOnly(b *testing.B) {
 				defer store.Close()
 				defer q.Close()
 
-				ctx := context.Background()
+				ctx := b.Context()
 				b.ResetTimer()
 				b.ReportAllocs()
 
@@ -78,7 +77,7 @@ func BenchmarkReadOnly(b *testing.B) {
 
 			// Pre-fill enough messages for reading.
 			const prefill = 10000
-			ctx := context.Background()
+			ctx := b.Context()
 			for i := 0; i < prefill; i++ {
 				if _, err := q.Append(ctx, payload); err != nil {
 					b.Fatal(err)
@@ -125,7 +124,7 @@ func BenchmarkMixedWorkload(b *testing.B) {
 				defer store.Close()
 				defer q.Close()
 
-				ctx := context.Background()
+				ctx := b.Context()
 				payload := []byte("some payload")
 
 				b.ResetTimer()
@@ -170,7 +169,7 @@ func BenchmarkBatchOperations(b *testing.B) {
 				defer store.Close()
 				defer q.Close()
 
-				ctx := context.Background()
+				ctx := b.Context()
 				payloads := make([][]byte, batchSize)
 				for i := range payloads {
 					payloads[i] = fmt.Appendf(nil, "msg-%d", i)
@@ -215,7 +214,7 @@ func BenchmarkHighConcurrencyStress(b *testing.B) {
 			defer store.Close()
 			defer q.Close()
 
-			ctx := context.Background()
+			ctx := b.Context()
 			payload := []byte("stress payload")
 
 			b.ResetTimer()

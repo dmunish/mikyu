@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build
+        run: go build ./...
+
+      - name: vet
+        run: go vet ./...
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+
+      - name: go fix (dry run)
+        run: |
+          go fix -diff ./... > /tmp/fix.diff
+          test ! -s /tmp/fix.diff || (cat /tmp/fix.diff; exit 1)
+
+      - name: architecture lint
+        run: |
+          go install github.com/fe3dback/go-arch-lint@latest
+          go-arch-lint check
+
+      - name: test (race)
+        run: go test -race ./...
+
+      - name: test (determinism, repeated)
+        run: go test -race -count=3 ./internal/queue/... ./internal/node/...
+
+      - name: parity gate
+        run: go test -run 'TestParity|TestNamingLaw|TestSentinelUniqueness|TestNoIDSiblings|TestNoCloseOnDrivers|TestSpecTagsIdentical|TestNoLegacyNames|TestNoLegacyVerbs|TestInternalCommentStyle' ./...
+
+      # The benchmark regression gate is enabled once the J.9 benchmark run
+      # writes bench/baseline.txt; scripts/benchcheck.{sh,go} are ready for it.
+      #
+      # - name: benchmarks (regression gate)
+      #   run: |
+      #     go test -bench=. -benchmem -tags bench ./... > /tmp/bench.txt
+      #     sh scripts/benchcheck.sh bench/baseline.txt /tmp/bench.txt

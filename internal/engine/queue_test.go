@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -32,7 +31,7 @@ func TestQueueProduceAndRead(t *testing.T) {
 	require.NoError(t, err)
 	defer q.Close()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	payloads := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
 	offsets := make([]uint64, 0, len(payloads))
 	for i, payload := range payloads {
@@ -58,7 +57,7 @@ func TestQueueProduceBatch(t *testing.T) {
 	require.NoError(t, err)
 	defer q.Close()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	payloads := [][]byte{[]byte("1"), []byte("2"), []byte("3")}
 	offsets, err := q.AppendBatch(ctx, payloads)
 	require.NoError(t, err)
@@ -83,7 +82,7 @@ func TestQueueProduceConcurrentBatch(t *testing.T) {
 	require.NoError(t, err)
 	defer q.Close()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	const goroutines = 10
 	const batches = 5
 	const msgsPerBatch = 2
@@ -131,7 +130,7 @@ func TestQueueReadOutOfRange(t *testing.T) {
 	defer store.Close()
 	q, _ := openQueue(dir, "range", Config{}, store)
 	defer q.Close()
-	_, err := q.Read(context.Background(), 10)
+	_, err := q.Read(t.Context(), 10)
 	assert.True(t, errors.Is(err, ErrOffsetNotFound))
 }
 
@@ -139,11 +138,11 @@ func TestQueueRolling(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
-	q, err := openQueue(dir, "roll", Config{MaxSegmentBytes: 128}, store)
+	q, err := openQueue(dir, "roll", Config{SegmentSize: 128}, store)
 	require.NoError(t, err)
 	defer q.Close()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	for i := range 20 {
 		_, err := q.Append(ctx, fmt.Appendf(nil, "message-%d", i))
 		require.NoError(t, err)
@@ -164,7 +163,7 @@ func TestQueueProduceConcurrentBatchExactOffsets(t *testing.T) {
 	require.NoError(t, err)
 	defer q.Close()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	const goroutines = 8
 	const batches = 5
 	const msgsPerBatch = 4
@@ -228,7 +227,7 @@ func TestQueueAsyncWriteFailureStopsSubsequentAppends(t *testing.T) {
 	q.mu.RUnlock()
 	require.NoError(t, file.Close())
 
-	_, err = q.Append(context.Background(), []byte("first"))
+	_, err = q.Append(t.Context(), []byte("first"))
 	require.NoError(t, err, "buffered mode accepts the write before the async failure is observed")
 
 	deadline := time.Now().Add(time.Second)
@@ -239,7 +238,7 @@ func TestQueueAsyncWriteFailureStopsSubsequentAppends(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	require.Error(t, q.w.currentError())
-	_, err = q.Append(context.Background(), []byte("second"))
+	_, err = q.Append(t.Context(), []byte("second"))
 	assert.Error(t, err)
 }
 
@@ -253,9 +252,9 @@ func TestQueueOperationsAfterCloseReturnErrQueueClosed(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, q.Close())
 
-	_, err = q.Append(context.Background(), []byte("x"))
+	_, err = q.Append(t.Context(), []byte("x"))
 	assert.ErrorIs(t, err, ErrQueueClosed)
-	_, err = q.Read(context.Background(), 0)
+	_, err = q.Read(t.Context(), 0)
 	assert.ErrorIs(t, err, ErrQueueClosed)
 }
 
@@ -266,7 +265,7 @@ func TestQueueAppendBatchAcrossSegmentRoll(t *testing.T) {
 	defer store.Close()
 
 	q, err := openQueue(dir, "batch-roll", Config{
-		MaxSegmentBytes: 256,
+		SegmentSize:     256,
 		MaxMessageBytes: 128,
 		BatchSize:       8,
 		MaxInterval:     time.Millisecond,
@@ -278,12 +277,12 @@ func TestQueueAppendBatchAcrossSegmentRoll(t *testing.T) {
 	for i := range payloads {
 		payloads[i] = fmt.Appendf(nil, "payload-%02d-xxxxxxxxxxxxxxxxxxxxxxxx", i)
 	}
-	offsets, err := q.AppendBatch(context.Background(), payloads)
+	offsets, err := q.AppendBatch(t.Context(), payloads)
 	require.NoError(t, err)
 	assert.Len(t, offsets, len(payloads))
 	assert.GreaterOrEqual(t, len(q.Segments()), 2)
 	for i, off := range offsets {
-		msg, err := q.Read(context.Background(), off)
+		msg, err := q.Read(t.Context(), off)
 		require.NoError(t, err)
 		assert.Equal(t, payloads[i], msg.Payload)
 	}
@@ -296,7 +295,7 @@ func TestQueueAppendBatchAcrossSegmentRoll(t *testing.T) {
 	require.NoError(t, err)
 	defer q2.Close()
 	for i, off := range offsets {
-		msg, err := q2.Read(context.Background(), off)
+		msg, err := q2.Read(t.Context(), off)
 		require.NoError(t, err)
 		assert.Equal(t, payloads[i], msg.Payload)
 	}
@@ -309,7 +308,7 @@ func TestQueueProduceMessageTooLarge(t *testing.T) {
 	q, _ := openQueue(dir, "large", Config{MaxMessageBytes: 10}, store)
 	defer q.Close()
 
-	_, err := q.Append(context.Background(), make([]byte, 11))
+	_, err := q.Append(t.Context(), make([]byte, 11))
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, ErrMessageTooLarge))
 }
@@ -318,12 +317,12 @@ func TestQueueProduceBatchMessageExceedsSegmentSize(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
-	q, err := openQueue(dir, "oversized-batch", Config{MaxSegmentBytes: 64, MaxMessageBytes: 1024}, store)
+	q, err := openQueue(dir, "oversized-batch", Config{SegmentSize: 64, MaxMessageBytes: 1024}, store)
 	require.NoError(t, err)
 	defer q.Close()
 
 	payloads := [][]byte{make([]byte, 100), []byte("ok")}
-	_, err = q.AppendBatch(context.Background(), payloads)
+	_, err = q.AppendBatch(t.Context(), payloads)
 	assert.ErrorIs(t, err, ErrRecordTooLarge)
 }
 
@@ -334,10 +333,10 @@ func TestQueueCommitOffset(t *testing.T) {
 	q, _ := openQueue(dir, "offset", Config{}, store)
 	defer q.Close()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	err := q.CommitOffset(ctx, "group1", 42)
 	require.NoError(t, err)
-	off, err := q.FetchOffset(ctx, "group1")
+	off, err := q.Committed(ctx, "group1")
 	require.NoError(t, err)
 	assert.Equal(t, uint64(42), off)
 }
@@ -350,7 +349,7 @@ func TestQueueUngracefulCrashRecovery(t *testing.T) {
 	q, err := openQueue(dir, "crash-queue", Config{BatchSize: 1, MaxInterval: time.Millisecond}, store)
 	require.NoError(t, err)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	for i := range 5 {
 		_, err := q.Append(ctx, fmt.Appendf(nil, "msg-%d", i))
 		require.NoError(t, err)
@@ -391,7 +390,7 @@ func TestQueueRealCrashRecovery(t *testing.T) {
 		q, err := openQueue(dir, "real-crash", Config{
 			BatchSize:       64,
 			MaxInterval:     10 * time.Millisecond,
-			MaxSegmentBytes: 1024,
+			SegmentSize:     1024,
 			MaxMessageBytes: 64,
 			Fsync:           true,
 		}, store)
@@ -402,7 +401,7 @@ func TestQueueRealCrashRecovery(t *testing.T) {
 		defer func() { _ = q.Close(); _ = store.Close() }()
 		for i := range 2_000 {
 			payload := fmt.Appendf(nil, "msg-%06d", i)
-			if _, err := q.Append(context.Background(), payload); err != nil {
+			if _, err := q.Append(t.Context(), payload); err != nil {
 				t.Fatal(err)
 			}
 			if (i+1)%100 == 0 {
@@ -457,7 +456,7 @@ func TestQueueRealCrashRecovery(t *testing.T) {
 	q, err := openQueue(dir, "real-crash", Config{
 		BatchSize:       8,
 		MaxInterval:     2 * time.Millisecond,
-		MaxSegmentBytes: 128,
+		SegmentSize:     128,
 		MaxMessageBytes: 64,
 		Fsync:           true,
 	}, store)
@@ -466,7 +465,7 @@ func TestQueueRealCrashRecovery(t *testing.T) {
 
 	require.GreaterOrEqual(t, q.LastOffset(), uint64(completed), "all completed durable appends must survive the crash")
 	for i := 0; i < completed; i++ {
-		msg, err := q.Read(context.Background(), uint64(i))
+		msg, err := q.Read(t.Context(), uint64(i))
 		require.NoError(t, err, "offset %d after crash recovery", i)
 		require.Equal(t, fmt.Sprintf("msg-%06d", i), string(msg.Payload))
 	}
@@ -477,11 +476,11 @@ func TestQueueConcurrentProduceDuringRoll(t *testing.T) {
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
 
-	q, err := openQueue(dir, "roll-race", Config{MaxSegmentBytes: 256, BatchSize: 10}, store)
+	q, err := openQueue(dir, "roll-race", Config{SegmentSize: 256, BatchSize: 10}, store)
 	require.NoError(t, err)
 	defer q.Close()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	const goroutines = 10
 	const msgsPerRoutine = 20
 	var wg sync.WaitGroup
@@ -513,11 +512,11 @@ func TestQueueReadUsesMMapOnRolledSegments(t *testing.T) {
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
 
-	q, err := openQueue(dir, "mmap-verify", Config{MaxSegmentBytes: 100}, store)
+	q, err := openQueue(dir, "mmap-verify", Config{SegmentSize: 100}, store)
 	require.NoError(t, err)
 	defer q.Close()
 
-	ctx := context.Background()
+	ctx := t.Context()
 	payload := []byte("0123456789")
 	for range 3 {
 		_, err := q.Append(ctx, payload)
@@ -543,7 +542,7 @@ func TestQueueConcurrentIndexDiskOrdering(t *testing.T) {
 	q, err := openQueue(dir, "disk-index-order", Config{BatchSize: 10, MaxInterval: time.Millisecond}, store)
 	require.NoError(t, err)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	const goroutines = 16
 	const msgsPerRoutine = 50
 	var wg sync.WaitGroup
@@ -584,11 +583,11 @@ func TestQueueVelocityPreallocationScaling(t *testing.T) {
 	defer store.Close()
 
 	// MaxSegmentBytes set to 64 MiB so it doesn't clamp minSegmentPrealloc (8 MiB)
-	q, err := openQueue(dir, "velocity-test", Config{MaxSegmentBytes: 64 * 1024 * 1024}, store)
+	q, err := openQueue(dir, "velocity-test", Config{SegmentSize: 64 * 1024 * 1024}, store)
 	require.NoError(t, err)
 	defer q.Close()
 
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Initial pre-allocation target starts at minSegmentPrealloc (8 MB)
 	assert.Equal(t, int64(minSegmentPrealloc), q.nextPreallocBytes)
@@ -621,15 +620,17 @@ func TestSegmentPreallocationTruncatedOnClose(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	q, err := openQueue(dir, "trunc-test", Config{MaxSegmentBytes: 64 * 1024 * 1024}, store)
+	q, err := openQueue(dir, "trunc-test", Config{SegmentSize: 64 * 1024 * 1024}, store)
 	require.NoError(t, err)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	_, err = q.Append(ctx, []byte("hello world"))
 	require.NoError(t, err)
 
-	// Active segment file initially has full pre-allocated capacity on disk
-	activePath := q.active.logFile.Name()
+	// Active segment file initially has full pre-allocated capacity on disk.
+	// Segment handles are opened through an os.Root, so Name() is relative
+	// to the queue directory; rebuild the full path for the external stat.
+	activePath := filepath.Join(dir, "trunc-test", q.active.logName)
 	info, err := os.Stat(activePath)
 	require.NoError(t, err)
 	assert.Equal(t, int64(minSegmentPrealloc), info.Size())

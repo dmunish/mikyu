@@ -5,10 +5,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strconv"
-	"time"
+	"strings"
 
-	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/goccy/go-yaml"
 )
 
@@ -18,76 +17,39 @@ server:
   target: "tcp://127.0.0.1:7420" # Bind target (tcp://, unix://, or pipe://)
   data_dir: "./data"             # Path for WAL log segments and offset store
 
-engine:
-  batch_size: 256                # Max pending messages before triggering WAL fsync
-  max_interval: "10ms"           # Max wait time before forcing WAL fsync
-  min_interval: "30us"           # Micro-linger window to group concurrent produces
-  max_segment_bytes: 67108864    # 64 MiB: Max size per log segment before rolling
-  max_message_bytes: 1048576     # 1 MiB: Max payload size per produce call
-  max_segment_age: "1h"          # Max time before rolling inactive segment
-  encrypted: false               # Enable OS transparent directory encryption
-  fsync: true                    # Perform physical disk fsync on produce (false for buffered OS page cache)
+defaults:                        # Session defaults inherited by new queues
+  engine:
+    batch_size: 256              # Max pending messages before triggering WAL fsync
+    max_interval: "10ms"         # Max wait time before forcing WAL fsync
+    min_interval: "30us"         # Micro-linger window to group concurrent produces
+    segment_size: 67108864       # 64 MiB: Max size per log segment before rolling
+    max_message_bytes: 1048576   # 1 MiB: Max payload size per produce call
+    segment_age: "1h"            # Max time before rolling inactive segment
+    encrypted: false             # Enable OS transparent directory encryption
+    fsync: true                  # Perform physical disk fsync on produce
 
-queues: []                       # Declarative pre-created queues on startup
+queues: {}                       # Declarative pre-created queues on startup
 `
 
+// Config is the loader's view of mikyu.yaml: one schema, two files.
 type Config struct {
-	Server ServerConfig  `yaml:"server"`
-	Engine EngineConfig  `yaml:"engine"`
-	Queues []QueueConfig `yaml:"queues"`
+	Server   ServerConfig         `yaml:"server"`
+	Defaults spec.Spec            `yaml:"defaults"`
+	Queues   map[string]spec.Spec `yaml:"queues"`
 }
 
-type ServerConfig struct {
-	Target      string `yaml:"target"`
-	DataDir     string `yaml:"data_dir"`
-	TLSEnabled  bool   `yaml:"tls_enabled"`
-	TLSCertFile string `yaml:"tls_cert_file"`
-	TLSKeyFile  string `yaml:"tls_key_file"`
-}
+// ServerConfig is the process-level server block, identical to the spec session type.
+type ServerConfig = spec.Session
 
-type EngineConfig struct {
-	BatchSize       int           `yaml:"batch_size"`
-	MaxInterval     time.Duration `yaml:"max_interval"`
-	MinInterval     time.Duration `yaml:"min_interval"`
-	MaxSegmentBytes int64         `yaml:"max_segment_bytes"`
-	MaxMessageBytes int64         `yaml:"max_message_bytes"`
-	MaxSegmentAge   time.Duration `yaml:"max_segment_age"`
-	Encrypted       bool          `yaml:"encrypted"`
-	Fsync           bool          `yaml:"fsync"`
-}
-
-type QueueConfig struct {
-	Name            string        `yaml:"name"`
-	BatchSize       int           `yaml:"batch_size,omitempty"`
-	MaxInterval     time.Duration `yaml:"max_interval,omitempty"`
-	MinInterval     time.Duration `yaml:"min_interval,omitempty"`
-	MaxSegmentBytes int64         `yaml:"max_segment_bytes,omitempty"`
-	MaxMessageBytes int64         `yaml:"max_message_bytes,omitempty"`
-	MaxSegmentAge   time.Duration `yaml:"max_segment_age,omitempty"`
-	Encrypted       *bool         `yaml:"encrypted,omitempty"`
-	Fsync           *bool         `yaml:"fsync,omitempty"`
-}
-
+// DefaultConfig returns the compiled defaults.
 func DefaultConfig() Config {
 	return Config{
-		Server: ServerConfig{
-			Target:  "tcp://127.0.0.1:7420",
-			DataDir: "./data",
-		},
-		Engine: EngineConfig{
-			BatchSize:       256,
-			MaxInterval:     10 * time.Millisecond,
-			MinInterval:     30 * time.Microsecond,
-			MaxSegmentBytes: 64 * 1024 * 1024,
-			MaxMessageBytes: 1 * 1024 * 1024,
-			MaxSegmentAge:   1 * time.Hour,
-			Encrypted:       false,
-			Fsync:           true, // Durable by default
-		},
-		Queues: []QueueConfig{},
+		Server: spec.BuiltinSession(),
+		Queues: map[string]spec.Spec{},
 	}
 }
 
+// Load reads mikyu.yaml, applies MIKYU_* environment overrides, and returns the resolved config plus the path it read (bootstrapping a default file if none exists).
 func Load(flagPath string) (*Config, string, error) {
 	cfg := DefaultConfig()
 	resolvedPath, bootstrapped, err := resolveOrBootstrapPath(flagPath)
@@ -104,11 +66,21 @@ func Load(flagPath string) (*Config, string, error) {
 		return nil, "", fmt.Errorf("failed to read config file %s: %w", resolvedPath, err)
 	}
 
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := checkLegacyKeys(data); err != nil {
+		return nil, "", err
+	}
+
+	if err := yaml.UnmarshalWithOptions(data, &cfg, yaml.DisallowUnknownField()); err != nil {
 		return nil, "", fmt.Errorf("failed to parse yaml config at %s: %w", resolvedPath, err)
 	}
 
-	applyEnvOverrides(&cfg)
+	if cfg.Queues == nil {
+		cfg.Queues = map[string]spec.Spec{}
+	}
+
+	if err := applyEnvOverrides(&cfg); err != nil {
+		return nil, "", err
+	}
 
 	return &cfg, resolvedPath, nil
 }
@@ -147,97 +119,47 @@ func resolveOrBootstrapPath(flagPath string) (path string, bootstrapped bool, er
 	return "", false, fmt.Errorf("unable to resolve or bootstrap config file")
 }
 
-func applyEnvOverrides(cfg *Config) {
-	if val := os.Getenv("MIKYU_SERVER_TARGET"); val != "" {
-		cfg.Server.Target = val
-	}
-	if val := os.Getenv("MIKYU_SERVER_DATA_DIR"); val != "" {
-		cfg.Server.DataDir = val
-	}
-	if val := os.Getenv("MIKYU_ENGINE_BATCH_SIZE"); val != "" {
-		if n, err := strconv.Atoi(val); err == nil && n > 0 {
-			cfg.Engine.BatchSize = n
-		}
-	}
-	if val := os.Getenv("MIKYU_ENGINE_MAX_INTERVAL"); val != "" {
-		if d, err := time.ParseDuration(val); err == nil && d > 0 {
-			cfg.Engine.MaxInterval = d
-		}
-	} else if val := os.Getenv("MIKYU_ENGINE_FLUSH_INTERVAL"); val != "" { // Fallback for legacy env
-		if d, err := time.ParseDuration(val); err == nil && d > 0 {
-			cfg.Engine.MaxInterval = d
-		}
-	}
-	if val := os.Getenv("MIKYU_ENGINE_MIN_INTERVAL"); val != "" {
-		if d, err := time.ParseDuration(val); err == nil && d >= 0 {
-			cfg.Engine.MinInterval = d
-		}
-	}
-	if val := os.Getenv("MIKYU_ENGINE_MAX_SEGMENT_BYTES"); val != "" {
-		if bytes, err := strconv.ParseInt(val, 10, 64); err == nil && bytes > 0 {
-			cfg.Engine.MaxSegmentBytes = bytes
-		}
-	}
-	if val := os.Getenv("MIKYU_ENGINE_MAX_MESSAGE_BYTES"); val != "" {
-		if bytes, err := strconv.ParseInt(val, 10, 64); err == nil && bytes > 0 {
-			cfg.Engine.MaxMessageBytes = bytes
-		}
-	}
-	if val := os.Getenv("MIKYU_ENGINE_MAX_SEGMENT_AGE"); val != "" {
-		if d, err := time.ParseDuration(val); err == nil && d > 0 {
-			cfg.Engine.MaxSegmentAge = d
-		}
-	}
-	if val := os.Getenv("MIKYU_ENGINE_ENCRYPTED"); val != "" {
-		if b, err := strconv.ParseBool(val); err == nil {
-			cfg.Engine.Encrypted = b
-		}
-	}
-	if val := os.Getenv("MIKYU_ENGINE_FSYNC"); val != "" {
-		if b, err := strconv.ParseBool(val); err == nil {
-			cfg.Engine.Fsync = b
-		}
-	}
+// legacyYAMLKeys maps pre-re-root keys to their canonical replacements.
+var legacyYAMLKeys = map[string]string{
+	"max_segment_bytes": "segment_size",
+	"max_segment_age":   "segment_age",
 }
 
-func ToEngineConfig(e EngineConfig) engine.Config {
-	return engine.Config{
-		BatchSize:       e.BatchSize,
-		MaxInterval:     e.MaxInterval,
-		MinInterval:     e.MinInterval,
-		MaxSegmentBytes: e.MaxSegmentBytes,
-		MaxMessageBytes: e.MaxMessageBytes,
-		MaxSegmentAge:   e.MaxSegmentAge,
-		Encrypted:       e.Encrypted,
-		Fsync:           e.Fsync,
+func checkLegacyKeys(data []byte) error {
+	for old, next := range legacyYAMLKeys {
+		if strings.Contains(string(data), old) {
+			return fmt.Errorf("%s was renamed to %s: update mikyu.yaml", old, next)
+		}
 	}
+	return nil
 }
 
-func ToQueueEngineConfig(defaults EngineConfig, q QueueConfig) engine.Config {
-	cfg := ToEngineConfig(defaults)
-	if q.BatchSize > 0 {
-		cfg.BatchSize = q.BatchSize
+// legacyEnvVars maps pre-re-root environment names to their canonical replacements.
+var legacyEnvVars = map[string]string{
+	"MIKYU_SERVER_TARGET":            "MIKYU_TARGET",
+	"MIKYU_SERVER_DATA_DIR":          "MIKYU_DATA_DIR",
+	"MIKYU_ENGINE_BATCH_SIZE":        "MIKYU_BATCH_SIZE",
+	"MIKYU_ENGINE_MAX_INTERVAL":      "MIKYU_MAX_INTERVAL",
+	"MIKYU_ENGINE_FLUSH_INTERVAL":    "MIKYU_MAX_INTERVAL",
+	"MIKYU_ENGINE_MIN_INTERVAL":      "MIKYU_MIN_INTERVAL",
+	"MIKYU_ENGINE_SEGMENT_SIZE":      "MIKYU_SEGMENT_SIZE",
+	"MIKYU_ENGINE_MAX_MESSAGE_BYTES": "MIKYU_MAX_MESSAGE_BYTES",
+	"MIKYU_ENGINE_SEGMENT_AGE":       "MIKYU_SEGMENT_AGE",
+	"MIKYU_ENGINE_ENCRYPTED":         "MIKYU_ENCRYPTED",
+	"MIKYU_ENGINE_FSYNC":             "MIKYU_FSYNC",
+}
+
+// applyEnvOverrides layers MIKYU_<CANONICAL_KEY> over the loaded file, driven
+// entirely by spec.Table: session parameters fill the server block, spec
+// parameters fill the session defaults.
+func applyEnvOverrides(cfg *Config) error {
+	for legacy, next := range legacyEnvVars {
+		if os.Getenv(legacy) != "" {
+			return fmt.Errorf("%s is no longer supported: use %s", legacy, next)
+		}
 	}
-	if q.MaxInterval > 0 {
-		cfg.MaxInterval = q.MaxInterval
+	if err := spec.ApplyEnvSession(&cfg.Server, os.Getenv); err != nil {
+		return err
 	}
-	if q.MinInterval > 0 {
-		cfg.MinInterval = q.MinInterval
-	}
-	if q.MaxSegmentBytes > 0 {
-		cfg.MaxSegmentBytes = q.MaxSegmentBytes
-	}
-	if q.MaxMessageBytes > 0 {
-		cfg.MaxMessageBytes = q.MaxMessageBytes
-	}
-	if q.MaxSegmentAge > 0 {
-		cfg.MaxSegmentAge = q.MaxSegmentAge
-	}
-	if q.Encrypted != nil {
-		cfg.Encrypted = *q.Encrypted
-	}
-	if q.Fsync != nil {
-		cfg.Fsync = *q.Fsync
-	}
-	return cfg
+	return spec.ApplyEnv(&cfg.Defaults, os.Getenv)
 }

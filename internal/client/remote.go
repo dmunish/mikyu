@@ -4,20 +4,18 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
-	"errors"
+	"encoding/json"
+	"fmt"
 	"io"
-	"iter"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/dmunish/mikyu/internal/engine"
-	"github.com/dmunish/mikyu/internal/group"
-	"github.com/dmunish/mikyu/internal/ipc"
-	"github.com/dmunish/mikyu/internal/logqueue"
-	"github.com/dmunish/mikyu/internal/protocol"
-	"github.com/dmunish/mikyu/internal/taskqueue"
+	"github.com/dmunish/mikyu/internal/queue/logqueue"
+	"github.com/dmunish/mikyu/internal/spec"
+	"github.com/dmunish/mikyu/internal/transport/ipc"
+	"github.com/dmunish/mikyu/internal/transport/protocol"
 )
 
 // remoteClient implements Client over a network connection pool.
@@ -25,7 +23,8 @@ type remoteClient struct {
 	target   string
 	network  string
 	addr     string
-	cfg      Config
+	cfg      SessionConfig
+	tls      *tls.Config
 	pool     chan *clientConn
 	maxConns int
 	connSem  chan struct{}
@@ -40,11 +39,20 @@ type clientConn struct {
 
 // NewRemote creates a lazy remote client for target.
 func NewRemote(target string, opts ...Option) (*remoteClient, error) {
-	cfg := DefaultClientConfig()
+	cfg := DefaultSessionConfig()
 	for _, opt := range opts {
-		opt(&cfg)
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	if cfg.Target != "" {
+		target = cfg.Target
 	}
 	network, addr, err := protocol.ParseTarget(target)
+	if err != nil {
+		return nil, err
+	}
+	tlsConfig, err := cfg.TLSConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -53,6 +61,7 @@ func NewRemote(target string, opts ...Option) (*remoteClient, error) {
 		network:  network,
 		addr:     addr,
 		cfg:      cfg,
+		tls:      tlsConfig,
 		pool:     make(chan *clientConn, cfg.MaxConns),
 		maxConns: cfg.MaxConns,
 		connSem:  make(chan struct{}, cfg.MaxConns),
@@ -90,8 +99,8 @@ func (c *remoteClient) dialConn(ctx context.Context) (*clientConn, error) {
 	if c.network == "unix" || c.network == "pipe" {
 		conn, err = ipc.DialContext(ctx, c.target)
 	} else {
-		if c.cfg.TLSConfig != nil {
-			conn, err = (&tls.Dialer{Config: c.cfg.TLSConfig, NetDialer: dialer}).DialContext(ctx, c.network, c.addr)
+		if c.tls != nil {
+			conn, err = (&tls.Dialer{Config: c.tls, NetDialer: dialer}).DialContext(ctx, c.network, c.addr)
 		} else {
 			conn, err = dialer.DialContext(ctx, c.network, c.addr)
 		}
@@ -134,82 +143,147 @@ func (c *remoteClient) Close() error {
 	}
 }
 
+// discard releases the connection slot and closes the connection. A round
+// trip that errored or was cancelled may have left a response (or half of
+// one) in flight, so such a connection must never return to the pool.
+func (c *remoteClient) discard(ch *clientConn) {
+	defer func() { <-c.connSem }()
+	if ch == nil {
+		return
+	}
+	_ = ch.conn.Close()
+}
+
 func (c *remoteClient) exchange(ctx context.Context, op byte, body []byte) ([]byte, error) {
 	ch, err := c.acquire(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer c.release(ch)
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
 
 	if deadline, ok := ctx.Deadline(); ok {
-		_ = ch.conn.SetDeadline(deadline)
+		_ = ch.conn.SetDeadline(deadline.Add(time.Second))
 	} else {
 		_ = ch.conn.SetDeadline(time.Time{})
 	}
-	defer func() { _ = ch.conn.SetDeadline(time.Time{}) }()
 
-	if err := protocol.WriteFrame(ch.conn, op, body); err != nil {
-		return nil, err
-	}
-	respOp, respBody, err := protocol.ReadFrame(ch.r)
-	if err != nil {
-		return nil, err
+	woken := make(chan struct{})
+	stop := make(chan struct{})
+	go func() {
+		defer close(woken)
+		select {
+		case <-ctx.Done():
+			_ = ch.conn.SetDeadline(time.Unix(0, 1))
+		case <-stop:
+		}
+	}()
+
+	respOp, respBody, rerr := c.roundTrip(ch, op, body)
+	close(stop)
+	<-woken
+	_ = ch.conn.SetDeadline(time.Time{})
+
+	switch {
+	case ctx.Err() != nil:
+		// Cancellation wins even if the response raced in
+		c.discard(ch)
+		return nil, ctx.Err()
+	case rerr != nil:
+		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			c.discard(ch)
+			return nil, context.DeadlineExceeded
+		}
+		c.discard(ch)
+		return nil, rerr
 	}
 	if respOp == protocol.OpError {
 		code, msg := protocol.DecodeError(respBody)
+		c.release(ch)
 		return nil, decodeProtocolError(code, msg)
 	}
+	c.release(ch)
 	return respBody, nil
 }
 
-func (c *remoteClient) CreateQueue(ctx context.Context, name string, opts ...QueueOption) error {
-	cfg := QueueConfig{
-		BatchSize:       c.cfg.BatchSize,
-		MaxInterval:     c.cfg.MaxInterval,
-		MinInterval:     c.cfg.MinInterval,
-		MaxSegmentBytes: c.cfg.DefaultMaxSegmentBytes,
-		MaxMessageBytes: c.cfg.DefaultMaxMessageBytes,
-		MaxSegmentAge:   c.cfg.DefaultMaxSegmentAge,
-		Encrypted:       c.cfg.Encrypted,
-		Fsync:           c.cfg.Fsync,
+// roundTrip performs exactly one request/response frame exchange on ch.
+func (c *remoteClient) roundTrip(ch *clientConn, op byte, body []byte) (byte, []byte, error) {
+	if err := protocol.WriteFrame(ch.conn, op, body); err != nil {
+		return 0, nil, err
 	}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&cfg)
-		}
-	}
+	return protocol.ReadFrame(ch.r)
+}
+
+// writeSpecFrame encodes a spec-bearing admin request:
+// bytes(name) u16 specVersion bytes(json Spec).
+func writeSpecFrame(name string, data []byte) []byte {
 	var body protocol.Buffer
 	body.WriteBytes([]byte(name))
-	body.WriteU32(uint32(cfg.BatchSize))
-	body.WriteU64(uint64(cfg.MaxInterval))
-	body.WriteU64(uint64(cfg.MinInterval))
-	body.WriteU64(uint64(cfg.MaxSegmentBytes))
-	body.WriteU64(uint64(cfg.MaxMessageBytes))
-	body.WriteU64(uint64(cfg.MaxSegmentAge))
-	if cfg.Encrypted {
-		body.WriteU32(1)
-	} else {
-		body.WriteU32(0)
+	body.WriteU16(spec.CurrentSpecVersion)
+	body.WriteBytes(data)
+	return body.Bytes()
+}
+
+func (c *remoteClient) CreateQueue(ctx context.Context, name string, opts ...QueueOption) error {
+	data, err := spec.EncodeSpec(applyQueueOptions(opts))
+	if err != nil {
+		return err
 	}
-	if cfg.Fsync {
-		body.WriteU32(1)
-	} else {
-		body.WriteU32(0)
-	}
-	_, err := c.exchange(ctx, protocol.OpCreateQueue, body.Bytes())
+	_, err = c.exchange(ctx, protocol.OpCreateQueue, writeSpecFrame(name, data))
 	return err
 }
 
-func (c *remoteClient) LogQueue(name string) (logqueue.ClientLogQueue, error) {
-	return &remoteLogQueue{client: c, name: name}, nil
+func (c *remoteClient) UpdateQueue(ctx context.Context, name string, opts ...QueueOption) error {
+	data, err := spec.EncodeSpec(applyQueueOptions(opts))
+	if err != nil {
+		return err
+	}
+	_, err = c.exchange(ctx, protocol.OpUpdateQueue, writeSpecFrame(name, data))
+	return err
 }
 
-func (c *remoteClient) TaskQueue(name string) (TaskQueue, error) {
-	return &remoteTaskQueue{client: c, name: name}, nil
+func (c *remoteClient) DescribeQueue(ctx context.Context, name string) (QueueDescription, error) {
+	body := protocol.Buffer{}
+	body.WriteBytes([]byte(name))
+	resp, err := c.exchange(ctx, protocol.OpDescribeQueue, body.Bytes())
+	if err != nil {
+		return QueueDescription{}, err
+	}
+	r := protocol.NewReader(resp)
+	version, err := r.ReadU16()
+	if err != nil {
+		return QueueDescription{}, fmt.Errorf("%w: %v", ErrProtocol, err)
+	}
+	if err := spec.CheckSpecVersion(version); err != nil {
+		return QueueDescription{}, err
+	}
+	data, err := r.ReadBytes()
+	if err != nil {
+		return QueueDescription{}, fmt.Errorf("%w: %v", ErrProtocol, err)
+	}
+	if len(data) > spec.MaxSpecPayload {
+		return QueueDescription{}, fmt.Errorf("%w: describe payload is %d bytes, limit is %d", ErrProtocol, len(data), spec.MaxSpecPayload)
+	}
+	var d QueueDescription
+	if err := json.Unmarshal(data, &d); err != nil {
+		return QueueDescription{}, fmt.Errorf("%w: %v", ErrProtocol, err)
+	}
+	return d, nil
+}
+
+func (c *remoteClient) Info(ctx context.Context) (Info, error) {
+	resp, err := c.exchange(ctx, protocol.OpInfo, nil)
+	if err != nil {
+		return Info{}, err
+	}
+	r := protocol.NewReader(resp)
+	data, err := r.ReadBytes()
+	if err != nil {
+		return Info{}, fmt.Errorf("%w: %v", ErrProtocol, err)
+	}
+	var info Info
+	if err := json.Unmarshal(data, &info); err != nil {
+		return Info{}, fmt.Errorf("%w: %v", ErrProtocol, err)
+	}
+	return info, nil
 }
 
 func (c *remoteClient) ListQueues(ctx context.Context) ([]string, error) {
@@ -240,7 +314,7 @@ func (c *remoteClient) DeleteQueue(ctx context.Context, name string) error {
 	return err
 }
 
-func (c *remoteClient) TruncateQueue(ctx context.Context, name string, minOffset uint64) (int64, error) {
+func (c *remoteClient) Truncate(ctx context.Context, name string, minOffset uint64) (int64, error) {
 	body := protocol.Buffer{}
 	body.WriteBytes([]byte(name))
 	body.WriteU64(minOffset)
@@ -256,501 +330,15 @@ func (c *remoteClient) TruncateQueue(ctx context.Context, name string, minOffset
 	return int64(reclaimed), nil
 }
 
-func (c *remoteClient) Stats(ctx context.Context) (engine.EngineStats, error) {
-	body, err := c.exchange(ctx, protocol.OpStats, nil)
-	if err != nil {
-		return engine.EngineStats{}, err
-	}
-	r := protocol.NewReader(body)
-	active, err := r.ReadU32()
-	if err != nil {
-		return engine.EngineStats{}, err
-	}
-	totalBytes, err := r.ReadU64()
-	if err != nil {
-		return engine.EngineStats{}, err
-	}
-	count, err := r.ReadU32()
-	if err != nil {
-		return engine.EngineStats{}, err
-	}
-	if count > 65536 {
-		return engine.EngineStats{}, errors.New("too many queue stats")
-	}
-	queues := make(map[string]engine.QueueStats, count)
-	for range count {
-		name, err := r.ReadBytes()
-		if err != nil {
-			return engine.EngineStats{}, err
-		}
-		msgCount, err := r.ReadU64()
-		if err != nil {
-			return engine.EngineStats{}, err
-		}
-		segCount, err := r.ReadU32()
-		if err != nil {
-			return engine.EngineStats{}, err
-		}
-		size, err := r.ReadU64()
-		if err != nil {
-			return engine.EngineStats{}, err
-		}
-		last, err := r.ReadU64()
-		if err != nil {
-			return engine.EngineStats{}, err
-		}
-		minOff, err := r.ReadU64()
-		if err != nil {
-			return engine.EngineStats{}, err
-		}
-		queues[string(name)] = engine.QueueStats{MessageCount: msgCount, SegmentCount: int(segCount), SizeBytes: int64(size), LastOffset: last, MinOffset: minOff}
-	}
-	return engine.EngineStats{ActiveQueues: int(active), TotalBytes: int64(totalBytes), Queues: queues}, nil
-}
-
-func decodeProtocolError(code byte, msg string) error {
-	switch code {
-	case protocol.ErrCodeQueueNotFound:
-		return engine.ErrQueueNotFound
-	case protocol.ErrCodeQueueExists:
-		return engine.ErrQueueExists
-	case protocol.ErrCodeOffsetNotFound:
-		return engine.ErrOffsetNotFound
-	case protocol.ErrCodeOffsetTruncated:
-		return engine.ErrOffsetTruncated
-	case protocol.ErrCodeTaskNotAvailable:
-		return taskqueue.ErrTaskNotAvailable
-	case protocol.ErrCodeTaskNotFound:
-		return taskqueue.ErrTaskNotFound
-	case protocol.ErrCodeTaskNotInflight:
-		return taskqueue.ErrTaskNotInflight
-	case protocol.ErrCodeTaskStale:
-		return taskqueue.ErrTaskStale
-	case protocol.ErrCodeTaskClosed:
-		return taskqueue.ErrTaskClosed
-	case protocol.ErrCodeInvalidTask:
-		return taskqueue.ErrInvalidTask
-	case protocol.ErrCodeDeadLetterNotFound:
-		return taskqueue.ErrDeadLetterNotFound
-	case protocol.ErrCodeDeadLetterStale:
-		return taskqueue.ErrDeadLetterStale
-	default:
-		return errors.New(msg)
-	}
-}
-
-type remoteLogQueue struct {
-	client *remoteClient
-	name   string
-}
-
-func (q *remoteLogQueue) Name() string { return q.name }
-
-func (q *remoteLogQueue) Produce(ctx context.Context, payload []byte) (uint64, error) {
-	body := protocol.Buffer{}
-	body.WriteBytes([]byte(q.name))
-	body.WriteBytes(payload)
-	resp, err := q.client.exchange(ctx, protocol.OpProduce, body.Bytes())
-	if err != nil {
-		return 0, err
-	}
-	r := protocol.NewReader(resp)
-	return r.ReadU64()
-}
-
-func (q *remoteLogQueue) ProduceBatch(ctx context.Context, payloads [][]byte) ([]uint64, error) {
-	body := protocol.Buffer{}
-	body.WriteBytes([]byte(q.name))
-	body.WriteU32(uint32(len(payloads)))
-	for _, p := range payloads {
-		body.WriteBytes(p)
-	}
-	resp, err := q.client.exchange(ctx, protocol.OpProduceBatch, body.Bytes())
-	if err != nil {
-		return nil, err
-	}
-	r := protocol.NewReader(resp)
-	count, err := r.ReadU32()
-	if err != nil {
-		return nil, err
-	}
-	offsets := make([]uint64, count)
-	for i := range count {
-		off, err := r.ReadU64()
-		if err != nil {
-			return nil, err
-		}
-		offsets[i] = off
-	}
-	return offsets, nil
-}
-
-func (q *remoteLogQueue) Read(ctx context.Context, offset uint64) (engine.Message, error) {
-	body := protocol.Buffer{}
-	body.WriteBytes([]byte(q.name))
-	body.WriteU64(offset)
-	resp, err := q.client.exchange(ctx, protocol.OpRead, body.Bytes())
-	if err != nil {
-		return engine.Message{}, err
-	}
-	r := protocol.NewReader(resp)
-	off, err := r.ReadU64()
-	if err != nil {
-		return engine.Message{}, err
-	}
-	idBytes, err := r.ReadBytes()
-	if err != nil {
-		return engine.Message{}, err
-	}
-	tsNano, err := r.ReadU64()
-	if err != nil {
-		return engine.Message{}, err
-	}
-	payload, err := r.ReadBytes()
-	if err != nil {
-		return engine.Message{}, err
-	}
-	return engine.Message{
-		Offset:    off,
-		ID:        string(idBytes),
-		Timestamp: time.Unix(0, int64(tsNano)),
-		Payload:   payload,
-	}, nil
-}
-
-func (q *remoteLogQueue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([]engine.Message, error) {
-	body := protocol.Buffer{}
-	body.WriteBytes([]byte(q.name))
-	body.WriteU64(startOffset)
-	body.WriteU32(uint32(count))
-	resp, err := q.client.exchange(ctx, protocol.OpReadBatch, body.Bytes())
-	if err != nil {
-		return nil, err
-	}
-	r := protocol.NewReader(resp)
-	n, err := r.ReadU32()
-	if err != nil {
-		return nil, err
-	}
-	msgs := make([]engine.Message, 0, n)
-	for range n {
-		off, _ := r.ReadU64()
-		idBytes, _ := r.ReadBytes()
-		tsNano, _ := r.ReadU64()
-		payload, _ := r.ReadBytes()
-		msgs = append(msgs, engine.Message{
-			Offset:    off,
-			ID:        string(idBytes),
-			Timestamp: time.Unix(0, int64(tsNano)),
-			Payload:   payload,
-		})
-	}
-	return msgs, nil
-}
-
-func (q *remoteLogQueue) LastOffset(ctx context.Context) (uint64, error) {
-	body := protocol.Buffer{}
-	body.WriteBytes([]byte(q.name))
-	resp, err := q.client.exchange(ctx, protocol.OpTail, body.Bytes())
-	if err != nil {
-		return 0, err
-	}
-	r := protocol.NewReader(resp)
-	return r.ReadU64()
-}
-
-func (q *remoteLogQueue) MinOffset(ctx context.Context) (uint64, error) {
-	stats, err := q.client.Stats(ctx)
-	if err != nil {
-		return 0, err
-	}
-	qs, ok := stats.Queues[q.name]
-	if !ok {
-		return 0, engine.ErrQueueNotFound
-	}
-	return qs.MinOffset, nil
-}
-
-func (q *remoteLogQueue) Truncate(ctx context.Context, minOffset uint64) (int64, error) {
-	return q.client.TruncateQueue(ctx, q.name, minOffset)
-}
-
-func (q *remoteLogQueue) Stream(ctx context.Context, startOffset uint64) iter.Seq2[engine.Message, error] {
-	return func(yield func(engine.Message, error) bool) {
-		for curr := startOffset; ; curr++ {
-			if err := ctx.Err(); err != nil {
-				yield(engine.Message{}, err)
-				return
-			}
-			msg, err := q.Read(ctx, curr)
-			if errors.Is(err, engine.ErrOffsetNotFound) {
-				return
-			}
-			if !yield(msg, err) || err != nil {
-				return
-			}
-		}
-	}
-}
-
-func (q *remoteLogQueue) Tail(ctx context.Context, startOffset uint64) iter.Seq2[engine.Message, error] {
-	return func(yield func(engine.Message, error) bool) {
-		curr := startOffset
-		for {
-			if err := ctx.Err(); err != nil {
-				yield(engine.Message{}, err)
-				return
-			}
-			last, err := q.LastOffset(ctx)
-			if err != nil {
-				// transient? retry after sleep
-				if isRetryable(err) {
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(5 * time.Millisecond):
-						continue
-					}
-				}
-				yield(engine.Message{}, err)
-				return
-			}
-			if curr >= last {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(5 * time.Millisecond):
-					continue
-				}
-			}
-			msg, err := q.Read(ctx, curr)
-			if err != nil {
-				if isRetryable(err) {
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(5 * time.Millisecond):
-						continue
-					}
-				}
-				yield(engine.Message{}, err)
-				return
-			}
-			if !yield(msg, nil) {
-				return
-			}
-			curr++
-		}
-	}
-}
-
-func (q *remoteLogQueue) Group(name string) logqueue.Group {
-	g := &remoteGroup{queue: q}
-	g.Base.Name = name
-	g.Base.CommitFn = func(ctx context.Context, offset uint64) error {
-		body := protocol.Buffer{}
-		body.WriteBytes([]byte(q.name))
-		body.WriteBytes([]byte(name))
-		body.WriteU64(offset)
-		_, err := q.client.exchange(ctx, protocol.OpCommitOffset, body.Bytes())
-		return err
-	}
-	return g
-}
-
-type remoteGroup struct {
-	group.Base
-	queue *remoteLogQueue
-}
-
-func (g *remoteGroup) Name() string {
-	return g.Base.Name
-}
-
-func (g *remoteGroup) FetchOffset(ctx context.Context) (uint64, error) {
-	body := protocol.Buffer{}
-	body.WriteBytes([]byte(g.queue.name))
-	body.WriteBytes([]byte(g.Base.Name))
-	resp, err := g.queue.client.exchange(ctx, protocol.OpFetchOffset, body.Bytes())
-	if err != nil {
-		return 0, err
-	}
-	r := protocol.NewReader(resp)
-	return r.ReadU64()
-}
-
 var _ interface {
 	io.Closer
 	CreateQueue(context.Context, string, ...QueueOption) error
+	UpdateQueue(context.Context, string, ...QueueOption) error
+	DescribeQueue(context.Context, string) (QueueDescription, error)
 	LogQueue(string) (logqueue.ClientLogQueue, error)
 	TaskQueue(string) (TaskQueue, error)
 	ListQueues(context.Context) ([]string, error)
 	DeleteQueue(context.Context, string) error
-	TruncateQueue(context.Context, string, uint64) (int64, error)
-	Stats(context.Context) (engine.EngineStats, error)
+	Truncate(context.Context, string, uint64) (int64, error)
+	Info(context.Context) (Info, error)
 } = (*remoteClient)(nil)
-
-func isRetryable(err error) bool {
-	return errors.Is(err, engine.ErrOffsetNotFound) ||
-		errors.Is(err, engine.ErrOffsetTruncated) || // optional; truncated offsets won't recover, but you may want to fail fast
-		errors.Is(err, engine.ErrCorruptRecord) ||
-		errors.Is(err, io.EOF) ||
-		errors.Is(err, io.ErrUnexpectedEOF)
-}
-
-type remoteTaskQueue struct {
-	client *remoteClient
-	name   string
-}
-
-func (q *remoteTaskQueue) Close() error { return nil }
-func (q *remoteTaskQueue) Name() string { return q.name }
-
-func (q *remoteTaskQueue) Enqueue(ctx context.Context, payload []byte, opts ...taskqueue.TaskOption) (taskqueue.Task, error) {
-	visibility, maxAttempts, scheduled := taskqueue.ResolveTaskOptions(opts...)
-	if visibility <= 0 || maxAttempts == 0 || scheduled.IsZero() {
-		return taskqueue.Task{}, taskqueue.ErrInvalidTask
-	}
-	var b protocol.Buffer
-	b.WriteBytes([]byte(q.name))
-	b.WriteBytes(payload)
-	b.WriteU32(maxAttempts)
-	b.WriteU64(uint64(int64(visibility)))
-	if scheduled.IsZero() {
-		b.WriteU64(0)
-	} else {
-		b.WriteU64(uint64(scheduled.UnixNano()))
-	}
-	resp, err := q.client.exchange(ctx, protocol.OpTaskEnqueue, b.Bytes())
-	if err != nil {
-		return taskqueue.Task{}, err
-	}
-	r := protocol.NewReader(resp)
-	return protocol.DecodeTask(r)
-}
-
-func (q *remoteTaskQueue) Dequeue(ctx context.Context) (taskqueue.Task, error) {
-	for {
-		var b protocol.Buffer
-		b.WriteBytes([]byte(q.name))
-		resp, err := q.client.exchange(ctx, protocol.OpTaskDequeue, b.Bytes())
-		if err == nil {
-			r := protocol.NewReader(resp)
-			return protocol.DecodeTask(r)
-		}
-		if !errors.Is(err, taskqueue.ErrTaskNotAvailable) {
-			return taskqueue.Task{}, err
-		}
-		timer := time.NewTimer(10 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				drainRemoteTimer(timer)
-			}
-			return taskqueue.Task{}, ctx.Err()
-		case <-timer.C:
-		}
-	}
-}
-
-func (q *remoteTaskQueue) Ack(ctx context.Context, task taskqueue.Task) error {
-	var b protocol.Buffer
-	b.WriteBytes([]byte(q.name))
-	protocol.EncodeTask(&b, task)
-	_, err := q.client.exchange(ctx, protocol.OpTaskAck, b.Bytes())
-	return err
-}
-
-func (q *remoteTaskQueue) AckID(ctx context.Context, taskID string) error {
-	var b protocol.Buffer
-	protocol.EncodeTaskID(&b, q.name, taskID)
-
-	_, err := q.client.exchange(ctx, protocol.OpTaskAckByID, b.Bytes())
-	return err
-}
-
-func (q *remoteTaskQueue) Fail(ctx context.Context, task taskqueue.Task, opts ...taskqueue.FailOption) error {
-	delay := taskqueue.ResolveFailOptions(task, opts...)
-	var b protocol.Buffer
-	b.WriteBytes([]byte(q.name))
-	protocol.EncodeTask(&b, task)
-	b.WriteU64(uint64(int64(delay)))
-	_, err := q.client.exchange(ctx, protocol.OpTaskFail, b.Bytes())
-	return err
-}
-
-func (q *remoteTaskQueue) FailID(ctx context.Context, taskID string, opts ...taskqueue.FailOption) error {
-	var b protocol.Buffer
-	protocol.EncodeTaskID(&b, q.name, taskID)
-
-	if len(opts) == 0 {
-		b.WriteU32(0)
-		b.WriteU64(0)
-	} else {
-		delay := taskqueue.ResolveFailOptions(taskqueue.Task{}, opts...)
-		b.WriteU32(1)
-		b.WriteU64(uint64(int64(delay)))
-	}
-
-	_, err := q.client.exchange(ctx, protocol.OpTaskFailByID, b.Bytes())
-	return err
-}
-
-func (q *remoteTaskQueue) Extend(ctx context.Context, task taskqueue.Task, timeout time.Duration) error {
-	if timeout <= 0 {
-		return taskqueue.ErrInvalidTask
-	}
-	var b protocol.Buffer
-	b.WriteBytes([]byte(q.name))
-	protocol.EncodeTask(&b, task)
-	b.WriteU64(uint64(int64(timeout)))
-	_, err := q.client.exchange(ctx, protocol.OpTaskExtend, b.Bytes())
-	return err
-}
-
-func (q *remoteTaskQueue) ExtendID(ctx context.Context, taskID string, timeout time.Duration) error {
-	if timeout <= 0 {
-		return taskqueue.ErrInvalidTask
-	}
-
-	var b protocol.Buffer
-	protocol.EncodeTaskID(&b, q.name, taskID)
-	b.WriteU64(uint64(int64(timeout)))
-
-	_, err := q.client.exchange(ctx, protocol.OpTaskExtendByID, b.Bytes())
-	return err
-}
-
-func (q *remoteTaskQueue) DeadLetters(ctx context.Context) ([]taskqueue.Task, error) {
-	var b protocol.Buffer
-	b.WriteBytes([]byte(q.name))
-	resp, err := q.client.exchange(ctx, protocol.OpTaskDeadLetters, b.Bytes())
-	if err != nil {
-		return nil, err
-	}
-	r := protocol.NewReader(resp)
-	return protocol.DecodeTaskList(r)
-}
-
-func (q *remoteTaskQueue) AckDeadLetter(ctx context.Context, task taskqueue.Task) error {
-	var b protocol.Buffer
-	b.WriteBytes([]byte(q.name))
-	protocol.EncodeTask(&b, task)
-	_, err := q.client.exchange(ctx, protocol.OpTaskDeadLetterAck, b.Bytes())
-	return err
-}
-
-func (q *remoteTaskQueue) AckDeadLetterID(ctx context.Context, taskID string) error {
-	var b protocol.Buffer
-	protocol.EncodeTaskID(&b, q.name, taskID)
-
-	_, err := q.client.exchange(ctx, protocol.OpTaskDeadLetterAckByID, b.Bytes())
-	return err
-}
-
-func drainRemoteTimer(t *time.Timer) {
-	select {
-	case <-t.C:
-	default:
-	}
-}
