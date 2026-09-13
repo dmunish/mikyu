@@ -24,6 +24,7 @@ The project ships as a **single binary** with four roles:
 - **Optional crash‑loss window (`Fsync: false`).** The record is published to the ring cache and `publishedOffset` immediately; the flusher writes via `WriteAt` without `syncData`. Trades a small crash window for ~3.5× lower latency. Bytes still land in the OS page cache.
 - **Zero‑copy reads.** Closed segments are `mmap`'d read‑only. `Read` on a closed segment returns a sub‑slice of mapped memory with no heap allocation.
 - **Ring cache.** The last 16,384 messages are cached in a lock‑protected ring for ~100 ns/op tail reads.
+- **Long‑poll tailing.** `Fetch` blocks on the queue's `notify` channel for up to its `maxWait`, waking on every `AppendBatch` broadcast. `Stream` reuses the same primitive with `maxWait=0` for a non‑blocking drain; `Tail` re‑arms a 30 s window per iteration, so an idle stream is one request per window instead of a 5 ms polling loop.
 - **Chunked, self‑describing checkpoints.** Task state is snapshotted into `recordCPStart` / `recordCPChunk` / `recordCPCommit` records; the newest valid commit wins on recovery, and corrupt or incomplete checkpoints are skipped in favor of earlier ones.
 - **Single source of truth for configuration.** Every queue and session parameter lives in `spec.Table` with a canonical key, path, kind, layer, mutability, env name, flag name, and option name. All layers (SDK, CLI, env, YAML, wire, storage) are driven from that one table.
 - **Enforced architecture.** `.go-arch-lint.yml` defines the package‑level dependency graph; `internal/audit` gates legacy names and comment style. CI fails on a violation.
@@ -106,7 +107,7 @@ Both drivers take an `engine.Storage` handle. A **single physical queue** can be
 | Consumer state | `group.Base` (HighWater) in memory | `active` map + `scheduleHeap` + `dlq` |
 | Durability anchor | Consumer group commit offsets | Chunked checkpoints (`recordCPCommit`) |
 | Retention floor | `min(HighWater)` across groups | `min(checkpointOffset, active offsets, uncheckpointed DLQ)` |
-| Primary API | `Append`, `Read`, `Stream`, `Tail`, `Group` | `Enqueue`, `Dequeue`, `Ack`, `Nack`, `Extend`, `DeadLetters` |
+| Primary API | `Append`, `Read`, `Fetch`, `Stream`, `Tail`, `Group` | `Enqueue`, `Dequeue`, `Ack`, `Nack`, `Extend`, `DeadLetters` |
 
 ### 3.2 Retention Arbitration Between Drivers
 
@@ -231,7 +232,7 @@ github.com/dmunish/mikyu/
     ├── engine/                     # Storage engine (see §6)
     │   ├── storage.go  manager.go  queue.go  wal.go  segment.go
     │   ├── index.go  encode.go  cache.go  offsets.go  compact.go
-    │   ├── read.go  append.go  offset_api.go  message.go  config.go
+    │   ├── read.go  append.go  fetch.go  offset_api.go  message.go  config.go
     │   ├── sync_{darwin,fdatasync,windows}.go
     │   └── encrypt_{linux,windows,other}.go
     │
@@ -249,7 +250,7 @@ github.com/dmunish/mikyu/
     │
     ├── transport/
     │   ├── protocol/               # frames.go, bytes.go, opcodes.go, errors.go,
-    │   │                            # task.go, doc.go
+    │   │                            # task.go, log.go, doc.go
     │   └── ipc/ipc.go              # Unix socket / named pipe listener & dialer
     │
     ├── node/                       # Process-wide shared local node
@@ -307,6 +308,7 @@ type Storage interface {
     AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
     Read(ctx context.Context, offset uint64) (Message, error)
     ReadBatch(ctx context.Context, start uint64, n int) ([]Message, error)
+    Fetch(ctx context.Context, offset uint64, maxCount int, maxWait time.Duration) ([]Message, error)
     LastOffset() uint64
     CommitOffset(ctx context.Context, group string, offset uint64) error
     Committed(ctx context.Context, group string) (uint64, error)
@@ -318,6 +320,8 @@ type Storage interface {
     FloorForSize(ctx context.Context, maxBytes int64) (uint64, error)
 }
 ```
+
+`Fetch` is the streaming primitive both `logqueue.Stream` and `logqueue.Tail` build on; it is the only read method on `Storage` that blocks.
 
 ### 6.2 `Config` (per queue)
 
@@ -389,7 +393,19 @@ type Queue struct {
 
 `ReadBatch` walks offsets in order, reusing the current segment pointer between consecutive offsets and short‑circuiting to `locateSegment` only on boundary crossings.
 
-#### 6.4.3 Segment Rolling & Preallocation
+#### 6.4.3 Fetch
+
+`Fetch` is the blocking, notify‑driven read primitive that `logqueue.Stream` and `logqueue.Tail` sit on. It is a single loop over the queue's `notify` channel:
+
+1. Snapshot `closed`, `minOffset`, `publishedOffset`, and the current `notify` channel under `RLock`.
+2. `closed` → `ErrQueueClosed`; `offset < minOffset` → `ErrOffsetTruncated`.
+3. `offset < publishedOffset` → delegate to `ReadBatch(ctx, offset, maxCount)` and return.
+4. No data and `maxWait <= 0` → `ErrNoData`.
+5. Otherwise arm a timer for the remaining budget and block on `{ctx.Done(), notify, timer.C}`. A notify wake means an `AppendBatch` reached the publish point and the loop re‑checks; a timer fire returns `ErrNoData`; ctx cancellation returns `ctx.Err()`.
+
+`notify` is broadcast by `broadcastLocked()` — called by both the sync and async `AppendBatch` paths after `publishedOffset` advances — so a parked reader wakes the instant a new record is visible. `Fetch` never touches `segments` directly; it hands off to `ReadBatch` once data is present, which keeps the mmap/read logic in one place.
+
+#### 6.4.4 Segment Rolling & Preallocation
 
 `nextPreallocBytes` starts at `min(8 MiB, SegmentSize)` and adapts inside `roll()`:
 
@@ -399,7 +415,7 @@ type Queue struct {
 
 This keeps small queues small and large queues fast.
 
-#### 6.4.4 Close & ApplyConfig
+#### 6.4.5 Close & ApplyConfig
 
 `Close` stops the WAL, closes every segment, marks `closed`. `ApplyConfig` updates `BatchSize`, `MaxInterval`, `MinInterval`, `SegmentAge` on the live queue and pushes the flusher config via `wal.UpdateConfig`.
 
@@ -508,13 +524,14 @@ type ClientLogQueue interface {
 }
 ```
 
-The interface deliberately exposes only `engine.Message`, not `engine.Storage`, keeping the engine internal.
+The interface deliberately exposes only `engine.Message`, not `engine.Storage`, keeping the engine internal. `LogQueue.Fetch` exists on the concrete type and is used by the server's `OpFetch` handler; it is not part of the client interface because remote callers reach it through `Tail`/`Stream`.
 
 ### 7.2 Behavior — `logqueue.go` & `stream.go`
 
 - `LogQueue` holds a `map[string]*queueGroup` for cached consumer groups.
-- `Stream(ctx, startOffset)` walks `storage.Read` until `ErrOffsetNotFound`, then returns. Errors other than "not found" are yielded once and stop the iterator.
-- `Tail(ctx, startOffset)` polls `storage.LastOffset()`; on `offset < last` it reads and yields; otherwise sleeps 5 ms. On **transient** errors (`ErrOffsetNotFound`, `ErrCorruptRecord`, `io.EOF`, `io.ErrUnexpectedEOF`) it sleeps 5 ms and retries the **same** offset, keeping streams alive across in‑flight WAL writes. This is tested by `TestLogQueueTailBugProof`.
+- **`Fetch(ctx, offset, maxCount, maxWait)`** is the streaming primitive. It returns `ErrOffsetTruncated` when `offset < MinOffset()`, returns up to `maxCount` records when `offset < publishedOffset`, blocks on the queue's `notify` channel for up to `maxWait` when the reader has caught up, and returns `ErrNoData` when the wait elapses with nothing new. `LogQueue.Fetch` is a thin delegate to `storage.Fetch`.
+- **`Stream(ctx, startOffset)`** drains every existing record from `startOffset` and returns on `ErrNoData`. It passes `maxWait=0`, which turns `Fetch` into a strictly non‑blocking drain: the first empty iteration ends the iterator. Any other error is yielded once and stops the iterator.
+- **`Tail(ctx, startOffset)`** yields existing records, then blocks in `Fetch` for up to `tailWait = 30 s` per iteration; `ErrNoData` simply re‑arms the wait, so an idle tail costs one long‑poll per 30 s window instead of the previous 5 ms polling loop. A `ctx` cancellation is yielded once and stops the iterator. `notify` is broadcast on every `AppendBatch` publish, so a tail wakes the instant new records become visible; the queue stays alive across in‑flight WAL writes because the wait is signal‑driven, not offset‑polled. This is tested by `TestLogQueueTailBugProof`, `TestLogQueueTailContinuous`, and `TestTailBatchDeliversAll` under `testing/synctest`.
 - `Group(name)` returns a cached `*queueGroup` (a `group.Base` with `CommitFn` bound to `LogQueue.CommitOffset`).
 
 ### 7.3 Retention — `retention.go`
@@ -725,7 +742,7 @@ Opcodes are **nibble‑grouped** by subsystem:
 | Subsystem | Range | Ops |
 |---|---|---|
 | Admin | `0x0X` | `OpCreateQueue`, `OpDeleteQueue`, `OpListQueues`, `OpUpdateQueue`, `OpDescribeQueue`, `OpTruncate`, `OpInfo`, `OpShutdown` (0x0C) |
-| Log | `0x1X` | `OpAppend`, `OpAppendBatch`, `OpRead`, `OpReadBatch`, `OpLastOffset`, `OpCommit`, `OpCommitted` |
+| Log | `0x1X` | `OpAppend`, `OpAppendBatch`, `OpRead`, `OpReadBatch`, `OpLastOffset`, `OpCommit`, `OpCommitted`, `OpFetch` |
 | Task | `0x2X` | `OpEnqueue`, `OpDequeue`, `OpAck`, `OpNack`, `OpExtend`, `OpDeadLetters`, `OpDeadLetterAck` |
 | Protocol‑level | — | `OpError` (0xFF), `OpReservedHandshake` (0x7E) |
 
@@ -745,6 +762,16 @@ Codes are blocked by subsystem nibble: `0x01–0x0F` admin, `0x11–0x1F` storag
 - `TaskRefModeTaskID = 1` → bare ID (server skips the strict check).
 
 `EncodeTaskDequeue` clamps negative timeouts to 0 so they decode as "non‑blocking" instead of a 64‑bit millisecond value. `EncodeTaskList` / `DecodeTaskList` handle `DeadLetters` responses with a `10,000,000` cap.
+
+#### 10.1.6 Log Wire — `log.go`
+
+The log wire DTO is `LogRecord{Offset, ID, Timestamp, Payload}`.
+
+- `WriteLogRecord(b, rec)` / `ReadLogRecord(r)` — one record as `u64 offset`, `bytes ID`, `u64 UnixNano timestamp`, `bytes payload`.
+- `WriteLogRecordList` / `ReadLogRecordList` — `u32 count` (cap `65536`) followed by that many records. Over‑large counts decode as `ErrTruncatedBody`.
+- `EncodeFetch(b, queue, start, maxCount, maxWait)` / `DecodeFetch(r)` — the `OpFetch` request: `bytes(queue) u64 start u32 maxCount u64 maxWait` (`maxWait` as a `time.Duration` in nanoseconds). A negative `maxWait` on the wire decodes to a negative duration, which the server clamps to 0 before dispatch.
+
+`OpFetch` requests carry a `u64` wait in nanoseconds; the server caps it at `maxFetchWait = 5 min` so a hostile client cannot pin a handler indefinitely.
 
 ### 10.2 IPC — `internal/transport/ipc`
 
@@ -769,7 +796,9 @@ type Server struct {
 - `serveConn` reads frames on a **single reader goroutine** feeding an unbuffered channel; the main goroutine dispatches each frame and writes the response. This gives one frame of lookahead and natural backpressure, and lets a dead connection cancel a long‑polling handler. `OpShutdown` sets `shouldShutdown`; the goroutine then launches `s.Stop()` and returns.
 - `Stop()` closes the stop channel and the listener; safe to call from any goroutine.
 
-`dispatch.go` routes every opcode. `handlers_admin.go` covers queue lifecycle and `Info`/`Describe`; `handlers_log.go` covers append/read/last/commit; `handlers_task.go` covers enqueue/dequeue/ack/nack/extend/dead‑letters. Every response is either a success frame reusing the request opcode, or `OpError`.
+`dispatch.go` routes every opcode. `handlers_admin.go` covers queue lifecycle and `Info`/`Describe`; `handlers_log.go` covers append/read/read‑batch/last‑offset/commit/committed/fetch; `handlers_task.go` covers enqueue/dequeue/ack/nack/extend/dead‑letters. Every response is either a success frame reusing the request opcode, or `OpError`.
+
+`handleFetch` clamps the client's requested wait at `maxFetchWait = 5 min` and then calls `LogQueue.Fetch`; it serializes the result as a `LogRecordList` frame. A non‑blocking call (`wait == 0`) that finds no data returns `ErrCodeNoData`, which the client maps back to `engine.ErrNoData`; the long‑polling `Tail` path therefore treats `ErrNoData` as "re‑arm the window" rather than an error.
 
 `handleDequeue` caps server‑side long‑poll at `maxDequeueWait = 5 min` and reports `ErrCodeTaskNotAvailable` on clean context deadline, so clients re‑arm.
 
@@ -844,7 +873,14 @@ type Node struct {
 - `Close` — flip `closed`, drain the pool.
 - `exchange(ctx, op, body)` — acquire, set deadline from `ctx`, run a cancellation watcher that forces the socket deadline to a poisoned time on `ctx.Done()`, write frame, read frame, decode `OpError`. On cancellation or error, `discard` the connection (never return a connection with an unread response to the pool).
 
-`remoteLogQueue` implements `ClientLogQueue`; `remoteTaskQueue` implements `TaskQueue` with a **long‑poll loop** in `Dequeue`:
+`remoteLogQueue` implements `ClientLogQueue`. Its internal `fetch(ctx, start, maxCount, maxWait)` is the mirrored `OpFetch` primitive:
+
+- The server budget is `wait = min(maxWait, ctx deadline remaining)`.
+- The call deadline is `wait + pollMargin` (`5 s`), so a stalled server cannot hold a socket past the poll window.
+- `Stream` calls `fetch(ctx, curr, streamBatch=1024, 0)` — the server's non‑blocking path — and returns on `engine.ErrNoData`.
+- `Tail` calls `fetch(ctx, curr, streamBatch, longPoll=30 s)`; `engine.ErrNoData` is treated as "poll elapsed, re‑arm", so an idle tail spends one request per 30 s window. The whole iterator yields on parent‑context cancellation, restoring the parent error after the call returns.
+
+`remoteTaskQueue` implements `TaskQueue` with a **long‑poll loop** in `Dequeue`:
 
 - Server budget per call: `longPollTimeout = 30s`, capped by `ctx` deadline.
 - Client deadline: `wait + longPollMargin` (`5s`).
@@ -853,7 +889,7 @@ type Node struct {
 
 `remoteGroup` embeds `group.Base` with a `CommitFn` that exchanges `OpCommit`.
 
-`errors.go` `decodeProtocolError` maps each wire code back to the exact Go sentinel, preserving server detail after the sentinel text (so `ErrImmutableField: …segment_size…` still satisfies `errors.Is`).
+`errors.go` `decodeProtocolError` maps each wire code back to the exact Go sentinel, preserving server detail after the sentinel text (so `ErrImmutableField: …segment_size…` still satisfies `errors.Is`). `ErrCodeNoData` maps to `engine.ErrNoData`.
 
 ---
 
@@ -996,7 +1032,7 @@ Client                                         Server
 - **Admin frames** carry `bytes(name) u16 specVersion bytes(json Spec)`. The server checks `specVersion` **before** touching the JSON, so a future schema is rejected without interpretation (`ErrCodeSpecTooNew`).
 - **`OpDescribeQueue`** response is `u16 specVersion bytes(json QueueDescription)`.
 - **`OpTruncate`** request is `bytes(name) u64 minOffset`; response is `u64 reclaimedBytes`.
-- **Log frames** carry `bytes(name)` and payload/offset fields as needed.
+- **Log frames** carry `bytes(name)` and payload/offset fields as needed. `OpFetch` is `bytes(name) u64 start u32 maxCount u64 maxWait`; the response is a length‑prefixed `LogRecordList`. `OpFetch` is the only log read that long‑polls: the server clamps `maxWait` at `maxFetchWait = 5 min` and reports `ErrCodeNoData` on a clean empty window, so the client's `Tail` re‑arms.
 - **Task frames** carry `bytes(name)`, then a mode‑tagged `TaskRef`, then op‑specific data. Responses carry a wire `Task` or a task list.
 - **`OpError`** carries `u8 code bytes(message)`; the code is the stable contract.
 
@@ -1160,6 +1196,8 @@ Embedded and remote clients produce **identical** JSON for `DescribeQueue` and `
 | Index memory | `O(log S)` per read; footprint ∝ segment count |
 | Checkpoint writes | Every 5 s tick or 128 dirty ops |
 | `remoteTaskQueue.Dequeue` idle | One long‑poll request per 30 s window (not 10 ms polls) |
+| `remoteLogQueue.Tail` idle | One long‑poll request per 30 s window (not 10 ms polls) |
+| Embedded `logqueue.Tail` idle | One `Fetch` block per 30 s window; wakes on `notify` broadcast, no polling |
 
 Benchmarks live behind the `bench` build tag: `internal/engine/stress_bench_test.go`, `internal/queue/taskqueue/bench_test.go`, `internal/client/remote_dequeue_test.go`.
 
@@ -1191,7 +1229,8 @@ off, _ := lq.AppendBatch(ctx, [][]byte{…})
 msg, _ := lq.Read(ctx, off)
 msgs, _ := lq.ReadBatch(ctx, off, 10)
 last, _ := lq.LastOffset(ctx)
-for m, err := range lq.Tail(ctx, 0) { … }
+for m, err := range lq.Stream(ctx, 0) { … }   // drains existing records, returns
+for m, err := range lq.Tail(ctx, 0) { … }     // 30 s long-poll, wakes on append
 g := lq.Group("consumers"); g.Mark(off); g.Commit(ctx); g.Committed(ctx)
 
 // Task queue
@@ -1226,7 +1265,7 @@ tq2.Append(ctx, event)
 |---|---|
 | Spec | `ErrInvalidConfig`, `ErrImmutableField`, `ErrSpecTooNew`, `ErrSpecTooLarge` |
 | Node | `ErrLocked`, `ErrRegistryCorrupt`, `ErrSessionDefaultsMismatch` |
-| Engine | `ErrQueueExists`, `ErrQueueNotFound`, `ErrOffsetNotFound`, `ErrOffsetTruncated`, `ErrMessageTooLarge`, `ErrQueueClosed`, `ErrCorruptRecord` |
+| Engine | `ErrQueueExists`, `ErrQueueNotFound`, `ErrOffsetNotFound`, `ErrOffsetTruncated`, `ErrMessageTooLarge`, `ErrQueueClosed`, `ErrCorruptRecord`, `ErrNoData` |
 | Task | `ErrTaskNotAvailable`, `ErrTaskNotFound`, `ErrTaskNotInflight`, `ErrTaskStale`, `ErrTaskClosed`, `ErrInvalidTask`, `ErrCheckpointCorrupt`, `ErrDeadLetterNotFound`, `ErrDeadLetterStale` |
 | Protocol | `ErrProtocol`, `ErrTruncatedBody` |
 
@@ -1266,6 +1305,7 @@ REPL‑only session commands: `use <queue>` (set active), `help`, `exit`/`quit`.
 - **Engine record** — the raw bytes produced by `encodeRecord`; carries a UUID v7, timestamp, and CRC32.
 - **Task record** — an engine record whose payload begins with `MIKYUTQ\x01` and a kind byte.
 - **Foreign record** — an engine record a driver does not own; silently skipped by the other driver.
+- **Fetch** — the engine's single blocking read: returns immediately when data is present, otherwise parks on the queue's `notify` channel for up to `maxWait`. Both `logqueue.Stream` (`maxWait=0`) and `logqueue.Tail` (`maxWait=30s`) are thin iterators over it.
 - **Effective spec** — stored spec merged over session defaults over built‑ins.
 - **TaskRef** — `Task` (strict lease check) or `TaskID` (loose check).
 - **DeliveryID** — a random per‑delivery identifier; changes on each lease.
