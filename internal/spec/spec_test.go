@@ -338,7 +338,7 @@ func TestSpecYAMLRoundTrip(t *testing.T) {
 func TestBuiltinSessionLayer(t *testing.T) {
 	s := BuiltinSession()
 	require.Equal(t, "tcp://127.0.0.1:7420", s.Target)
-	require.Equal(t, "./data", s.DataDir)
+	require.Empty(t, s.DataDir)
 	require.Equal(t, 10, s.MaxConns)
 	require.False(t, s.TLSEnabled)
 }
