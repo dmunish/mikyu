@@ -25,6 +25,7 @@ excludeFiles:
 
 components:
   spec:       { in: internal/spec }
+  metrics:    { in: internal/metrics }
   engine:     { in: internal/engine }
   enginetest: { in: internal/enginetest }
   protocol:   { in: internal/transport/protocol }
@@ -48,6 +49,9 @@ components:
 deps:
   # ---- bottoms ---- (anyVendorDeps: stdlib allowed, no internal deps)
   spec:
+    anyVendorDeps: true
+  metrics:
+    mayDependOn: [spec]
     anyVendorDeps: true
   engine:
     anyVendorDeps: true

@@ -1,0 +1,52 @@
+# HELP mikyu_goroutines Number of goroutines.
+# TYPE mikyu_goroutines gauge
+mikyu_goroutines 7
+# HELP mikyu_heap_alloc_bytes Bytes of allocated heap objects.
+# TYPE mikyu_heap_alloc_bytes gauge
+mikyu_heap_alloc_bytes 1024
+# HELP mikyu_heap_inuse_bytes Bytes in in-use heap spans.
+# TYPE mikyu_heap_inuse_bytes gauge
+mikyu_heap_inuse_bytes 2048
+# HELP mikyu_gc_count_total Completed garbage collection cycles.
+# TYPE mikyu_gc_count_total counter
+mikyu_gc_count_total 3
+# HELP mikyu_uptime_seconds Process uptime in seconds.
+# TYPE mikyu_uptime_seconds gauge
+mikyu_uptime_seconds 12.5
+# HELP mikyu_process_cpu_percent Process CPU utilization percent.
+# TYPE mikyu_process_cpu_percent gauge
+mikyu_process_cpu_percent 1.25
+# HELP mikyu_process_rss_bytes Resident set size in bytes.
+# TYPE mikyu_process_rss_bytes gauge
+mikyu_process_rss_bytes 4096
+# HELP mikyu_queues Number of queues.
+# TYPE mikyu_queues gauge
+mikyu_queues 1
+# HELP mikyu_messages Total messages across queues.
+# TYPE mikyu_messages gauge
+mikyu_messages 10
+# HELP mikyu_bytes Total on-disk bytes across queues.
+# TYPE mikyu_bytes gauge
+mikyu_bytes 2048
+# HELP mikyu_queue_messages Messages stored in the queue.
+# TYPE mikyu_queue_messages gauge
+mikyu_queue_messages{queue="events"} 10
+# HELP mikyu_queue_segments Number of segments in the queue.
+# TYPE mikyu_queue_segments gauge
+mikyu_queue_segments{queue="events"} 1
+# HELP mikyu_queue_bytes On-disk bytes used by the queue.
+# TYPE mikyu_queue_bytes gauge
+mikyu_queue_bytes{queue="events"} 2048
+# HELP mikyu_append_total Log appends.
+# TYPE mikyu_append_total counter
+mikyu_append_total{queue="events"} 10
+# HELP mikyu_read_total Log reads.
+# TYPE mikyu_read_total counter
+mikyu_read_total{queue="events"} 4
+# HELP mikyu_append_duration_seconds Append latency in seconds.
+# TYPE mikyu_append_duration_seconds histogram
+mikyu_append_duration_seconds_bucket{queue="events",le="0.001"} 5
+mikyu_append_duration_seconds_bucket{queue="events",le="0.01"} 8
+mikyu_append_duration_seconds_bucket{queue="events",le="+Inf"} 10
+mikyu_append_duration_seconds_sum{queue="events"} 0.5
+mikyu_append_duration_seconds_count{queue="events"} 10
