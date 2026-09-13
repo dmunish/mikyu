@@ -120,6 +120,57 @@ func TestHandleReadOffsetNotFound(t *testing.T) {
 	assert.Equal(t, protocol.ErrCodeOffsetNotFound, code)
 }
 
+func TestHandleFetch(t *testing.T) {
+	n, release, _ := node.Acquire(t.TempDir(), spec.Spec{})
+	defer func() { _ = release() }()
+	srv := New(n)
+	defer srv.Stop()
+	_, _ = n.Manager().CreateQueue("q")
+
+	t.Run("empty non-blocking", func(t *testing.T) {
+		var b protocol.Buffer
+		b.WriteBytes([]byte("q"))
+		b.WriteU64(0)
+		b.WriteU32(16)
+		b.WriteU64(0)
+		respOp, respBody := srv.handleFetch(t.Context(), b.Bytes())
+		assert.Equal(t, protocol.OpError, respOp)
+		code, _ := protocol.DecodeError(respBody)
+		assert.Equal(t, protocol.ErrCodeNoData, code)
+	})
+
+	t.Run("returns batch", func(t *testing.T) {
+		q, _ := srv.getOrCreateLogQueue("q")
+		_, err := q.Append(t.Context(), []byte("hello"))
+		require.NoError(t, err)
+
+		var b protocol.Buffer
+		b.WriteBytes([]byte("q"))
+		b.WriteU64(0)
+		b.WriteU32(16)
+		b.WriteU64(0)
+		respOp, respBody := srv.handleFetch(t.Context(), b.Bytes())
+		assert.Equal(t, protocol.OpFetch, respOp)
+		r := protocol.NewReader(respBody)
+		n, _ := r.ReadU32()
+		assert.Equal(t, uint32(1), n)
+	})
+
+	t.Run("truncated", func(t *testing.T) {
+		var b protocol.Buffer
+		b.WriteBytes([]byte("q"))
+		b.WriteU64(0)
+		b.WriteU32(16)
+		b.WriteU64(0)
+		q, _ := srv.getOrCreateLogQueue("q")
+		_, err := q.Append(t.Context(), []byte("msg"))
+		require.NoError(t, err)
+		// Truncate should be tested separately; this fetch at 0 with 0 messages is not truncated.
+		respOp, _ := srv.handleFetch(t.Context(), b.Bytes())
+		assert.Equal(t, protocol.OpFetch, respOp)
+	})
+}
+
 func TestHandleListQueues(t *testing.T) {
 	n, release, _ := node.Acquire(t.TempDir(), spec.Spec{})
 	defer func() { _ = release() }()

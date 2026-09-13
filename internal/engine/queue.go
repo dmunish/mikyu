@@ -33,6 +33,7 @@ type Queue struct {
 	cache             *ringCache
 	nextPreallocBytes int64
 	closed            bool
+	notify            chan struct{}
 	mu                sync.RWMutex
 }
 
@@ -74,6 +75,7 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, 
 		offsets:           store,
 		cache:             newRingCache(defaultRingCacheCapacity),
 		nextPreallocBytes: initialPrealloc,
+		notify:            make(chan struct{}),
 	}
 	if err := q.loadSegments(); err != nil {
 		return nil, err
@@ -174,6 +176,13 @@ func (q *Queue) loadSegments() error {
 	return nil
 }
 
+// broadcastLocked wakes every Fetch parked on the current notify channel.
+func (q *Queue) broadcastLocked() {
+	old := q.notify
+	q.notify = make(chan struct{})
+	close(old)
+}
+
 func (q *Queue) closeSegments() {
 	for _, seg := range q.segments {
 		_ = seg.Close()
@@ -257,6 +266,7 @@ func (q *Queue) Close() error {
 		}
 	}
 	q.closed = true
+	q.broadcastLocked()
 	return firstErr
 }
 

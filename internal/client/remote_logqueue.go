@@ -11,6 +11,12 @@ import (
 	"github.com/dmunish/mikyu/internal/transport/protocol"
 )
 
+const (
+	streamBatch = 1024
+	longPoll    = 30 * time.Second
+	pollMargin  = 5 * time.Second
+)
+
 func (c *remoteClient) LogQueue(name string) (logqueue.ClientLogQueue, error) {
 	return &remoteLogQueue{client: c, name: name}, nil
 }
@@ -151,19 +157,57 @@ func (q *remoteLogQueue) Truncate(ctx context.Context, minOffset uint64) (int64,
 	return q.client.Truncate(ctx, q.name, minOffset)
 }
 
+func (q *remoteLogQueue) fetch(ctx context.Context, start uint64, maxCount int, maxWait time.Duration) ([]engine.Message, error) {
+	wait := maxWait
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < wait {
+			wait = remaining
+		}
+	}
+	var b protocol.Buffer
+	protocol.EncodeFetch(&b, q.name, start, maxCount, wait)
+	callCtx, cancel := context.WithTimeout(ctx, wait+pollMargin)
+	defer cancel()
+	resp, err := q.client.exchange(callCtx, protocol.OpFetch, b.Bytes())
+	if err != nil {
+		if parentErr := ctx.Err(); parentErr != nil {
+			return nil, parentErr
+		}
+		return nil, err
+	}
+	recs, err := protocol.ReadLogRecordList(protocol.NewReader(resp))
+	if err != nil {
+		return nil, err
+	}
+	msgs := make([]engine.Message, len(recs))
+	for i, rec := range recs {
+		msgs[i] = engine.Message{
+			Offset:    rec.Offset,
+			ID:        rec.ID,
+			Timestamp: rec.Timestamp,
+			Payload:   rec.Payload,
+		}
+	}
+	return msgs, nil
+}
+
 func (q *remoteLogQueue) Stream(ctx context.Context, startOffset uint64) iter.Seq2[engine.Message, error] {
 	return func(yield func(engine.Message, error) bool) {
-		for curr := startOffset; ; curr++ {
-			if err := ctx.Err(); err != nil {
+		curr := startOffset
+		for {
+			msgs, err := q.fetch(ctx, curr, streamBatch, 0)
+			if err != nil {
+				if errors.Is(err, engine.ErrNoData) {
+					return
+				}
 				yield(engine.Message{}, err)
 				return
 			}
-			msg, err := q.Read(ctx, curr)
-			if errors.Is(err, engine.ErrOffsetNotFound) {
-				return
-			}
-			if !yield(msg, err) || err != nil {
-				return
+			for _, msg := range msgs {
+				if !yield(msg, nil) {
+					return
+				}
+				curr = msg.Offset + 1
 			}
 		}
 	}
@@ -177,45 +221,20 @@ func (q *remoteLogQueue) Tail(ctx context.Context, startOffset uint64) iter.Seq2
 				yield(engine.Message{}, err)
 				return
 			}
-			last, err := q.LastOffset(ctx)
+			msgs, err := q.fetch(ctx, curr, streamBatch, longPoll)
 			if err != nil {
-				// transient? retry after sleep
-				if isRetryable(err) {
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(5 * time.Millisecond):
-						continue
-					}
-				}
-				yield(engine.Message{}, err)
-				return
-			}
-			if curr >= last {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(5 * time.Millisecond):
+				if errors.Is(err, engine.ErrNoData) {
 					continue
 				}
-			}
-			msg, err := q.Read(ctx, curr)
-			if err != nil {
-				if isRetryable(err) {
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(5 * time.Millisecond):
-						continue
-					}
-				}
 				yield(engine.Message{}, err)
 				return
 			}
-			if !yield(msg, nil) {
-				return
+			for _, msg := range msgs {
+				if !yield(msg, nil) {
+					return
+				}
+				curr = msg.Offset + 1
 			}
-			curr++
 		}
 	}
 }

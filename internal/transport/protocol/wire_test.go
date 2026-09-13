@@ -26,7 +26,7 @@ var opNames = map[byte]string{
 	OpCreateQueue: "create_queue", OpDeleteQueue: "delete_queue", OpListQueues: "list_queues",
 	OpUpdateQueue: "update_queue", OpDescribeQueue: "describe_queue", OpTruncate: "truncate", OpInfo: "info",
 	OpAppend: "append", OpAppendBatch: "append_batch", OpRead: "read", OpReadBatch: "read_batch",
-	OpLastOffset: "last_offset", OpCommit: "commit", OpCommitted: "committed",
+	OpLastOffset: "last_offset", OpCommit: "commit", OpCommitted: "committed", OpFetch: "fetch",
 	OpEnqueue: "enqueue", OpDequeue: "dequeue", OpAck: "ack", OpNack: "nack", OpExtend: "extend",
 	OpDeadLetters: "dead_letters", OpDeadLetterAck: "dead_letter_ack",
 }
@@ -101,6 +101,11 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 			b.WriteU64(uint64(int64(90 * time.Second)))
 		case OpDeadLetters:
 			b.WriteBytes([]byte("tasks"))
+		case OpFetch:
+			b.WriteBytes([]byte("events"))
+			b.WriteU64(0)
+			b.WriteU32(10)
+			b.WriteU64(uint64(int64(30 * time.Second)))
 		default:
 			t.Fatalf("no representative payload for op 0x%02X", op)
 		}
@@ -109,7 +114,7 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 
 	ops := []byte{
 		OpCreateQueue, OpDeleteQueue, OpListQueues, OpUpdateQueue, OpDescribeQueue, OpTruncate, OpInfo,
-		OpAppend, OpAppendBatch, OpRead, OpReadBatch, OpLastOffset, OpCommit, OpCommitted,
+		OpAppend, OpAppendBatch, OpRead, OpReadBatch, OpLastOffset, OpCommit, OpCommitted, OpFetch,
 		OpEnqueue, OpDequeue, OpAck, OpNack, OpExtend, OpDeadLetters, OpDeadLetterAck,
 	}
 	for _, op := range ops {
@@ -148,7 +153,7 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 				off, err := r.ReadU64()
 				require.NoError(t, err)
 				assert.Equal(t, uint64(3), off)
-			case OpReadBatch:
+		case OpReadBatch:
 				assert.NotEmpty(t, mustReadBytes(t, r))
 				start, err := r.ReadU64()
 				require.NoError(t, err)
@@ -195,7 +200,18 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 						assert.Equal(t, uint64(int64(90*time.Second)), timeout)
 					}
 				}
-			case OpAppendBatch:
+		case OpFetch:
+			assert.NotEmpty(t, mustReadBytes(t, r))
+			start, err := r.ReadU64()
+			require.NoError(t, err)
+			assert.Equal(t, uint64(0), start)
+			count, err := r.ReadU32()
+			require.NoError(t, err)
+			assert.Equal(t, uint32(10), count)
+			wait, err := r.ReadU64()
+			require.NoError(t, err)
+			assert.Equal(t, uint64(int64(30*time.Second)), wait)
+		case OpAppendBatch:
 				assert.NotEmpty(t, mustReadBytes(t, r))
 				n, err := r.ReadU32()
 				require.NoError(t, err)

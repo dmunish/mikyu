@@ -3,7 +3,6 @@ package client
 import (
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/dmunish/mikyu/internal/engine"
@@ -64,15 +63,11 @@ func decodeProtocolError(code byte, msg string) error {
 		return decodeKnown(taskqueue.ErrDeadLetterNotFound, msg)
 	case protocol.ErrCodeDeadLetterStale:
 		return decodeKnown(taskqueue.ErrDeadLetterStale, msg)
+	case protocol.ErrCodeNoData:
+		return decodeKnown(engine.ErrNoData, msg)
 	default:
 		return fmt.Errorf("%w: %s", ErrProtocol, msg)
 	}
 }
 
-func isRetryable(err error) bool {
-	return errors.Is(err, engine.ErrOffsetNotFound) ||
-		errors.Is(err, engine.ErrOffsetTruncated) || // optional; truncated offsets won't recover, but you may want to fail fast
-		errors.Is(err, engine.ErrCorruptRecord) ||
-		errors.Is(err, io.EOF) ||
-		errors.Is(err, io.ErrUnexpectedEOF)
-}
+

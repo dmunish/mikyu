@@ -57,6 +57,58 @@ func TestLogQueueTailContinuous(t *testing.T) {
 	})
 }
 
+func TestStreamReturnsImmediately(t *testing.T) {
+	lq := newMemLogQueue(t, "stream-immediate")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	received := 0
+	for msg, err := range lq.Stream(ctx, 0) {
+		_ = msg
+		_ = err
+		received++
+	}
+	assert.Equal(t, 0, received)
+}
+
+func TestTailBatchDeliversAll(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lq := newMemLogQueue(t, "tail-batch")
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		const total = 100
+		for i := range total {
+			_, err := lq.Append(ctx, fmt.Appendf(nil, "msg-%d", i))
+			require.NoError(t, err)
+		}
+
+		received := make(chan int, total)
+		go func() {
+			count := 0
+			for msg, err := range lq.Tail(ctx, 0) {
+				if err != nil {
+					return
+				}
+				_ = msg
+				count++
+				if count >= total {
+					received <- count
+					return
+				}
+			}
+		}()
+
+		select {
+		case count := <-received:
+			assert.Equal(t, total, count)
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out")
+		}
+	})
+}
+
 func TestLogQueueTailBugProof(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		lq := newMemLogQueue(t, "tail-proof")

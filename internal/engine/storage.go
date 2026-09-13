@@ -17,6 +17,8 @@ type Storage interface {
 	Read(ctx context.Context, offset uint64) (Message, error)
 	// ReadBatch retrieves a batch of messages starting at offset.
 	ReadBatch(ctx context.Context, start uint64, n int) ([]Message, error)
+	// Fetch returns up to maxCount messages starting at offset, blocking up to maxWait for new data.
+	Fetch(ctx context.Context, offset uint64, maxCount int, maxWait time.Duration) ([]Message, error)
 	// LastOffset returns the offset of the last written message.
 	LastOffset() uint64
 	// CommitOffset persists the consumer group offset.

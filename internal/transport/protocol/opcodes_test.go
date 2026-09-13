@@ -52,7 +52,7 @@ func TestOpcodeNibbleGrouping(t *testing.T) {
 		ops       []byte
 	}{
 		{SubsystemAdmin, []byte{OpCreateQueue, OpDeleteQueue, OpListQueues, OpUpdateQueue, OpDescribeQueue, OpTruncate, OpInfo}},
-		{SubsystemLog, []byte{OpAppend, OpAppendBatch, OpRead, OpReadBatch, OpLastOffset, OpCommit, OpCommitted}},
+		{SubsystemLog, []byte{OpAppend, OpAppendBatch, OpRead, OpReadBatch, OpLastOffset, OpCommit, OpCommitted, OpFetch}},
 		{SubsystemTask, []byte{OpEnqueue, OpDequeue, OpAck, OpNack, OpExtend, OpDeadLetters, OpDeadLetterAck}},
 	}
 	seen := make(map[byte]bool)

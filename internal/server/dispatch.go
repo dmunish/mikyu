@@ -38,6 +38,8 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byt
 		respOp, respBody = s.handleCommit(ctx, body)
 	case protocol.OpCommitted:
 		respOp, respBody = s.handleCommitted(ctx, body)
+	case protocol.OpFetch:
+		respOp, respBody = s.handleFetch(ctx, body)
 
 	case protocol.OpEnqueue:
 		respOp, respBody = s.handleEnqueue(ctx, body)

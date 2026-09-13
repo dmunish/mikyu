@@ -31,21 +31,83 @@ type MemStorage struct {
 	maxSeg int64
 	msgs   []engine.Message
 	groups map[string]uint64
-	minOff uint64
-	segs   []memSegment
-	closed bool
+	minOff  uint64
+	segs    []memSegment
+	closed  bool
+	notify  chan struct{}
 }
 
 func NewMemStorage(name string, maxMsg, maxSeg int64) *MemStorage {
 	return &MemStorage{
-		name:   name,
-		maxMsg: maxMsg,
-		maxSeg: maxSeg,
-		groups: make(map[string]uint64),
+		name:    name,
+		maxMsg:  maxMsg,
+		maxSeg:  maxSeg,
+		groups:  make(map[string]uint64),
+		notify:  make(chan struct{}),
+	}
+}
+
+// Fetch returns up to maxCount messages starting at offset, blocking up to maxWait.
+func (m *MemStorage) Fetch(ctx context.Context, offset uint64, maxCount int, maxWait time.Duration) ([]engine.Message, error) {
+	if maxCount <= 0 {
+		return nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(maxWait)
+	for {
+		m.mu.Lock()
+		closed := m.closed
+		minOff := m.minOff
+		published := uint64(len(m.msgs))
+		notify := m.notify
+		m.mu.Unlock()
+
+		if closed {
+			return nil, engine.ErrQueueClosed
+		}
+		if offset < minOff {
+			return nil, engine.ErrOffsetTruncated
+		}
+		if offset < published {
+			m.mu.Lock()
+			start := offset
+			end := start + uint64(maxCount)
+			if end > published {
+				end = published
+			}
+			msgs := append([]engine.Message(nil), m.msgs[start:end]...)
+			m.mu.Unlock()
+			return msgs, nil
+		}
+		if maxWait <= 0 {
+			return nil, engine.ErrNoData
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, engine.ErrNoData
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-notify:
+			timer.Stop()
+		case <-timer.C:
+			return nil, engine.ErrNoData
+		}
 	}
 }
 
 func (m *MemStorage) Name() string { return m.name }
+
+func (m *MemStorage) broadcastLocked() {
+	old := m.notify
+	m.notify = make(chan struct{})
+	close(old)
+}
 
 func (m *MemStorage) Append(ctx context.Context, payload []byte) (uint64, error) {
 	offs, err := m.AppendBatch(ctx, [][]byte{payload})
@@ -88,6 +150,7 @@ func (m *MemStorage) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint
 		cur.hasRecords = true
 		out[i] = off
 	}
+	m.broadcastLocked()
 	return out, nil
 }
 

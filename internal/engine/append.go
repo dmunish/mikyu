@@ -174,6 +174,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 			q.mu.Unlock()
 			return nil, err
 		}
+		q.broadcastLocked()
 		q.mu.Unlock()
 		return offsets, nil
 	}
@@ -197,6 +198,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 	if last := offsets[len(offsets)-1]; last+1 > q.publishedOffset {
 		q.publishedOffset = last + 1
 	}
+	q.broadcastLocked()
 	q.mu.Unlock()
 	return offsets, nil
 }

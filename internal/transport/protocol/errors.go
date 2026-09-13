@@ -21,6 +21,7 @@ const (
 	ErrCodeOffsetTruncated byte = 0x12
 	ErrCodeMessageTooLarge byte = 0x13
 	ErrCodeQueueClosed     byte = 0x14
+	ErrCodeNoData          byte = 0x15
 
 	// Task block: enqueue/dequeue and lease operations.
 	ErrCodeTaskNotAvailable  byte = 0x21

@@ -43,6 +43,8 @@ func taskErr(err error) (byte, []byte) {
 		return opErr(protocol.ErrCodeMessageTooLarge, err.Error())
 	case errors.Is(err, engine.ErrQueueClosed), errors.Is(err, taskqueue.ErrTaskClosed):
 		return opErr(protocol.ErrCodeQueueClosed, err.Error())
+	case errors.Is(err, engine.ErrNoData):
+		return opErr(protocol.ErrCodeNoData, err.Error())
 	case errors.Is(err, taskqueue.ErrTaskNotAvailable):
 		return opErr(protocol.ErrCodeTaskNotAvailable, err.Error())
 	case errors.Is(err, taskqueue.ErrTaskNotFound):

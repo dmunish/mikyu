@@ -39,6 +39,7 @@ const (
 	OpLastOffset  byte = 0x15
 	OpCommit      byte = 0x16
 	OpCommitted   byte = 0x17
+	OpFetch       byte = 0x18
 
 	// Task: enqueue/dequeue and lease operations.
 

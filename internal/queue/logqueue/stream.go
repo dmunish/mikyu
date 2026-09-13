@@ -3,72 +3,62 @@ package logqueue
 import (
 	"context"
 	"errors"
-	"io"
 	"iter"
 	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
 )
 
+const (
+	streamBatch = 1024
+	tailWait    = 30 * time.Second
+)
+
+// Stream yields every existing record from startOffset, then returns.
 func (q *LogQueue) Stream(ctx context.Context, startOffset uint64) iter.Seq2[engine.Message, error] {
 	return func(yield func(engine.Message, error) bool) {
-		offset := startOffset
+		curr := startOffset
 		for {
-			msg, err := q.storage.Read(ctx, offset)
+			msgs, err := q.storage.Fetch(ctx, curr, streamBatch, 0)
 			if err != nil {
-				if err == engine.ErrOffsetNotFound {
+				if errors.Is(err, engine.ErrNoData) {
 					return
 				}
-				if !yield(engine.Message{}, err) {
+				yield(engine.Message{}, err)
+				return
+			}
+			for _, msg := range msgs {
+				if !yield(msg, nil) {
 					return
 				}
-				return
+				curr = msg.Offset + 1
 			}
-			if !yield(msg, nil) {
-				return
-			}
-			offset++
 		}
 	}
 }
 
+// Tail yields existing records then blocks for new ones until ctx ends.
 func (q *LogQueue) Tail(ctx context.Context, startOffset uint64) iter.Seq2[engine.Message, error] {
 	return func(yield func(engine.Message, error) bool) {
-		offset := startOffset
+		curr := startOffset
 		for {
 			if err := ctx.Err(); err != nil {
 				yield(engine.Message{}, err)
 				return
 			}
-			last := q.storage.LastOffset()
-			if offset < last {
-				msg, err := q.storage.Read(ctx, offset)
-				if err != nil {
-					// Transient read error while WAL flusher is writing payload to disk
-					if errors.Is(err, engine.ErrOffsetNotFound) || errors.Is(err, engine.ErrCorruptRecord) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-						select {
-						case <-ctx.Done():
-							yield(engine.Message{}, ctx.Err())
-							return
-						case <-time.After(5 * time.Millisecond):
-							continue // Retry reading current offset
-						}
-					}
-					if !yield(engine.Message{}, err) {
-						return
-					}
-					return
+			msgs, err := q.storage.Fetch(ctx, curr, streamBatch, tailWait)
+			if err != nil {
+				if errors.Is(err, engine.ErrNoData) {
+					continue
 				}
+				yield(engine.Message{}, err)
+				return
+			}
+			for _, msg := range msgs {
 				if !yield(msg, nil) {
 					return
 				}
-				offset++
-			} else {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(5 * time.Millisecond):
-				}
+				curr = msg.Offset + 1
 			}
 		}
 	}

@@ -13,6 +13,7 @@ var (
 	ErrRecordTooLarge  = errors.New("record size exceeds max segment size")
 	ErrOffsetTruncated = errors.New("offset has been truncated from storage")
 	ErrQueueClosed     = errors.New("queue is closed")
+	ErrNoData          = errors.New("no data available")
 )
 
 // Config holds per-queue configuration parameters.

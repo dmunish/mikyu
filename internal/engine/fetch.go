@@ -1,0 +1,52 @@
+package engine
+
+import (
+	"context"
+	"time"
+)
+
+// Fetch returns up to maxCount messages starting at offset, blocking up to maxWait.
+func (q *Queue) Fetch(ctx context.Context, offset uint64, maxCount int, maxWait time.Duration) ([]Message, error) {
+	if maxCount <= 0 {
+		return nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(maxWait)
+	for {
+		q.mu.RLock()
+		closed := q.closed
+		minOff := q.minOffset
+		published := q.publishedOffset
+		notify := q.notify
+		q.mu.RUnlock()
+
+		if closed {
+			return nil, ErrQueueClosed
+		}
+		if offset < minOff {
+			return nil, ErrOffsetTruncated
+		}
+		if offset < published {
+			return q.ReadBatch(ctx, offset, maxCount)
+		}
+		if maxWait <= 0 {
+			return nil, ErrNoData
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, ErrNoData
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-notify:
+			timer.Stop()
+		case <-timer.C:
+			return nil, ErrNoData
+		}
+	}
+}

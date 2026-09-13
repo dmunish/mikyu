@@ -3,6 +3,7 @@ package logqueue
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
 )
@@ -40,6 +41,10 @@ func (q *LogQueue) Read(ctx context.Context, offset uint64) (engine.Message, err
 
 func (q *LogQueue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([]engine.Message, error) {
 	return q.storage.ReadBatch(ctx, startOffset, count)
+}
+
+func (q *LogQueue) Fetch(ctx context.Context, offset uint64, maxCount int, maxWait time.Duration) ([]engine.Message, error) {
+	return q.storage.Fetch(ctx, offset, maxCount, maxWait)
 }
 
 func (q *LogQueue) LastOffset(ctx context.Context) (uint64, error) {

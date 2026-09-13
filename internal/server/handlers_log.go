@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/transport/protocol"
@@ -50,6 +51,38 @@ func (s *Server) handleAppendBatch(ctx context.Context, body []byte) (byte, []by
 		buf.WriteU64(off)
 	}
 	return protocol.OpAppendBatch, buf.Bytes()
+}
+
+const maxFetchWait = 5 * time.Minute
+
+func (s *Server) handleFetch(ctx context.Context, body []byte) (byte, []byte) {
+	name, start, count, wait, err := protocol.DecodeFetch(protocol.NewReader(body))
+	if err != nil {
+		return opErr(protocol.ErrCodeInvalidConfig, err.Error())
+	}
+	q, err := s.getOrCreateLogQueue(name)
+	if err != nil {
+		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
+	}
+	if wait > maxFetchWait {
+		wait = maxFetchWait
+	}
+	msgs, err := q.Fetch(ctx, start, count, wait)
+	if err != nil {
+		return logReadErr(err)
+	}
+	recs := make([]protocol.LogRecord, len(msgs))
+	for i, msg := range msgs {
+		recs[i] = protocol.LogRecord{
+			Offset:    msg.Offset,
+			ID:        msg.ID,
+			Timestamp: msg.Timestamp,
+			Payload:   msg.Payload,
+		}
+	}
+	var buf protocol.Buffer
+	protocol.WriteLogRecordList(&buf, recs)
+	return protocol.OpFetch, buf.Bytes()
 }
 
 func (s *Server) handleRead(ctx context.Context, body []byte) (byte, []byte) {
@@ -155,6 +188,9 @@ func logReadErr(err error) (byte, []byte) {
 	}
 	if errors.Is(err, engine.ErrOffsetTruncated) {
 		return opErr(protocol.ErrCodeOffsetTruncated, err.Error())
+	}
+	if errors.Is(err, engine.ErrNoData) {
+		return opErr(protocol.ErrCodeNoData, err.Error())
 	}
 	return taskErr(err)
 }
