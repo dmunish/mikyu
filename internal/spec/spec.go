@@ -160,7 +160,6 @@ func Builtin() Spec {
 func BuiltinSession() Session {
 	return Session{
 		Target:   builtinTarget,
-		DataDir:  builtinDataDir,
 		MaxConns: builtinMaxConns,
 	}
 }

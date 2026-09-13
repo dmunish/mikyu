@@ -43,8 +43,12 @@ type ServerConfig = spec.Session
 
 // DefaultConfig returns the compiled defaults.
 func DefaultConfig() Config {
+	sess := spec.BuiltinSession()
+	if sess.DataDir == "" {
+		sess.DataDir = "./data"
+	}
 	return Config{
-		Server: spec.BuiltinSession(),
+		Server: sess,
 		Queues: map[string]spec.Spec{},
 	}
 }
