@@ -1,10 +1,4 @@
-# go-arch-lint rules for Mikyu — reconcile.md Phase F.1.
-#
-# spec and engine are the two bottoms; spec has zero internal deps.
-# transport imports nothing internal below itself; protocol is pure DTOs.
-# node never touches protocol/server/client. client and server never import
-# each other. daemon is the only package wiring server. ui/* reaches the
-# world only through the root `mikyu` facade, client, command, daemon, spec.
+# go-arch-lint rules for Mikyu
 #
 # enginetest is deliberately absent from every mayDependOn list: it is a
 # test-only package (see excludeFiles), and nothing in production code may
