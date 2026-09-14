@@ -1,6 +1,9 @@
 package spec
 
-import "fmt"
+import (
+	"fmt"
+	"net"
+)
 
 // ValidateCreate checks a proposed spec.
 func ValidateCreate(s Spec) error { return validate(s) }
@@ -16,6 +19,22 @@ func ValidateUpdate(patch Spec) error {
 		}
 	}
 	return validate(patch)
+}
+
+// ValidateSession checks the process-level parameters: the tick interval must be positive when metrics are enabled, the history depth is bounded away from zero, and the listen address, when set, is a host:port.
+func ValidateSession(s Session) error {
+	if s.MetricsEnabled && s.MetricsInterval <= 0 {
+		return errInvalid("metrics_interval", rulePositive, s.MetricsInterval)
+	}
+	if s.MetricsHistory < 1 {
+		return errInvalid("metrics_history", ruleAtLeastOne, s.MetricsHistory)
+	}
+	if s.MetricsListen != "" {
+		if _, _, err := net.SplitHostPort(s.MetricsListen); err != nil {
+			return fmt.Errorf("%w: metrics_listen must be host:port, got %q", ErrInvalidConfig, s.MetricsListen)
+		}
+	}
+	return nil
 }
 
 func validate(s Spec) error {

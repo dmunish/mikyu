@@ -41,6 +41,26 @@ func WithTLSCertFile(path string) ClientOption { return client.WithTLSCertFile(p
 // WithTLSKeyFile sets the private key matching the client certificate.
 func WithTLSKeyFile(path string) ClientOption { return client.WithTLSKeyFile(path) }
 
+// WithMetricsEnabled turns the live metrics collector on or off.
+func WithMetricsEnabled(enabled bool) ClientOption { return client.WithMetricsEnabled(enabled) }
+
+// WithMetricsInterval sets the collector's tick interval.
+func WithMetricsInterval(d time.Duration) ClientOption { return client.WithMetricsInterval(d) }
+
+// WithMetricsHistory sets how many snapshots the collector retains in memory.
+func WithMetricsHistory(n int) ClientOption { return client.WithMetricsHistory(n) }
+
+// WithMetricsListen sets the address of the metrics HTTP server; empty leaves it off.
+func WithMetricsListen(addr string) ClientOption { return client.WithMetricsListen(addr) }
+
+// WithMetricsPerQueuePrometheus toggles per-queue series on the Prometheus endpoint.
+func WithMetricsPerQueuePrometheus(enabled bool) ClientOption {
+	return client.WithMetricsPerQueuePrometheus(enabled)
+}
+
+// WithMetricsHistograms toggles latency histograms in the metrics snapshot.
+func WithMetricsHistograms(enabled bool) ClientOption { return client.WithMetricsHistograms(enabled) }
+
 // WithBatchSize sets the max pending appends before a WAL flush.
 func WithBatchSize(n int) QueueOption { return client.WithBatchSize(n) }
 

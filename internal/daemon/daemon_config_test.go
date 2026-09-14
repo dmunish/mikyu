@@ -120,6 +120,28 @@ func TestDaemonAllEngineFlagsReachConfig(t *testing.T) {
 	assert.False(t, *cfg.Defaults.Engine.Fsync)
 }
 
+func TestMetricsFlagOverride(t *testing.T) {
+	path := batchConfig(t, 100)
+
+	cfg, _, err := resolveConfig([]string{
+		"--config", path,
+		"--metrics-enabled=false",
+		"--metrics-interval", "5s",
+		"--metrics-history", "42",
+		"--metrics-listen", "127.0.0.1:9090",
+		"--metrics-per-queue-prometheus",
+		"--metrics-histograms",
+	}, io.Discard, io.Discard)
+	require.NoError(t, err)
+
+	assert.False(t, cfg.Server.MetricsEnabled)
+	assert.Equal(t, 5*time.Second, cfg.Server.MetricsInterval.Duration())
+	assert.Equal(t, 42, cfg.Server.MetricsHistory)
+	assert.Equal(t, "127.0.0.1:9090", cfg.Server.MetricsListen)
+	assert.True(t, cfg.Server.MetricsPerQueuePrometheus)
+	assert.True(t, cfg.Server.MetricsHistograms)
+}
+
 func TestDaemonRejectsUnknownFlag(t *testing.T) {
 	_, _, err := resolveConfig([]string{"--nope"}, io.Discard, io.Discard)
 	require.Error(t, err)
@@ -185,6 +207,8 @@ func TestDaemonHelpListsEveryFlag(t *testing.T) {
 		"batch-size", "max-interval", "min-interval",
 		"segment-size", "max-message-bytes", "segment-age", "max-conns",
 		"encrypted", "fsync",
+		"metrics-enabled", "metrics-interval", "metrics-history", "metrics-listen",
+		"metrics-per-queue-prometheus", "metrics-histograms",
 	} {
 		assert.Contains(t, help, "-"+name, "help should list --%s", name)
 	}

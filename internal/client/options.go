@@ -20,6 +20,13 @@ type SessionConfig struct {
 	TLSEnabled  bool
 	TLSCertFile string
 	TLSKeyFile  string
+
+	MetricsEnabled            bool
+	MetricsInterval           time.Duration
+	MetricsHistory            int
+	MetricsListen             string
+	MetricsPerQueuePrometheus bool
+	MetricsHistograms         bool
 }
 
 // DefaultSessionConfig returns the built-in connection defaults.
@@ -67,6 +74,36 @@ func WithTLSCertFile(path string) Option {
 // WithTLSKeyFile sets the private key matching the client certificate.
 func WithTLSKeyFile(path string) Option {
 	return func(c *SessionConfig) { c.TLSKeyFile = path }
+}
+
+// WithMetricsEnabled turns the live metrics collector on or off.
+func WithMetricsEnabled(enabled bool) Option {
+	return func(c *SessionConfig) { c.MetricsEnabled = enabled }
+}
+
+// WithMetricsInterval sets the collector's tick interval.
+func WithMetricsInterval(d time.Duration) Option {
+	return func(c *SessionConfig) { c.MetricsInterval = d }
+}
+
+// WithMetricsHistory sets how many snapshots the collector retains in memory.
+func WithMetricsHistory(n int) Option {
+	return func(c *SessionConfig) { c.MetricsHistory = n }
+}
+
+// WithMetricsListen sets the address of the metrics HTTP server; empty leaves it off.
+func WithMetricsListen(addr string) Option {
+	return func(c *SessionConfig) { c.MetricsListen = addr }
+}
+
+// WithMetricsPerQueuePrometheus toggles per-queue series on the Prometheus endpoint.
+func WithMetricsPerQueuePrometheus(enabled bool) Option {
+	return func(c *SessionConfig) { c.MetricsPerQueuePrometheus = enabled }
+}
+
+// WithMetricsHistograms toggles latency histograms in the metrics snapshot.
+func WithMetricsHistograms(enabled bool) Option {
+	return func(c *SessionConfig) { c.MetricsHistograms = enabled }
 }
 
 // TLSConfig builds the TLS configuration, or nil when TLS is disabled; the cert pair authenticates this client and is trusted as the server's root.

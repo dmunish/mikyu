@@ -146,6 +146,14 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 	encrypted := fs.Bool("encrypted", false, "Enable OS transparent directory encryption")
 	fsync := fs.Bool("fsync", false, "Physical disk fsync on produce (use --fsync=false for OS page cache)")
 
+	// Metrics
+	metricsEnabled := fs.Bool("metrics-enabled", false, "Enable the live metrics collector")
+	metricsInterval := fs.Duration("metrics-interval", 0, "Metrics tick interval")
+	metricsHistory := fs.Int("metrics-history", 0, "Number of snapshots kept in memory")
+	metricsListen := fs.String("metrics-listen", "", "Listen address for the metrics HTTP server (off when empty)")
+	metricsPerQueuePrometheus := fs.Bool("metrics-per-queue-prometheus", false, "Emit per-queue series on the Prometheus endpoint")
+	metricsHistograms := fs.Bool("metrics-histograms", false, "Enable latency histograms in the metrics snapshot")
+
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			_, _ = stdout.Write(out.Bytes())
@@ -251,11 +259,28 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 			cfg.Defaults.Engine.Encrypted = new(*encrypted)
 		case "fsync":
 			cfg.Defaults.Engine.Fsync = new(*fsync)
+		case "metrics-enabled":
+			cfg.Server.MetricsEnabled = *metricsEnabled
+		case "metrics-interval":
+			cfg.Server.MetricsInterval = spec.Duration(*metricsInterval)
+		case "metrics-history":
+			cfg.Server.MetricsHistory = *metricsHistory
+		case "metrics-listen":
+			cfg.Server.MetricsListen = *metricsListen
+		case "metrics-per-queue-prometheus":
+			cfg.Server.MetricsPerQueuePrometheus = *metricsPerQueuePrometheus
+		case "metrics-histograms":
+			cfg.Server.MetricsHistograms = *metricsHistograms
 		}
 	})
 	if flagErr != nil {
 		fmt.Fprintf(stderr, "mikyu daemon: %v\n", flagErr)
 		return nil, "", fmt.Errorf("%w: %v", ErrUsage, flagErr)
+	}
+
+	if err := spec.ValidateSession(cfg.Server); err != nil {
+		fmt.Fprintf(stderr, "mikyu daemon: %v\n", err)
+		return nil, "", fmt.Errorf("%w: %v", ErrUsage, err)
 	}
 
 	return cfg, resolvedPath, nil

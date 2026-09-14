@@ -164,12 +164,18 @@ var specSetters = map[string]func(*Spec, Value){
 }
 
 var sessionSetters = map[string]func(*Session, Value){
-	"target":        func(s *Session, v Value) { s.Target = v.Text() },
-	"data_dir":      func(s *Session, v Value) { s.DataDir = v.Text() },
-	"tls_enabled":   func(s *Session, v Value) { s.TLSEnabled = v.Bool() },
-	"tls_cert_file": func(s *Session, v Value) { s.TLSCertFile = v.Text() },
-	"tls_key_file":  func(s *Session, v Value) { s.TLSKeyFile = v.Text() },
-	"max_conns":     func(s *Session, v Value) { s.MaxConns = v.Int() },
+	"target":                       func(s *Session, v Value) { s.Target = v.Text() },
+	"data_dir":                     func(s *Session, v Value) { s.DataDir = v.Text() },
+	"tls_enabled":                  func(s *Session, v Value) { s.TLSEnabled = v.Bool() },
+	"tls_cert_file":                func(s *Session, v Value) { s.TLSCertFile = v.Text() },
+	"tls_key_file":                 func(s *Session, v Value) { s.TLSKeyFile = v.Text() },
+	"max_conns":                    func(s *Session, v Value) { s.MaxConns = v.Int() },
+	"metrics_enabled":              func(s *Session, v Value) { s.MetricsEnabled = v.Bool() },
+	"metrics_interval":             func(s *Session, v Value) { s.MetricsInterval = Duration(v.Duration()) },
+	"metrics_history":              func(s *Session, v Value) { s.MetricsHistory = v.Int() },
+	"metrics_listen":               func(s *Session, v Value) { s.MetricsListen = v.Text() },
+	"metrics_per_queue_prometheus": func(s *Session, v Value) { s.MetricsPerQueuePrometheus = v.Bool() },
+	"metrics_histograms":           func(s *Session, v Value) { s.MetricsHistograms = v.Bool() },
 }
 
 // getter reads one Spec field so presence lives beside the canonical keys.
@@ -248,6 +254,13 @@ func buildTable() []Param {
 		sessionParam("tls_cert_file", KindString),
 		sessionParam("tls_key_file", KindString),
 		sessionParam("max_conns", KindInt),
+
+		sessionParam("metrics_enabled", KindBool),
+		sessionParam("metrics_interval", KindDuration),
+		sessionParam("metrics_history", KindInt),
+		sessionParam("metrics_listen", KindString),
+		sessionParam("metrics_per_queue_prometheus", KindBool),
+		sessionParam("metrics_histograms", KindBool),
 	}
 
 	for i := range table {

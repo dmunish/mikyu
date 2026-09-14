@@ -106,6 +106,18 @@ func (v *sessionValue) String() string {
 		return v.session.TLSKeyFile
 	case "max_conns":
 		return strconv.Itoa(v.session.MaxConns)
+	case "metrics_enabled":
+		return strconv.FormatBool(v.session.MetricsEnabled)
+	case "metrics_interval":
+		return v.session.MetricsInterval.Duration().String()
+	case "metrics_history":
+		return strconv.Itoa(v.session.MetricsHistory)
+	case "metrics_listen":
+		return v.session.MetricsListen
+	case "metrics_per_queue_prometheus":
+		return strconv.FormatBool(v.session.MetricsPerQueuePrometheus)
+	case "metrics_histograms":
+		return strconv.FormatBool(v.session.MetricsHistograms)
 	}
 	return ""
 }

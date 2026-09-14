@@ -20,6 +20,7 @@ var (
 const (
 	rulePositive    = "greater than 0"
 	ruleNonNegative = "0 or greater"
+	ruleAtLeastOne  = "1 or greater"
 )
 
 func errInvalid(key, rule string, got any) error {

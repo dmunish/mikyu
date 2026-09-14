@@ -116,6 +116,38 @@ func TestValidateUpdateRejectsCreateOnly(t *testing.T) {
 	require.NotEmpty(t, Updatable())
 }
 
+func TestValidateSession(t *testing.T) {
+	require.NoError(t, ValidateSession(BuiltinSession()), "built-in session is valid")
+
+	// Interval may be zero only when metrics are disabled.
+	disabled := BuiltinSession()
+	disabled.MetricsEnabled = false
+	disabled.MetricsInterval = 0
+	require.NoError(t, ValidateSession(disabled))
+
+	enabled := BuiltinSession()
+	enabled.MetricsInterval = 0
+	err := ValidateSession(enabled)
+	require.ErrorIs(t, err, ErrInvalidConfig)
+	require.Contains(t, err.Error(), "metrics_interval")
+
+	lowHistory := BuiltinSession()
+	lowHistory.MetricsHistory = 0
+	err = ValidateSession(lowHistory)
+	require.ErrorIs(t, err, ErrInvalidConfig)
+	require.Contains(t, err.Error(), "metrics_history")
+
+	badListen := BuiltinSession()
+	badListen.MetricsListen = "no-port"
+	err = ValidateSession(badListen)
+	require.ErrorIs(t, err, ErrInvalidConfig)
+	require.Contains(t, err.Error(), "metrics_listen")
+
+	goodListen := BuiltinSession()
+	goodListen.MetricsListen = "127.0.0.1:9090"
+	require.NoError(t, ValidateSession(goodListen))
+}
+
 func TestIsCreateOnly(t *testing.T) {
 	require.True(t, IsCreateOnly("segment_size"))
 	require.True(t, IsCreateOnly("max_message_bytes"))

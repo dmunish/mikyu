@@ -343,6 +343,16 @@ func TestBuiltinSessionLayer(t *testing.T) {
 	require.False(t, s.TLSEnabled)
 }
 
+func TestMetricsSessionDefaults(t *testing.T) {
+	s := BuiltinSession()
+	require.True(t, s.MetricsEnabled)
+	require.Equal(t, time.Second, s.MetricsInterval.Duration())
+	require.Equal(t, 300, s.MetricsHistory)
+	require.Empty(t, s.MetricsListen)
+	require.False(t, s.MetricsPerQueuePrometheus)
+	require.True(t, s.MetricsHistograms)
+}
+
 func TestLayerKindAndParamNames(t *testing.T) {
 	require.Equal(t, "call", LayerCall.String())
 	require.Equal(t, "spec", LayerSpec.String())

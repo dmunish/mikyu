@@ -104,12 +104,18 @@ func TestConfigOldKeyHardError(t *testing.T) {
 // Every session-layer parameter in spec.Table must be reachable from its env var.
 func TestConfigEnvOverridesFromTable(t *testing.T) {
 	values := map[string]string{
-		"target":        "tcp://10.0.0.1:7000",
-		"data_dir":      "D:/mikyu-data",
-		"tls_enabled":   "true",
-		"tls_cert_file": "cert.pem",
-		"tls_key_file":  "key.pem",
-		"max_conns":     "7",
+		"target":                       "tcp://10.0.0.1:7000",
+		"data_dir":                     "D:/mikyu-data",
+		"tls_enabled":                  "true",
+		"tls_cert_file":                "cert.pem",
+		"tls_key_file":                 "key.pem",
+		"max_conns":                    "7",
+		"metrics_enabled":              "true",
+		"metrics_interval":             "2s",
+		"metrics_history":              "50",
+		"metrics_listen":               "127.0.0.1:9090",
+		"metrics_per_queue_prometheus": "true",
+		"metrics_histograms":           "true",
 	}
 	for _, p := range spec.Params(spec.LayerSession) {
 		t.Run(p.Key, func(t *testing.T) {
@@ -131,6 +137,18 @@ func TestConfigEnvOverridesFromTable(t *testing.T) {
 				assert.Equal(t, values["tls_key_file"], cfg.Server.TLSKeyFile)
 			case "max_conns":
 				assert.Equal(t, 7, cfg.Server.MaxConns)
+			case "metrics_enabled":
+				assert.True(t, cfg.Server.MetricsEnabled)
+			case "metrics_interval":
+				assert.Equal(t, 2*time.Second, cfg.Server.MetricsInterval.Duration())
+			case "metrics_history":
+				assert.Equal(t, 50, cfg.Server.MetricsHistory)
+			case "metrics_listen":
+				assert.Equal(t, values["metrics_listen"], cfg.Server.MetricsListen)
+			case "metrics_per_queue_prometheus":
+				assert.True(t, cfg.Server.MetricsPerQueuePrometheus)
+			case "metrics_histograms":
+				assert.True(t, cfg.Server.MetricsHistograms)
 			default:
 				t.Fatalf("session parameter %q has no assertion", p.Key)
 			}

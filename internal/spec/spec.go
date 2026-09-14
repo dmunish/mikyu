@@ -41,6 +41,13 @@ type Session struct {
 	TLSCertFile string `yaml:"tls_cert_file"`
 	TLSKeyFile  string `yaml:"tls_key_file"`
 	MaxConns    int    `yaml:"max_conns"`
+
+	MetricsEnabled            bool     `yaml:"metrics_enabled"`
+	MetricsInterval           Duration `yaml:"metrics_interval"`
+	MetricsHistory            int      `yaml:"metrics_history"`
+	MetricsListen             string   `yaml:"metrics_listen"`
+	MetricsPerQueuePrometheus bool     `yaml:"metrics_per_queue_prometheus"`
+	MetricsHistograms         bool     `yaml:"metrics_histograms"`
 }
 
 // Merge returns s with each unset field filled from other.
@@ -115,21 +122,27 @@ const (
 
 // Every Spec and Session field appears here exactly once; Builtin and BuiltinSession are total.
 const (
-	builtinBatchSize          = 256
-	builtinMaxInterval        = Duration(10 * time.Millisecond)
-	builtinMinInterval        = Duration(30 * time.Microsecond)
-	builtinSegmentSize        = int64(64 << 20)
-	builtinSegmentAge         = Duration(time.Hour)
-	builtinMaxMessageBytes    = int64(1 << 20)
-	builtinEncrypted          = false
-	builtinFsync              = true
-	builtinRetentionAge       = Duration(0)
-	builtinRetentionBytes     = int64(0)
-	builtinDefaultVisibility  = Duration(DefaultVisibility)
-	builtinDefaultMaxAttempts = DefaultMaxAttempts
-	builtinTarget             = "tcp://127.0.0.1:7420"
-	builtinDataDir            = "./data"
-	builtinMaxConns           = 10
+	builtinBatchSize                 = 256
+	builtinMaxInterval               = Duration(10 * time.Millisecond)
+	builtinMinInterval               = Duration(30 * time.Microsecond)
+	builtinSegmentSize               = int64(64 << 20)
+	builtinSegmentAge                = Duration(time.Hour)
+	builtinMaxMessageBytes           = int64(1 << 20)
+	builtinEncrypted                 = false
+	builtinFsync                     = true
+	builtinRetentionAge              = Duration(0)
+	builtinRetentionBytes            = int64(0)
+	builtinDefaultVisibility         = Duration(DefaultVisibility)
+	builtinDefaultMaxAttempts        = DefaultMaxAttempts
+	builtinTarget                    = "tcp://127.0.0.1:7420"
+	builtinDataDir                   = "./data"
+	builtinMaxConns                  = 10
+	builtinMetricsEnabled            = true
+	builtinMetricsInterval           = Duration(time.Second)
+	builtinMetricsHistory            = 300
+	builtinMetricsListen             = ""
+	builtinMetricsPerQueuePrometheus = false
+	builtinMetricsHistograms         = true
 )
 
 // Builtin returns the fully-populated built-in layer.
@@ -156,10 +169,16 @@ func Builtin() Spec {
 	}
 }
 
-// BuiltinSession returns the built-in session layer. TLS is off at this layer.
+// BuiltinSession returns the built-in session layer. TLS is off at this layer; metrics run enabled at a one-second tick.
 func BuiltinSession() Session {
 	return Session{
-		Target:   builtinTarget,
-		MaxConns: builtinMaxConns,
+		Target:                    builtinTarget,
+		MaxConns:                  builtinMaxConns,
+		MetricsEnabled:            builtinMetricsEnabled,
+		MetricsInterval:           builtinMetricsInterval,
+		MetricsHistory:            builtinMetricsHistory,
+		MetricsListen:             builtinMetricsListen,
+		MetricsPerQueuePrometheus: builtinMetricsPerQueuePrometheus,
+		MetricsHistograms:         builtinMetricsHistograms,
 	}
 }
