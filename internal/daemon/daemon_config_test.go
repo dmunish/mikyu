@@ -142,6 +142,19 @@ func TestMetricsFlagOverride(t *testing.T) {
 	assert.True(t, cfg.Server.MetricsHistograms)
 }
 
+func TestMetricsListenFromConfigFile(t *testing.T) {
+	cfgPath := writeConfig(t, t.TempDir(), "mikyu.yaml", "server:\n  metrics_listen: 127.0.0.1:9090\n")
+
+	cfg, _, err := resolveConfig([]string{"--config", cfgPath}, io.Discard, io.Discard)
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1:9090", cfg.Server.MetricsListen)
+
+	// An explicit flag still wins over the file.
+	cfg, _, err = resolveConfig([]string{"--config", cfgPath, "--metrics-listen", "127.0.0.1:9091"}, io.Discard, io.Discard)
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1:9091", cfg.Server.MetricsListen)
+}
+
 func TestDaemonRejectsUnknownFlag(t *testing.T) {
 	_, _, err := resolveConfig([]string{"--nope"}, io.Discard, io.Discard)
 	require.Error(t, err)

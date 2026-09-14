@@ -89,7 +89,7 @@ deps:
   config:
     mayDependOn: [spec]
   daemon:
-    mayDependOn: [spec, config, engine, node, server, protocol]
+    mayDependOn: [spec, config, engine, node, server, protocol, metrics]
 
   # ---- user surface ----
   mikyu:

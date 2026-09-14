@@ -76,6 +76,29 @@ func Run(args []string) error {
 
 	srv := server.New(n, srvOpts...)
 
+	// Off by default; enabled with --metrics-listen. Started before the wire
+	// server listens so a bind failure below can still stop srv cleanly.
+	var httpSrv *metricsServer
+	if cfg.Server.MetricsListen != "" {
+		s, err := startMetricsHTTP(n, cfg.Server.MetricsPerQueuePrometheus, cfg.Server.MetricsHistograms, cfg.Server.MetricsListen)
+		if err != nil {
+			srv.Stop()
+			return fmt.Errorf("metrics http: %w", err)
+		}
+		httpSrv = s
+	}
+	// LIFO: this defer runs after the wire server has stopped, so scrapers racing shutdown are still answered.
+	defer func() {
+		if httpSrv == nil {
+			return
+		}
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := httpSrv.Stop(stopCtx); err != nil {
+			log.Printf("mikyu daemon: metrics http stop: %v", err)
+		}
+	}()
+
 	// Surface the serve result through a buffered channel so a bind failure
 	// (e.g. port already in use) ends Run with an error instead of calling
 	// os.Exit from the goroutine, which would skip the deferred cleanups
