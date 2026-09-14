@@ -23,6 +23,7 @@ type Server struct {
 	mu        sync.Mutex
 	stopCh    chan struct{}
 	doneCh    chan struct{}
+	metrics   *serverMetrics
 }
 
 type ServerOption func(*Server)
@@ -30,9 +31,10 @@ type ServerOption func(*Server)
 // New creates a new Server instance backed by the provided Node.
 func New(n *node.Node, opts ...ServerOption) *Server {
 	s := &Server{
-		node:   n,
-		stopCh: make(chan struct{}),
-		doneCh: make(chan struct{}),
+		node:    n,
+		stopCh:  make(chan struct{}),
+		doneCh:  make(chan struct{}),
+		metrics: newServerMetrics(n.Collector().Registry().Scope(serverScopeName)),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -125,6 +127,9 @@ func (s *Server) Stop() {
 }
 
 func (s *Server) serveConn(conn net.Conn) {
+	s.metrics.connections.Add(1)
+	defer s.metrics.connections.Add(-1)
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	r := bufio.NewReader(conn)

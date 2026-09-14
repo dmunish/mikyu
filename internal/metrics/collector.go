@@ -222,11 +222,37 @@ func (c *Collector) mergeScopes(snap *Snapshot) {
 		if qv.Kind == "" {
 			qv.Kind = "shared"
 		}
-		qv.Counters = counters
-		qv.Gauges = gauges
+		// Sources and scopes both contribute instruments to the same queue view,
+		// so merge rather than replace: a source's gauges must survive.
+		mergeInt64(&qv.Counters, counters)
+		mergeInt64(&qv.Gauges, gauges)
 		if c.cfg.Histograms {
-			qv.Histograms = histograms
+			mergeHistograms(&qv.Histograms, histograms)
 		}
+	}
+}
+
+func mergeInt64(dst *map[string]int64, src map[string]int64) {
+	if len(src) == 0 {
+		return
+	}
+	if *dst == nil {
+		*dst = make(map[string]int64, len(src))
+	}
+	for k, v := range src {
+		(*dst)[k] = v
+	}
+}
+
+func mergeHistograms(dst *map[string]HistogramSnapshot, src map[string]HistogramSnapshot) {
+	if len(src) == 0 {
+		return
+	}
+	if *dst == nil {
+		*dst = make(map[string]HistogramSnapshot, len(src))
+	}
+	for k, v := range src {
+		(*dst)[k] = v
 	}
 }
 

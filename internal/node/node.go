@@ -69,7 +69,8 @@ func openNode(dir string, defaults spec.Spec, mc MetricsConfig) (*Node, error) {
 	}
 	defaultEngineCfg := toEngineConfig(defaults.Merge(builtin))
 
-	mgr, err := engine.OpenManager(dir, defaultEngineCfg, perQueue)
+	mreg := newRegistry(mc)
+	mgr, err := engine.OpenManager(dir, defaultEngineCfg, perQueue, mreg)
 	if err != nil {
 		_ = lock.release()
 		return nil, err
@@ -87,8 +88,9 @@ func openNode(dir string, defaults spec.Spec, mc MetricsConfig) (*Node, error) {
 		registry:        reg,
 		lock:            lock,
 		openedAt:        time.Now(),
-		metrics:         newCollector(mc),
+		metrics:         newCollector(mreg, mc, NewRuntimeSource(), mgr),
 	}
+	preregisterServerMetrics(mreg)
 	n.retentionWG.Go(func() { n.retention.Start(ctx) })
 	n.metrics.Start(ctx)
 	return n, nil
@@ -272,19 +274,28 @@ func (n *Node) DescribeQueue(ctx context.Context, name string) (QueueDescription
 
 	builtin := spec.Builtin()
 	stored := n.registry.Queues[name]
-	stats := n.mgr.EngineStats().Queues[name]
+	snap, err := n.Metrics(ctx)
+	if err != nil {
+		return QueueDescription{}, err
+	}
+	qv, _ := snap.Queue(name)
 	return QueueDescription{
-		Spec:      stored,
-		Effective: stored.Effective(n.defaults, builtin),
-		Defaults:  n.defaults,
-		QueueStats: QueueStats{
-			MessageCount: stats.MessageCount,
-			SegmentCount: stats.SegmentCount,
-			SizeBytes:    stats.SizeBytes,
-			LastOffset:   stats.LastOffset,
-			MinOffset:    stats.MinOffset,
-		},
+		Spec:       stored,
+		Effective:  stored.Effective(n.defaults, builtin),
+		Defaults:   n.defaults,
+		QueueStats: statsFromView(qv),
 	}, nil
+}
+
+// statsFromView projects one queue view's gauges into storage stats.
+func statsFromView(q metrics.QueueView) QueueStats {
+	return QueueStats{
+		MessageCount: uint64(q.Gauges[engine.GaugeMessages]),
+		SegmentCount: int(q.Gauges[engine.GaugeSegments]),
+		SizeBytes:    q.Gauges[engine.GaugeSizeBytes],
+		LastOffset:   uint64(q.Gauges[engine.GaugeLastOffset]),
+		MinOffset:    uint64(q.Gauges[engine.GaugeMinOffset]),
+	}
 }
 
 // Info is a snapshot of the node's identity and aggregate storage state.
@@ -311,23 +322,27 @@ func (n *Node) Info(ctx context.Context) (Info, error) {
 	openedAt := n.openedAt
 	n.mu.RUnlock()
 
-	s := n.mgr.EngineStats()
-	queues := make(map[string]QueueStats, len(s.Queues))
-	for name, qs := range s.Queues {
-		queues[name] = QueueStats{
-			MessageCount: qs.MessageCount,
-			SegmentCount: qs.SegmentCount,
-			SizeBytes:    qs.SizeBytes,
-			LastOffset:   qs.LastOffset,
-			MinOffset:    qs.MinOffset,
+	snap, err := n.Metrics(ctx)
+	if err != nil {
+		return Info{}, err
+	}
+	queues := make(map[string]QueueStats, len(snap.Queues))
+	var totalBytes int64
+	for _, name := range n.mgr.ListQueues() {
+		qv, ok := snap.Queue(name)
+		if !ok {
+			continue
 		}
+		qs := statsFromView(qv)
+		queues[name] = qs
+		totalBytes += qs.SizeBytes
 	}
 	return Info{
 		Version:      versionString(),
 		UptimeNs:     time.Since(openedAt).Nanoseconds(),
 		DataDir:      dir,
-		ActiveQueues: s.ActiveQueues,
-		TotalBytes:   s.TotalBytes,
+		ActiveQueues: len(queues),
+		TotalBytes:   totalBytes,
 		Queues:       queues,
 	}, nil
 }
@@ -371,7 +386,7 @@ func (n *Node) TaskQueue(name string) (*taskqueue.TaskQueue, error) {
 	if stored, known := n.registry.Queues[name]; known {
 		d = taskDefaultsFor(stored.Effective(n.defaults, spec.Builtin()))
 	}
-	tq, err := taskqueue.NewTaskQueue(name, storage, d)
+	tq, err := taskqueue.NewTaskQueue(name, storage, d, n.metrics.Registry().Scope(name))
 	if err != nil {
 		return nil, err
 	}

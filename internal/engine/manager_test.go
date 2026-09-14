@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -49,17 +50,18 @@ func TestManagerRejectsEscape(t *testing.T) {
 	require.Error(t, mgr.DeleteQueue("../../outside"))
 }
 
-func TestManagerStats(t *testing.T) {
+func TestManagerCollectsQueues(t *testing.T) {
 	dir := t.TempDir()
 	mgr, _ := OpenManager(dir, Config{}, nil)
 	defer mgr.Close()
 
 	_, _ = mgr.CreateQueue("q1")
 	_, _ = mgr.CreateQueue("q2")
-	stats := mgr.EngineStats()
-	assert.Equal(t, 2, stats.ActiveQueues)
-	assert.Contains(t, stats.Queues, "q1")
-	assert.Contains(t, stats.Queues, "q2")
+	var snap metrics.Snapshot
+	mgr.Collect(t.Context(), &snap)
+	require.Len(t, snap.Queues, 2)
+	names := []string{snap.Queues[0].Name, snap.Queues[1].Name}
+	assert.ElementsMatch(t, []string{"q1", "q2"}, names)
 }
 
 func TestManagerRestoresQueuesOnOpen(t *testing.T) {
@@ -83,7 +85,7 @@ func TestManagerCloseCleansUp(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestManagerStatsConcurrent(t *testing.T) {
+func TestManagerCollectConcurrent(t *testing.T) {
 	dir := t.TempDir()
 	mgr, err := OpenManager(dir, Config{BatchSize: 10, MaxInterval: time.Millisecond}, nil)
 	require.NoError(t, err)
@@ -110,12 +112,13 @@ func TestManagerStatsConcurrent(t *testing.T) {
 		}(i)
 	}
 
-	// Concurrent stats readers
+	// Concurrent snapshot readers
 	for range 4 {
 		wg.Go(func() {
 			for range ops {
-				st := mgr.EngineStats()
-				assert.GreaterOrEqual(t, st.ActiveQueues, 1)
+				var snap metrics.Snapshot
+				mgr.Collect(ctx, &snap)
+				assert.GreaterOrEqual(t, len(snap.Queues), 1)
 			}
 		})
 	}

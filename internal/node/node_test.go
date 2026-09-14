@@ -273,6 +273,40 @@ func TestNodeCollectorLifecycle(t *testing.T) {
 	}
 }
 
+func TestNodeSnapshotIncludesQueueInstruments(t *testing.T) {
+	dir := t.TempDir()
+	n, release, err := Acquire(dir, spec.Spec{}, WithMetrics(MetricsConfig{
+		Enabled:    true,
+		Interval:   time.Hour,
+		History:    4,
+		Histograms: true,
+	}))
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+
+	ctx := t.Context()
+	require.NoError(t, n.CreateQueue(ctx, "q", spec.Spec{}))
+
+	lq, err := n.LogQueue("q")
+	require.NoError(t, err)
+	_, err = lq.Append(ctx, []byte("hello"))
+	require.NoError(t, err)
+
+	tq, err := n.TaskQueue("q")
+	require.NoError(t, err)
+	_, err = tq.Enqueue(ctx, []byte("task"))
+	require.NoError(t, err)
+
+	snap, err := n.Metrics(ctx)
+	require.NoError(t, err)
+	qv, ok := snap.Queue("q")
+	require.True(t, ok)
+	assert.Positive(t, qv.Gauges["messages"])
+	assert.Positive(t, qv.Counters["appends"])
+	assert.Positive(t, qv.Counters["enqueues"])
+	assert.Contains(t, qv.Histograms, "append_duration")
+}
+
 func TestNodeCollectorDisabled(t *testing.T) {
 	dir := t.TempDir()
 	n, release, err := Acquire(dir, spec.Spec{}) // no WithMetrics -> disabled

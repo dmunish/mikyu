@@ -23,6 +23,8 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 	if len(payloads) == 0 {
 		return nil, nil
 	}
+	start := time.Now()
+	var totalBytes int64
 
 	type stagedBatch struct {
 		w         *wal
@@ -59,6 +61,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 			q.mu.Unlock()
 			return nil, ErrMessageTooLarge
 		}
+		totalBytes += int64(len(payload))
 		id := uuid.NewV7()
 		rec := encodeRecord(id, ts, payload)
 		recLen := int64(len(rec))
@@ -176,6 +179,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 		}
 		q.broadcastLocked()
 		q.mu.Unlock()
+		q.recordAppend(len(payloads), totalBytes, start)
 		return offsets, nil
 	}
 
@@ -200,5 +204,6 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 	}
 	q.broadcastLocked()
 	q.mu.Unlock()
+	q.recordAppend(len(payloads), totalBytes, start)
 	return offsets, nil
 }

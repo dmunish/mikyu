@@ -4,6 +4,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/dmunish/mikyu/internal/metrics"
 )
 
 const asyncChanBufferCap = 65536
@@ -43,9 +45,11 @@ type wal struct {
 	shutdown      chan struct{}
 	done          chan struct{}
 	stopOnce      sync.Once
+
+	m *walMetrics
 }
 
-func newWAL(f *os.File, cfg Config, startOffset int64) *wal {
+func newWAL(f *os.File, cfg Config, startOffset int64, scopes ...*metrics.Scope) *wal {
 	initCap := cfg.BatchSize * 1024
 	w := &wal{
 		file:          f,
@@ -61,6 +65,7 @@ func newWAL(f *os.File, cfg Config, startOffset int64) *wal {
 		configChanged: make(chan struct{}, 1),
 		shutdown:      make(chan struct{}),
 		done:          make(chan struct{}),
+		m:             newWALMetrics(scopeOf(scopes)),
 	}
 	w.cond = sync.NewCond(&w.mu)
 	return w
@@ -134,6 +139,7 @@ func (w *wal) push(rec []byte, pos int64) (seq int64, wake bool, err error) {
 	w.pushed++
 	w.buf = append(w.buf, rec...)
 	w.pending = append(w.pending, pendingEntry{pos: pos, len: int64(len(rec))})
+	w.m.pending.Set(int64(len(w.pending)))
 
 	wake = len(w.pending) == 1 || len(w.pending) >= w.cfg.BatchSize
 	return seq, wake, nil
@@ -154,6 +160,7 @@ func (w *wal) pushBatch(recs [][]byte, positions []int64) (seq int64, wake bool,
 		w.buf = append(w.buf, rec...)
 		w.pending = append(w.pending, pendingEntry{pos: positions[i], len: int64(len(rec))})
 	}
+	w.m.pending.Set(int64(len(w.pending)))
 
 	wake = len(w.pending) >= w.cfg.BatchSize || len(recs) >= w.cfg.BatchSize
 	return seq, wake, nil
@@ -216,6 +223,7 @@ func (w *wal) flush() {
 
 	w.mu.Unlock()
 
+	start := time.Now()
 	var writeErr error
 	if _, err := w.file.WriteAt(data, entries[0].pos); err != nil {
 		writeErr = err
@@ -224,6 +232,8 @@ func (w *wal) flush() {
 			writeErr = err
 		}
 	}
+	w.m.flushes.Inc()
+	w.m.flushDur.Observe(time.Since(start).Seconds())
 
 	w.mu.Lock()
 	if writeErr != nil {
@@ -235,6 +245,7 @@ func (w *wal) flush() {
 	// Reclaim used buffer capacity for next swap cycle
 	w.swapBuf = data[:0]
 	w.swapPending = entries[:0]
+	w.m.pending.Set(int64(len(w.pending)))
 
 	w.cond.Broadcast()
 	w.mu.Unlock()
@@ -265,6 +276,7 @@ WRITE:
 		return
 	}
 
+	start := time.Now()
 	for _, e := range entries {
 		if _, err := e.seg.logFile.WriteAt(e.rec, e.pos); err != nil {
 			w.setError(err)
@@ -279,6 +291,8 @@ WRITE:
 			published++
 		}
 	}
+	w.m.flushes.Inc()
+	w.m.flushDur.Observe(time.Since(start).Seconds())
 
 	w.mu.Lock()
 	if published > uint64(w.published) {

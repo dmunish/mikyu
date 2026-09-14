@@ -23,5 +23,6 @@ func (q *TaskQueue) Ack(ctx context.Context, ref TaskRef) error {
 	q.dirty++
 	q.broadcastLocked()
 	q.pruneScheduleLocked()
+	q.m.acks.Inc()
 	return nil
 }

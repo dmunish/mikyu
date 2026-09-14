@@ -5,6 +5,8 @@ import (
 	"os"
 	"slices"
 	"sync"
+
+	"github.com/dmunish/mikyu/internal/metrics"
 )
 
 type Manager struct {
@@ -14,24 +16,11 @@ type Manager struct {
 	cfg     Config
 	queues  map[string]*Queue
 	offsets *OffsetStore
-}
-
-type EngineStats struct {
-	ActiveQueues int
-	TotalBytes   int64
-	Queues       map[string]QueueStats
-}
-
-type QueueStats struct {
-	MessageCount uint64
-	SegmentCount int
-	SizeBytes    int64
-	LastOffset   uint64
-	MinOffset    uint64
+	reg     *metrics.Registry
 }
 
 // OpenManager creates a Manager and loads existing queues.
-func OpenManager(dir string, cfg Config, perQueue map[string]Config) (*Manager, error) {
+func OpenManager(dir string, cfg Config, perQueue map[string]Config, regs ...*metrics.Registry) (*Manager, error) {
 	cfg = cfg.withDefaults()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -54,6 +43,7 @@ func OpenManager(dir string, cfg Config, perQueue map[string]Config) (*Manager, 
 		cfg:     cfg,
 		queues:  make(map[string]*Queue),
 		offsets: store,
+		reg:     scopeRegistry(regs),
 	}
 
 	entries, err := os.ReadDir(dir)
@@ -71,7 +61,7 @@ func OpenManager(dir string, cfg Config, perQueue map[string]Config) (*Manager, 
 		if override, ok := perQueue[name]; ok {
 			qCfg = override
 		}
-		q, err := openQueue(dir, name, qCfg, store)
+		q, err := openQueue(dir, name, qCfg, store, m.scopeFor(name))
 		if err != nil {
 			_ = m.Close()
 			return nil, err
@@ -93,12 +83,28 @@ func (m *Manager) CreateQueue(name string, opts ...Config) (Storage, error) {
 	if len(opts) > 0 {
 		cfg = opts[0]
 	}
-	q, err := openQueue(m.dir, name, cfg, m.offsets)
+	q, err := openQueue(m.dir, name, cfg, m.offsets, m.scopeFor(name))
 	if err != nil {
 		return nil, err
 	}
 	m.queues[name] = q
 	return q, nil
+}
+
+// scopeFor returns the instrumentation scope for a queue, if a registry is set.
+func (m *Manager) scopeFor(name string) *metrics.Scope {
+	if m.reg == nil {
+		return nil
+	}
+	return m.reg.Scope(name)
+}
+
+// scopeRegistry returns the single optional registry, or nil.
+func scopeRegistry(regs []*metrics.Registry) *metrics.Registry {
+	if len(regs) == 0 {
+		return nil
+	}
+	return regs[0]
 }
 
 // GetQueue returns an existing queue as a Storage.
@@ -134,42 +140,6 @@ func (m *Manager) DeleteQueue(name string) error {
 	}
 	delete(m.queues, name)
 	return m.root.RemoveAll(name)
-}
-
-// EngineStats returns aggregate engine statistics.
-func (m *Manager) EngineStats() EngineStats {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	stats := EngineStats{
-		ActiveQueues: len(m.queues),
-		Queues:       make(map[string]QueueStats, len(m.queues)),
-	}
-
-	for name, q := range m.queues {
-		q.mu.RLock()
-		msgCount := q.publishedOffset
-		segCount := len(q.segments)
-		lastOff := q.nextOffset
-		minOff := q.minOffset
-
-		var size int64
-		for _, seg := range q.segments {
-			size += seg.pos
-		}
-		q.mu.RUnlock()
-
-		stats.Queues[name] = QueueStats{
-			MessageCount: msgCount,
-			SegmentCount: segCount,
-			SizeBytes:    size,
-			LastOffset:   lastOff,
-			MinOffset:    minOff,
-		}
-		stats.TotalBytes += size
-	}
-
-	return stats
 }
 
 // Close shuts down the manager and all its queues cleanly.

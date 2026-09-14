@@ -55,5 +55,6 @@ func (q *TaskQueue) AckDeadLetter(ctx context.Context, ref TaskRef) error {
 	delete(q.dlq, ref.taskID())
 	delete(q.dlqUncheckpointed, ref.taskID())
 	q.dirty++
+	q.m.dlqAcks.Inc()
 	return nil
 }

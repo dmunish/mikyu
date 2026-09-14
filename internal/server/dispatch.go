@@ -2,12 +2,16 @@ package server
 
 import (
 	"context"
+	"time"
 
 	"github.com/dmunish/mikyu/internal/transport/protocol"
 )
 
 // dispatch routes opcodes to handlers.
 func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byte, respBody []byte, shouldShutdown bool) {
+	start := time.Now()
+	defer func() { s.recordOp(op, start) }()
+
 	switch op {
 	case protocol.OpCreateQueue:
 		respOp, respBody = s.handleCreateQueue(ctx, body)

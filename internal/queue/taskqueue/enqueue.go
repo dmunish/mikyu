@@ -3,6 +3,7 @@ package taskqueue
 import (
 	"bytes"
 	"context"
+	"time"
 )
 
 func (q *TaskQueue) Enqueue(ctx context.Context, payload []byte, opts ...EnqueueOption) (Task, error) {
@@ -24,10 +25,12 @@ func (q *TaskQueue) Enqueue(ctx context.Context, payload []byte, opts ...Enqueue
 	if err := ctx.Err(); err != nil {
 		return Task{}, err
 	}
+	start := time.Now()
 	offset, err := q.storage.Append(ctx, encodeTaskRecord(id, maxAttempts, visibilityTimeout, scheduledAt, payload))
 	if err != nil {
 		return Task{}, err
 	}
+	q.recordEnqueue(start)
 	state := &taskState{task: Task{ID: id, Payload: bytes.Clone(payload), MaxAttempts: maxAttempts, ScheduledAt: scheduledAt, Offset: offset}, nextAt: scheduledAt, visibilityTimeout: visibilityTimeout}
 	q.active[id] = state
 	q.pushScheduleLocked(state)

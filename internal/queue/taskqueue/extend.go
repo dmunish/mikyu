@@ -34,5 +34,6 @@ func (q *TaskQueue) Extend(ctx context.Context, ref TaskRef, timeout time.Durati
 		q.broadcastLocked()
 		q.pruneScheduleLocked()
 	}
+	q.m.extends.Inc()
 	return nil
 }

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 func (q *Queue) readFromSegment(seg *segment, offset uint64) (Message, error) {
@@ -33,6 +34,7 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 	if err := ctx.Err(); err != nil {
 		return Message{}, err
 	}
+	start := time.Now()
 
 	q.mu.RLock()
 	closed := q.closed
@@ -47,6 +49,7 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 
 	// 1. Fast Path: Check in-memory ring cache first (~10 ns)
 	if msg, ok := q.cache.Get(offset); ok {
+		q.recordRead(1, int64(len(msg.Payload)), start)
 		return msg, nil
 	}
 
@@ -56,7 +59,12 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 		return Message{}, err
 	}
 
-	return q.readFromSegment(seg, offset)
+	msg, err := q.readFromSegment(seg, offset)
+	if err != nil {
+		return Message{}, err
+	}
+	q.recordRead(1, int64(len(msg.Payload)), start)
+	return msg, nil
 }
 
 // ReadBatch implements Storage.ReadBatch.
@@ -67,6 +75,7 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	begin := time.Now()
 
 	q.mu.RLock()
 	if q.closed {
@@ -130,5 +139,10 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 		msgs = append(msgs, msg)
 	}
 
+	var outBytes int64
+	for _, msg := range msgs {
+		outBytes += int64(len(msg.Payload))
+	}
+	q.recordRead(len(msgs), outBytes, begin)
 	return msgs, nil
 }

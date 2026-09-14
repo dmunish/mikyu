@@ -28,7 +28,11 @@ func (q *Queue) CommitOffset(ctx context.Context, group string, offset uint64) e
 	if q.offsets == nil {
 		return ErrQueueNotFound
 	}
-	return q.offsets.Commit(q.name, group, offset)
+	if err := q.offsets.Commit(q.name, group, offset); err != nil {
+		return err
+	}
+	q.m.groupCommits.Inc()
+	return nil
 }
 
 // Committed implements Storage.Committed.

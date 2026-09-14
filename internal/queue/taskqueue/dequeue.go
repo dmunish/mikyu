@@ -117,6 +117,7 @@ func (q *TaskQueue) takeDueLocked(ctx context.Context, now time.Time) (*taskStat
 		q.pushScheduleLocked(state)
 		q.dirty++
 		q.broadcastLocked()
+		q.recordDequeue(due)
 		return state, time.Time{}, true, nil
 	}
 	return nil, time.Time{}, false, nil

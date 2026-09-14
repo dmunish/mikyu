@@ -9,6 +9,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/dmunish/mikyu/internal/metrics"
 )
 
 const (
@@ -34,6 +36,8 @@ type Queue struct {
 	nextPreallocBytes int64
 	closed            bool
 	notify            chan struct{}
+	m                 *queueMetrics
+	scope             *metrics.Scope
 	mu                sync.RWMutex
 }
 
@@ -44,8 +48,9 @@ var _ Storage = (*Queue)(nil)
 // The directory is created through an os.Root scoped to parentDir, so a
 // hostile name can never escape the data directory. The resulting Queue
 // keeps parentDir/name only for read-only directory listing; all file
-// creation, opening, and removal happen through os.Root handles.
-func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, error) {
+// creation, opening, and removal happen through os.Root handles. An optional
+// instrumentation scope records queue operations; without one they are no-ops.
+func openQueue(parentDir, name string, cfg Config, store *OffsetStore, scopes ...*metrics.Scope) (*Queue, error) {
 	cfg = cfg.withDefaults()
 
 	parent, err := os.OpenRoot(parentDir)
@@ -68,6 +73,7 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, 
 	// Clamp initial pre-allocation size to SegmentSize
 	initialPrealloc := min(int64(minSegmentPrealloc), cfg.SegmentSize)
 
+	scope := scopeOf(scopes)
 	q := &Queue{
 		name:              name,
 		dir:               dir,
@@ -76,6 +82,8 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore) (*Queue, 
 		cache:             newRingCache(defaultRingCacheCapacity),
 		nextPreallocBytes: initialPrealloc,
 		notify:            make(chan struct{}),
+		m:                 newQueueMetrics(scope),
+		scope:             scope,
 	}
 	if err := q.loadSegments(); err != nil {
 		return nil, err
@@ -171,7 +179,7 @@ func (q *Queue) loadSegments() error {
 	if len(q.segments) > 0 {
 		q.minOffset = q.segments[0].baseOff
 	}
-	q.w = newWAL(q.active.logFile, q.cfg, int64(q.nextOffset))
+	q.w = newWAL(q.active.logFile, q.cfg, int64(q.nextOffset), q.scope)
 	q.w.start()
 	return nil
 }
@@ -233,7 +241,8 @@ func (q *Queue) roll() error {
 
 	q.active = seg
 	q.segments = append(q.segments, seg)
-	q.w = newWAL(seg.logFile, q.cfg, int64(q.nextOffset))
+	q.m.segmentRolls.Inc()
+	q.w = newWAL(seg.logFile, q.cfg, int64(q.nextOffset), q.scope)
 	q.w.start()
 	return nil
 }

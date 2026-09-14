@@ -3,6 +3,8 @@ package client
 import (
 	"testing"
 
+	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/stretchr/testify/require"
 )
 
@@ -34,9 +36,11 @@ func TestEmbeddedRetentionCoordinatesLogAndTaskDrivers(t *testing.T) {
 	// the shared storage at or before the task driver's safe floor.
 	_, err = client.Truncate(ctx, name, ^uint64(0))
 	require.NoError(t, err)
-	stats := client.node.Manager().EngineStats()
-	qs := stats.Queues[name]
-	require.Equal(t, uint64(0), qs.MinOffset)
+	var snap metrics.Snapshot
+	client.node.Manager().Collect(ctx, &snap)
+	qv, ok := snap.Queue(name)
+	require.True(t, ok)
+	require.Equal(t, uint64(0), uint64(qv.Gauges[engine.GaugeMinOffset]))
 	// After the task is acknowledged and the checkpoint is written, the log
 	// consumer remains the constraining driver for a deliberately smaller floor.
 	leased, err := taskQ.Dequeue(ctx)
@@ -60,8 +64,12 @@ func TestEmbeddedRetentionCoordinatesLogAndTaskDrivers(t *testing.T) {
 
 	_, err = client2.Truncate(ctx, name, 18)
 	require.NoError(t, err)
-	qs = client2.node.Manager().EngineStats().Queues[name]
+	var snap2 metrics.Snapshot
+	client2.node.Manager().Collect(ctx, &snap2)
+	qv2, ok := snap2.Queue(name)
+	require.True(t, ok)
+	minOffset := uint64(qv2.Gauges[engine.GaugeMinOffset])
 	// Truncation happens at segment boundaries, so MinOffset will be <= 18 and > 0.
-	require.LessOrEqual(t, qs.MinOffset, uint64(18))
-	require.Greater(t, qs.MinOffset, uint64(0))
+	require.LessOrEqual(t, minOffset, uint64(18))
+	require.Greater(t, minOffset, uint64(0))
 }

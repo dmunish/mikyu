@@ -54,6 +54,7 @@ deps:
     mayDependOn: [spec]
     anyVendorDeps: true
   engine:
+    mayDependOn: [metrics]
     anyVendorDeps: true
   protocol:
     anyVendorDeps: true
@@ -70,7 +71,7 @@ deps:
   logqueue:
     mayDependOn: [engine, group]
   taskqueue:
-    mayDependOn: [engine]
+    mayDependOn: [engine, metrics]
   retention:
     mayDependOn: [engine]
 
@@ -82,7 +83,7 @@ deps:
   client:
     mayDependOn: [spec, engine, node, group, logqueue, taskqueue, ipc, protocol]
   server:
-    mayDependOn: [spec, engine, node, logqueue, taskqueue, ipc, protocol]
+    mayDependOn: [spec, engine, node, logqueue, taskqueue, ipc, protocol, metrics]
 
   # ---- configuration and process entry ----
   config:

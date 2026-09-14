@@ -33,6 +33,7 @@ func (q *TaskQueue) Nack(ctx context.Context, ref TaskRef, opts ...NackOption) e
 		q.dirty++
 		q.broadcastLocked()
 		q.pruneScheduleLocked()
+		q.m.nacks.Inc()
 		return nil
 	}
 	state.inFlight = false
@@ -44,5 +45,6 @@ func (q *TaskQueue) Nack(ctx context.Context, ref TaskRef, opts ...NackOption) e
 	q.dirty++
 	q.broadcastLocked()
 	q.pruneScheduleLocked()
+	q.m.nacks.Inc()
 	return nil
 }

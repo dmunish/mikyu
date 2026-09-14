@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/metrics"
 )
 
 // TaskQueue implements at-least-once task processing over engine.Storage.
@@ -32,6 +33,8 @@ type TaskQueue struct {
 	// defaultVisibility and defaultMaxAttempts fall back for optionless enqueues; SetDefaults updates them live.
 	defaultVisibility  time.Duration
 	defaultMaxAttempts uint32
+
+	m *taskMetrics
 }
 
 // Defaults carry the queue's task-queue defaults into the driver.
@@ -42,10 +45,14 @@ type Defaults struct {
 
 var _ ClientTaskQueue = (*TaskQueue)(nil)
 
-// NewTaskQueue opens a task driver over an existing engine storage queue.
-func NewTaskQueue(name string, storage engine.Storage, defaults Defaults) (*TaskQueue, error) {
+// NewTaskQueue opens a task driver over existing engine storage with optional metrics scope.
+func NewTaskQueue(name string, storage engine.Storage, defaults Defaults, scopes ...*metrics.Scope) (*TaskQueue, error) {
 	if storage == nil {
 		return nil, engine.ErrQueueNotFound
+	}
+	var scope *metrics.Scope
+	if len(scopes) > 0 {
+		scope = scopes[0]
 	}
 	visibility := defaults.Visibility
 	if visibility <= 0 {
@@ -65,6 +72,7 @@ func NewTaskQueue(name string, storage engine.Storage, defaults Defaults) (*Task
 		stopCh:             make(chan struct{}),
 		defaultVisibility:  visibility,
 		defaultMaxAttempts: maxAttempts,
+		m:                  newTaskMetrics(scope),
 	}
 	schedInit(q.schedule)
 	q.mu.Lock()
