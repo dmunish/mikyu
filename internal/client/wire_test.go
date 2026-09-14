@@ -102,7 +102,6 @@ func TestDescribeQueueRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, d.Effective.Engine.SegmentSize)
 	assert.Equal(t, int64(64<<20), *d.Effective.Engine.SegmentSize)
-	assert.Zero(t, d.QueueStats.MessageCount)
 }
 
 func TestDecodeProtocolErrorNewCodes(t *testing.T) {

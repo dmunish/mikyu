@@ -81,7 +81,7 @@ deps:
 
   # ---- remote/embedded adapters; client and server never meet ----
   client:
-    mayDependOn: [spec, engine, node, group, logqueue, taskqueue, ipc, protocol]
+    mayDependOn: [spec, engine, node, group, logqueue, taskqueue, ipc, protocol, metrics]
   server:
     mayDependOn: [spec, engine, node, logqueue, taskqueue, ipc, protocol, metrics]
 
@@ -93,7 +93,7 @@ deps:
 
   # ---- user surface ----
   mikyu:
-    mayDependOn: [spec, client, engine, node, logqueue, taskqueue]
+    mayDependOn: [spec, client, engine, node, logqueue, taskqueue, metrics]
   audit:
     anyVendorDeps: true
   command:

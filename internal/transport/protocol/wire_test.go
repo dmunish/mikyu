@@ -24,7 +24,7 @@ func sampleTask() Task {
 
 var opNames = map[byte]string{
 	OpCreateQueue: "create_queue", OpDeleteQueue: "delete_queue", OpListQueues: "list_queues",
-	OpUpdateQueue: "update_queue", OpDescribeQueue: "describe_queue", OpTruncate: "truncate", OpInfo: "info",
+	OpUpdateQueue: "update_queue", OpDescribeQueue: "describe_queue", OpTruncate: "truncate", OpMetrics: "metrics",
 	OpAppend: "append", OpAppendBatch: "append_batch", OpRead: "read", OpReadBatch: "read_batch",
 	OpLastOffset: "last_offset", OpCommit: "commit", OpCommitted: "committed", OpFetch: "fetch",
 	OpEnqueue: "enqueue", OpDequeue: "dequeue", OpAck: "ack", OpNack: "nack", OpExtend: "extend",
@@ -55,7 +55,7 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 		case OpTruncate:
 			b.WriteBytes([]byte("payments"))
 			b.WriteU64(7)
-		case OpInfo:
+		case OpMetrics:
 		case OpAppend:
 			b.WriteBytes([]byte("events"))
 			b.WriteBytes([]byte("hello"))
@@ -113,7 +113,7 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 	}
 
 	ops := []byte{
-		OpCreateQueue, OpDeleteQueue, OpListQueues, OpUpdateQueue, OpDescribeQueue, OpTruncate, OpInfo,
+		OpCreateQueue, OpDeleteQueue, OpListQueues, OpUpdateQueue, OpDescribeQueue, OpTruncate, OpMetrics,
 		OpAppend, OpAppendBatch, OpRead, OpReadBatch, OpLastOffset, OpCommit, OpCommitted, OpFetch,
 		OpEnqueue, OpDequeue, OpAck, OpNack, OpExtend, OpDeadLetters, OpDeadLetterAck,
 	}

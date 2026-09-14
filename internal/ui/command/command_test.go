@@ -63,10 +63,11 @@ func TestCommandLifecycle(t *testing.T) {
 	})
 	assert.Contains(t, received, "msg1")
 
-	// 6. Stats
-	st, err := command.Info(ctx, client)
+	// 6. Metrics
+	snap, err := command.Metrics(ctx, client)
 	require.NoError(t, err)
-	assert.Equal(t, 1, st.ActiveQueues)
+	_, ok := snap.Queue("events")
+	assert.True(t, ok)
 
 	// 7. Truncate with confirmation (canceled)
 	reclaimed, executed, err := command.Truncate(ctx, client, "events", 0, func() (bool, error) {

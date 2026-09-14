@@ -219,21 +219,6 @@ func TestQueueDefaultUpdateSurvivesRestart(t *testing.T) {
 	assert.InDelta(t, (2 * time.Minute).Seconds(), time.Until(second.Visibility).Seconds(), 5)
 }
 
-func TestInfoShape(t *testing.T) {
-	dir := t.TempDir()
-	n, release, err := Acquire(dir, spec.Spec{})
-	require.NoError(t, err)
-	defer func() { _ = release() }()
-
-	require.NoError(t, n.CreateQueue(t.Context(), "q", spec.Spec{}))
-	info, err := n.Info(t.Context())
-	require.NoError(t, err)
-	assert.Equal(t, 1, info.ActiveQueues)
-	assert.Contains(t, info.Queues, "q")
-	assert.Greater(t, info.UptimeNs, int64(0))
-	assert.NotEmpty(t, info.Version)
-}
-
 func TestNodeCollectorLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	n, release, err := Acquire(dir, spec.Spec{}, WithMetrics(MetricsConfig{

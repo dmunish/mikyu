@@ -40,9 +40,10 @@ func TestEmbeddedClientLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "hello", string(msg.Payload))
 
-	stats, err := client.Info(t.Context())
+	snap, err := client.Metrics(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, 1, stats.ActiveQueues)
+	_, ok := snap.Queue("test")
+	assert.True(t, ok, "queue view missing from snapshot")
 }
 
 func TestEmbeddedClientDuplicateQueue(t *testing.T) {

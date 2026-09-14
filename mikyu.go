@@ -10,6 +10,7 @@ import (
 
 	"github.com/dmunish/mikyu/internal/client"
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/dmunish/mikyu/internal/node"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
 	"github.com/dmunish/mikyu/internal/queue/taskqueue"
@@ -29,8 +30,8 @@ type Client interface {
 	// the mutable fields to the live queue. Create-only fields are rejected.
 	UpdateQueue(ctx context.Context, name string, opts ...QueueOption) error
 
-	// DescribeQueue returns the stored spec, effective spec, session defaults,
-	// and current storage stats for one queue.
+	// DescribeQueue returns the stored spec, effective spec, and session
+	// defaults for one queue.
 	DescribeQueue(ctx context.Context, name string) (QueueDescription, error)
 
 	// DeleteQueue removes a queue and its on-disk data.
@@ -42,8 +43,8 @@ type Client interface {
 	// Truncate drops log segments before minOffset and reports the bytes freed.
 	Truncate(ctx context.Context, name string, minOffset uint64) (int64, error)
 
-	// Info returns the server's identity and aggregate storage state.
-	Info(ctx context.Context) (Info, error)
+	// Metrics returns the node's live telemetry snapshot.
+	Metrics(ctx context.Context) (Metrics, error)
 
 	// LogQueue returns a handle for append, read, stream, tail, and groups.
 	LogQueue(name string) (LogQueue, error)
@@ -106,14 +107,12 @@ type TaskRef = taskqueue.TaskRef
 type TaskID = taskqueue.TaskID
 
 // QueueDescription is the full truth about one queue: its stored spec, its
-// effective spec, the session defaults it inherits from, and its stats.
+// effective spec, and the session defaults it inherits from.
 type QueueDescription = client.QueueDescription
 
-// QueueStats is a per-queue storage snapshot.
-type QueueStats = client.QueueStats
-
-// Info describes the server's identity and aggregate storage state.
-type Info = client.Info
+// Metrics is the node's live telemetry snapshot: runtime and process gauges,
+// per-queue instruments, and totals.
+type Metrics = metrics.Snapshot
 
 // Error variables re-exported from the spec, engine, node, and driver layers.
 var (

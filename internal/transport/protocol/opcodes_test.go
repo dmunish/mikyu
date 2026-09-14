@@ -51,7 +51,7 @@ func TestOpcodeNibbleGrouping(t *testing.T) {
 		subsystem byte
 		ops       []byte
 	}{
-		{SubsystemAdmin, []byte{OpCreateQueue, OpDeleteQueue, OpListQueues, OpUpdateQueue, OpDescribeQueue, OpTruncate, OpInfo}},
+		{SubsystemAdmin, []byte{OpCreateQueue, OpDeleteQueue, OpListQueues, OpUpdateQueue, OpDescribeQueue, OpTruncate, OpMetrics}},
 		{SubsystemLog, []byte{OpAppend, OpAppendBatch, OpRead, OpReadBatch, OpLastOffset, OpCommit, OpCommitted, OpFetch}},
 		{SubsystemTask, []byte{OpEnqueue, OpDequeue, OpAck, OpNack, OpExtend, OpDeadLetters, OpDeadLetterAck}},
 	}

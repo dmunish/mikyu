@@ -37,7 +37,7 @@ func TestWriteFramePoolReuse(t *testing.T) {
 	payload := []byte("reuse")
 	for range 100 {
 		buf.Reset()
-		err := WriteFrame(&buf, OpInfo, payload)
+		err := WriteFrame(&buf, OpMetrics, payload)
 		require.NoError(t, err)
 	}
 }

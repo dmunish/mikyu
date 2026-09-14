@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
 	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/dmunish/mikyu/internal/transport/ipc"
@@ -269,21 +270,32 @@ func (c *remoteClient) DescribeQueue(ctx context.Context, name string) (QueueDes
 	return d, nil
 }
 
-func (c *remoteClient) Info(ctx context.Context) (Info, error) {
-	resp, err := c.exchange(ctx, protocol.OpInfo, nil)
+// Metrics returns the server's live snapshot over OpMetrics.
+func (c *remoteClient) Metrics(ctx context.Context) (metrics.Snapshot, error) {
+	resp, err := c.exchange(ctx, protocol.OpMetrics, nil)
 	if err != nil {
-		return Info{}, err
+		return metrics.Snapshot{}, err
 	}
 	r := protocol.NewReader(resp)
+	version, err := r.ReadU16()
+	if err != nil {
+		return metrics.Snapshot{}, fmt.Errorf("%w: %v", ErrProtocol, err)
+	}
+	if err := spec.CheckSpecVersion(version); err != nil {
+		return metrics.Snapshot{}, err
+	}
 	data, err := r.ReadBytes()
 	if err != nil {
-		return Info{}, fmt.Errorf("%w: %v", ErrProtocol, err)
+		return metrics.Snapshot{}, fmt.Errorf("%w: %v", ErrProtocol, err)
 	}
-	var info Info
-	if err := json.Unmarshal(data, &info); err != nil {
-		return Info{}, fmt.Errorf("%w: %v", ErrProtocol, err)
+	if len(data) > spec.MaxSpecPayload {
+		return metrics.Snapshot{}, fmt.Errorf("%w: metrics payload is %d bytes, limit is %d", ErrProtocol, len(data), spec.MaxSpecPayload)
 	}
-	return info, nil
+	var snap metrics.Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return metrics.Snapshot{}, fmt.Errorf("%w: %v", ErrProtocol, err)
+	}
+	return snap, nil
 }
 
 func (c *remoteClient) ListQueues(ctx context.Context) ([]string, error) {
@@ -340,5 +352,5 @@ var _ interface {
 	ListQueues(context.Context) ([]string, error)
 	DeleteQueue(context.Context, string) error
 	Truncate(context.Context, string, uint64) (int64, error)
-	Info(context.Context) (Info, error)
+	Metrics(context.Context) (metrics.Snapshot, error)
 } = (*remoteClient)(nil)

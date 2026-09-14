@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"os"
-	"runtime/debug"
 	"sync"
 	"time"
 
@@ -241,24 +240,14 @@ func (n *Node) UpdateQueue(ctx context.Context, name string, patch spec.Spec) er
 	return nil
 }
 
-// QueueDescription is the full truth about one queue: its stored spec, its effective spec (stored over defaults over built-in), the session defaults it inherits from, and its current storage stats.
+// QueueDescription is the full truth about one queue: its stored spec, its effective spec (stored over defaults over built-in), and the session defaults it inherits from.
 type QueueDescription struct {
-	Spec       spec.Spec  `json:"spec"`
-	Effective  spec.Spec  `json:"effective"`
-	Defaults   spec.Spec  `json:"defaults"`
-	QueueStats QueueStats `json:"stats"`
+	Spec      spec.Spec `json:"spec"`
+	Effective spec.Spec `json:"effective"`
+	Defaults  spec.Spec `json:"defaults"`
 }
 
-// QueueStats is a per-queue storage snapshot.
-type QueueStats struct {
-	MessageCount uint64 `json:"message_count"`
-	SegmentCount int    `json:"segment_count"`
-	SizeBytes    int64  `json:"size_bytes"`
-	LastOffset   uint64 `json:"last_offset"`
-	MinOffset    uint64 `json:"min_offset"`
-}
-
-// DescribeQueue returns the stored spec, effective spec, defaults, and stats.
+// DescribeQueue returns the stored spec, the effective spec, and the session defaults for one queue.
 func (n *Node) DescribeQueue(ctx context.Context, name string) (QueueDescription, error) {
 	if err := ctx.Err(); err != nil {
 		return QueueDescription{}, err
@@ -271,79 +260,12 @@ func (n *Node) DescribeQueue(ctx context.Context, name string) (QueueDescription
 	if _, err := n.mgr.GetQueue(name); err != nil {
 		return QueueDescription{}, err
 	}
-
 	builtin := spec.Builtin()
 	stored := n.registry.Queues[name]
-	snap, err := n.Metrics(ctx)
-	if err != nil {
-		return QueueDescription{}, err
-	}
-	qv, _ := snap.Queue(name)
 	return QueueDescription{
-		Spec:       stored,
-		Effective:  stored.Effective(n.defaults, builtin),
-		Defaults:   n.defaults,
-		QueueStats: statsFromView(qv),
-	}, nil
-}
-
-// statsFromView projects one queue view's gauges into storage stats.
-func statsFromView(q metrics.QueueView) QueueStats {
-	return QueueStats{
-		MessageCount: uint64(q.Gauges[engine.GaugeMessages]),
-		SegmentCount: int(q.Gauges[engine.GaugeSegments]),
-		SizeBytes:    q.Gauges[engine.GaugeSizeBytes],
-		LastOffset:   uint64(q.Gauges[engine.GaugeLastOffset]),
-		MinOffset:    uint64(q.Gauges[engine.GaugeMinOffset]),
-	}
-}
-
-// Info is a snapshot of the node's identity and aggregate storage state.
-type Info struct {
-	Version      string                `json:"version"`
-	UptimeNs     int64                 `json:"uptime_ns"`
-	DataDir      string                `json:"data_dir"`
-	ActiveQueues int                   `json:"active_queues"`
-	TotalBytes   int64                 `json:"total_bytes"`
-	Queues       map[string]QueueStats `json:"queues"`
-}
-
-// Info returns a snapshot of the node's identity and aggregate storage state.
-func (n *Node) Info(ctx context.Context) (Info, error) {
-	if err := ctx.Err(); err != nil {
-		return Info{}, err
-	}
-	n.mu.RLock()
-	if n.closed {
-		n.mu.RUnlock()
-		return Info{}, errNodeClosed
-	}
-	dir := n.dir
-	openedAt := n.openedAt
-	n.mu.RUnlock()
-
-	snap, err := n.Metrics(ctx)
-	if err != nil {
-		return Info{}, err
-	}
-	queues := make(map[string]QueueStats, len(snap.Queues))
-	var totalBytes int64
-	for _, name := range n.mgr.ListQueues() {
-		qv, ok := snap.Queue(name)
-		if !ok {
-			continue
-		}
-		qs := statsFromView(qv)
-		queues[name] = qs
-		totalBytes += qs.SizeBytes
-	}
-	return Info{
-		Version:      versionString(),
-		UptimeNs:     time.Since(openedAt).Nanoseconds(),
-		DataDir:      dir,
-		ActiveQueues: len(queues),
-		TotalBytes:   totalBytes,
-		Queues:       queues,
+		Spec:      stored,
+		Effective: stored.Effective(n.defaults, builtin),
+		Defaults:  n.defaults,
 	}, nil
 }
 
@@ -494,11 +416,4 @@ func toEngineConfig(s spec.Spec) engine.Config {
 		cfg.Fsync = *s.Engine.Fsync
 	}
 	return cfg
-}
-
-func versionString() string {
-	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
-		return info.Main.Version
-	}
-	return "devel"
 }

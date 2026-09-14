@@ -25,8 +25,8 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byt
 		respOp, respBody = s.handleDescribeQueue(ctx, body)
 	case protocol.OpTruncate:
 		respOp, respBody = s.handleTruncate(ctx, body)
-	case protocol.OpInfo:
-		respOp, respBody = s.handleInfo(ctx)
+	case protocol.OpMetrics:
+		respOp, respBody = s.handleMetrics(ctx)
 
 	case protocol.OpAppend:
 		respOp, respBody = s.handleAppend(ctx, body)

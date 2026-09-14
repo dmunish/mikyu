@@ -25,7 +25,7 @@ var opLabels = map[byte]string{
 	protocol.OpUpdateQueue:   "update_queue",
 	protocol.OpDescribeQueue: "describe_queue",
 	protocol.OpTruncate:      "truncate",
-	protocol.OpInfo:          "info",
+	protocol.OpMetrics:       "metrics",
 	protocol.OpAppend:        "append",
 	protocol.OpAppendBatch:   "append_batch",
 	protocol.OpRead:          "read",

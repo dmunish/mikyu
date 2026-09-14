@@ -139,11 +139,10 @@ func TestCLIInfoJSON(t *testing.T) {
 
 	app.run(t, "create", "q")
 
-	var info mikyu.Info
-	require.NoError(t, json.Unmarshal([]byte(app.run(t, "info", "--json")), &info))
-	assert.Equal(t, 1, info.ActiveQueues)
-	assert.Contains(t, info.Queues, "q")
-	assert.NotEmpty(t, info.Version)
+	var snap mikyu.Metrics
+	require.NoError(t, json.Unmarshal([]byte(app.run(t, "info", "--json")), &snap))
+	_, ok := snap.Queue("q")
+	assert.True(t, ok)
 }
 
 func TestCLIUpdateImmutable(t *testing.T) {

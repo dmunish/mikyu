@@ -5,7 +5,9 @@ import (
 	"net"
 	"sort"
 	"testing"
+	"time"
 
+	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/node"
 	"github.com/dmunish/mikyu/internal/server"
 	"github.com/dmunish/mikyu/internal/spec"
@@ -59,37 +61,94 @@ func TestDescribeAfterCreateWithFlags(t *testing.T) {
 	require.JSONEq(t, string(embJSON), string(remJSON))
 }
 
-// TestInfoShape: Info carries the same shape through the embedded and remote
-// clients, and survives a JSON round-trip.
-func TestInfoShape(t *testing.T) {
+// TestRemoteMetricsRoundTrip: a queue with traffic shows up in the remote
+// snapshot with its counters and gauges populated.
+func TestRemoteMetricsRoundTrip(t *testing.T) {
+	ctx := t.Context()
+	c := newLoopbackServer(t)
+	require.NoError(t, c.CreateQueue(ctx, "q"))
+
+	lq, err := c.LogQueue("q")
+	require.NoError(t, err)
+	_, err = lq.Append(ctx, []byte("hello"))
+	require.NoError(t, err)
+
+	snap, err := c.Metrics(ctx)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, snap.Totals.Messages, uint64(1))
+	qv, ok := snap.Queue("q")
+	require.True(t, ok, "queue view missing from snapshot")
+	assert.Positive(t, qv.Counters["appends"])
+	assert.Equal(t, int64(1), qv.Gauges["messages"])
+	assert.Zero(t, qv.Gauges["min_offset"])
+}
+
+// TestEmbeddedMetricsMatchesRemote: embedded and remote snapshots share the
+// same JSON shape; timestamps and machine-local values differ and are stripped.
+func TestEmbeddedMetricsMatchesRemote(t *testing.T) {
 	ctx := t.Context()
 
 	emb, err := NewEmbedded(t.TempDir())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = emb.Close() })
 	require.NoError(t, emb.CreateQueue(ctx, "q"))
-	embInfo, err := emb.Info(ctx)
+	embLq, err := emb.LogQueue("q")
 	require.NoError(t, err)
-
-	assert.NotEmpty(t, embInfo.Version)
-	assert.Equal(t, 1, embInfo.ActiveQueues)
-	assert.Contains(t, embInfo.Queues, "q")
-	assert.Greater(t, embInfo.UptimeNs, int64(0))
-	assert.NotEmpty(t, embInfo.DataDir)
-
-	data, err := json.Marshal(embInfo)
+	_, err = embLq.Append(ctx, []byte("a"))
 	require.NoError(t, err)
-	var back Info
-	require.NoError(t, json.Unmarshal(data, &back))
-	assert.Equal(t, embInfo, back)
+	embSnap, err := emb.Metrics(ctx)
+	require.NoError(t, err)
 
 	rem := newLoopbackServer(t)
 	require.NoError(t, rem.CreateQueue(ctx, "q"))
-	remInfo, err := rem.Info(ctx)
+	remLq, err := rem.LogQueue("q")
+	require.NoError(t, err)
+	_, err = remLq.Append(ctx, []byte("a"))
+	require.NoError(t, err)
+	remSnap, err := rem.Metrics(ctx)
 	require.NoError(t, err)
 
-	assert.Equal(t, jsonKeys(t, embInfo), jsonKeys(t, remInfo))
-	assert.Equal(t, jsonKeys(t, embInfo.Queues["q"]), jsonKeys(t, remInfo.Queues["q"]))
+	embSnap.Timestamp, remSnap.Timestamp = time.Time{}, time.Time{}
+	assert.Equal(t, jsonKeys(t, embSnap), jsonKeys(t, remSnap), "top-level snapshot shape differs")
+	embQ, embOK := embSnap.Queue("q")
+	remQ, remOK := remSnap.Queue("q")
+	require.True(t, embOK)
+	require.True(t, remOK)
+	assert.Equal(t, jsonKeys(t, embQ), jsonKeys(t, remQ), "queue view shape differs")
+}
+
+// TestRemoteMinOffsetUsesMetrics: MinOffset reads the snapshot's min_offset
+// gauge, and a queue absent from the snapshot surfaces as ErrQueueNotFound.
+func TestRemoteMinOffsetUsesMetrics(t *testing.T) {
+	ctx := t.Context()
+	c := newLoopbackServer(t)
+	require.NoError(t, c.CreateQueue(ctx, "q"))
+
+	lq, err := c.LogQueue("q")
+	require.NoError(t, err)
+	minOffset, err := lq.MinOffset(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, minOffset)
+
+	missing, err := c.LogQueue("no-such-queue")
+	require.NoError(t, err)
+	_, err = missing.MinOffset(ctx)
+	require.ErrorIs(t, err, engine.ErrQueueNotFound)
+}
+
+// TestDescribeNoStats: describe no longer carries per-queue storage stats.
+func TestDescribeNoStats(t *testing.T) {
+	ctx := t.Context()
+	emb, err := NewEmbedded(t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = emb.Close() })
+	require.NoError(t, emb.CreateQueue(ctx, "q"))
+
+	d, err := emb.DescribeQueue(ctx, "q")
+	require.NoError(t, err)
+	data, err := json.Marshal(d)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), `"stats"`)
 }
 
 func jsonKeys(t *testing.T, v any) []string {

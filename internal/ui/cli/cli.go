@@ -299,9 +299,6 @@ func (in *invocation) handleDescribe(args []string) error {
 	fmt.Fprintf(in.app.Stdout, "stored:    %s\n", stored)
 	fmt.Fprintf(in.app.Stdout, "effective: %s\n", effective)
 	fmt.Fprintf(in.app.Stdout, "defaults:  %s\n", defaults)
-	fmt.Fprintf(in.app.Stdout, "messages=%d segments=%d size=%d last_offset=%d min_offset=%d\n",
-		d.QueueStats.MessageCount, d.QueueStats.SegmentCount, d.QueueStats.SizeBytes,
-		d.QueueStats.LastOffset, d.QueueStats.MinOffset)
 	return nil
 }
 
@@ -438,26 +435,37 @@ func (in *invocation) handleInfo(args []string) error {
 	if len(rest) != 0 {
 		return in.app.usage("usage: mikyu info [--json]")
 	}
-	info, err := command.Info(in.ctx, in.client)
+	snap, err := command.Metrics(in.ctx, in.client)
 	if err != nil {
 		return err
 	}
 	if asJSON {
-		data, err := json.MarshalIndent(info, "", "  ")
+		data, err := json.MarshalIndent(snap, "", "  ")
 		if err != nil {
 			return err
 		}
 		fmt.Fprintln(in.app.Stdout, string(data))
 		return nil
 	}
-	fmt.Fprintf(in.app.Stdout, "version: %s\n", info.Version)
-	fmt.Fprintf(in.app.Stdout, "uptime: %s\n", time.Duration(info.UptimeNs))
-	fmt.Fprintf(in.app.Stdout, "data_dir: %s\n", info.DataDir)
-	fmt.Fprintf(in.app.Stdout, "active_queues: %d\n", info.ActiveQueues)
-	fmt.Fprintf(in.app.Stdout, "total_bytes: %d\n", info.TotalBytes)
-	for name, qs := range info.Queues {
+	uptime := time.Duration(snap.Runtime.UptimeSec * float64(time.Second))
+	queueCount := 0
+	for _, qv := range snap.Queues {
+		if qv.Name == "server" {
+			continue
+		}
+		queueCount++
+	}
+	fmt.Fprintf(in.app.Stdout, "uptime: %s\n", uptime.Round(time.Second))
+	fmt.Fprintf(in.app.Stdout, "data_dir: %s\n", snap.Storage.DataDir)
+	fmt.Fprintf(in.app.Stdout, "queues: %d\n", queueCount)
+	fmt.Fprintf(in.app.Stdout, "bytes: %d\n", snap.Totals.Bytes)
+	for _, qv := range snap.Queues {
+		if qv.Name == "server" {
+			continue
+		}
+		g := qv.Gauges
 		fmt.Fprintf(in.app.Stdout, "queue %s: messages=%d, segments=%d, size=%d, last_offset=%d, min_offset=%d\n",
-			name, qs.MessageCount, qs.SegmentCount, qs.SizeBytes, qs.LastOffset, qs.MinOffset)
+			qv.Name, g["messages"], g["segments"], g["size_bytes"], g["last_offset"], g["min_offset"])
 	}
 	return nil
 }

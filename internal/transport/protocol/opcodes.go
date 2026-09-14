@@ -28,7 +28,7 @@ const (
 	OpUpdateQueue   byte = 0x04
 	OpDescribeQueue byte = 0x05
 	OpTruncate      byte = 0x06
-	OpInfo          byte = 0x07
+	OpMetrics       byte = 0x07 // 0x07 formerly reserved; now carries Metrics
 
 	// Log: append/read/tail and consumer-group offsets.
 

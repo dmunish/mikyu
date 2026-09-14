@@ -184,9 +184,9 @@ func Tail(ctx context.Context, client mikyu.Client, name string, startOffset uin
 	return nil
 }
 
-// Info retrieves the server's identity and aggregate storage state.
-func Info(ctx context.Context, client mikyu.Client) (mikyu.Info, error) {
-	return client.Info(ctx)
+// Metrics retrieves the node's live telemetry snapshot.
+func Metrics(ctx context.Context, client mikyu.Client) (mikyu.Metrics, error) {
+	return client.Metrics(ctx)
 }
 
 // Truncate truncates physical log segments for a queue before minOffset. If confirmFn is provided, truncation occurs only if confirmFn returns true.

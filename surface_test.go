@@ -248,7 +248,7 @@ func effectiveJSON(t *testing.T, d mikyu.QueueDescription) string {
 // TestNamingLaw holds the CLI verbs, the public methods, and the option
 // constructors to the vocabulary of spec.Table.
 func TestNamingLaw(t *testing.T) {
-	bannedParts := []string{"Produce", "Publish", "Pop", "Stats", "TruncateQueue", "FetchOffset", "OriginalOffset", "DequeueNow"}
+	bannedParts := []string{"Produce", "Publish", "Pop", "Stats", "Info", "TruncateQueue", "FetchOffset", "OriginalOffset", "DequeueNow"}
 
 	for _, v := range command.Verbs {
 		lower := strings.ToLower(v.Name)
@@ -312,6 +312,24 @@ func TestNoCloseOnDrivers(t *testing.T) {
 	for _, iface := range driverInterfaces() {
 		_, ok := iface.MethodByName("Close")
 		assert.False(t, ok, "%s must not expose Close", iface)
+	}
+}
+
+// TestSurfaceNoInfo checks the Info and Stats surfaces are retired; Metrics is
+// the only observation point on the client interfaces.
+func TestSurfaceNoInfo(t *testing.T) {
+	interfaces := []reflect.Type{
+		reflect.TypeFor[mikyu.Client](),
+		reflect.TypeFor[mikyu.LogQueue](),
+		reflect.TypeFor[mikyu.TaskQueue](),
+	}
+	for _, iface := range interfaces {
+		_, hasInfo := iface.MethodByName("Info")
+		assert.False(t, hasInfo, "%s still exposes Info", iface)
+		for _, name := range methodNames(iface) {
+			assert.NotContains(t, name, "Info", "%s.%s uses the retired Info surface", iface, name)
+			assert.NotContains(t, name, "Stats", "%s.%s uses the retired Stats surface", iface, name)
+		}
 	}
 }
 

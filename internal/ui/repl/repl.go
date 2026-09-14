@@ -280,9 +280,6 @@ func (s *replSession) handleDescribe(args []string) {
 	fmt.Println(infoStyle.Render(fmt.Sprintf("Queue %q", rest[0])))
 	fmt.Printf("  stored:    %s\n", stored)
 	fmt.Printf("  effective: %s\n", effective)
-	fmt.Printf("  messages=%d segments=%d size=%d last_offset=%d min_offset=%d\n",
-		d.QueueStats.MessageCount, d.QueueStats.SegmentCount, d.QueueStats.SizeBytes,
-		d.QueueStats.LastOffset, d.QueueStats.MinOffset)
 }
 
 func (s *replSession) handleDelete(args []string) {
@@ -418,13 +415,20 @@ func (s *replSession) handleTruncate(args []string) {
 }
 
 func (s *replSession) handleInfo(args []string) {
-	info, err := command.Info(s.ctx, s.client)
+	snap, err := command.Metrics(s.ctx, s.client)
 	if err != nil {
 		s.fail(err)
 		return
 	}
-	fmt.Printf("Version: %s | Uptime: %s | Data Dir: %s\n", info.Version, time.Duration(info.UptimeNs).Round(time.Second), info.DataDir)
-	fmt.Printf("Active Queues: %d | Total Storage: %d Bytes\n", info.ActiveQueues, info.TotalBytes)
+	uptime := time.Duration(snap.Runtime.UptimeSec * float64(time.Second))
+	queueCount := 0
+	for _, qv := range snap.Queues {
+		if qv.Name != "server" {
+			queueCount++
+		}
+	}
+	fmt.Printf("Uptime: %s | Data Dir: %s\n", uptime.Round(time.Second), snap.Storage.DataDir)
+	fmt.Printf("Queues: %d | Total Storage: %d Bytes\n", queueCount, snap.Totals.Bytes)
 }
 
 func (s *replSession) handleShutdown(args []string) {

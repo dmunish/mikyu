@@ -133,16 +133,19 @@ func (s *Server) handleTruncate(ctx context.Context, body []byte) (byte, []byte)
 	return protocol.OpTruncate, buf.Bytes()
 }
 
-func (s *Server) handleInfo(ctx context.Context) (byte, []byte) {
-	info, err := s.node.Info(ctx)
+// handleMetrics serves OpMetrics: a u16 specVersion followed by the
+// JSON-encoded live snapshot, the same envelope as OpDescribeQueue.
+func (s *Server) handleMetrics(ctx context.Context) (byte, []byte) {
+	snap, err := s.node.Metrics(ctx)
 	if err != nil {
 		return taskErr(err)
 	}
-	data, err := json.Marshal(info)
+	data, err := json.Marshal(snap)
 	if err != nil {
 		return opErr(protocol.ErrCodeUnknown, err.Error())
 	}
 	var buf protocol.Buffer
+	buf.WriteU16(spec.CurrentSpecVersion)
 	buf.WriteBytes(data)
-	return protocol.OpInfo, buf.Bytes()
+	return protocol.OpMetrics, buf.Bytes()
 }

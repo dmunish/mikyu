@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/dmunish/mikyu/internal/node"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
 	"github.com/dmunish/mikyu/internal/queue/taskqueue"
@@ -57,13 +58,9 @@ func (c *embeddedClient) DescribeQueue(ctx context.Context, name string) (QueueD
 	return toClientDescription(d), nil
 }
 
-// Info returns a snapshot of the node's identity and aggregate storage state.
-func (c *embeddedClient) Info(ctx context.Context) (Info, error) {
-	i, err := c.node.Info(ctx)
-	if err != nil {
-		return Info{}, err
-	}
-	return toClientInfo(i), nil
+// Metrics returns the node's current live snapshot.
+func (c *embeddedClient) Metrics(ctx context.Context) (metrics.Snapshot, error) {
+	return c.node.Metrics(ctx)
 }
 
 // ListQueues returns all queue names.
@@ -94,5 +91,5 @@ var _ interface {
 	ListQueues(context.Context) ([]string, error)
 	DeleteQueue(context.Context, string) error
 	Truncate(context.Context, string, uint64) (int64, error)
-	Info(context.Context) (Info, error)
+	Metrics(context.Context) (metrics.Snapshot, error)
 } = (*embeddedClient)(nil)
