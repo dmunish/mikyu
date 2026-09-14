@@ -333,6 +333,23 @@ func TestSurfaceNoInfo(t *testing.T) {
 	}
 }
 
+// TestMetricsIsOnlyStatsSurface pins the SDK's observation surface: the client
+// exposes exactly one Metrics method and no retired Info/Stats methods at all.
+func TestMetricsIsOnlyStatsSurface(t *testing.T) {
+	iface := reflect.TypeFor[mikyu.Client]()
+	metric, legacy := 0, 0
+	for _, name := range methodNames(iface) {
+		switch {
+		case strings.Contains(name, "Metric"):
+			metric++
+		case strings.Contains(name, "Info"), strings.Contains(name, "Stats"):
+			legacy++
+		}
+	}
+	assert.Equal(t, 1, metric, "Client must expose exactly one Metric* method")
+	assert.Zero(t, legacy, "Client still exposes a retired Info/Stats method")
+}
+
 func driverInterfaces() []reflect.Type {
 	return []reflect.Type{
 		reflect.TypeFor[mikyu.TaskQueue](),

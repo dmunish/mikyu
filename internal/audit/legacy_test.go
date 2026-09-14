@@ -22,6 +22,8 @@ var bannedIdentifiers = []string{
 	"FetchOffset", "TaskOption", "FailOption", "WithScheduleAt", "WithVisibilityTimeout",
 	"MaxSegmentAge", "MaxSegmentBytes", "OriginalOffset", "DequeueNow",
 	"OpProduce", "OpPublish", "OpPop", "OpStats", "OpTail", "OpFetchOffset",
+	// metrics.md retirements: Metrics replaces Info, nothing invents Stats types.
+	"Info", "EngineStats", "QueueStats", "InfoResult", "MetricsResult", "OpInfo",
 }
 
 var bannedOpPattern = regexp.MustCompile(`^OpTask[A-Za-z]*ByID$`)
