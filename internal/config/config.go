@@ -53,7 +53,10 @@ func DefaultConfig() Config {
 	}
 }
 
-// Load reads mikyu.yaml, applies MIKYU_* environment overrides, and returns the resolved config plus the path it read (bootstrapping a default file if none exists).
+// configFileName is the default config file name, resolved next to the executable.
+const configFileName = "mikyu.yaml"
+
+// Load reads the config file (the --config path, or configFileName next to the executable), applies MIKYU_* environment overrides, and returns the resolved config plus the path it read (bootstrapping the default file next to the executable if none exists).
 func Load(flagPath string) (*Config, string, error) {
 	cfg := DefaultConfig()
 	resolvedPath, bootstrapped, err := resolveOrBootstrapPath(flagPath)
@@ -97,30 +100,19 @@ func resolveOrBootstrapPath(flagPath string) (path string, bootstrapped bool, er
 		return "", false, fmt.Errorf("specified config file does not exist: %s", flagPath)
 	}
 
-	localPath := "./mikyu.yaml"
-	if _, err := os.Stat(localPath); err == nil {
-		return localPath, false, nil
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", false, fmt.Errorf("unable to resolve executable directory for config bootstrap: %w", err)
 	}
+	path = filepath.Join(filepath.Dir(exePath), configFileName)
 
-	userConfigDir, err := os.UserConfigDir()
-	if err == nil {
-		userPath := filepath.Join(userConfigDir, "mikyu", "mikyu.yaml")
-		if _, err := os.Stat(userPath); err == nil {
-			return userPath, false, nil
-		}
-
-		if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err == nil {
-			if err := os.WriteFile(userPath, []byte(defaultConfigYAML), 0o644); err == nil {
-				return userPath, true, nil
-			}
-		}
+	if _, err := os.Stat(path); err == nil {
+		return path, false, nil
 	}
-
-	if err := os.WriteFile(localPath, []byte(defaultConfigYAML), 0o644); err == nil {
-		return localPath, true, nil
+	if err := os.WriteFile(path, []byte(defaultConfigYAML), 0o644); err != nil {
+		return "", false, fmt.Errorf("unable to bootstrap config file at %s: %w", path, err)
 	}
-
-	return "", false, fmt.Errorf("unable to resolve or bootstrap config file")
+	return path, true, nil
 }
 
 // legacyYAMLKeys maps pre-re-root keys to their canonical replacements.

@@ -78,18 +78,11 @@ func TestDaemonRunServesUntilShutdownSignal(t *testing.T) {
 }
 
 // TestDaemonRunStartsWithoutConfigFile is the §7.5 bootstrap check: a bare
-// daemon with no mikyu.yaml anywhere must still start and serve. OS config
-// locations are redirected into the test dir so the bootstrap writes nothing
-// to the real user profile.
+// daemon without --config bootstraps mikyu.yaml next to the binary (a
+// throwaway temp dir under go test) and still starts and serves.
 func TestDaemonRunStartsWithoutConfigFile(t *testing.T) {
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	t.Setenv("APPDATA", filepath.Join(tmp, "appdata"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "xdg"))
-	t.Setenv("HOME", filepath.Join(tmp, "home"))
-
 	target := "tcp://" + freeTCPAddr(t)
-	startDaemon(t, target, "--target", target, "--data-dir", filepath.Join(tmp, "data"))()
+	startDaemon(t, target, "--target", target, "--data-dir", filepath.Join(t.TempDir(), "data"))()
 }
 
 // TestDaemonRunBindFailureReturnsError guards the lifecycle bug in the

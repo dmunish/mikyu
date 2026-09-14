@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -228,27 +227,22 @@ func TestDaemonHelpListsEveryFlag(t *testing.T) {
 }
 
 func TestDaemonBootstrapWithoutConfigFile(t *testing.T) {
-	// Empty working directory and redirected OS config locations (the three
-	// inputs os.UserConfigDir consults across platforms) so the bootstrap
-	// cannot touch the real user profile.
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	t.Setenv("APPDATA", filepath.Join(tmp, "appdata"))     // Windows
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "xdg")) // Linux
-	t.Setenv("HOME", filepath.Join(tmp, "home"))           // macOS fallback
+	// The default config resolves next to the binary; under go test that is a
+	// throwaway temp dir, so nothing user-visible is ever touched.
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	wantPath := filepath.Join(filepath.Dir(exe), "mikyu.yaml")
+	dataDir := filepath.Join(t.TempDir(), "data")
 
-	cfg, resolvedPath, err := resolveConfig([]string{"--data-dir", filepath.Join(tmp, "data")}, io.Discard, io.Discard)
+	cfg, resolvedPath, err := resolveConfig([]string{"--data-dir", dataDir}, io.Discard, io.Discard)
 	require.NoError(t, err)
 	assert.FileExists(t, resolvedPath)
-	// Whichever config dir the platform prefers, it must be the sandboxed one.
-	rel, rerr := filepath.Rel(tmp, resolvedPath)
-	require.NoError(t, rerr)
-	assert.False(t, strings.HasPrefix(rel, ".."), "bootstrapped config %q escaped test dir", resolvedPath)
+	assert.Equal(t, wantPath, resolvedPath)
 	assert.Equal(t, 256, *cfg.Defaults.Engine.BatchSize) // bootstrapped default survived
-	assert.Equal(t, filepath.Join(tmp, "data"), cfg.Server.DataDir)
+	assert.Equal(t, dataDir, cfg.Server.DataDir)
 
 	// Flags still win over the freshly bootstrapped file.
-	cfg, _, err = resolveConfig([]string{"--data-dir", filepath.Join(tmp, "data"), "--batch-size", "777"}, io.Discard, io.Discard)
+	cfg, _, err = resolveConfig([]string{"--data-dir", dataDir, "--batch-size", "777"}, io.Discard, io.Discard)
 	require.NoError(t, err)
 	assert.Equal(t, 777, *cfg.Defaults.Engine.BatchSize)
 }

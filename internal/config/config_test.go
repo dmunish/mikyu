@@ -57,15 +57,15 @@ queues:
 }
 
 func TestLoadAutoBootstrapWhenMissing(t *testing.T) {
-	tmp := t.TempDir()
-	t.Chdir(tmp)
-	t.Setenv("APPDATA", filepath.Join(tmp, "appdata"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "xdg"))
-	t.Setenv("HOME", filepath.Join(tmp, "home"))
+	// The default config resolves next to the binary; under go test that is a
+	// throwaway temp dir, so nothing user-visible is ever touched.
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	wantPath := filepath.Join(filepath.Dir(exe), "mikyu.yaml")
 
 	cfg, path, err := Load("")
 	require.NoError(t, err)
-	assert.NotEmpty(t, path)
+	assert.Equal(t, wantPath, path)
 	assert.NotNil(t, cfg)
 	assert.Equal(t, 256, *cfg.Defaults.Engine.BatchSize)
 }
