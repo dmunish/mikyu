@@ -37,9 +37,18 @@ func TestREPLMatchesCLIVerbs(t *testing.T) {
 		assert.False(t, ok, "retired verb %q must not be dispatchable", name)
 	}
 
-	// The session commands only the REPL has.
 	for _, name := range []string{"use"} {
 		_, ok := replHandlers[name]
 		assert.True(t, ok, "session command %q is missing", name)
 	}
+}
+
+func TestREPLMetricsVerb(t *testing.T) {
+	_, ok := replHandlers["metrics"]
+	assert.True(t, ok, "metrics must be dispatchable in REPL")
+}
+
+func TestREPLNoInfoVerb(t *testing.T) {
+	_, ok := replHandlers["info"]
+	assert.False(t, ok, "info must not be dispatchable in REPL")
 }

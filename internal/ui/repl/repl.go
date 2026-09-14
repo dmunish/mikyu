@@ -45,7 +45,7 @@ var replHandlers = map[string]func(*replSession, []string){
 	"read":     (*replSession).handleRead,
 	"tail":     (*replSession).handleTail,
 	"truncate": (*replSession).handleTruncate,
-	"info":     (*replSession).handleInfo,
+	"metrics":  (*replSession).handleMetrics,
 	"shutdown": (*replSession).handleShutdown,
 
 	"enqueue": (*replSession).handleEnqueue,
@@ -414,21 +414,59 @@ func (s *replSession) handleTruncate(args []string) {
 	fmt.Println(successStyle.Render(fmt.Sprintf("● Queue %q truncated (%d bytes reclaimed).", name, reclaimed)))
 }
 
-func (s *replSession) handleInfo(args []string) {
+func (s *replSession) handleMetrics(args []string) {
+	var watch bool
+	fs := command.NewFlagSet("metrics")
+	fs.BoolVar(&watch, "watch", false, "stream snapshots until interrupted")
+	rest, err := command.ParseAnywhere(fs, args)
+	if err != nil {
+		s.usage("metrics [--watch] (" + err.Error() + ")")
+		return
+	}
+	if len(rest) > 0 {
+		s.usage("metrics [--watch]")
+		return
+	}
+
+	render := func(snap mikyu.Metrics) {
+		uptime := time.Duration(snap.Runtime.UptimeSec * float64(time.Second))
+		queueCount := 0
+		for _, qv := range snap.Queues {
+			if qv.Name != "server" {
+				queueCount++
+			}
+		}
+		fmt.Printf("Uptime: %s | Data Dir: %s\n", uptime.Round(time.Second), snap.Storage.DataDir)
+		fmt.Printf("Queues: %d | Total Storage: %d Bytes\n", queueCount, snap.Totals.Bytes)
+	}
+
+	if watch {
+		sigCtx, stopSig := signal.NotifyContext(s.ctx, os.Interrupt, syscall.SIGTERM)
+		defer stopSig()
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-sigCtx.Done():
+				fmt.Println(infoStyle.Render("Watch stopped."))
+				return
+			case <-ticker.C:
+				snap, err := command.Metrics(sigCtx, s.client)
+				if err != nil {
+					s.fail(err)
+					return
+				}
+				render(snap)
+			}
+		}
+	}
+
 	snap, err := command.Metrics(s.ctx, s.client)
 	if err != nil {
 		s.fail(err)
 		return
 	}
-	uptime := time.Duration(snap.Runtime.UptimeSec * float64(time.Second))
-	queueCount := 0
-	for _, qv := range snap.Queues {
-		if qv.Name != "server" {
-			queueCount++
-		}
-	}
-	fmt.Printf("Uptime: %s | Data Dir: %s\n", uptime.Round(time.Second), snap.Storage.DataDir)
-	fmt.Printf("Queues: %d | Total Storage: %d Bytes\n", queueCount, snap.Totals.Bytes)
+	render(snap)
 }
 
 func (s *replSession) handleShutdown(args []string) {

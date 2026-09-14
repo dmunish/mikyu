@@ -73,6 +73,11 @@ func (c *embeddedClient) DeleteQueue(ctx context.Context, name string) error {
 	return c.node.DeleteQueue(ctx, name)
 }
 
+// SubscribeSnapshots streams live snapshots from the embedded node's collector.
+func (c *embeddedClient) SubscribeSnapshots() (<-chan metrics.Snapshot, func()) {
+	return c.node.Collector().Subscribe()
+}
+
 // Close releases this client's reference to the shared node.
 func (c *embeddedClient) Close() error {
 	if c.release == nil {

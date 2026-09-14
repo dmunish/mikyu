@@ -134,15 +134,35 @@ func TestCLIDescribeJSONMatchesSDK(t *testing.T) {
 	assert.JSONEq(t, string(sdkJSON), string(cliJSON))
 }
 
-func TestCLIInfoJSON(t *testing.T) {
+func TestCLIMetricsJSON(t *testing.T) {
 	app := newTestApp(t)
 
 	app.run(t, "create", "q")
 
 	var snap mikyu.Metrics
-	require.NoError(t, json.Unmarshal([]byte(app.run(t, "info", "--json")), &snap))
+	require.NoError(t, json.Unmarshal([]byte(app.run(t, "metrics", "--json")), &snap))
 	_, ok := snap.Queue("q")
 	assert.True(t, ok)
+}
+
+func TestCLIMetricsQueueFilter(t *testing.T) {
+	app := newTestApp(t)
+	app.run(t, "create", "q")
+
+	out := app.run(t, "metrics", "--queue", "q", "--json")
+	var snap mikyu.Metrics
+	require.NoError(t, json.Unmarshal([]byte(out), &snap))
+	q, ok := snap.Queue("q")
+	assert.True(t, ok)
+	assert.NotEmpty(t, q.Name)
+}
+
+
+func TestCLINoInfoVerb(t *testing.T) {
+	app := newTestApp(t)
+	err := app.runErr(t, "info")
+	require.ErrorIs(t, err, daemon.ErrUsage)
+	assert.Contains(t, app.errOut.String(), "unknown command")
 }
 
 func TestCLIUpdateImmutable(t *testing.T) {

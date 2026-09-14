@@ -59,7 +59,7 @@ var handlers = map[string]func(*invocation, []string) error{
 	"extend":   (*invocation).handleExtend,
 	"dlq":      (*invocation).handleDLQ,
 	"dlq-ack":  (*invocation).handleDLQAck,
-	"info":     (*invocation).handleInfo,
+	"metrics":  (*invocation).handleMetrics,
 	"shutdown": (*invocation).handleShutdown,
 }
 
@@ -423,22 +423,32 @@ func (in *invocation) handleTruncate(args []string) error {
 	return nil
 }
 
-func (in *invocation) handleInfo(args []string) error {
-	var asJSON bool
-	fs := newFlagSet("info")
-	fs.BoolVar(&asJSON, "json", false, "emit the machine-readable info payload")
+func (in *invocation) handleMetrics(args []string) error {
+	var asJSON, watch bool
+	var queueFilter string
+	fs := newFlagSet("metrics")
+	fs.BoolVar(&asJSON, "json", false, "emit the snapshot as JSON")
+	fs.BoolVar(&watch, "watch", false, "stream snapshots until interrupted")
+	fs.StringVar(&queueFilter, "queue", "", "restrict output to one queue")
 
 	rest, err := command.ParseAnywhere(fs, args)
 	if err != nil {
-		return in.app.usage("info: %v", err)
+		return in.app.usage("metrics: %v", err)
 	}
-	if len(rest) != 0 {
-		return in.app.usage("usage: mikyu info [--json]")
+	if len(rest) > 0 {
+		return in.app.usage("usage: mikyu metrics [--json] [--watch] [--queue name]")
+	}
+	if watch {
+		return in.streamMetrics(queueFilter, asJSON)
 	}
 	snap, err := command.Metrics(in.ctx, in.client)
 	if err != nil {
 		return err
 	}
+	return in.renderMetrics(snap, queueFilter, asJSON)
+}
+
+func (in *invocation) renderMetrics(snap mikyu.Metrics, queueFilter string, asJSON bool) error {
 	if asJSON {
 		data, err := json.MarshalIndent(snap, "", "  ")
 		if err != nil {
@@ -450,17 +460,24 @@ func (in *invocation) handleInfo(args []string) error {
 	uptime := time.Duration(snap.Runtime.UptimeSec * float64(time.Second))
 	queueCount := 0
 	for _, qv := range snap.Queues {
-		if qv.Name == "server" {
+		if qv.Name == "server" || (queueFilter != "" && qv.Name != queueFilter) {
 			continue
 		}
 		queueCount++
 	}
-	fmt.Fprintf(in.app.Stdout, "uptime: %s\n", uptime.Round(time.Second))
-	fmt.Fprintf(in.app.Stdout, "data_dir: %s\n", snap.Storage.DataDir)
-	fmt.Fprintf(in.app.Stdout, "queues: %d\n", queueCount)
-	fmt.Fprintf(in.app.Stdout, "bytes: %d\n", snap.Totals.Bytes)
+	if queueFilter != "" {
+		fmt.Fprintf(in.app.Stdout, "queue: %s\n", queueFilter)
+	} else {
+		fmt.Fprintf(in.app.Stdout, "uptime: %s\n", uptime.Round(time.Second))
+		fmt.Fprintf(in.app.Stdout, "data_dir: %s\n", snap.Storage.DataDir)
+		fmt.Fprintf(in.app.Stdout, "queues: %d\n", queueCount)
+		fmt.Fprintf(in.app.Stdout, "bytes: %d\n", snap.Totals.Bytes)
+	}
 	for _, qv := range snap.Queues {
 		if qv.Name == "server" {
+			continue
+		}
+		if queueFilter != "" && qv.Name != queueFilter {
 			continue
 		}
 		g := qv.Gauges
@@ -468,6 +485,58 @@ func (in *invocation) handleInfo(args []string) error {
 			qv.Name, g["messages"], g["segments"], g["size_bytes"], g["last_offset"], g["min_offset"])
 	}
 	return nil
+}
+
+var pollInterval = time.Second
+
+func (in *invocation) streamMetrics(queueFilter string, asJSON bool) error {
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	ch, cancel := in.trySubscribe()
+	defer cancel()
+
+	first := true
+	for {
+		select {
+		case <-in.ctx.Done():
+			return nil
+		case snap, ok := <-ch:
+			if !ok {
+				ch = nil
+				continue
+			}
+			if err := in.renderMetrics(snap, queueFilter, asJSON); err != nil {
+				return err
+			}
+			first = false
+		case <-ticker.C:
+			if ch != nil {
+				continue
+			}
+			snap, err := command.Metrics(in.ctx, in.client)
+			if err != nil {
+				if first {
+					return err
+				}
+				continue
+			}
+			if err := in.renderMetrics(snap, queueFilter, asJSON); err != nil {
+				return err
+			}
+			first = false
+		}
+	}
+}
+
+func (in *invocation) trySubscribe() (<-chan mikyu.Metrics, func()) {
+	type subscriber interface {
+		SubscribeSnapshots() (<-chan mikyu.Metrics, func())
+	}
+	if s, ok := in.client.(subscriber); ok {
+		return s.SubscribeSnapshots()
+	}
+	return nil, func() {}
 }
 
 func (in *invocation) handleShutdown(args []string) error {
