@@ -23,10 +23,17 @@ var (
 )
 
 // Acquire returns a reference-counted Node for dir.
-func Acquire(dir string, defaults spec.Spec) (*Node, func() error, error) {
+func Acquire(dir string, defaults spec.Spec, opts ...AcquireOption) (*Node, func() error, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	mc := MetricsConfig{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&mc)
+		}
 	}
 
 	poolMu.Lock()
@@ -39,7 +46,7 @@ func Acquire(dir string, defaults spec.Spec) (*Node, func() error, error) {
 		poolMu.Unlock()
 		return e.node, releaseFunc(abs), nil
 	}
-	n, err := openNode(abs, defaults)
+	n, err := openNode(abs, defaults, mc)
 	if err != nil {
 		poolMu.Unlock()
 		return nil, nil, err

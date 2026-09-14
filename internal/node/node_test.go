@@ -233,3 +233,58 @@ func TestInfoShape(t *testing.T) {
 	assert.Greater(t, info.UptimeNs, int64(0))
 	assert.NotEmpty(t, info.Version)
 }
+
+func TestNodeCollectorLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	n, release, err := Acquire(dir, spec.Spec{}, WithMetrics(MetricsConfig{
+		Enabled:  true,
+		Interval: 5 * time.Millisecond,
+		History:  8,
+	}))
+	require.NoError(t, err)
+
+	ch, cancel := n.Collector().Subscribe()
+	defer cancel()
+
+	// Wait for at least one collector tick.
+	require.Eventually(t, func() bool {
+		return len(n.Collector().History()) > 0
+	}, time.Second, time.Millisecond)
+
+	snap, err := n.Metrics(t.Context())
+	require.NoError(t, err)
+	require.False(t, snap.Disabled)
+	require.Greater(t, snap.Runtime.Goroutines, 0)
+	require.Greater(t, snap.Runtime.HeapAlloc, int64(0))
+
+	require.NoError(t, release())
+	// Stop joins the ticker goroutine and closes every subscriber channel. Drain
+	// any buffered snapshot, then the channel must read as closed.
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+		case <-deadline:
+			t.Fatal("collector subscriber channel did not close after node release")
+		}
+	}
+}
+
+func TestNodeCollectorDisabled(t *testing.T) {
+	dir := t.TempDir()
+	n, release, err := Acquire(dir, spec.Spec{}) // no WithMetrics -> disabled
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+
+	snap, err := n.Metrics(t.Context())
+	require.NoError(t, err)
+	require.True(t, snap.Disabled)
+
+	ch, cancel := n.Collector().Subscribe()
+	defer cancel()
+	_, ok := <-ch
+	require.False(t, ok, "disabled collector must return a closed channel")
+}

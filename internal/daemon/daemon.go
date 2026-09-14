@@ -40,7 +40,7 @@ func Run(args []string) error {
 	}
 	logEffectiveConfig(cfg, resolvedPath)
 
-	n, release, err := node.Acquire(cfg.Server.DataDir, cfg.Defaults)
+	n, release, err := node.Acquire(cfg.Server.DataDir, cfg.Defaults, node.WithMetrics(node.MetricsFromSession(cfg.Server)))
 	if err != nil {
 		return fmt.Errorf("open node at %s: %w", cfg.Server.DataDir, err)
 	}

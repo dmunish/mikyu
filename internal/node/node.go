@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
 	"github.com/dmunish/mikyu/internal/queue/retention"
 	"github.com/dmunish/mikyu/internal/queue/taskqueue"
@@ -38,11 +39,12 @@ type Node struct {
 	registry *registry
 	lock     *dirLock
 	openedAt time.Time
+	metrics  *metrics.Collector
 }
 
 // openNode acquires the directory lock, loads the registry, and starts the
 // retention reconciler. Callers outside this package must go through Acquire.
-func openNode(dir string, defaults spec.Spec) (*Node, error) {
+func openNode(dir string, defaults spec.Spec, mc MetricsConfig) (*Node, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -85,8 +87,10 @@ func openNode(dir string, defaults spec.Spec) (*Node, error) {
 		registry:        reg,
 		lock:            lock,
 		openedAt:        time.Now(),
+		metrics:         newCollector(mc),
 	}
 	n.retentionWG.Go(func() { n.retention.Start(ctx) })
+	n.metrics.Start(ctx)
 	return n, nil
 }
 
@@ -103,6 +107,8 @@ func (n *Node) closeInternal() error {
 
 	n.retentionWG.Wait()
 	n.reconcileWG.Wait()
+
+	n.metrics.Stop()
 
 	n.mu.Lock()
 	var firstErr error

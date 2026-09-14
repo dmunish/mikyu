@@ -76,7 +76,7 @@ deps:
 
   # ---- node: registry, pool, driver cache, retention wiring ----
   node:
-    mayDependOn: [spec, engine, logqueue, taskqueue, retention]
+    mayDependOn: [spec, engine, logqueue, taskqueue, retention, metrics]
 
   # ---- remote/embedded adapters; client and server never meet ----
   client:
