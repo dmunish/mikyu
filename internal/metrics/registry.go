@@ -121,11 +121,13 @@ func (s *Scope) Histogram(name string, bounds []float64) *Histogram {
 
 // read copies every instrument reading held by the scope.
 func (s *Scope) read() (map[string]int64, map[string]int64, map[string]HistogramSnapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	counters := make(map[string]int64, len(s.counters))
 	gauges := make(map[string]int64, len(s.gauges))
 	histograms := make(map[string]HistogramSnapshot, len(s.histograms))
-	s.mu.Lock()
-	defer s.mu.Unlock()
+
 	for name, c := range s.counters {
 		counters[name] = c.Load()
 	}
