@@ -298,6 +298,34 @@ func (c *remoteClient) Metrics(ctx context.Context) (metrics.Snapshot, error) {
 	return snap, nil
 }
 
+// Schema fetches the server's parameter table over OpSchema.
+func (c *remoteClient) Schema(ctx context.Context) ([]spec.Param, error) {
+	resp, err := c.exchange(ctx, protocol.OpSchema, nil)
+	if err != nil {
+		return nil, err
+	}
+	r := protocol.NewReader(resp)
+	version, err := r.ReadU16()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrProtocol, err)
+	}
+	if err := spec.CheckSpecVersion(version); err != nil {
+		return nil, err
+	}
+	data, err := r.ReadBytes()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrProtocol, err)
+	}
+	if len(data) > spec.MaxSpecPayload {
+		return nil, fmt.Errorf("%w: schema payload is %d bytes, limit is %d", ErrProtocol, len(data), spec.MaxSpecPayload)
+	}
+	var params []spec.Param
+	if err := json.Unmarshal(data, &params); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrProtocol, err)
+	}
+	return params, nil
+}
+
 func (c *remoteClient) ListQueues(ctx context.Context) ([]string, error) {
 	body, err := c.exchange(ctx, protocol.OpListQueues, nil)
 	if err != nil {
@@ -353,4 +381,5 @@ var _ interface {
 	DeleteQueue(context.Context, string) error
 	Truncate(context.Context, string, uint64) (int64, error)
 	Metrics(context.Context) (metrics.Snapshot, error)
+	Schema(context.Context) ([]spec.Param, error)
 } = (*remoteClient)(nil)

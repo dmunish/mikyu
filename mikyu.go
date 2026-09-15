@@ -1,6 +1,23 @@
-// Package mikyu is the public SDK for the Mikyu message queue: one Client
-// handle for embedded and remote servers, a spec-native configuration surface,
-// and log-queue and task-queue drivers behind it.
+// Package mikyu is the public SDK for the Mikyu message queue.
+//
+// Mikyu separates process configuration from data:
+//
+//   - mikyu.yaml lives with the binary and describes how a daemon runs:
+//     bind target, TLS, metrics HTTP, and the ambient session defaults new
+//     queues inherit on this host. The daemon reads it; embedded clients
+//     do not.
+//
+//   - queues.json lives inside the data directory alongside the log
+//     segments, index files, offset store, and lock. It records the name
+//     and sparse spec of every queue and is written only by mikyu.
+//
+// Copying a data directory copies everything durable. Installing a binary
+// copies the process's launch configuration. They travel independently
+// because they are different things.
+//
+// Session defaults are ambient: they belong to the node that opened the
+// directory, not to the data inside it. To make a queue's behavior
+// portable across hosts, set the field on the queue itself.
 package mikyu
 
 import (
@@ -51,6 +68,10 @@ type Client interface {
 
 	// TaskQueue returns a handle for at-least-once task processing.
 	TaskQueue(name string) (TaskQueue, error)
+
+	// Schema returns the parameter table the server accepts. Embedded clients
+	// return spec.Table directly; remote clients fetch it over OpSchema.
+	Schema(ctx context.Context) ([]Param, error)
 }
 
 // Open creates an in-process Client over the data directory dir. Two Open calls

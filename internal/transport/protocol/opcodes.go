@@ -29,6 +29,7 @@ const (
 	OpDescribeQueue byte = 0x05
 	OpTruncate      byte = 0x06
 	OpMetrics       byte = 0x07 // 0x07 formerly reserved; now carries Metrics
+	OpSchema        byte = 0x08 // returns the spec parameter table as JSON
 
 	// Log: append/read/tail and consumer-group offsets.
 

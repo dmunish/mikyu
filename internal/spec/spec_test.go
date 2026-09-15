@@ -114,6 +114,21 @@ func TestSpecTagsIdentical(t *testing.T) {
 		}
 	}
 	walk(reflect.TypeFor[Spec](), "")
+
+	// The parameter table is the wire schema for non-Go SDKs: every exported
+	// field serializes, the function bindings stay out, and the keys are stable.
+	pt := reflect.TypeFor[Param]()
+	for field := range pt.Fields() {
+		tag, ok := field.Tag.Lookup("json")
+		require.True(t, ok, "Param."+field.Name+" has no json tag")
+		switch field.Name {
+		case "Apply", "ApplySession":
+			require.Equal(t, "-", tag, "Param."+field.Name)
+		default:
+			require.NotEqual(t, "-", tag, "Param."+field.Name)
+			require.NotEmpty(t, tagName(tag), "Param."+field.Name)
+		}
+	}
 }
 
 func TestTableMatchesSpecFields(t *testing.T) {

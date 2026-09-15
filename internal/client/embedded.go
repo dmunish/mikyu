@@ -8,6 +8,7 @@ import (
 	"github.com/dmunish/mikyu/internal/node"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
 	"github.com/dmunish/mikyu/internal/queue/taskqueue"
+	"github.com/dmunish/mikyu/internal/spec"
 )
 
 // TaskQueue is the client-facing task driver interface.
@@ -63,6 +64,16 @@ func (c *embeddedClient) Metrics(ctx context.Context) (metrics.Snapshot, error) 
 	return c.node.Metrics(ctx)
 }
 
+// Schema returns a fresh copy of the node's parameter table.
+func (c *embeddedClient) Schema(ctx context.Context) ([]spec.Param, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]spec.Param, len(spec.Table))
+	copy(out, spec.Table)
+	return out, nil
+}
+
 // ListQueues returns all queue names.
 func (c *embeddedClient) ListQueues(ctx context.Context) ([]string, error) {
 	return c.node.ListQueues(ctx)
@@ -97,4 +108,5 @@ var _ interface {
 	DeleteQueue(context.Context, string) error
 	Truncate(context.Context, string, uint64) (int64, error)
 	Metrics(context.Context) (metrics.Snapshot, error)
+	Schema(context.Context) ([]spec.Param, error)
 } = (*embeddedClient)(nil)

@@ -39,6 +39,9 @@ func sampleText(p spec.Param) string {
 		if p.Key == "target" {
 			return "tcp://127.0.0.1:7420"
 		}
+		if p.Key == "metrics_listen" {
+			return "127.0.0.1:9090"
+		}
 		return "sample"
 	case spec.KindTime:
 		return "2020-01-01T00:00:00Z"

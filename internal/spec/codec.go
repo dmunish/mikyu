@@ -95,6 +95,15 @@ func EncodeSpec(s Spec) ([]byte, error) {
 	return data, nil
 }
 
+// EncodeSpecYAML renders s as sparse YAML: unset fields are absent.
+func EncodeSpecYAML(s Spec) ([]byte, error) {
+	data, err := yaml.Marshal(s)
+	if err != nil {
+		return nil, fmt.Errorf("spec: encode yaml: %w", err)
+	}
+	return data, nil
+}
+
 // DecodeSpec parses JSON, rejecting unknown keys, trailing data, and any payload larger than MaxSpecPayload.
 func DecodeSpec(data []byte) (Spec, error) {
 	if len(data) > MaxSpecPayload {

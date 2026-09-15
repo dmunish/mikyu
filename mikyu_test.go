@@ -228,6 +228,35 @@ func TestRemoteUpdateQueueImmutable(t *testing.T) {
 	assert.Contains(t, err.Error(), "segment_size")
 }
 
+// TestSchemaOverWire: embedded and remote Schema share the same table, field
+// for field — the schema is a property of the build, not of the transport.
+func TestSchemaOverWire(t *testing.T) {
+	emb, err := mikyu.Open(t.TempDir())
+	require.NoError(t, err)
+	defer emb.Close()
+
+	rem, err := mikyu.Dial(newTestServer(t))
+	require.NoError(t, err)
+	defer rem.Close()
+
+	local, err := emb.Schema(t.Context())
+	require.NoError(t, err)
+	remote, err := rem.Schema(t.Context())
+	require.NoError(t, err)
+
+	require.Equal(t, len(local), len(remote))
+	for i := range local {
+		assert.Equal(t, local[i].Key, remote[i].Key, "row %d key", i)
+		assert.Equal(t, local[i].Path, remote[i].Path, "row %d path", i)
+		assert.Equal(t, local[i].Kind, remote[i].Kind, "row %d kind", i)
+		assert.Equal(t, local[i].Layer, remote[i].Layer, "row %d layer", i)
+		assert.Equal(t, local[i].Mutability, remote[i].Mutability, "row %d mutability", i)
+		assert.Equal(t, local[i].EnvName, remote[i].EnvName, "row %d env", i)
+		assert.Equal(t, local[i].FlagName, remote[i].FlagName, "row %d flag", i)
+		assert.Equal(t, local[i].OptionName, remote[i].OptionName, "row %d option", i)
+	}
+}
+
 func TestOpenDefaultsMismatch(t *testing.T) {
 	dir := t.TempDir()
 	first, err := mikyu.Open(dir, mikyu.WithSessionSpec(mikyu.Spec{

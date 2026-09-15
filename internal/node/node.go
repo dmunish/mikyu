@@ -247,7 +247,7 @@ func (n *Node) UpdateQueue(ctx context.Context, name string, patch spec.Spec) er
 	return nil
 }
 
-// QueueDescription is the full truth about one queue: its stored spec, its effective spec (stored over defaults over built-in), and the session defaults it inherits from.
+// QueueDescription is the full truth about one queue: its stored spec, its effective spec (stored over defaults over built-in), and the session defaults it inherits from, which are ambient to the node that opened the directory and never stored with the queue; to make a queue's behavior portable across hosts, set the field on the queue itself.
 type QueueDescription struct {
 	Spec      spec.Spec `json:"spec"`
 	Effective spec.Spec `json:"effective"`

@@ -104,6 +104,23 @@ func TestDescribeQueueRoundTrip(t *testing.T) {
 	assert.Equal(t, int64(64<<20), *d.Effective.Engine.SegmentSize)
 }
 
+// TestRemoteSchemaMatchesLocal: Schema over OpSchema returns exactly the
+// server's parameter table, keyed by canonical name.
+func TestRemoteSchemaMatchesLocal(t *testing.T) {
+	c := newRemoteClient(t)
+	params, err := c.Schema(t.Context())
+	require.NoError(t, err)
+	require.Len(t, params, len(spec.Table))
+
+	seen := make(map[string]bool, len(params))
+	for _, p := range params {
+		seen[p.Key] = true
+	}
+	for _, p := range spec.Table {
+		assert.True(t, seen[p.Key], "wire schema is missing %s", p.Key)
+	}
+}
+
 func TestDecodeProtocolErrorNewCodes(t *testing.T) {
 	cases := map[byte]error{
 		protocol.ErrCodeInvalidConfig:     spec.ErrInvalidConfig,

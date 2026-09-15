@@ -1,6 +1,7 @@
 package spec
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -75,19 +76,87 @@ const (
 	MutNotApplicable
 )
 
+// String renders the mutability for schema and wire output.
+func (m Mutability) String() string {
+	switch m {
+	case MutMutable:
+		return "mutable"
+	case MutCreateOnly:
+		return "create_only"
+	case MutNotApplicable:
+		return "not_applicable"
+	default:
+		return "unspecified"
+	}
+}
+
+// MarshalJSON renders the kind as its string form so the wire shape is language-neutral.
+func (k Kind) MarshalJSON() ([]byte, error) { return json.Marshal(k.String()) }
+
+// UnmarshalJSON decodes the string form produced by MarshalJSON.
+func (k *Kind) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	for i := KindInt; i <= KindTime; i++ {
+		if i.String() == s {
+			*k = i
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: unknown kind %q", ErrInvalidConfig, s)
+}
+
+// MarshalJSON renders the layer as its string form so the wire shape is language-neutral.
+func (l Layer) MarshalJSON() ([]byte, error) { return json.Marshal(l.String()) }
+
+// UnmarshalJSON decodes the string form produced by MarshalJSON.
+func (l *Layer) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	for i := LayerCall; i <= LayerSession; i++ {
+		if i.String() == s {
+			*l = i
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: unknown layer %q", ErrInvalidConfig, s)
+}
+
+// MarshalJSON renders the mutability as its string form so the wire shape is language-neutral.
+func (m Mutability) MarshalJSON() ([]byte, error) { return json.Marshal(m.String()) }
+
+// UnmarshalJSON decodes the string form produced by MarshalJSON.
+func (m *Mutability) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	for i := MutMutable; i <= MutNotApplicable; i++ {
+		if i.String() == s {
+			*m = i
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: unknown mutability %q", ErrInvalidConfig, s)
+}
+
 // Param is one entry of the parameter table: the single source of truth for how a configuration value is named and set in every layer that can reach it.
 type Param struct {
-	Key        string // canonical flat key: identity of env, flag, option, and patch
-	Path       string // location in the nested spec, e.g. "engine.batch_size"
-	Kind       Kind
-	Layer      Layer
-	Mutability Mutability
-	EnvName    string
-	FlagName   string
-	OptionName string
+	Key        string     `json:"key"`  // canonical flat key: identity of env, flag, option, and patch
+	Path       string     `json:"path"` // location in the nested spec, e.g. "engine.batch_size"
+	Kind       Kind       `json:"kind"`
+	Layer      Layer      `json:"layer"`
+	Mutability Mutability `json:"mutability"`
+	EnvName    string     `json:"env_name"`
+	FlagName   string     `json:"flag_name"`
+	OptionName string     `json:"option_name"`
 
-	Apply        func(*Spec, Value)
-	ApplySession func(*Session, Value)
+	Apply        func(*Spec, Value)    `json:"-"`
+	ApplySession func(*Session, Value) `json:"-"`
 }
 
 func (p Param) String() string { return p.Key }

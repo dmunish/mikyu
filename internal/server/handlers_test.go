@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 
 	"github.com/dmunish/mikyu/internal/node"
@@ -184,4 +185,33 @@ func TestHandleListQueues(t *testing.T) {
 	r := protocol.NewReader(respBody)
 	count, _ := r.ReadU32()
 	assert.Equal(t, uint32(2), count)
+}
+
+// TestHandleSchema serves OpSchema and verifies the u16 version envelope plus
+// the full parameter table keyed by canonical name.
+func TestHandleSchema(t *testing.T) {
+	n, release, _ := node.Acquire(t.TempDir(), spec.Spec{})
+	defer func() { _ = release() }()
+	srv := New(n)
+	defer srv.Stop()
+
+	respOp, respBody := srv.handleSchema()
+	assert.Equal(t, protocol.OpSchema, respOp)
+	r := protocol.NewReader(respBody)
+	version, err := r.ReadU16()
+	require.NoError(t, err)
+	assert.Equal(t, spec.CurrentSpecVersion, version)
+	data, err := r.ReadBytes()
+	require.NoError(t, err)
+
+	var params []spec.Param
+	require.NoError(t, json.Unmarshal(data, &params))
+	require.Len(t, params, len(spec.Table))
+	seen := make(map[string]bool, len(params))
+	for _, p := range params {
+		seen[p.Key] = true
+	}
+	for _, p := range spec.Table {
+		assert.True(t, seen[p.Key], "wire schema is missing %s", p.Key)
+	}
 }

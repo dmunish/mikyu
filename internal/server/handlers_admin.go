@@ -149,3 +149,16 @@ func (s *Server) handleMetrics(ctx context.Context) (byte, []byte) {
 	buf.WriteBytes(data)
 	return protocol.OpMetrics, buf.Bytes()
 }
+
+// handleSchema serves OpSchema: a u16 specVersion followed by the JSON-encoded
+// parameter table, the same envelope as OpDescribeQueue and OpMetrics.
+func (s *Server) handleSchema() (byte, []byte) {
+	data, err := json.Marshal(spec.Table)
+	if err != nil {
+		return opErr(protocol.ErrCodeUnknown, err.Error())
+	}
+	var buf protocol.Buffer
+	buf.WriteU16(spec.CurrentSpecVersion)
+	buf.WriteBytes(data)
+	return protocol.OpSchema, buf.Bytes()
+}
