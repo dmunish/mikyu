@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/dmunish/mikyu/internal/metrics"
@@ -29,11 +30,14 @@ func NewEmbedded(dir string, opts ...Option) (*embeddedClient, error) {
 			opt(&cfg)
 		}
 	}
+	if cfg.Target != "" {
+		return nil, fmt.Errorf("%w: target is for remote clients, use Dial", ErrModeMismatch)
+	}
 	if cfg.DataDir != "" {
 		dir = cfg.DataDir
 	}
 
-	n, release, err := node.Acquire(dir, cfg.Spec)
+	n, release, err := node.Acquire(dir, cfg.Spec, node.WithMetrics(cfg.metricsConfig()))
 	if err != nil {
 		return nil, err
 	}

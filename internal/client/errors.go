@@ -14,6 +14,9 @@ import (
 // ErrProtocol wraps an error reported by the server whose code the client does not recognize.
 var ErrProtocol = errors.New("protocol error")
 
+// ErrModeMismatch reports an option that does not apply in this client mode.
+var ErrModeMismatch = errors.New("option does not apply in this client mode")
+
 // decodeKnown rebuilds a sentinel from a recognized wire code, preserving
 // the server's detail that follows the sentinel's own text (e.g. the field
 // name in an immutable-field error). A message with no extra detail yields

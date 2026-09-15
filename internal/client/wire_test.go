@@ -121,6 +121,32 @@ func TestRemoteSchemaMatchesLocal(t *testing.T) {
 	}
 }
 
+// TestEmbeddedRejectsTarget: a target is a remote-client setting.
+func TestEmbeddedRejectsTarget(t *testing.T) {
+	_, err := NewEmbedded(t.TempDir(), WithTarget("tcp://127.0.0.1:1"))
+	require.ErrorIs(t, err, ErrModeMismatch)
+}
+
+// TestRemoteRejectsDataDir: a data directory is an embedded-client setting.
+func TestRemoteRejectsDataDir(t *testing.T) {
+	_, err := NewRemote("tcp://127.0.0.1:1", WithDataDir("./x"))
+	require.ErrorIs(t, err, ErrModeMismatch)
+}
+
+// TestEmbeddedMetricsHistoryHonored: the session's history depth caps the embedded collector's ring.
+func TestEmbeddedMetricsHistoryHonored(t *testing.T) {
+	c, err := NewEmbedded(t.TempDir(),
+		WithMetricsEnabled(true),
+		WithMetricsInterval(20*time.Millisecond),
+		WithMetricsHistory(4),
+	)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	require.Eventually(t, func() bool { return len(c.node.Collector().History()) >= 4 }, 2*time.Second, 10*time.Millisecond)
+	assert.LessOrEqual(t, len(c.node.Collector().History()), 4, "history grew past its configured depth")
+}
+
 func TestDecodeProtocolErrorNewCodes(t *testing.T) {
 	cases := map[byte]error{
 		protocol.ErrCodeInvalidConfig:     spec.ErrInvalidConfig,

@@ -46,6 +46,9 @@ func NewRemote(target string, opts ...Option) (*remoteClient, error) {
 			opt(&cfg)
 		}
 	}
+	if cfg.DataDir != "" {
+		return nil, fmt.Errorf("%w: data_dir is for embedded clients, use Open", ErrModeMismatch)
+	}
 	if cfg.Target != "" {
 		target = cfg.Target
 	}

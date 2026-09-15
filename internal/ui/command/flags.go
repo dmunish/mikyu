@@ -23,7 +23,7 @@ type Global struct {
 // SessionFlags returns the global flag set every verb accepts: one flag per session parameter, plus --dir as the short spelling of data_dir.
 func SessionFlags(sess *spec.Session, help *bool) *flag.FlagSet {
 	fs := NewFlagSet("mikyu")
-	for _, p := range spec.Params(spec.LayerSession) {
+	for _, p := range spec.ParamsInScope(spec.LayerSession, spec.ScopeClient, spec.ScopeBoth) {
 		fs.Var(&sessionValue{param: p, session: sess}, p.FlagName, p.Key)
 	}
 	if p, ok := spec.Lookup("data_dir"); ok {

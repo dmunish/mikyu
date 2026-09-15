@@ -396,7 +396,8 @@ func TestSentinelUniqueness(t *testing.T) {
 		"ErrDeadLetterStale":         mikyu.ErrDeadLetterStale,
 		"ErrNoData":                  mikyu.ErrNoData,
 		"ErrRecordTooLarge":          mikyu.ErrRecordTooLarge,
-		"ErrProtocol":                 mikyu.ErrProtocol,
+		"ErrProtocol":                mikyu.ErrProtocol,
+		"ErrModeMismatch":            mikyu.ErrModeMismatch,
 	}
 
 	declared := exportedErrVars(t, ".")

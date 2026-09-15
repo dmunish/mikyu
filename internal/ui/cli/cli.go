@@ -155,7 +155,7 @@ func (a *App) printUsage() {
 	}
 	fmt.Fprintf(a.Stdout, "Global flags:\n")
 	fmt.Fprintf(a.Stdout, "  %-24s %s\n", "--dir <path>", "run embedded against a data directory")
-	for _, p := range spec.Params(spec.LayerSession) {
+	for _, p := range spec.ParamsInScope(spec.LayerSession, spec.ScopeClient, spec.ScopeBoth) {
 		fmt.Fprintf(a.Stdout, "  %-24s %s\n", "--"+p.FlagName+" <"+p.Kind.String()+">", p.Path)
 	}
 }

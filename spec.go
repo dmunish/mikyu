@@ -12,6 +12,9 @@ type Kind = spec.Kind
 // Layer is where a parameter may be set.
 type Layer = spec.Layer
 
+// Scope is which side of a session boundary a parameter configures.
+type Scope = spec.Scope
+
 // Session carries the process-level parameters a host or daemon is launched with.
 type Session = spec.Session
 
@@ -37,6 +40,13 @@ const (
 	LayerSpec = spec.LayerSpec
 	// LayerSession parameters are per-process settings that never reach the wire.
 	LayerSession = spec.LayerSession
+
+	// ScopeClient parameters configure only the client side of a connection.
+	ScopeClient = spec.ScopeClient
+	// ScopeServer parameters configure only the server side of a connection.
+	ScopeServer = spec.ScopeServer
+	// ScopeBoth parameters configure both sides of a connection.
+	ScopeBoth = spec.ScopeBoth
 )
 
 // Schema returns a fresh copy of the compiled-in parameter table.

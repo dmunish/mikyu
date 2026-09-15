@@ -196,6 +196,7 @@ func TestTableSelfCheck(t *testing.T) {
 			require.NotNil(t, p.ApplySession, p.Key)
 			require.Nil(t, p.Apply, p.Key)
 			require.NotEmpty(t, p.EnvName, p.Key)
+			require.NotEqual(t, ScopeUnspecified, p.Scope, p.Key)
 		}
 
 		got, ok := Lookup(p.Key)

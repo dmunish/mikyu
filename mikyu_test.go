@@ -288,3 +288,38 @@ func TestOpenDefaultsMatchSucceeds(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, names, "shared")
 }
+
+func TestOpenRejectsTarget(t *testing.T) {
+	_, err := mikyu.Open(t.TempDir(), mikyu.WithTarget("tcp://127.0.0.1:1"))
+	require.ErrorIs(t, err, mikyu.ErrModeMismatch)
+}
+
+func TestDialRejectsDataDir(t *testing.T) {
+	_, err := mikyu.Dial("tcp://127.0.0.1:1", mikyu.WithDataDir(t.TempDir()))
+	require.ErrorIs(t, err, mikyu.ErrModeMismatch)
+}
+
+// TestEmbeddedMetricsHonorsSession pins that the metrics options now actually
+// reach the embedded node's collector instead of silently doing nothing.
+func TestEmbeddedMetricsHonorsSession(t *testing.T) {
+	off, err := mikyu.Open(t.TempDir(), mikyu.WithMetricsEnabled(false))
+	require.NoError(t, err)
+	defer off.Close()
+
+	snap, err := off.Metrics(t.Context())
+	require.NoError(t, err)
+	assert.True(t, snap.Disabled, "collector should be off when disabled")
+
+	on, err := mikyu.Open(t.TempDir(),
+		mikyu.WithMetricsEnabled(true),
+		mikyu.WithMetricsInterval(time.Hour),
+		mikyu.WithMetricsHistory(4),
+	)
+	require.NoError(t, err)
+	defer on.Close()
+
+	snap, err = on.Metrics(t.Context())
+	require.NoError(t, err)
+	assert.False(t, snap.Disabled, "collector should be on when enabled")
+	assert.Greater(t, snap.Runtime.Goroutines, 0)
+}

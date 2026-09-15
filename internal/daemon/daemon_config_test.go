@@ -215,9 +215,9 @@ func TestDaemonHelpListsEveryFlag(t *testing.T) {
 	assert.Contains(t, help, "Usage: mikyu daemon")
 	for _, name := range []string{
 		"config", "target", "data-dir",
-		"tls-enabled", "tls-cert-file", "tls-key-file", "max-conns",
+		"tls-enabled", "tls-cert-file", "tls-key-file",
 		"batch-size", "max-interval", "min-interval",
-		"segment-size", "max-message-bytes", "segment-age", "max-conns",
+		"segment-size", "max-message-bytes", "segment-age",
 		"encrypted", "fsync",
 		"metrics-enabled", "metrics-interval", "metrics-history", "metrics-listen",
 		"metrics-per-queue-prometheus", "metrics-histograms",

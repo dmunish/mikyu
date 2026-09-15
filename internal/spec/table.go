@@ -3,6 +3,7 @@ package spec
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -144,12 +145,55 @@ func (m *Mutability) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("%w: unknown mutability %q", ErrInvalidConfig, s)
 }
 
+// Scope says which side of a session boundary a parameter configures.
+type Scope int
+
+const (
+	ScopeUnspecified Scope = iota
+	ScopeClient
+	ScopeServer
+	ScopeBoth
+)
+
+// String renders the scope for schema and wire output.
+func (s Scope) String() string {
+	switch s {
+	case ScopeClient:
+		return "client"
+	case ScopeServer:
+		return "server"
+	case ScopeBoth:
+		return "both"
+	default:
+		return "unspecified"
+	}
+}
+
+// MarshalJSON renders the scope as its string form so the wire shape is language-neutral.
+func (s Scope) MarshalJSON() ([]byte, error) { return json.Marshal(s.String()) }
+
+// UnmarshalJSON decodes the string form produced by MarshalJSON.
+func (s *Scope) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err != nil {
+		return err
+	}
+	for i := ScopeUnspecified; i <= ScopeBoth; i++ {
+		if i.String() == text {
+			*s = i
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: unknown scope %q", ErrInvalidConfig, text)
+}
+
 // Param is one entry of the parameter table: the single source of truth for how a configuration value is named and set in every layer that can reach it.
 type Param struct {
 	Key        string     `json:"key"`  // canonical flat key: identity of env, flag, option, and patch
 	Path       string     `json:"path"` // location in the nested spec, e.g. "engine.batch_size"
 	Kind       Kind       `json:"kind"`
 	Layer      Layer      `json:"layer"`
+	Scope      Scope      `json:"scope"`
 	Mutability Mutability `json:"mutability"`
 	EnvName    string     `json:"env_name"`
 	FlagName   string     `json:"flag_name"`
@@ -188,12 +232,13 @@ func specParam(group, key string, kind Kind, mut Mutability) Param {
 }
 
 // sessionParam declares a process-only parameter living in the server block.
-func sessionParam(key string, kind Kind) Param {
+func sessionParam(key string, kind Kind, scope Scope) Param {
 	return Param{
 		Key:        key,
 		Path:       "server." + key,
 		Kind:       kind,
 		Layer:      LayerSession,
+		Scope:      scope,
 		Mutability: MutNotApplicable,
 		EnvName:    envName(key),
 		FlagName:   flagName(key),
@@ -317,19 +362,19 @@ func buildTable() []Param {
 		callParam("scheduled_at", KindTime),
 		callParam("retry_after", KindDuration),
 
-		sessionParam("target", KindString),
-		sessionParam("data_dir", KindString),
-		sessionParam("tls_enabled", KindBool),
-		sessionParam("tls_cert_file", KindString),
-		sessionParam("tls_key_file", KindString),
-		sessionParam("max_conns", KindInt),
+		sessionParam("target", KindString, ScopeBoth),
+		sessionParam("data_dir", KindString, ScopeBoth),
+		sessionParam("tls_enabled", KindBool, ScopeBoth),
+		sessionParam("tls_cert_file", KindString, ScopeBoth),
+		sessionParam("tls_key_file", KindString, ScopeBoth),
+		sessionParam("max_conns", KindInt, ScopeClient),
 
-		sessionParam("metrics_enabled", KindBool),
-		sessionParam("metrics_interval", KindDuration),
-		sessionParam("metrics_history", KindInt),
-		sessionParam("metrics_listen", KindString),
-		sessionParam("metrics_per_queue_prometheus", KindBool),
-		sessionParam("metrics_histograms", KindBool),
+		sessionParam("metrics_enabled", KindBool, ScopeBoth),
+		sessionParam("metrics_interval", KindDuration, ScopeBoth),
+		sessionParam("metrics_history", KindInt, ScopeBoth),
+		sessionParam("metrics_listen", KindString, ScopeServer),
+		sessionParam("metrics_per_queue_prometheus", KindBool, ScopeServer),
+		sessionParam("metrics_histograms", KindBool, ScopeBoth),
 	}
 
 	for i := range table {
@@ -359,6 +404,17 @@ func Params(layer Layer) []Param {
 	var out []Param
 	for _, p := range Table {
 		if p.Layer == layer {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// ParamsInScope returns the table entries on layer whose scope is one of scopes.
+func ParamsInScope(layer Layer, scopes ...Scope) []Param {
+	var out []Param
+	for _, p := range Table {
+		if p.Layer == layer && slices.Contains(scopes, p.Scope) {
 			out = append(out, p)
 		}
 	}

@@ -105,10 +105,15 @@ func TestParitySurfaces(t *testing.T) {
 		t.Run("session/"+p.Key, func(t *testing.T) {
 			assert.Contains(t, clientFuncs, p.OptionName, "client SDK option missing")
 			assert.Contains(t, facadeFuncs, p.OptionName, "facade option missing")
-			assert.NotNil(t, globalFlags.Lookup(p.FlagName), "--dir mode flag missing")
-			assert.True(t, daemonFlags[p.FlagName], "mikyu daemon flag missing")
 			assertEnvSession(t, p)
 			assertYAMLSession(t, p)
+
+			if p.Scope == spec.ScopeServer {
+				assert.Nil(t, globalFlags.Lookup(p.FlagName), "server-scope parameter must not be a client flag")
+				assert.True(t, daemonFlags[p.FlagName], "mikyu daemon flag missing")
+				return
+			}
+			assert.NotNil(t, globalFlags.Lookup(p.FlagName), "client-scope flag missing")
 		})
 	}
 

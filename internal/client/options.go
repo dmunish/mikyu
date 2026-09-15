@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/node"
 	"github.com/dmunish/mikyu/internal/spec"
 )
 
@@ -76,34 +77,44 @@ func WithTLSKeyFile(path string) Option {
 	return func(c *SessionConfig) { c.TLSKeyFile = path }
 }
 
-// WithMetricsEnabled turns the live metrics collector on or off.
+// WithMetricsEnabled turns the embedded node's live collector on or off; a remote client cannot configure the server's collector.
 func WithMetricsEnabled(enabled bool) Option {
 	return func(c *SessionConfig) { c.MetricsEnabled = enabled }
 }
 
-// WithMetricsInterval sets the collector's tick interval.
+// WithMetricsInterval sets the embedded collector's tick interval; a remote client cannot configure the server's collector.
 func WithMetricsInterval(d time.Duration) Option {
 	return func(c *SessionConfig) { c.MetricsInterval = d }
 }
 
-// WithMetricsHistory sets how many snapshots the collector retains in memory.
+// WithMetricsHistory sets how many snapshots the embedded collector retains in memory; a remote client cannot configure the server's collector.
 func WithMetricsHistory(n int) Option {
 	return func(c *SessionConfig) { c.MetricsHistory = n }
 }
 
-// WithMetricsListen sets the address of the metrics HTTP server; empty leaves it off.
+// WithMetricsListen sets the daemon's metrics HTTP listen address; embedded and remote clients have no HTTP endpoint.
 func WithMetricsListen(addr string) Option {
 	return func(c *SessionConfig) { c.MetricsListen = addr }
 }
 
-// WithMetricsPerQueuePrometheus toggles per-queue series on the Prometheus endpoint.
+// WithMetricsPerQueuePrometheus toggles per-queue series on the daemon's Prometheus endpoint; embedded and remote clients have no HTTP endpoint.
 func WithMetricsPerQueuePrometheus(enabled bool) Option {
 	return func(c *SessionConfig) { c.MetricsPerQueuePrometheus = enabled }
 }
 
-// WithMetricsHistograms toggles latency histograms in the metrics snapshot.
+// WithMetricsHistograms toggles latency histograms in the embedded collector's snapshot; a remote client cannot configure the server's collector.
 func WithMetricsHistograms(enabled bool) Option {
 	return func(c *SessionConfig) { c.MetricsHistograms = enabled }
+}
+
+// metricsConfig builds the node collector settings this session requests.
+func (c SessionConfig) metricsConfig() node.MetricsConfig {
+	return node.MetricsConfig{
+		Enabled:    c.MetricsEnabled,
+		Interval:   c.MetricsInterval,
+		History:    c.MetricsHistory,
+		Histograms: c.MetricsHistograms,
+	}
 }
 
 // TLSConfig builds the TLS configuration, or nil when TLS is disabled; the cert pair authenticates this client and is trusted as the server's root.

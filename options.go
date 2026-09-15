@@ -41,24 +41,30 @@ func WithTLSCertFile(path string) ClientOption { return client.WithTLSCertFile(p
 // WithTLSKeyFile sets the private key matching the client certificate.
 func WithTLSKeyFile(path string) ClientOption { return client.WithTLSKeyFile(path) }
 
-// WithMetricsEnabled turns the live metrics collector on or off.
+// WithMetricsEnabled turns the embedded node's live collector on or off; a
+// remote client cannot configure the server's collector.
 func WithMetricsEnabled(enabled bool) ClientOption { return client.WithMetricsEnabled(enabled) }
 
-// WithMetricsInterval sets the collector's tick interval.
+// WithMetricsInterval sets the embedded collector's tick interval; a remote
+// client cannot configure the server's collector.
 func WithMetricsInterval(d time.Duration) ClientOption { return client.WithMetricsInterval(d) }
 
-// WithMetricsHistory sets how many snapshots the collector retains in memory.
+// WithMetricsHistory sets how many snapshots the embedded collector retains in
+// memory; a remote client cannot configure the server's collector.
 func WithMetricsHistory(n int) ClientOption { return client.WithMetricsHistory(n) }
 
-// WithMetricsListen sets the address of the metrics HTTP server; empty leaves it off.
+// WithMetricsListen sets the daemon's metrics HTTP listen address; embedded
+// and remote clients have no HTTP endpoint.
 func WithMetricsListen(addr string) ClientOption { return client.WithMetricsListen(addr) }
 
-// WithMetricsPerQueuePrometheus toggles per-queue series on the Prometheus endpoint.
+// WithMetricsPerQueuePrometheus toggles per-queue series on the daemon's
+// Prometheus endpoint; embedded and remote clients have no HTTP endpoint.
 func WithMetricsPerQueuePrometheus(enabled bool) ClientOption {
 	return client.WithMetricsPerQueuePrometheus(enabled)
 }
 
-// WithMetricsHistograms toggles latency histograms in the metrics snapshot.
+// WithMetricsHistograms toggles latency histograms in the embedded collector's
+// snapshot; a remote client cannot configure the server's collector.
 func WithMetricsHistograms(enabled bool) ClientOption { return client.WithMetricsHistograms(enabled) }
 
 // WithBatchSize sets the max pending appends before a WAL flush.

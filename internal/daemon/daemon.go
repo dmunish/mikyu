@@ -157,7 +157,6 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 	tlsEnabled := fs.Bool("tls-enabled", false, "Enable TLS on tcp:// listeners")
 	tlsCertFile := fs.String("tls-cert-file", "", "TLS certificate file (PEM)")
 	tlsKeyFile := fs.String("tls-key-file", "", "TLS key file (PEM)")
-	maxConns := fs.Int("max-conns", 0, "Max concurrent client connections")
 
 	// Session defaults
 	batchSize := fs.Int("batch-size", 0, "Max pending messages before WAL fsync")
@@ -236,12 +235,6 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 			cfg.Server.TLSCertFile = *tlsCertFile
 		case "tls-key-file":
 			cfg.Server.TLSKeyFile = *tlsKeyFile
-		case "max-conns":
-			if *maxConns <= 0 {
-				flagErr = fmt.Errorf("--max-conns must be > 0, got %d", *maxConns)
-				return
-			}
-			cfg.Server.MaxConns = *maxConns
 		case "batch-size":
 			if *batchSize <= 0 {
 				flagErr = fmt.Errorf("--batch-size must be > 0, got %d", *batchSize)

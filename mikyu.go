@@ -174,6 +174,8 @@ var (
 	ErrRecordTooLarge = engine.ErrRecordTooLarge
 	// ErrProtocol reports a wire-level protocol error.
 	ErrProtocol = client.ErrProtocol
+	// ErrModeMismatch reports an option that does not apply in this client mode.
+	ErrModeMismatch = client.ErrModeMismatch
 
 	// ErrTaskNotAvailable reports a non-blocking dequeue with no task due.
 	ErrTaskNotAvailable = taskqueue.ErrTaskNotAvailable
