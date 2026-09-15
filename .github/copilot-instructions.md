@@ -26,7 +26,7 @@ The project ships as a **single binary** with four roles:
 - **Ring cache.** The last 16,384 messages are cached in a lock‑protected ring for ~100 ns/op tail reads.
 - **Long‑poll tailing.** `Fetch` blocks on the queue's `notify` channel for up to its `maxWait`, waking on every `AppendBatch` broadcast. `Stream` reuses the same primitive with `maxWait=0` for a non‑blocking drain; `Tail` re‑arms a 30 s window per iteration, so an idle stream is one request per window instead of a 5 ms polling loop.
 - **Chunked, self‑describing checkpoints.** Task state is snapshotted into `recordCPStart` / `recordCPChunk` / `recordCPCommit` records; the newest valid commit wins on recovery, and corrupt or incomplete checkpoints are skipped in favor of earlier ones.
-- **Single source of truth for configuration.** Every queue and session parameter lives in `spec.Table` with a canonical key, path, kind, layer, mutability, env name, flag name, and option name. All layers (SDK, CLI, env, YAML, wire, storage) are driven from that one table.
+- **Single source of truth for configuration.** Every queue and session parameter lives in `spec.Table` with a canonical key, path, kind, layer, mutability, env name, flag name, and option name. All layers (SDK, CLI, env, YAML, wire, storage) are driven from that one table, and the table itself is a published artifact: `mikyu.Schema()` returns it locally, `OpSchema` serves it over the wire.
 - **Live telemetry under one surface.** `internal/metrics` is the single observation point: a pull‑based `Collector` over a `Registry` of atomic instruments, materializing `Snapshot`s for the wire (`OpMetrics`), the CLI/REPL (`metrics`), and the daemon's Prometheus/JSON/SSE HTTP endpoints. There is no separate `Info`/`Stats` path.
 - **Enforced architecture.** `.go-arch-lint.yml` defines the package‑level dependency graph; `internal/audit` gates legacy names and comment style. CI fails on a violation.
 
@@ -48,7 +48,7 @@ The project ships as a **single binary** with four roles:
 
 1. **Layer purity.** `spec` and `engine` are bottoms. `spec` imports nothing internal. `engine` imports only `spec` (and `metrics` for its scopes). `protocol` is pure DTOs over `bytes`/`frames`. `metrics` is a bottom‑adjacent utility imported by `engine`, `server`, `node`, `daemon`, and the drivers. `node` never touches `protocol`/`server`/`client`. `client` and `server` never import each other. `ui/*` reaches the world only through `mikyu`, `client`, `command`, `daemon`, `spec`. This graph is enforced.
 2. **One storage engine, two policy drivers.** `engine.Storage` is the only contract drivers see. `logqueue` and `taskqueue` implement different semantics over identical bytes.
-3. **One configuration table.** `spec.Table` is the canonical parameter list. Every other surface is generated from it.
+3. **One configuration table.** `spec.Table` is the canonical parameter list. Every other surface is generated from it, and the table itself is published — `mikyu.Schema()` locally, `OpSchema` over the wire.
 4. **One observation surface.** `internal/metrics` is the only telemetry contract. Every instrument flows through a `metrics.Scope`; every snapshot comes from a `metrics.Collector`. `Info` and `Stats` do not exist.
 5. **The registry is a config artifact.** Per‑queue specs live in `queues.json`. The filesystem is the source of truth for existence; missing directories purge entries, orphan directories are adopted.
 6. **The data directory is a lock.** `node.Acquire` takes an exclusive `flock` on `<dir>/mikyu.lock`. Two processes on the same dir fail fast with `ErrLocked`.
@@ -140,6 +140,7 @@ type Param struct {
     Path       string   // nested location, e.g. "engine.batch_size"
     Kind       Kind     // int | uint32 | duration | bytes | bool | string | timestamp
     Layer      Layer    // call | spec | session
+    Scope      Scope    // client | server | both (session layer only)
     Mutability Mutability // mutable | create-only | not-applicable
     EnvName    string   // MIKYU_<KEY>
     FlagName   string   // <key-with-dashes>
@@ -210,6 +211,16 @@ effective = stored.Spec.Merge(session_defaults).Merge(spec.Builtin())
 
 All `Spec` fields are pointers. `EncodeSpec` omits unset fields (`{"engine":{"fsync":true}}`), and `DecodeSpec` uses `DisallowUnknownFields` + `MaxSpecPayload = 1 MiB` + trailing‑data rejection. Same schema for JSON (wire) and YAML (config), enforced by `TestSpecTagsIdentical`.
 
+### 4.5 Schema Publication
+
+The table is a first‑class SDK artifact. Three surfaces publish it:
+
+- **SDK.** `mikyu.Schema()` returns a fresh copy of the table; `mikyu.Lookup(key)` finds one row by canonical key. `mikyu.Param`, `mikyu.Kind`, `mikyu.Layer`, `mikyu.Scope`, and `mikyu.Session` are aliases for the corresponding `internal/spec` types, and every `Kind*`, `Layer*`, and `Scope*` constant is re‑exported. `mikyu.EncodeSpec`/`DecodeSpec` (JSON) and `mikyu.EncodeSpecYAML`/`DecodeSpecYAML` (YAML) round‑trip a sparse `Spec` with the same rejection rules as the wire codec. `mikyu.ValidateCreate`, `mikyu.ValidateUpdate`, and `mikyu.ValidateSession` are the exported validators; `mikyu.Builtin()` and `mikyu.BuiltinSession()` return the total built‑in layers.
+- **Wire.** `OpSchema` (0x08) returns `u16 specVersion bytes(json []Param)`, the same envelope as `OpDescribeQueue` and `OpMetrics`. `Client.Schema(ctx)` is the cross‑mode façade: embedded returns a copy of `spec.Table`, remote round‑trips `OpSchema`. `TestSchemaOverWire` requires the two to agree field for field.
+- **Codec.** The JSON and YAML encoders share the same struct tags; `TestJSONIsValidYAML` proves anything the wire sends is readable by the YAML config path.
+
+The net effect: a client can discover what a server accepts, decode a stored spec, and validate a patch without linking `internal/spec`.
+
 ---
 
 ## 5. Repository Layout
@@ -219,8 +230,10 @@ github.com/dmunish/mikyu/
 ├── .go-arch-lint.yml               # Enforced package graph
 ├── mikyu.go                        # Public SDK facade
 ├── options.go                      # Re-exported option constructors
+├── spec.go                         # Schema table, codec, validators
 ├── typed.go                        # Typed[T] log wrapper + Codec[T]
 ├── mikyu_test.go / surface_test.go # SDK surface contract
+├── schema_test.go                  # Schema surface contract
 │
 ├── cmd/mikyu/main.go               # Single-binary entrypoint
 │
@@ -977,12 +990,12 @@ Opcodes are **nibble‑grouped** by subsystem:
 
 | Subsystem | Range | Ops |
 |---|---|---|
-| Admin | `0x0X` | `OpCreateQueue`, `OpDeleteQueue`, `OpListQueues`, `OpUpdateQueue`, `OpDescribeQueue`, `OpTruncate`, `OpMetrics` (0x07), `OpShutdown` (0x0C) |
+| Admin | `0x0X` | `OpCreateQueue`, `OpDeleteQueue`, `OpListQueues`, `OpUpdateQueue`, `OpDescribeQueue`, `OpTruncate`, `OpMetrics` (0x07), `OpSchema` (0x08), `OpShutdown` (0x0C) |
 | Log | `0x1X` | `OpAppend`, `OpAppendBatch`, `OpRead`, `OpReadBatch`, `OpLastOffset`, `OpCommit`, `OpCommitted`, `OpFetch` |
 | Task | `0x2X` | `OpEnqueue`, `OpDequeue`, `OpAck`, `OpNack`, `OpExtend`, `OpDeadLetters`, `OpDeadLetterAck` |
 | Protocol‑level | — | `OpError` (0xFF), `OpReservedHandshake` (0x7E) |
 
-`OpMetrics` occupies `0x07`, the slot that was reserved before metrics landed. The `Info` opcode is retired and never reissued; the frozen table skips it. The table is **frozen**: opcodes are never reused. `TestOpcodeNibbleGrouping` asserts every op lives in its declared nibble and no collisions exist.
+`OpMetrics` occupies `0x07`, the slot that was reserved before metrics landed; `OpSchema` occupies `0x08`, returning the parameter table. The `Info` opcode is retired and never reissued; the frozen table skips it. The table is **frozen**: opcodes are never reused. `TestOpcodeNibbleGrouping` asserts every op lives in its declared nibble and no collisions exist.
 
 `ParseTarget` supports `tcp://`, `unix://`, `pipe://`, and bare `host:port` (treated as TCP).
 
@@ -1033,9 +1046,11 @@ type Server struct {
 - `serveConn` reads frames on a **single reader goroutine** feeding an unbuffered channel; the main goroutine dispatches each frame and writes the response. This gives one frame of lookahead and natural backpressure, and lets a dead connection cancel a long‑polling handler. `OpShutdown` sets `shouldShutdown`; the goroutine then launches `s.Stop()` and returns.
 - `Stop()` closes the stop channel and the listener; safe to call from any goroutine.
 
-`dispatch.go` routes every opcode and records each one's latency. `handlers_admin.go` covers queue lifecycle and `OpMetrics`; `handlers_log.go` covers append/read/read‑batch/last‑offset/commit/committed/fetch; `handlers_task.go` covers enqueue/dequeue/ack/nack/extend/dead‑letters. Every response is either a success frame reusing the request opcode, or `OpError`.
+`dispatch.go` routes every opcode and records each one's latency. `handlers_admin.go` covers queue lifecycle, `OpMetrics`, and `OpSchema`; `handlers_log.go` covers append/read/read‑batch/last‑offset/commit/committed/fetch; `handlers_task.go` covers enqueue/dequeue/ack/nack/extend/dead‑letters. Every response is either a success frame reusing the request opcode, or `OpError`.
 
 `handleMetrics` (admin) serves the live `metrics.Snapshot` as `u16 specVersion bytes(json)`, the same envelope as `OpDescribeQueue`, so a future schema bump travels through the same `CheckSpecVersion` gate.
+
+`handleSchema` (admin) serves the JSON‑encoded parameter table as the same `u16 specVersion bytes(json)` envelope, with no queue name: the table is a process‑wide fact.
 
 `handleFetch` clamps the client's requested wait at `maxFetchWait = 5 min` and then calls `LogQueue.Fetch`; it serializes the result as a `LogRecordList` frame. A non‑blocking call (`wait == 0`) that finds no data returns `ErrCodeNoData`, which the client maps back to `engine.ErrNoData`; the long‑polling `Tail` path therefore treats `ErrNoData` as "re‑arm the window" rather than an error.
 
@@ -1152,7 +1167,7 @@ Scope readings (§7.5 `mergeScopes`) supply the counters and histograms from eac
 - The `"server"` scope is visible to a snapshot even on an idle process.
 - Two concurrent calls cannot race instrument creation inside `Scope.Histogram`.
 
-This mirrors the instruments the server's `opLabels` map declares, and it is why `TestMetricsHTTPPrometheusPerQueue` sees `queue="server"` series on a fresh daemon.
+This mirrors the instruments the server's `opLabels` map declares, and it is why `TestMetricsHTTPPrometheusPerQueue` sees `queue="server"` series on a fresh daemon. `OpSchema` is deliberately not in `opLabels`: it is a schema‑discovery op, not a data‑path op, and the server records it through the generic dispatch path.
 
 ### 12.4 Runtime Source — `runtime_source.go`
 
@@ -1176,7 +1191,7 @@ func (s *RuntimeSource) Collect(_ context.Context, dst *metrics.Snapshot)
 
 ### 13.1 Options — `options.go`
 
-`SessionConfig` carries `Spec`, `Target`, `DataDir`, `MaxConns`, `TLSEnabled`, `TLSCertFile`, `TLSKeyFile`, and the six metrics settings. `WithSessionSpec` replaces the inherited defaults. `TLSConfig()` builds a `tls.Config` from a cert pair, using the client cert as its own root, `MinVersion: tls.VersionTLS13`.
+`SessionConfig` carries `Spec`, `Target`, `DataDir`, `MaxConns`, `TLSEnabled`, `TLSCertFile`, `TLSKeyFile`, `AutoStart`, and the six metrics settings. `WithSessionSpec` replaces the inherited defaults. `TLSConfig()` builds a `tls.Config` from a cert pair, using the client cert as its own root, `MinVersion: tls.VersionTLS13`.
 
 Metrics options (each maps directly onto a session parameter):
 
@@ -1187,11 +1202,13 @@ Metrics options (each maps directly onto a session parameter):
 - `WithMetricsPerQueuePrometheus(enabled bool)`
 - `WithMetricsHistograms(enabled bool)`
 
+`WithAutoStart(enabled bool)` makes `Dial` spawn a daemon with the session's settings when the target is not already serving; it is a client‑composition helper, not a table row.
+
 `QueueOption func(*spec.Spec)` — every queue option writes exactly one field, so the spec is sparse by construction. `applyQueueOptions` folds them.
 
 ### 13.2 Embedded — `embedded.go`, `embedded_queues.go`
 
-`embeddedClient` holds `*node.Node` and the release func from `node.Acquire`. Every method delegates to the node. `Metrics(ctx)` returns the node's snapshot. `SubscribeSnapshots()` returns the node collector's subscription so the CLI/REPL `metrics --watch` can stream without polling. `Close` releases the reference.
+`embeddedClient` holds `*node.Node` and the release func from `node.Acquire`. Every method delegates to the node. `Metrics(ctx)` returns the node's snapshot. `Schema(ctx)` returns a fresh copy of `spec.Table`. `SubscribeSnapshots()` returns the node collector's subscription so the CLI/REPL `metrics --watch` can stream without polling. `Close` releases the reference.
 
 ### 13.3 Remote — `remote.go`, `remote_logqueue.go`, `remote_taskqueue.go`, `remote_group.go`
 
@@ -1204,6 +1221,8 @@ Metrics options (each maps directly onto a session parameter):
 - `exchange(ctx, op, body)` — acquire, set deadline from `ctx`, run a cancellation watcher that forces the socket deadline to a poisoned time on `ctx.Done()`, write frame, read frame, decode `OpError`. On cancellation or error, `discard` the connection (never return a connection with an unread response to the pool).
 
 `Metrics(ctx)` decodes the `OpMetrics` response: `u16 specVersion` gated through `spec.CheckSpecVersion`, then a length‑prefixed JSON `metrics.Snapshot`, capped at `MaxSpecPayload`. Embedded and remote clients produce identical JSON (modulo timestamp and machine‑local values), verified by `TestEmbeddedMetricsMatchesRemote`.
+
+`Schema(ctx)` decodes the `OpSchema` response with the same `CheckSpecVersion` gate, yielding the server's `[]spec.Param` as the embedded surface does; `TestSchemaOverWire` requires the two to agree field for field.
 
 `remoteLogQueue` implements `ClientLogQueue`. Its internal `fetch(ctx, start, maxCount, maxWait)` is the mirrored `OpFetch` primitive:
 
@@ -1247,7 +1266,7 @@ The canonical CLI/REPL verb list:
 - `ResolvePayload` — string, `@file`, or `-` (stdin).
 - `FormatSingleLinePayload` — escapes CR/LF/TAB, strips control chars, and truncates to a terminal‑width cell count via Lipgloss.
 - `TightensRetention(current, patch)` — used to decide whether to prompt before an irreversible update.
-- Flags: `SessionFlags`, `QueueFlagSet`, `QueuePatchFlagSet`, `EnqueueFlagSet`, `NackFlagSet`, plus `ParseAnywhere` for flags before/after positionals. All flag sets are driven by `spec.Params(layer)`.
+- Flags: `SessionFlags`, `QueueFlagSet`, `QueuePatchFlagSet`, `EnqueueFlagSet`, `NackFlagSet`, plus `ParseAnywhere` for flags before/after positionals. All flag sets are driven by `spec.Params(layer)` and `spec.ParamsInScope(layer, scopes...)`.
 - `SpecOption(spec.Spec)` — the one bridge that hands a fully‑built spec to the SDK.
 - `OpenClient(session)` — embedded if `--dir`, otherwise ensures the daemon is running and dials.
 
@@ -1401,301 +1420,4 @@ Client                                         Server
 
 - **Admin frames** carry `bytes(name) u16 specVersion bytes(json Spec)`. The server checks `specVersion` **before** touching the JSON, so a future schema is rejected without interpretation (`ErrCodeSpecTooNew`).
 - **`OpDescribeQueue`** response is `u16 specVersion bytes(json QueueDescription)`. `QueueDescription` carries three specs (stored, effective, defaults) and no stats.
-- **`OpMetrics`** response is `u16 specVersion bytes(json metrics.Snapshot)`, the same envelope as `OpDescribeQueue`. There is no `OpInfo`; the opcode that used to carry a scattered identity payload is retired.
-- **`OpTruncate`** request is `bytes(name) u64 minOffset`; response is `u64 reclaimedBytes`.
-- **Log frames** carry `bytes(name)` and payload/offset fields as needed. `OpFetch` is `bytes(name) u64 start u32 maxCount u64 maxWait`; the response is a length‑prefixed `LogRecordList`. `OpFetch` is the only log read that long‑polls: the server clamps `maxWait` at `maxFetchWait = 5 min` and reports `ErrCodeNoData` on a clean empty window, so the client's `Tail` re‑arms.
-- **Task frames** carry `bytes(name)`, then a mode‑tagged `TaskRef`, then op‑specific data. Responses carry a wire `Task` or a task list.
-- **`OpError`** carries `u8 code bytes(message)`; the code is the stable contract.
-
----
-
-## 19. Storage Layout & Record Format
-
-```
-<data_dir>/
-├── mikyu.lock                  # Exclusive directory lock
-├── queues.json                 # Per-queue sparse specs (atomic write)
-├── queues.json.tmp             # Rename scratch
-├── manager-offsets.dat         # Compacted consumer-group offsets
-├── manager-offsets.dat.tmp     # Rename scratch
-└── <queue_name>/
-    ├── 00000000000000000000.log   # Log segment (pre-allocated while active)
-    ├── 00000000000000000000.idx   # Fixed-width index (16 B/record)
-    ├── 00000000000000001024.log   # Next segment (base offset in name)
-    ├── 00000000000000001024.idx
-    └── ...
-```
-
-Every **engine record**:
-
-```
-[4B Body Length][4B CRC32][2B ID Length (16)][16B Raw UUID v7][8B Unix Nanoseconds][Payload]
-```
-
-Every **task record** additionally carries the 8‑byte magic `MIKYUTQ\x01` and a kind byte, so a task driver can ignore foreign log records and vice versa.
-
----
-
-## 20. Task Queue Semantics (Precise)
-
-| Operation | Effect |
-|---|---|
-| `Enqueue` | Appends `recordTask`. Installs a scheduled `active` state. `Attempts = 0`, `DeliveryID = ""`. |
-| `Dequeue` / `TryDequeue` | Pops due tasks. On the **final** attempt expiring, dead‑letters instead of redelivering. Otherwise bumps `Attempts`, assigns a fresh `DeliveryID`, sets `Visibility = now + visibilityTimeout`. |
-| `Ack` | Requires an active lease (strict if `Task`). Removes from `active`, broadcast. |
-| `Nack` | Requires an active lease. If `Attempts >= MaxAttempts`, dead‑letters; else resets to pending with `RetryAfter` (default exponential backoff). |
-| `Extend` | Requires an active lease. Only extends forward. Never increments `Attempts`. |
-| `DeadLetters` | Offset‑sorted snapshot. |
-| `AckDeadLetter` | Verifies `Offset`/`Attempts` when strict; appends `recordDLQAck`. |
-| `Close` | Stops the checkpoint loop; writes a final checkpoint if dirty. |
-
-**Retry backoff**: `defaultRetryDelay * 2^(Attempts-1)`, capped at `defaultMaxRetryDelay` (5 min).
-
-**Stale‑lease protection** is layered:
-
-- Wire: `TaskRef` mode byte selects strict vs loose.
-- Server: `decodeTaskRef` forwards the mode; `fromWireTask` copies the payload.
-- Driver: `resolveLeaseLocked` enforces `Offset`, `Attempts`, and non‑empty `DeliveryID` in strict mode.
-- CLI/REPL: `ParseTaskRef` accepts either a JSON task record or a bare ID, so `dequeue --json` feeds straight into `ack` with the strict check intact.
-
----
-
-## 21. Retention & Truncation Flow
-
-```
-logqueue.TruncateFloor  ──┐                        (per-queue Policy: Age, Bytes)
-                          │
-taskqueue.TruncateFloor ──┤
-                          ├──► Coordinator.ReconcileQueueAt(ctx, name, requested)
-                          │        │
-                          │        ├─ policyFloor = max(FloorOlderThan, FloorForSize, requested)
-                          │        ├─ safeFloor   = min(driver floors)   (or policyFloor if none)
-                          │        ├─ if safeFloor == 0 → no-op
-                          │        └─ storage.TruncateBefore(safeFloor)
-                          ▼
-            Closed segments with nextOffset ≤ safeFloor are unmapped,
-            unlinked, and ring-cache-evicted. The active segment survives.
-```
-
-The `node.UpdateQueue` path wires a policy shrink to an immediate reconcile bounded by `retentionCtx` (5‑minute timeout) so a tightening isn't deferred to the 30 s ticker.
-
----
-
-## 22. Cross‑Cutting Concerns
-
-### 22.1 Concurrency
-
-| Subsystem | Synchronization |
-|---|---|
-| `engine.Queue` | `sync.RWMutex` over segments, offsets, WAL pointer. |
-| `engine.wal` | `sync.Mutex` + `sync.Cond` for sync path; buffered `asyncChan` for async path; wake token drained inside `flush`. |
-| `ringCache` | `sync.RWMutex` over the slot slice. |
-| `OffsetStore` | `sync.RWMutex`; writes flushed and `Sync`'d under lock. |
-| `taskqueue.TaskQueue` | Single `sync.Mutex` over all state and checkpoint writes; `notify` broadcast on every state change. |
-| `retention.Coordinator` | `sync.RWMutex` over the target map; per‑target `sync.Mutex`. |
-| `group.Base` | `sync.Mutex` over `HighWater`. |
-| `node.Node` | `sync.RWMutex` over driver maps and registry. |
-| `metrics.Registry` | `sync.RWMutex` over the scope map; each `Scope` has its own `sync.Mutex` guarding instrument maps. Instruments are atomic; readers never take the scope lock. |
-| `metrics.Collector` | `sync.Mutex` over subscribers; `atomic.Pointer[Snapshot]` for latest; `RingBuffer` self‑synchronizes. |
-| `remoteClient` | `chan *clientConn` pool + `chan struct{}` semaphore + `atomic.Bool` closed. |
-| `server.Server` | `sync.Mutex` on listener; per‑connection goroutines; `serverMetrics` maps are read‑only after construction. |
-
-### 22.2 Error Model
-
-- Public methods honor `ctx.Err()` first.
-- `spec`, `engine`, `taskqueue`, `node`, `metrics` each export their own sentinels.
-- `server.errors.taskErr` maps every sentinel to a stable wire code.
-- `client.decodeProtocolError` maps every wire code back to the same sentinel and preserves detail after `": "`.
-- The CLI/REPL render `daemon.ErrUsage` with exit code 2; everything else is a general error.
-
-### 22.3 Security
-
-- Directory encryption: `fscrypt` (Linux), NTFS EFS (Windows), warning fallback elsewhere.
-- TLS 1.3 minimum for TCP when enabled; IPC bypasses TLS.
-- Self‑signed ECDSA certificates generated automatically when no keypair is supplied.
-- Unix sockets `chmod 0600`; stale socket files removed on `Listen`.
-- Every `engine` path flows through `os.Root` so no name can escape the data directory.
-- The metrics HTTP endpoint warns when bound beyond loopback; it is documentation‑secured, not firewall‑secured.
-
-### 22.4 Configuration Precedence
-
-```
-flags > MIKYU_* env > mikyu.yaml > spec.Builtin()/BuiltinSession()
-```
-
-Only explicitly‑set flags override lower layers (via `fs.Visit`). Bool flags honor explicit false values (`--fsync=false` overrides a true config value), matching the daemon's `resolveConfig`.
-
----
-
-## 23. Architectural Guards — `internal/audit`
-
-Two source‑level tests enforce invariants that the compiler cannot:
-
-1. **`TestNoLegacyNames`** — walks every non‑test Go file in the module and fails on any banned identifier: `Produce`, `ProduceBatch`, `Publish`, `Pop`, `Stats`, `TruncateQueue`, `FetchOffset`, `OriginalOffset`, `TaskOption`, `FailOption`, `WithScheduleAt`, `WithVisibilityTimeout`, `MaxSegmentAge`, `MaxSegmentBytes`, `DequeueNow`, `OpProduce`, `OpPublish`, `OpPop`, `OpStats`, `OpTail`, `OpFetchOffset`, `OpInfo`, `Info`, `EngineStats`, `QueueStats`, `InfoResult`, `MetricsResult`, and any `OpTask*ByID`.
-2. **`TestInternalCommentStyle`** — walks `internal/` and `cmd/`: every package clause and exported symbol carries at most one line of doc comment. The `mikyu` facade at the repo root is exempt because it is what end users read.
-
-Additionally, `mikyu/surface_test.go` asserts:
-
-- Every verb in `command.Verbs` has a CLI handler and a REPL handler.
-- No retired verb leaks into `command.LookupVerb`, `cli.handlers`, or `repl.replHandlers`. `TestREPLNoInfoVerb` and `TestCLINoInfoVerb` pin the retirement of `info` in the REPL and CLI respectively.
-- The set of `With*` constructors exactly matches `spec.Table`'s `OptionName` set plus `WithSessionSpec`.
-- `Client`, `LogQueue`, `TaskQueue`, `Group` expose no `*ID` sibling methods and no `Close`.
-- **`TestSurfaceNoInfo`** — `Client`, `LogQueue`, and `TaskQueue` expose no `Info` method and no method whose name contains `Info` or `Stats`.
-- **`TestMetricsIsOnlyStatsSurface`** — `Client` exposes exactly one method whose name contains `Metric` (`Metrics`) and zero methods whose name contains `Info` or `Stats`.
-- Every exported `Err*` sentinel is distinct (no `errors.Is` equality, no shared message).
-
-`spec/parity_test.go` additionally cross‑checks that every `spec.Table` row is reachable from every layer its `Layer` allows: SDK option, CLI flag, env var, YAML, `queues.json`, and wire JSON. The session‑layer rows include the six metrics parameters.
-
----
-
-## 24. Deployment Modes
-
-1. **Embedded.** `mikyu.Open(dir, opts...)` → ref‑counted `node.Node` over an `engine.Manager`. No network, no daemon, no TLS. `Metrics` reads the node collector directly.
-2. **Remote.** `mikyu.Dial(target, opts...)` → pooled wire client. Lazy connect on first operation. Supports `tcp://`, `unix://`, `pipe://`. `Metrics` round‑trips an `OpMetrics` frame.
-3. **Daemon.** `mikyu daemon` (or `daemon.Run`) → foreground server; `EnsureDaemonRunning` spawns a detached copy on first CLI/REPL use. Optionally serves a Prometheus/JSON/SSE metrics endpoint.
-4. **CLI / REPL.** `mikyu <verb>` or `mikyu shell`. Both drive the same `command` helper layer. `metrics` prints a snapshot; `metrics --watch` streams it.
-
-Embedded and remote clients produce **identical** JSON for `DescribeQueue` and `Metrics` (modulo timestamp and machine‑local runtime fields), verified by `internal/client/describe_test.go` and `mikyu/surface_test.go`.
-
----
-
-## 25. Performance Characteristics
-
-| Path | Result |
-|---|---|
-| Append (durable, `Fsync: true`) | ≈ 292.6 µs/op (64 B) |
-| Append (async, `Fsync: false`) | ≈ 25.9 µs/op (**≈ 3.5× faster**) |
-| Ring‑cache `Read` | ≈ 100 ns/op, 0 allocs |
-| `encodeRecord` | ≈ 887 ns/op, 0 allocs |
-| WAL flusher steady state | 0 allocs/op, 3 B/op (double‑buffered swap) |
-| 64 KB frame write | 38.5 µs → 3.5 µs (pooled writer) |
-| Index memory | `O(log S)` per read; footprint ∝ segment count |
-| Checkpoint writes | Every 5 s tick or 128 dirty ops |
-| Metric instrument cost | One atomic op per counter/histogram observation; nil‑safe when no scope is wired. |
-| `Collector.Snapshot` | One pass over sources + one pass over scopes; no locks on the hot path (scopes are read under each scope's own lock, instruments are atomic). |
-| `Collector` tick | Every `metrics_interval` (default 1s); snapshot history is `metrics_history` entries deep (default 300). |
-| Slow subscriber | Buffered at 1 snapshot; extra frames dropped, never blocking the tick. |
-| Prometheus encode | O(queues × instruments); `TopNQueues` bounds cardinality (default 50). |
-| `remoteTaskQueue.Dequeue` idle | One long‑poll request per 30 s window (not 10 ms polls) |
-| `remoteLogQueue.Tail` idle | One long‑poll request per 30 s window (not 10 ms polls) |
-| Embedded `logqueue.Tail` idle | One `Fetch` block per 30 s window; wakes on `notify` broadcast, no polling |
-
-Benchmarks live behind the `bench` build tag: `internal/engine/stress_bench_test.go`, `internal/queue/taskqueue/bench_test.go`, `internal/client/remote_dequeue_test.go`, `internal/metrics/bench_test.go`.
-
----
-
-## 26. Public API Quick Reference
-
-### 26.1 Facade — `package mikyu`
-
-```go
-// Lifecycle
-client, err := mikyu.Open("/var/lib/mikyu")            // embedded
-client, err := mikyu.Dial("tcp://host:7420")            // remote
-defer client.Close()
-
-// Client
-client.CreateQueue(ctx, "events", mikyu.WithSegmentSize(64<<20))
-client.UpdateQueue(ctx, "events", mikyu.WithRetentionAge(24*time.Hour))
-d, _    := client.DescribeQueue(ctx, "events")
-names, _:= client.ListQueues(ctx)
-client.DeleteQueue(ctx, "events")
-client.Truncate(ctx, "events", minOffset)
-snap, _ := client.Metrics(ctx)                          // live telemetry
-
-// Log queue
-lq, _ := client.LogQueue("events")
-off, _ := lq.Append(ctx, []byte("hello"))
-off, _ := lq.AppendBatch(ctx, [][]byte{…})
-msg, _ := lq.Read(ctx, off)
-msgs, _ := lq.ReadBatch(ctx, off, 10)
-last, _ := lq.LastOffset(ctx)
-for m, err := range lq.Stream(ctx, 0) { … }   // drains existing records, returns
-for m, err := range lq.Tail(ctx, 0) { … }     // 30 s long-poll, wakes on append
-g := lq.Group("consumers"); g.Mark(off); g.Commit(ctx); g.Committed(ctx)
-
-// Task queue
-tq, _ := client.TaskQueue("jobs")
-task, _ := tq.Enqueue(ctx, payload,
-    mikyu.WithVisibility(30*time.Second),
-    mikyu.WithMaxAttempts(3),
-    mikyu.WithScheduledAt(time.Now().Add(time.Minute)))
-got, _ := tq.Dequeue(ctx)
-tq.Ack(ctx, got)
-tq.Nack(ctx, got, mikyu.WithRetryAfter(time.Second))
-tq.Extend(ctx, got, time.Minute)
-dls, _ := tq.DeadLetters(ctx)
-tq.AckDeadLetter(ctx, dls[0])
-
-// Typed log wrapper
-codec := mikyu.Codec[Event]{Marshal: …, Unmarshal: …}
-tq2 := mikyu.NewTyped(lq, codec)
-tq2.Append(ctx, event)
-```
-
-### 26.2 Options
-
-- **Client:** `WithSessionSpec`, `WithTarget`, `WithDataDir`, `WithMaxConns`, `WithTLSEnabled`, `WithTLSCertFile`, `WithTLSKeyFile`, `WithMetricsEnabled`, `WithMetricsInterval`, `WithMetricsHistory`, `WithMetricsListen`, `WithMetricsPerQueuePrometheus`, `WithMetricsHistograms`.
-- **Queue (spec):** `WithBatchSize`, `WithMaxInterval`, `WithMinInterval`, `WithSegmentSize`, `WithSegmentAge`, `WithMaxMessageBytes`, `WithEncrypted`, `WithFsync`, `WithRetentionAge`, `WithRetentionBytes`, `WithDefaultVisibility`, `WithDefaultMaxAttempts`.
-- **Enqueue (call):** `WithVisibility`, `WithMaxAttempts`, `WithScheduledAt`.
-- **Nack (call):** `WithRetryAfter`.
-
-### 26.3 Errors
-
-| Category | Sentinels |
-|---|---|
-| Spec | `ErrInvalidConfig`, `ErrImmutableField`, `ErrSpecTooNew`, `ErrSpecTooLarge` |
-| Node | `ErrLocked`, `ErrRegistryCorrupt`, `ErrSessionDefaultsMismatch` |
-| Engine | `ErrQueueExists`, `ErrQueueNotFound`, `ErrOffsetNotFound`, `ErrOffsetTruncated`, `ErrMessageTooLarge`, `ErrQueueClosed`, `ErrCorruptRecord`, `ErrNoData` |
-| Task | `ErrTaskNotAvailable`, `ErrTaskNotFound`, `ErrTaskNotInflight`, `ErrTaskStale`, `ErrTaskClosed`, `ErrInvalidTask`, `ErrCheckpointCorrupt`, `ErrDeadLetterNotFound`, `ErrDeadLetterStale` |
-| Protocol | `ErrProtocol`, `ErrTruncatedBody` |
-
-All of the above are re‑exported from `package mikyu` and checked for uniqueness by `TestSentinelUniqueness`.
-
----
-
-## 27. CLI / REPL Verbs
-
-| Verb | Args | Purpose |
-|---|---|---|
-| `list` | — | List queues |
-| `create` | `[flags] <queue>` | Create a queue (all spec flags) |
-| `update` | `[flags] <queue>` | Patch mutable fields only |
-| `describe` | `<queue> [--json]` | Stored + effective spec + defaults |
-| `delete` | `<queue> [-y]` | Delete a queue and its data |
-| `append` | `<queue> <payload\|@file\|->` | Append a log record |
-| `read` | `<queue> <offset>` | Read a log record |
-| `tail` | `<queue> [offset]` | Stream log records |
-| `truncate` | `<queue> [offset] [-y]` | Truncate through the retention coordinator |
-| `enqueue` | `[flags] <queue> <payload\|@file\|->` | Enqueue a task |
-| `dequeue` | `<queue> [--timeout 30s] [--json]` | Lease the next due task |
-| `ack` | `<queue> <task\|json\|id>` | Acknowledge a task |
-| `nack` | `<queue> <task\|json\|id> [--retry-after 5s]` | Return for redelivery |
-| `extend` | `<queue> <task\|json\|id> <timeout>` | Extend a lease |
-| `dlq` | `<queue> [--json]` | List dead‑letter tasks |
-| `dlq-ack` | `<queue> <task\|json\|id>` | Remove a dead‑letter task |
-| `metrics` | `[--json] [--watch] [--queue name]` | Live node + queue telemetry |
-| `shutdown` | `[-y]` | Stop the daemon |
-
-REPL‑only session commands: `use <queue>` (set active), `help`, `exit`/`quit`. The `info` verb is retired; `metrics` is its replacement in both the CLI and the REPL.
-
----
-
-## 28. Glossary
-
-- **Engine record** — the raw bytes produced by `encodeRecord`; carries a UUID v7, timestamp, and CRC32.
-- **Task record** — an engine record whose payload begins with `MIKYUTQ\x01` and a kind byte.
-- **Foreign record** — an engine record a driver does not own; silently skipped by the other driver.
-- **Fetch** — the engine's single blocking read: returns immediately when data is present, otherwise parks on the queue's `notify` channel for up to `maxWait`. Both `logqueue.Stream` (`maxWait=0`) and `logqueue.Tail` (`maxWait=30s`) are thin iterators over it.
-- **Effective spec** — stored spec merged over session defaults over built‑ins.
-- **Snapshot** — an immutable `metrics.Snapshot`: runtime/process/storage views, one `QueueView` per queue, and totals. The one observation shape across the wire, CLI, REPL, and HTTP.
-- **Scope** — a named attachment point for instruments. Queue scopes are named for their queue; the server scope is named `"server"` and holds per‑op counters and histograms.
-- **Collector** — the `metrics.Collector`: a ticker that materializes snapshots from sources and scopes, buffers a history, and fans out to subscribers.
-- **Source** — a pull‑based producer of snapshot fields. The `*engine.Manager` and the node's `RuntimeSource` are the two sources the daemon wires.
-- **TaskRef** — `Task` (strict lease check) or `TaskID` (loose check).
-- **DeliveryID** — a random per‑delivery identifier; changes on each lease.
-- **Checkpoint** — a chunked, self‑describing snapshot of task state and DLQ.
-- **Truncate floor** — the highest offset a driver permits retention to delete.
-- **Policy shrink** — a retention change that lowers a finite bound, or makes an unbounded dimension bounded; triggers an immediate reconcile.
-- **Session defaults** — process‑wide `spec.Spec` inherited by every new queue in a process.
-- **Verb** — one CLI/REPL command, defined once in `command.Verbs`.
+- **`OpMetrics`** response is `u16 specVersion bytes(json metrics.Snapshot)`, the same envelope as `OpDescribeQueue`. There is no `OpInfo`
