@@ -198,16 +198,23 @@ func (s *Server) handleNack(ctx context.Context, body []byte) (byte, []byte) {
 	if err != nil {
 		return opErr(protocol.ErrCodeTaskInvalid, err.Error())
 	}
-	retryRaw, err := r.ReadU64()
+	mode, err := protocol.ReadMode(r)
 	if err != nil {
 		return opErr(protocol.ErrCodeTaskInvalid, err.Error())
+	}
+	var opts []taskqueue.NackOption
+	if mode == protocol.NackModeExplicit {
+		retryRaw, err := r.ReadU64()
+		if err != nil {
+			return opErr(protocol.ErrCodeTaskInvalid, err.Error())
+		}
+		opts = append(opts, taskqueue.WithRetryAfter(time.Duration(int64(retryRaw))))
 	}
 	q, err := s.getOrCreateTaskQueue(string(name))
 	if err != nil {
 		return taskErr(err)
 	}
-	delay := taskqueue.WithRetryAfter(time.Duration(int64(retryRaw)))
-	nackErr := q.Nack(ctx, refFromWire(taskID, wt), delay)
+	nackErr := q.Nack(ctx, refFromWire(taskID, wt), opts...)
 	if nackErr != nil {
 		return taskErr(nackErr)
 	}

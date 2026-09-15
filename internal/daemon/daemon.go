@@ -316,16 +316,43 @@ func logEffectiveConfig(cfg *config.Config, resolvedPath string) {
 	log.Printf("mikyu daemon: defaults %s", defaults)
 }
 
-// EnsureDaemonRunning checks if a daemon is alive, and if not, spawns one.
-func EnsureDaemonRunning(target string) error {
-	if IsDaemonAlive(target) {
+// SpawnOptions carries the session settings a spawned daemon must inherit.
+type SpawnOptions struct {
+	Target      string
+	DataDir     string
+	TLSEnabled  bool
+	TLSCertFile string
+	TLSKeyFile  string
+	ExtraArgs   []string
+}
+
+// EnsureDaemonRunning spawns a detached daemon with opts when opts.Target is not already serving.
+func EnsureDaemonRunning(opts SpawnOptions) error {
+	if opts.Target == "" {
+		return errors.New("EnsureDaemonRunning: target is required")
+	}
+	if IsDaemonAlive(opts.Target) {
 		return nil
 	}
 	executable, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(executable, "daemon")
+	args := []string{"daemon", "--target", opts.Target}
+	if opts.DataDir != "" {
+		args = append(args, "--data-dir", opts.DataDir)
+	}
+	if opts.TLSEnabled {
+		args = append(args, "--tls-enabled")
+	}
+	if opts.TLSCertFile != "" {
+		args = append(args, "--tls-cert-file", opts.TLSCertFile)
+	}
+	if opts.TLSKeyFile != "" {
+		args = append(args, "--tls-key-file", opts.TLSKeyFile)
+	}
+	args = append(args, opts.ExtraArgs...)
+	cmd := exec.Command(executable, args...)
 	setDetachedProcessAttr(cmd)
 	if err := cmd.Start(); err != nil {
 		return err
@@ -333,7 +360,7 @@ func EnsureDaemonRunning(target string) error {
 	// Wait up to 3 seconds for daemon to come online.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if IsDaemonAlive(target) {
+		if IsDaemonAlive(opts.Target) {
 			return nil
 		}
 		time.Sleep(50 * time.Millisecond)

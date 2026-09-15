@@ -41,6 +41,10 @@ func WithTLSCertFile(path string) ClientOption { return client.WithTLSCertFile(p
 // WithTLSKeyFile sets the private key matching the client certificate.
 func WithTLSKeyFile(path string) ClientOption { return client.WithTLSKeyFile(path) }
 
+// WithAutoStart makes Dial spawn a daemon with the session's settings when the
+// target is not already serving.
+func WithAutoStart(enabled bool) ClientOption { return client.WithAutoStart(enabled) }
+
 // WithMetricsEnabled turns the embedded node's live collector on or off; a
 // remote client cannot configure the server's collector.
 func WithMetricsEnabled(enabled bool) ClientOption { return client.WithMetricsEnabled(enabled) }

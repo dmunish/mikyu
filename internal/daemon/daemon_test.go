@@ -2,7 +2,10 @@ package daemon
 
 import (
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,4 +34,40 @@ func TestIsDaemonAlive(t *testing.T) {
 
 	ln.Close()
 	<-done
+}
+
+func TestEnsureDaemonRunningRejectsEmptyTarget(t *testing.T) {
+	err := EnsureDaemonRunning(SpawnOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "target is required")
+}
+
+func TestEnsureDaemonRunningLeavesLiveDaemonAlone(t *testing.T) {
+	target := "tcp://" + freeTCPAddr(t)
+	stop := startDaemon(t, target, "--target", target, "--data-dir", filepath.Join(t.TempDir(), "data"))
+	defer stop()
+
+	require.NoError(t, EnsureDaemonRunning(SpawnOptions{Target: target}))
+	assert.True(t, IsDaemonAlive(target))
+}
+
+// TestEnsureDaemonRunningPassesTarget spawns a real detached daemon through
+// the test binary acting as a helper process.
+func TestEnsureDaemonRunningPassesTarget(t *testing.T) {
+	t.Setenv(daemonHelperEnv, "1")
+	target := "tcp://" + freeTCPAddr(t)
+	dataDir := filepath.Join(t.TempDir(), "data")
+
+	require.NoError(t, EnsureDaemonRunning(SpawnOptions{Target: target, DataDir: dataDir}))
+	t.Cleanup(func() {
+		_ = SendShutdownSignal(target)
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) && IsDaemonAlive(target) {
+			time.Sleep(25 * time.Millisecond)
+		}
+	})
+
+	require.True(t, IsDaemonAlive(target), "spawned daemon never came online")
+	_, err := os.Stat(dataDir)
+	require.NoError(t, err, "spawned daemon must honor the session's data directory")
 }

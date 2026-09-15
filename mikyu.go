@@ -72,6 +72,11 @@ type Client interface {
 	// Schema returns the parameter table the server accepts. Embedded clients
 	// return spec.Table directly; remote clients fetch it over OpSchema.
 	Schema(ctx context.Context) ([]Param, error)
+
+	// SubscribeSnapshots streams live snapshots until the returned cancel runs.
+	// Embedded clients delegate to the node's collector; remote clients poll
+	// OpMetrics on the session's metrics interval.
+	SubscribeSnapshots() (<-chan Metrics, func())
 }
 
 // Open creates an in-process Client over the data directory dir. Two Open calls

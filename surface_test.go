@@ -273,7 +273,7 @@ func TestNamingLaw(t *testing.T) {
 
 	// The option constructors are exactly the table's option names, plus the
 	// one composition helper that carries a whole session spec.
-	compositionHelpers := map[string]bool{"WithSessionSpec": true}
+	compositionHelpers := map[string]bool{"WithSessionSpec": true, "WithAutoStart": true}
 	have := map[string]bool{}
 	for _, name := range exportedFuncs(t, ".") {
 		if strings.HasPrefix(name, "With") {

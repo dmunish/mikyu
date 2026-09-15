@@ -94,6 +94,7 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 		case OpNack:
 			b.WriteBytes([]byte("tasks"))
 			EncodeTaskRef(&b, "just-an-id")
+			WriteMode(&b, NackModeExplicit)
 			b.WriteU64(uint64(int64(2 * time.Second)))
 		case OpExtend:
 			b.WriteBytes([]byte("tasks"))
@@ -153,7 +154,7 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 				off, err := r.ReadU64()
 				require.NoError(t, err)
 				assert.Equal(t, uint64(3), off)
-		case OpReadBatch:
+			case OpReadBatch:
 				assert.NotEmpty(t, mustReadBytes(t, r))
 				start, err := r.ReadU64()
 				require.NoError(t, err)
@@ -187,6 +188,9 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 				case OpNack:
 					assert.Equal(t, TaskRefModeTaskID, mode)
 					assert.Equal(t, "just-an-id", id)
+					nackMode, err := ReadMode(r)
+					require.NoError(t, err)
+					assert.Equal(t, NackModeExplicit, nackMode)
 					retry, err := r.ReadU64()
 					require.NoError(t, err)
 					assert.Equal(t, uint64(int64(2*time.Second)), retry)
@@ -200,18 +204,18 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 						assert.Equal(t, uint64(int64(90*time.Second)), timeout)
 					}
 				}
-		case OpFetch:
-			assert.NotEmpty(t, mustReadBytes(t, r))
-			start, err := r.ReadU64()
-			require.NoError(t, err)
-			assert.Equal(t, uint64(0), start)
-			count, err := r.ReadU32()
-			require.NoError(t, err)
-			assert.Equal(t, uint32(10), count)
-			wait, err := r.ReadU64()
-			require.NoError(t, err)
-			assert.Equal(t, uint64(int64(30*time.Second)), wait)
-		case OpAppendBatch:
+			case OpFetch:
+				assert.NotEmpty(t, mustReadBytes(t, r))
+				start, err := r.ReadU64()
+				require.NoError(t, err)
+				assert.Equal(t, uint64(0), start)
+				count, err := r.ReadU32()
+				require.NoError(t, err)
+				assert.Equal(t, uint32(10), count)
+				wait, err := r.ReadU64()
+				require.NoError(t, err)
+				assert.Equal(t, uint64(int64(30*time.Second)), wait)
+			case OpAppendBatch:
 				assert.NotEmpty(t, mustReadBytes(t, r))
 				n, err := r.ReadU32()
 				require.NoError(t, err)
@@ -238,6 +242,25 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 			assert.Equal(t, len(r.b), r.i)
 		})
 	}
+
+	// Nack in inherit mode carries no delay bytes at all.
+	t.Run("nack_inherit_mode", func(t *testing.T) {
+		var b Buffer
+		b.WriteBytes([]byte("tasks"))
+		EncodeTaskRef(&b, "just-an-id")
+		WriteMode(&b, NackModeInherit)
+
+		r := NewReader(b.Bytes())
+		assert.NotEmpty(t, mustReadBytes(t, r))
+		id, _, refMode, err := DecodeTaskRef(r)
+		require.NoError(t, err)
+		assert.Equal(t, TaskRefModeTaskID, refMode)
+		assert.Equal(t, "just-an-id", id)
+		mode, err := ReadMode(r)
+		require.NoError(t, err)
+		assert.Equal(t, NackModeInherit, mode)
+		assert.Equal(t, len(r.b), r.i, "inherit mode must not write a delay")
+	})
 }
 
 func mustReadBytes(t *testing.T, r *Reader) []byte {

@@ -153,7 +153,13 @@ func OpenClient(sess spec.Session) (mikyu.Client, error) {
 		return mikyu.Open(sess.DataDir, append(opts, mikyu.WithSessionSpec(s))...)
 	}
 
-	if err := daemon.EnsureDaemonRunning(sess.Target); err != nil {
+	if err := daemon.EnsureDaemonRunning(daemon.SpawnOptions{
+		Target:      sess.Target,
+		DataDir:     sess.DataDir,
+		TLSEnabled:  sess.TLSEnabled,
+		TLSCertFile: sess.TLSCertFile,
+		TLSKeyFile:  sess.TLSKeyFile,
+	}); err != nil {
 		return nil, err
 	}
 	return mikyu.Dial(sess.Target, opts...)

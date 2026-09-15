@@ -323,3 +323,128 @@ func TestEmbeddedMetricsHonorsSession(t *testing.T) {
 	assert.False(t, snap.Disabled, "collector should be on when enabled")
 	assert.Greater(t, snap.Runtime.Goroutines, 0)
 }
+
+func TestSubscribeSnapshotsEmbedded(t *testing.T) {
+	c, err := mikyu.Open(t.TempDir(), mikyu.WithMetricsEnabled(true), mikyu.WithMetricsInterval(20*time.Millisecond))
+	require.NoError(t, err)
+	defer c.Close()
+
+	ch, cancel := c.SubscribeSnapshots()
+	defer cancel()
+
+	select {
+	case snap, ok := <-ch:
+		require.True(t, ok)
+		assert.False(t, snap.Disabled)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("no snapshot within 500ms")
+	}
+}
+
+func TestSubscribeSnapshotsRemote(t *testing.T) {
+	c, err := mikyu.Dial(newTestServer(t))
+	require.NoError(t, err)
+	defer c.Close()
+
+	ch, cancel := c.SubscribeSnapshots()
+	defer cancel()
+
+	select {
+	case _, ok := <-ch:
+		require.True(t, ok)
+	case <-time.After(2 * time.Second):
+		t.Fatal("no snapshot within 2s")
+	}
+}
+
+func TestSubscribeSnapshotsRemoteHonorsInterval(t *testing.T) {
+	c, err := mikyu.Dial(newTestServer(t), mikyu.WithMetricsInterval(50*time.Millisecond))
+	require.NoError(t, err)
+	defer c.Close()
+
+	ch, cancel := c.SubscribeSnapshots()
+	defer cancel()
+
+	for i := range 2 {
+		select {
+		case _, ok := <-ch:
+			require.True(t, ok)
+		case <-time.After(time.Second):
+			t.Fatalf("snapshot %d did not arrive within 1s", i+1)
+		}
+	}
+}
+
+func TestSubscribeSnapshotsCancelCloses(t *testing.T) {
+	c, err := mikyu.Open(t.TempDir(), mikyu.WithMetricsEnabled(true), mikyu.WithMetricsInterval(20*time.Millisecond))
+	require.NoError(t, err)
+	defer c.Close()
+
+	ch, cancel := c.SubscribeSnapshots()
+	cancel()
+
+	require.Eventually(t, func() bool {
+		select {
+		case _, ok := <-ch:
+			return !ok
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond, "channel must close after cancel")
+}
+
+// TestNackInheritBackoffEmbedded: Nack with no options applies the driver's
+// exponential backoff instead of a zero delay.
+func TestNackInheritBackoffEmbedded(t *testing.T) {
+	c, err := mikyu.Open(t.TempDir())
+	require.NoError(t, err)
+	defer c.Close()
+	require.NoError(t, c.CreateQueue(t.Context(), "tasks"))
+	q, err := c.TaskQueue("tasks")
+	require.NoError(t, err)
+
+	_, err = q.Enqueue(t.Context(), []byte("x"), mikyu.WithMaxAttempts(3), mikyu.WithVisibility(time.Second))
+	require.NoError(t, err)
+	first, err := q.Dequeue(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, uint32(1), first.Attempts)
+	require.NoError(t, q.Nack(t.Context(), first))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
+	second, err := q.Dequeue(ctx)
+	require.NoError(t, err)
+	waited := time.Since(start)
+	assert.Equal(t, uint32(2), second.Attempts)
+	assert.GreaterOrEqual(t, waited, 800*time.Millisecond, "inherit mode must apply the ~1s backoff")
+	assert.Less(t, waited, 5*time.Minute)
+}
+
+// TestNackInheritBackoffRemote: the same backoff survives the wire when the
+// client sends Nack with no options.
+func TestNackInheritBackoffRemote(t *testing.T) {
+	c, err := mikyu.Dial(newTestServer(t))
+	require.NoError(t, err)
+	defer c.Close()
+	require.NoError(t, c.CreateQueue(t.Context(), "tasks"))
+	q, err := c.TaskQueue("tasks")
+	require.NoError(t, err)
+
+	_, err = q.Enqueue(t.Context(), []byte("x"), mikyu.WithMaxAttempts(3))
+	require.NoError(t, err)
+	first, err := q.Dequeue(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, uint32(1), first.Attempts)
+	require.NoError(t, q.Nack(t.Context(), first))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
+	second, err := q.Dequeue(ctx)
+	require.NoError(t, err)
+	waited := time.Since(start)
+	assert.Equal(t, uint32(2), second.Attempts)
+	assert.GreaterOrEqual(t, waited, 800*time.Millisecond, "inherit mode must apply the ~1s backoff")
+	assert.Less(t, waited, 5*time.Minute)
+}

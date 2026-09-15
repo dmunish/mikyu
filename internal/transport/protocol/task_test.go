@@ -136,3 +136,43 @@ func TestTaskDequeueWireRejectsMalformedPayload(t *testing.T) {
 	_, _, err = DecodeTaskDequeue(NewReader(emptyQueue.Bytes()))
 	assert.ErrorIs(t, err, ErrInvalidTask)
 }
+
+// TestNackModeInheritNoDelay: a Nack frame in inherit mode ends right after the mode byte.
+func TestNackModeInheritNoDelay(t *testing.T) {
+	var b Buffer
+	EncodeTaskRef(&b, "task-1")
+	WriteMode(&b, NackModeInherit)
+
+	r := NewReader(b.Bytes())
+	id, task, refMode, err := DecodeTaskRef(r)
+	require.NoError(t, err)
+	assert.Nil(t, task)
+	assert.Equal(t, "task-1", id)
+	assert.Equal(t, TaskRefModeTaskID, refMode)
+
+	mode, err := ReadMode(r)
+	require.NoError(t, err)
+	assert.Equal(t, NackModeInherit, mode)
+	assert.Equal(t, len(r.b), r.i)
+}
+
+// TestNackModeExplicitDelay: a Nack frame in explicit mode carries its delay in nanoseconds.
+func TestNackModeExplicitDelay(t *testing.T) {
+	var b Buffer
+	EncodeTaskRef(&b, "task-1")
+	WriteMode(&b, NackModeExplicit)
+	b.WriteU64(uint64(int64(2 * time.Second)))
+
+	r := NewReader(b.Bytes())
+	_, _, _, err := DecodeTaskRef(r)
+	require.NoError(t, err)
+
+	mode, err := ReadMode(r)
+	require.NoError(t, err)
+	assert.Equal(t, NackModeExplicit, mode)
+
+	delay, err := r.ReadU64()
+	require.NoError(t, err)
+	assert.Equal(t, uint64(int64(2*time.Second)), delay)
+	assert.Equal(t, len(r.b), r.i)
+}

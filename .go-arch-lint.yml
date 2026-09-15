@@ -75,7 +75,7 @@ deps:
 
   # ---- remote/embedded adapters; client and server never meet ----
   client:
-    mayDependOn: [spec, engine, node, group, logqueue, taskqueue, ipc, protocol, metrics]
+    mayDependOn: [spec, engine, node, group, logqueue, taskqueue, ipc, protocol, metrics, daemon]
   server:
     mayDependOn: [spec, engine, node, logqueue, taskqueue, ipc, protocol, metrics]
 

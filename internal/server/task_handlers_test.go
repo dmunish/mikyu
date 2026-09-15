@@ -42,6 +42,18 @@ func ackBody(name string, task protocol.Task) []byte {
 	return b.Bytes()
 }
 
+// nackBody builds a Nack request; explicit mode appends the retry delay.
+func nackBody(name string, task protocol.Task, mode byte, delay time.Duration) []byte {
+	var b protocol.Buffer
+	b.WriteBytes([]byte(name))
+	protocol.EncodeTaskRef(&b, task)
+	protocol.WriteMode(&b, mode)
+	if mode == protocol.NackModeExplicit {
+		b.WriteU64(uint64(int64(delay)))
+	}
+	return b.Bytes()
+}
+
 func TestTaskHandlersLifecycle(t *testing.T) {
 	n, release, err := node.Acquire(t.TempDir(), spec.Spec{
 		Engine: spec.EngineSpec{
@@ -335,4 +347,80 @@ func TestServerDequeueDisconnectCancelsHandler(t *testing.T) {
 	task, err := protocol.DecodeTask(protocol.NewReader(body))
 	require.NoError(t, err)
 	assert.Equal(t, []byte("mine"), task.Payload)
+}
+
+// TestNackInheritBackoff: mode 0 leaves the delay to the server, which doubles
+// it per attempt (1s, then 2s) from the task's own Attempts.
+func TestNackInheritBackoff(t *testing.T) {
+	n, release, err := node.Acquire(t.TempDir(), spec.Spec{})
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+	_, err = n.Manager().CreateQueue("tasks")
+	require.NoError(t, err)
+	s := New(n)
+	defer s.Stop()
+
+	op, body := s.handleEnqueue(t.Context(), enqueueBody("tasks", []byte("hello")))
+	require.Equal(t, protocol.OpEnqueue, op)
+	op, body = s.handleDequeue(t.Context(), dequeueBody("tasks", 0))
+	require.Equal(t, protocol.OpDequeue, op)
+	leased, err := protocol.DecodeTask(protocol.NewReader(body))
+	require.NoError(t, err)
+	require.Equal(t, uint32(1), leased.Attempts)
+
+	op, body = s.handleNack(t.Context(), nackBody("tasks", leased, protocol.NackModeInherit, 0))
+	require.Equal(t, protocol.OpNack, op)
+
+	// Not immediately due: the server applied the first backoff.
+	op, body = s.handleDequeue(t.Context(), dequeueBody("tasks", 0))
+	require.Equal(t, protocol.OpError, op)
+	code, _ := protocol.DecodeError(body)
+	assert.Equal(t, protocol.ErrCodeTaskNotAvailable, code)
+
+	start := time.Now()
+	op, body = s.handleDequeue(t.Context(), dequeueBody("tasks", 3*time.Second))
+	require.Equal(t, protocol.OpDequeue, op)
+	firstWait := time.Since(start)
+	second, err := protocol.DecodeTask(protocol.NewReader(body))
+	require.NoError(t, err)
+	assert.Equal(t, uint32(2), second.Attempts)
+	assert.GreaterOrEqual(t, firstWait, 800*time.Millisecond, "first retry should wait about 1s")
+	assert.Less(t, firstWait, 5*time.Minute)
+
+	// The second backoff doubles, proving the delay tracks Attempts.
+	op, body = s.handleNack(t.Context(), nackBody("tasks", second, protocol.NackModeInherit, 0))
+	require.Equal(t, protocol.OpNack, op)
+	start = time.Now()
+	op, _ = s.handleDequeue(t.Context(), dequeueBody("tasks", 4*time.Second))
+	require.Equal(t, protocol.OpDequeue, op)
+	secondWait := time.Since(start)
+	assert.GreaterOrEqual(t, secondWait, 1600*time.Millisecond, "second retry should wait about 2s")
+	assert.Greater(t, secondWait, firstWait)
+}
+
+// TestNackExplicitDelay: mode 1 carries a caller-supplied delay; zero redelivers immediately.
+func TestNackExplicitDelay(t *testing.T) {
+	n, release, err := node.Acquire(t.TempDir(), spec.Spec{})
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+	_, err = n.Manager().CreateQueue("tasks")
+	require.NoError(t, err)
+	s := New(n)
+	defer s.Stop()
+
+	op, body := s.handleEnqueue(t.Context(), enqueueBody("tasks", []byte("hello")))
+	require.Equal(t, protocol.OpEnqueue, op)
+	op, body = s.handleDequeue(t.Context(), dequeueBody("tasks", 0))
+	require.Equal(t, protocol.OpDequeue, op)
+	leased, err := protocol.DecodeTask(protocol.NewReader(body))
+	require.NoError(t, err)
+
+	op, body = s.handleNack(t.Context(), nackBody("tasks", leased, protocol.NackModeExplicit, 0))
+	require.Equal(t, protocol.OpNack, op)
+
+	op, body = s.handleDequeue(t.Context(), dequeueBody("tasks", 100*time.Millisecond))
+	require.Equal(t, protocol.OpDequeue, op, "an explicit zero delay must make the task immediately available")
+	got, err := protocol.DecodeTask(protocol.NewReader(body))
+	require.NoError(t, err)
+	assert.Equal(t, leased.ID, got.ID)
 }

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/daemon"
 	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
 	"github.com/dmunish/mikyu/internal/spec"
@@ -59,6 +60,17 @@ func NewRemote(target string, opts ...Option) (*remoteClient, error) {
 	tlsConfig, err := cfg.TLSConfig()
 	if err != nil {
 		return nil, err
+	}
+	if cfg.AutoStart {
+		if err := daemon.EnsureDaemonRunning(daemon.SpawnOptions{
+			Target:      target,
+			DataDir:     cfg.DataDir,
+			TLSEnabled:  cfg.TLSEnabled,
+			TLSCertFile: cfg.TLSCertFile,
+			TLSKeyFile:  cfg.TLSKeyFile,
+		}); err != nil {
+			return nil, err
+		}
 	}
 	c := &remoteClient{
 		target:   target,
@@ -301,6 +313,37 @@ func (c *remoteClient) Metrics(ctx context.Context) (metrics.Snapshot, error) {
 	return snap, nil
 }
 
+// SubscribeSnapshots polls OpMetrics on the session's metrics interval until the returned cancel runs.
+func (c *remoteClient) SubscribeSnapshots() (<-chan metrics.Snapshot, func()) {
+	interval := c.cfg.MetricsInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	ch := make(chan metrics.Snapshot, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		defer close(ch)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				snap, err := c.Metrics(ctx)
+				if err != nil {
+					continue
+				}
+				select {
+				case ch <- snap:
+				default:
+				}
+			}
+		}
+	}()
+	return ch, cancel
+}
+
 // Schema fetches the server's parameter table over OpSchema.
 func (c *remoteClient) Schema(ctx context.Context) ([]spec.Param, error) {
 	resp, err := c.exchange(ctx, protocol.OpSchema, nil)
@@ -385,4 +428,5 @@ var _ interface {
 	Truncate(context.Context, string, uint64) (int64, error)
 	Metrics(context.Context) (metrics.Snapshot, error)
 	Schema(context.Context) ([]spec.Param, error)
+	SubscribeSnapshots() (<-chan metrics.Snapshot, func())
 } = (*remoteClient)(nil)

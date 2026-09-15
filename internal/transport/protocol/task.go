@@ -166,6 +166,13 @@ const (
 	TaskRefModeTaskID byte = 1
 )
 
+// Nack frame payload: bytes(queue) taskRef u8 mode [u64 retryDelayNanos if mode == NackModeExplicit].
+// Inherit lets the server compute exponential backoff from the task's Attempts.
+const (
+	NackModeInherit  byte = 0
+	NackModeExplicit byte = 1
+)
+
 // WriteMode appends a TaskRef mode byte.
 func WriteMode(b *Buffer, mode byte) {
 	b.b = append(b.b, mode)

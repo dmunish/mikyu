@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bufio"
 	"context"
 	"net"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/dmunish/mikyu/internal/queue/taskqueue"
 	"github.com/dmunish/mikyu/internal/server"
 	"github.com/dmunish/mikyu/internal/spec"
+	"github.com/dmunish/mikyu/internal/transport/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -166,5 +168,64 @@ func BenchmarkRemoteTaskDequeueReady(b *testing.B) {
 		b.StartTimer()
 		_, err = tq.Dequeue(b.Context())
 		require.NoError(b, err)
+	}
+}
+
+// TestRemoteNackSendsModeZero pins the inherit wire shape: Nack with no options
+// sends mode 0 and no delay bytes, leaving the backoff to the server.
+func TestRemoteNackSendsModeZero(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	type captured struct {
+		mode     byte
+		trailing bool
+	}
+	got := make(chan captured, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		op, body, err := protocol.ReadFrame(bufio.NewReader(conn))
+		if err != nil || op != protocol.OpNack {
+			got <- captured{mode: 0xFF}
+			return
+		}
+		r := protocol.NewReader(body)
+		if _, err := r.ReadBytes(); err != nil { // queue name
+			got <- captured{mode: 0xFF}
+			return
+		}
+		if _, _, _, err := protocol.DecodeTaskRef(r); err != nil {
+			got <- captured{mode: 0xFF}
+			return
+		}
+		mode, err := protocol.ReadMode(r)
+		if err != nil {
+			got <- captured{mode: 0xFF}
+			return
+		}
+		_, trailing := r.ReadU64() // inherit mode leaves nothing to read
+		got <- captured{mode: mode, trailing: trailing == nil}
+		_ = protocol.WriteFrame(conn, protocol.OpNack, nil)
+	}()
+
+	c, err := NewRemote("tcp://" + ln.Addr().String())
+	require.NoError(t, err)
+	defer c.Close()
+	tq, err := c.TaskQueue("tasks")
+	require.NoError(t, err)
+
+	require.NoError(t, tq.Nack(t.Context(), taskqueue.TaskID("task-1")))
+	select {
+	case cap := <-got:
+		assert.Equal(t, protocol.NackModeInherit, cap.mode)
+		assert.False(t, cap.trailing, "inherit mode must not send a delay")
+	case <-time.After(2 * time.Second):
+		t.Fatal("server never saw the Nack frame")
 	}
 }

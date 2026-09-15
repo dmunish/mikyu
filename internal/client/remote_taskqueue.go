@@ -137,17 +137,21 @@ func (q *remoteTaskQueue) Ack(ctx context.Context, ref taskqueue.TaskRef) error 
 	return err
 }
 
-// Nack a task; the retry delay is resolved from the Task ref when one is given.
+// Nack a task; with no options the server computes exponential backoff from the task's attempt count.
 func (q *remoteTaskQueue) Nack(ctx context.Context, ref taskqueue.TaskRef, opts ...taskqueue.NackOption) error {
-	var task taskqueue.Task
-	if t, ok := ref.(taskqueue.Task); ok {
-		task = t
-	}
-	delay := taskqueue.ResolveNackOptions(task, opts...)
 	var b protocol.Buffer
 	b.WriteBytes([]byte(q.name))
 	protocol.EncodeTaskRef(&b, toWireRef(ref))
-	b.WriteU64(uint64(int64(delay)))
+	if len(opts) == 0 {
+		protocol.WriteMode(&b, protocol.NackModeInherit)
+	} else {
+		var task taskqueue.Task
+		if t, ok := ref.(taskqueue.Task); ok {
+			task = t
+		}
+		protocol.WriteMode(&b, protocol.NackModeExplicit)
+		b.WriteU64(uint64(int64(taskqueue.ResolveNackOptions(task, opts...))))
+	}
 	_, err := q.client.exchange(ctx, protocol.OpNack, b.Bytes())
 	return err
 }

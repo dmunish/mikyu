@@ -21,6 +21,7 @@ type SessionConfig struct {
 	TLSEnabled  bool
 	TLSCertFile string
 	TLSKeyFile  string
+	AutoStart   bool
 
 	MetricsEnabled            bool
 	MetricsInterval           time.Duration
@@ -75,6 +76,11 @@ func WithTLSCertFile(path string) Option {
 // WithTLSKeyFile sets the private key matching the client certificate.
 func WithTLSKeyFile(path string) Option {
 	return func(c *SessionConfig) { c.TLSKeyFile = path }
+}
+
+// WithAutoStart makes Dial spawn a daemon with the session's settings when the target is not already serving.
+func WithAutoStart(enabled bool) Option {
+	return func(c *SessionConfig) { c.AutoStart = enabled }
 }
 
 // WithMetricsEnabled turns the embedded node's live collector on or off; a remote client cannot configure the server's collector.
