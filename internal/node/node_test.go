@@ -129,9 +129,10 @@ func TestRetentionShrinkTriggersImmediateReconcile(t *testing.T) {
 	ctx := t.Context()
 
 	segSize := int64(256)
+	maxMsg := int64(128)
 	hour := spec.Duration(time.Hour)
 	require.NoError(t, n.CreateQueue(ctx, "q", spec.Spec{
-		Engine:    spec.EngineSpec{SegmentSize: &segSize},
+		Engine:    spec.EngineSpec{SegmentSize: &segSize, MaxMessageBytes: &maxMsg},
 		Retention: spec.RetentionSpec{Age: &hour},
 	}))
 	lq, err := n.LogQueue("q")

@@ -93,6 +93,9 @@ func (a *App) Run(target string, args []string) error {
 
 	client, err := command.OpenClient(global.Session)
 	if err != nil {
+		if errors.Is(err, mikyu.ErrLocked) {
+			return fmt.Errorf("%w (use --target to connect to the running daemon)", err)
+		}
 		return err
 	}
 	defer client.Close()
@@ -104,7 +107,11 @@ func (a *App) Run(target string, args []string) error {
 		dir:    global.Session.DataDir,
 		target: global.Session.Target,
 	}
-	return handler(in, args)
+	err = handler(in, args)
+	if errors.Is(err, mikyu.ErrLocked) {
+		return fmt.Errorf("%w (use --target to connect to the running daemon)", err)
+	}
+	return err
 }
 
 // usage reports a command-line mistake and marks it as exit code 2.

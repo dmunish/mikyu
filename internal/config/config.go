@@ -89,6 +89,14 @@ func Load(flagPath string) (*Config, string, error) {
 		return nil, "", err
 	}
 
+	if err := spec.ValidateSession(cfg.Server); err != nil {
+		return nil, "", err
+	}
+	resolved := cfg.Defaults.Effective(spec.Spec{}, spec.Builtin())
+	if err := spec.ValidateCreate(resolved); err != nil {
+		return nil, "", err
+	}
+
 	return &cfg, resolvedPath, nil
 }
 
@@ -110,7 +118,10 @@ func resolveOrBootstrapPath(flagPath string) (path string, bootstrapped bool, er
 		return path, false, nil
 	}
 	if err := os.WriteFile(path, []byte(defaultConfigYAML), 0o644); err != nil {
-		return "", false, fmt.Errorf("unable to bootstrap config file at %s: %w", path, err)
+		return "", false, fmt.Errorf(
+			"unable to bootstrap config file at %s: %w (pass --config <path> to specify an alternate location)",
+			path, err,
+		)
 	}
 	return path, true, nil
 }

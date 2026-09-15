@@ -147,6 +147,13 @@ var (
 	// ErrCorruptRecord reports an unreadable record on disk.
 	ErrCorruptRecord = engine.ErrCorruptRecord
 
+	// ErrNoData reports that a fetch or read found no available records.
+	ErrNoData = engine.ErrNoData
+	// ErrRecordTooLarge reports a payload exceeding the segment size.
+	ErrRecordTooLarge = engine.ErrRecordTooLarge
+	// ErrProtocol reports a wire-level protocol error.
+	ErrProtocol = client.ErrProtocol
+
 	// ErrTaskNotAvailable reports a non-blocking dequeue with no task due.
 	ErrTaskNotAvailable = taskqueue.ErrTaskNotAvailable
 	// ErrTaskNotFound reports an unknown task ID.

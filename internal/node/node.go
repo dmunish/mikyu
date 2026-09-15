@@ -152,6 +152,9 @@ func (n *Node) CreateQueue(ctx context.Context, name string, s spec.Spec) error 
 	}
 
 	eff := s.Effective(n.defaults, spec.Builtin())
+	if err := spec.ValidateCreate(eff); err != nil {
+		return err
+	}
 	storage, err := n.mgr.CreateQueue(name, toEngineConfig(eff))
 	if err != nil {
 		return err
@@ -197,6 +200,10 @@ func (n *Node) UpdateQueue(ctx context.Context, name string, patch spec.Spec) er
 	// The patch is the more specific layer: it overrides the stored spec and
 	// the stored spec fills whatever the patch leaves unset.
 	merged := patch.Merge(current)
+	eff := merged.Effective(n.defaults, spec.Builtin())
+	if err := spec.ValidateCreate(eff); err != nil {
+		return err
+	}
 	n.registry.Queues[name] = merged
 	if err := saveRegistry(n.dir, n.registry); err != nil {
 		n.registry.Queues[name] = current
@@ -207,7 +214,7 @@ func (n *Node) UpdateQueue(ctx context.Context, name string, patch spec.Spec) er
 	if err != nil {
 		return err
 	}
-	eff := merged.Effective(n.defaults, spec.Builtin())
+	eff = merged.Effective(n.defaults, spec.Builtin())
 	if ac, ok := storage.(interface{ ApplyConfig(engine.Config) }); ok {
 		ac.ApplyConfig(toEngineConfig(eff))
 	}

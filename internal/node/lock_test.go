@@ -48,4 +48,5 @@ func TestLockedDirRejectsSecondProcess(t *testing.T) {
 
 	_, err := acquireDirLock(dir)
 	require.ErrorIs(t, err, ErrLocked)
+	require.NotContains(t, err.Error(), "--target")
 }

@@ -394,6 +394,9 @@ func TestSentinelUniqueness(t *testing.T) {
 		"ErrCheckpointCorrupt":       mikyu.ErrCheckpointCorrupt,
 		"ErrDeadLetterNotFound":      mikyu.ErrDeadLetterNotFound,
 		"ErrDeadLetterStale":         mikyu.ErrDeadLetterStale,
+		"ErrNoData":                  mikyu.ErrNoData,
+		"ErrRecordTooLarge":          mikyu.ErrRecordTooLarge,
+		"ErrProtocol":                 mikyu.ErrProtocol,
 	}
 
 	declared := exportedErrVars(t, ".")

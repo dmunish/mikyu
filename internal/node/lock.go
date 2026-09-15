@@ -8,7 +8,7 @@ import (
 )
 
 // ErrLocked reports that the data directory is in use by another process.
-var ErrLocked = errors.New("data directory is in use by a running server — use --target to connect to it")
+var ErrLocked = errors.New("data directory is locked by another process")
 
 type dirLock struct {
 	f *os.File
