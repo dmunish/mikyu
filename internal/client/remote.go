@@ -213,8 +213,15 @@ func (c *remoteClient) exchange(ctx context.Context, op byte, body []byte) ([]by
 	}
 	if respOp == protocol.OpError {
 		code, msg := protocol.DecodeError(respBody)
+		err := decodeProtocolError(code, msg)
+		if code == protocol.ErrCodeTooManyConnections {
+			// The server closes after refusing the connection, so it must not
+			// return to the pool.
+			c.discard(ch)
+			return nil, err
+		}
 		c.release(ch)
-		return nil, decodeProtocolError(code, msg)
+		return nil, err
 	}
 	c.release(ch)
 	return respBody, nil

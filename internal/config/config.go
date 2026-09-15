@@ -56,6 +56,9 @@ func DefaultConfig() Config {
 // configFileName is the default config file name, resolved next to the executable.
 const configFileName = "mikyu.yaml"
 
+// executablePath resolves the running binary for config bootstrap; tests override it.
+var executablePath = os.Executable
+
 // Load reads the config file (the --config path, or configFileName next to the executable), applies MIKYU_* environment overrides, and returns the resolved config plus the path it read (bootstrapping the default file next to the executable if none exists).
 func Load(flagPath string) (*Config, string, error) {
 	cfg := DefaultConfig()
@@ -108,7 +111,7 @@ func resolveOrBootstrapPath(flagPath string) (path string, bootstrapped bool, er
 		return "", false, fmt.Errorf("specified config file does not exist: %s", flagPath)
 	}
 
-	exePath, err := os.Executable()
+	exePath, err := executablePath()
 	if err != nil {
 		return "", false, fmt.Errorf("unable to resolve executable directory for config bootstrap: %w", err)
 	}

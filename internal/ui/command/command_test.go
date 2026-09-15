@@ -8,10 +8,34 @@ import (
 	"time"
 
 	"github.com/dmunish/mikyu"
+	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/dmunish/mikyu/internal/ui/command"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestOpenClientForwardsMetricsSession: the CLI's global metrics flags reach
+// the embedded client instead of being silently dropped.
+func TestOpenClientForwardsMetricsSession(t *testing.T) {
+	sess := spec.BuiltinSession()
+	sess.DataDir = t.TempDir()
+	sess.MetricsEnabled = true
+	sess.MetricsInterval = spec.Duration(20 * time.Millisecond)
+
+	client, err := command.OpenClient(sess)
+	require.NoError(t, err)
+	defer client.Close()
+
+	ch, cancel := client.SubscribeSnapshots()
+	defer cancel()
+
+	select {
+	case _, ok := <-ch:
+		require.True(t, ok)
+	case <-time.After(time.Second):
+		t.Fatal("OpenClient did not forward the metrics session to the embedded collector")
+	}
+}
 
 func TestResolvePayload(t *testing.T) {
 	payload, err := command.ResolvePayload("hello")

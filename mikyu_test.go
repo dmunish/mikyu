@@ -299,6 +299,15 @@ func TestDialRejectsDataDir(t *testing.T) {
 	require.ErrorIs(t, err, mikyu.ErrModeMismatch)
 }
 
+// TestOpenRejectsInvalidSessionSpec: Open validates the resolved session
+// defaults up front instead of deferring to the first CreateQueue.
+func TestOpenRejectsInvalidSessionSpec(t *testing.T) {
+	_, err := mikyu.Open(t.TempDir(), mikyu.WithSessionSpec(mikyu.Spec{
+		Engine: mikyu.EngineSpec{BatchSize: new(0)},
+	}))
+	require.ErrorIs(t, err, mikyu.ErrInvalidConfig)
+}
+
 // TestEmbeddedMetricsHonorsSession pins that the metrics options now actually
 // reach the embedded node's collector instead of silently doing nothing.
 func TestEmbeddedMetricsHonorsSession(t *testing.T) {

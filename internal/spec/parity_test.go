@@ -108,12 +108,12 @@ func TestParitySurfaces(t *testing.T) {
 			assertEnvSession(t, p)
 			assertYAMLSession(t, p)
 
-			if p.Scope == spec.ScopeServer {
-				assert.Nil(t, globalFlags.Lookup(p.FlagName), "server-scope parameter must not be a client flag")
-				assert.True(t, daemonFlags[p.FlagName], "mikyu daemon flag missing")
-				return
+			if p.Scope != spec.ScopeServer {
+				assert.NotNil(t, globalFlags.Lookup(p.FlagName), "client-scope flag missing")
 			}
-			assert.NotNil(t, globalFlags.Lookup(p.FlagName), "client-scope flag missing")
+			if p.Scope != spec.ScopeClient {
+				assert.True(t, daemonFlags[p.FlagName], "mikyu daemon flag missing")
+			}
 		})
 	}
 

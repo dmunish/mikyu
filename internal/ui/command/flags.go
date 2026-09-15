@@ -143,6 +143,10 @@ func OpenClient(sess spec.Session) (mikyu.Client, error) {
 		mikyu.WithTLSEnabled(sess.TLSEnabled),
 		mikyu.WithTLSCertFile(sess.TLSCertFile),
 		mikyu.WithTLSKeyFile(sess.TLSKeyFile),
+		mikyu.WithMetricsEnabled(sess.MetricsEnabled),
+		mikyu.WithMetricsInterval(sess.MetricsInterval.Duration()),
+		mikyu.WithMetricsHistory(sess.MetricsHistory),
+		mikyu.WithMetricsHistograms(sess.MetricsHistograms),
 	}
 
 	if sess.DataDir != "" {

@@ -32,6 +32,7 @@ import (
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
 	"github.com/dmunish/mikyu/internal/queue/taskqueue"
 	"github.com/dmunish/mikyu/internal/spec"
+	"github.com/dmunish/mikyu/internal/transport/protocol"
 )
 
 // Client is a handle to a Mikyu server, embedded in this process or remote.
@@ -181,6 +182,8 @@ var (
 	ErrProtocol = client.ErrProtocol
 	// ErrModeMismatch reports an option that does not apply in this client mode.
 	ErrModeMismatch = client.ErrModeMismatch
+	// ErrTooManyConnections reports a server at its concurrent-connection limit.
+	ErrTooManyConnections = protocol.ErrTooManyConnections
 
 	// ErrTaskNotAvailable reports a non-blocking dequeue with no task due.
 	ErrTaskNotAvailable = taskqueue.ErrTaskNotAvailable

@@ -74,6 +74,8 @@ func Run(args []string) error {
 		srvOpts = append(srvOpts, server.WithTLS(tlsCfg))
 	}
 
+	srvOpts = append(srvOpts, server.WithMaxConns(cfg.Server.MaxConns))
+
 	srv := server.New(n, srvOpts...)
 
 	// Off by default; enabled with --metrics-listen. Started before the wire
@@ -157,6 +159,7 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 	tlsEnabled := fs.Bool("tls-enabled", false, "Enable TLS on tcp:// listeners")
 	tlsCertFile := fs.String("tls-cert-file", "", "TLS certificate file (PEM)")
 	tlsKeyFile := fs.String("tls-key-file", "", "TLS key file (PEM)")
+	maxConns := fs.Int("max-conns", 0, "Max concurrent client connections")
 
 	// Session defaults
 	batchSize := fs.Int("batch-size", 0, "Max pending messages before WAL fsync")
@@ -235,6 +238,12 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 			cfg.Server.TLSCertFile = *tlsCertFile
 		case "tls-key-file":
 			cfg.Server.TLSKeyFile = *tlsKeyFile
+		case "max-conns":
+			if *maxConns <= 0 {
+				flagErr = fmt.Errorf("--max-conns must be > 0, got %d", *maxConns)
+				return
+			}
+			cfg.Server.MaxConns = *maxConns
 		case "batch-size":
 			if *batchSize <= 0 {
 				flagErr = fmt.Errorf("--batch-size must be > 0, got %d", *batchSize)
@@ -307,8 +316,8 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 // which layer (flag, env, file, default) each value came from.
 func logEffectiveConfig(cfg *config.Config, resolvedPath string) {
 	log.Printf("mikyu daemon: config file %s", resolvedPath)
-	log.Printf("mikyu daemon: server target=%s data_dir=%s tls_enabled=%t queues=%d",
-		cfg.Server.Target, cfg.Server.DataDir, cfg.Server.TLSEnabled, len(cfg.Queues))
+	log.Printf("mikyu daemon: server target=%s data_dir=%s tls_enabled=%t max_conns=%d queues=%d",
+		cfg.Server.Target, cfg.Server.DataDir, cfg.Server.TLSEnabled, cfg.Server.MaxConns, len(cfg.Queues))
 	defaults, err := json.Marshal(cfg.Defaults)
 	if err != nil {
 		defaults = []byte("{}")

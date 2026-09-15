@@ -146,6 +146,12 @@ func TestValidateSession(t *testing.T) {
 	goodListen := BuiltinSession()
 	goodListen.MetricsListen = "127.0.0.1:9090"
 	require.NoError(t, ValidateSession(goodListen))
+
+	noConns := BuiltinSession()
+	noConns.MaxConns = 0
+	err = ValidateSession(noConns)
+	require.ErrorIs(t, err, ErrInvalidConfig)
+	require.Contains(t, err.Error(), "max_conns")
 }
 
 func TestIsCreateOnly(t *testing.T) {

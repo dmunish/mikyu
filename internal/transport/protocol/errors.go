@@ -1,8 +1,11 @@
 package protocol
 
+import "errors"
+
 // Error codes are re-blocked by subsystem (code >> 4):
 //
-//	0x01-0x0F admin, 0x11-0x1F storage, 0x21-0x2F task, 0x31-0x3F dead-letter.
+//	0x01-0x0F admin, 0x11-0x1F storage, 0x21-0x2F task, 0x31-0x3F dead-letter,
+//	0x41-0x4F server.
 //
 // Error frames (OpError) carry one of these codes plus a human-readable
 // message; the code is the stable contract, the message is not.
@@ -34,7 +37,13 @@ const (
 	// Dead-letter block.
 	ErrCodeDeadLetterNotFound byte = 0x31
 	ErrCodeDeadLetterStale    byte = 0x32
+
+	// Server block: connection admission.
+	ErrCodeTooManyConnections byte = 0x41
 )
+
+// ErrTooManyConnections reports that a server is at its concurrent-connection limit.
+var ErrTooManyConnections = errors.New("too many connections")
 
 // EncodeError encodes an error byte code and string message into a wire payload.
 func EncodeError(code byte, msg string) []byte {

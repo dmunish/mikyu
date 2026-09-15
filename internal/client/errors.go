@@ -68,9 +68,9 @@ func decodeProtocolError(code byte, msg string) error {
 		return decodeKnown(taskqueue.ErrDeadLetterStale, msg)
 	case protocol.ErrCodeNoData:
 		return decodeKnown(engine.ErrNoData, msg)
+	case protocol.ErrCodeTooManyConnections:
+		return decodeKnown(protocol.ErrTooManyConnections, msg)
 	default:
 		return fmt.Errorf("%w: %s", ErrProtocol, msg)
 	}
 }
-
-

@@ -308,3 +308,55 @@ func TestNodeCollectorDisabled(t *testing.T) {
 	_, ok := <-ch
 	require.False(t, ok, "disabled collector must return a closed channel")
 }
+
+// TestCreateQueueRejectsInheritedConflict: the proposal is valid alone but
+// conflicts with the session default it inherits.
+func TestCreateQueueRejectsInheritedConflict(t *testing.T) {
+	seg := int64(1 << 20)
+	n, release, err := Acquire(t.TempDir(), spec.Spec{Engine: spec.EngineSpec{SegmentSize: &seg}})
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+
+	msg := int64(2 << 20)
+	err = n.CreateQueue(t.Context(), "q", spec.Spec{Engine: spec.EngineSpec{MaxMessageBytes: &msg}})
+	require.ErrorIs(t, err, spec.ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "max_message_bytes")
+	assert.Contains(t, err.Error(), "segment_size")
+}
+
+// TestUpdateQueueRejectsInheritedConflict: reopening a directory under smaller
+// session defaults makes a stored create-only field conflict with what it now
+// inherits, so even an unrelated update must revalidate the merged result.
+func TestUpdateQueueRejectsInheritedConflict(t *testing.T) {
+	dir := t.TempDir()
+	msg := int64(512 << 10)
+	roomy := int64(1 << 20)
+
+	n1, r1, err := Acquire(dir, spec.Spec{Engine: spec.EngineSpec{SegmentSize: &roomy}})
+	require.NoError(t, err)
+	require.NoError(t, n1.CreateQueue(t.Context(), "q", spec.Spec{Engine: spec.EngineSpec{MaxMessageBytes: &msg}}))
+	require.NoError(t, r1())
+
+	small := int64(256 << 10)
+	n2, r2, err := Acquire(dir, spec.Spec{Engine: spec.EngineSpec{SegmentSize: &small}})
+	require.NoError(t, err)
+	defer func() { _ = r2() }()
+
+	err = n2.UpdateQueue(t.Context(), "q", spec.Spec{Engine: spec.EngineSpec{BatchSize: new(7)}})
+	require.ErrorIs(t, err, spec.ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "max_message_bytes")
+	assert.Contains(t, err.Error(), "segment_size")
+}
+
+// TestCreateQueueRejectsInvalidSessionDefault: a bad session default makes
+// every create fail, even for an empty proposal.
+func TestCreateQueueRejectsInvalidSessionDefault(t *testing.T) {
+	zero := 0
+	n, release, err := Acquire(t.TempDir(), spec.Spec{Engine: spec.EngineSpec{BatchSize: &zero}})
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+
+	err = n.CreateQueue(t.Context(), "q", spec.Spec{})
+	require.ErrorIs(t, err, spec.ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "batch_size")
+}

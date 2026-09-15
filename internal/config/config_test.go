@@ -155,3 +155,35 @@ func TestConfigEnvOverridesFromTable(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadRejectsInvalidSession(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mikyu.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("server:\n  metrics_enabled: true\n  metrics_interval: \"0s\"\n"), 0o644))
+
+	_, _, err := Load(path)
+	require.ErrorIs(t, err, spec.ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "metrics_interval")
+}
+
+func TestLoadRejectsInvalidDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mikyu.yaml")
+	body := "defaults:\n  engine:\n    max_message_bytes: 2000000\n    segment_size: 1000000\n"
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+
+	_, _, err := Load(path)
+	require.ErrorIs(t, err, spec.ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "max_message_bytes")
+	assert.Contains(t, err.Error(), "segment_size")
+}
+
+func TestBootstrapWriteFailureHintsConfigFlag(t *testing.T) {
+	orig := executablePath
+	t.Cleanup(func() { executablePath = orig })
+	executablePath = func() (string, error) {
+		return filepath.Join(t.TempDir(), "missing-dir", "mikyu"), nil
+	}
+
+	_, _, err := Load("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--config")
+}

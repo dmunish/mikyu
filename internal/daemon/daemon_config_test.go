@@ -194,6 +194,8 @@ func TestDaemonRejectsInvalidFlagValues(t *testing.T) {
 		{"bad target scheme", []string{"--config", path, "--target", "http://x"}},
 		{"empty target", []string{"--config", path, "--target", ""}},
 		{"empty data dir", []string{"--config", path, "--data-dir", ""}},
+		{"zero max-conns", []string{"--config", path, "--max-conns", "0"}},
+		{"negative max-conns", []string{"--config", path, "--max-conns", "-1"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -215,7 +217,7 @@ func TestDaemonHelpListsEveryFlag(t *testing.T) {
 	assert.Contains(t, help, "Usage: mikyu daemon")
 	for _, name := range []string{
 		"config", "target", "data-dir",
-		"tls-enabled", "tls-cert-file", "tls-key-file",
+		"tls-enabled", "tls-cert-file", "tls-key-file", "max-conns",
 		"batch-size", "max-interval", "min-interval",
 		"segment-size", "max-message-bytes", "segment-age",
 		"encrypted", "fsync",

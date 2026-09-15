@@ -55,10 +55,20 @@ func TestEnsureDaemonRunningLeavesLiveDaemonAlone(t *testing.T) {
 // the test binary acting as a helper process.
 func TestEnsureDaemonRunningPassesTarget(t *testing.T) {
 	t.Setenv(daemonHelperEnv, "1")
-	target := "tcp://" + freeTCPAddr(t)
-	dataDir := filepath.Join(t.TempDir(), "data")
 
-	require.NoError(t, EnsureDaemonRunning(SpawnOptions{Target: target, DataDir: dataDir}))
+	// An ephemeral port can be reused between the probe and the spawn, so retry
+	// on a fresh port until the daemon we spawned creates its data directory.
+	var target, dataDir string
+	require.Eventually(t, func() bool {
+		target = "tcp://" + freeTCPAddr(t)
+		dataDir = filepath.Join(t.TempDir(), "data")
+		if err := EnsureDaemonRunning(SpawnOptions{Target: target, DataDir: dataDir}); err != nil {
+			return false
+		}
+		_, err := os.Stat(dataDir)
+		return err == nil
+	}, 10*time.Second, 100*time.Millisecond, "spawned daemon never honored the session's data directory")
+
 	t.Cleanup(func() {
 		_ = SendShutdownSignal(target)
 		deadline := time.Now().Add(5 * time.Second)
@@ -66,8 +76,5 @@ func TestEnsureDaemonRunningPassesTarget(t *testing.T) {
 			time.Sleep(25 * time.Millisecond)
 		}
 	})
-
 	require.True(t, IsDaemonAlive(target), "spawned daemon never came online")
-	_, err := os.Stat(dataDir)
-	require.NoError(t, err, "spawned daemon must honor the session's data directory")
 }

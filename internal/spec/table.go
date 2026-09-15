@@ -367,7 +367,7 @@ func buildTable() []Param {
 		sessionParam("tls_enabled", KindBool, ScopeBoth),
 		sessionParam("tls_cert_file", KindString, ScopeBoth),
 		sessionParam("tls_key_file", KindString, ScopeBoth),
-		sessionParam("max_conns", KindInt, ScopeClient),
+		sessionParam("max_conns", KindInt, ScopeBoth),
 
 		sessionParam("metrics_enabled", KindBool, ScopeBoth),
 		sessionParam("metrics_interval", KindDuration, ScopeBoth),

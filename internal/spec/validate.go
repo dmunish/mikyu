@@ -23,6 +23,9 @@ func ValidateUpdate(patch Spec) error {
 
 // ValidateSession checks the process-level parameters: the tick interval must be positive when metrics are enabled, the history depth is bounded away from zero, and the listen address, when set, is a host:port.
 func ValidateSession(s Session) error {
+	if s.MaxConns < 1 {
+		return errInvalid("max_conns", ruleAtLeastOne, s.MaxConns)
+	}
 	if s.MetricsEnabled && s.MetricsInterval <= 0 {
 		return errInvalid("metrics_interval", rulePositive, s.MetricsInterval)
 	}

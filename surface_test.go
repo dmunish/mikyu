@@ -398,6 +398,7 @@ func TestSentinelUniqueness(t *testing.T) {
 		"ErrRecordTooLarge":          mikyu.ErrRecordTooLarge,
 		"ErrProtocol":                mikyu.ErrProtocol,
 		"ErrModeMismatch":            mikyu.ErrModeMismatch,
+		"ErrTooManyConnections":      mikyu.ErrTooManyConnections,
 	}
 
 	declared := exportedErrVars(t, ".")

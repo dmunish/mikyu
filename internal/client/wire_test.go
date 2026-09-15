@@ -149,13 +149,14 @@ func TestEmbeddedMetricsHistoryHonored(t *testing.T) {
 
 func TestDecodeProtocolErrorNewCodes(t *testing.T) {
 	cases := map[byte]error{
-		protocol.ErrCodeInvalidConfig:     spec.ErrInvalidConfig,
-		protocol.ErrCodeImmutableField:    spec.ErrImmutableField,
-		protocol.ErrCodeSpecTooNew:        spec.ErrSpecTooNew,
-		protocol.ErrCodeSpecTooLarge:      spec.ErrSpecTooLarge,
-		protocol.ErrCodeMessageTooLarge:   engine.ErrMessageTooLarge,
-		protocol.ErrCodeQueueClosed:       taskqueue.ErrTaskClosed,
-		protocol.ErrCodeCheckpointCorrupt: taskqueue.ErrCheckpointCorrupt,
+		protocol.ErrCodeInvalidConfig:      spec.ErrInvalidConfig,
+		protocol.ErrCodeImmutableField:     spec.ErrImmutableField,
+		protocol.ErrCodeSpecTooNew:         spec.ErrSpecTooNew,
+		protocol.ErrCodeSpecTooLarge:       spec.ErrSpecTooLarge,
+		protocol.ErrCodeMessageTooLarge:    engine.ErrMessageTooLarge,
+		protocol.ErrCodeQueueClosed:        taskqueue.ErrTaskClosed,
+		protocol.ErrCodeCheckpointCorrupt:  taskqueue.ErrCheckpointCorrupt,
+		protocol.ErrCodeTooManyConnections: protocol.ErrTooManyConnections,
 	}
 	for code, want := range cases {
 		assert.True(t, errors.Is(decodeProtocolError(code, "boom"), want), "code 0x%02X", code)

@@ -1,7 +1,6 @@
 package spec
 
 import (
-	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,7 +22,7 @@ func TestSessionScopeAssignments(t *testing.T) {
 		"tls_enabled":                  ScopeBoth,
 		"tls_cert_file":                ScopeBoth,
 		"tls_key_file":                 ScopeBoth,
-		"max_conns":                    ScopeClient,
+		"max_conns":                    ScopeBoth,
 		"metrics_enabled":              ScopeBoth,
 		"metrics_interval":             ScopeBoth,
 		"metrics_history":              ScopeBoth,
@@ -49,12 +48,15 @@ func TestParamsInScope(t *testing.T) {
 	}
 
 	client := ParamsInScope(LayerSession, ScopeClient)
-	assert.Equal(t, []string{"max_conns"}, keys(client))
+	assert.Empty(t, keys(client), "no session parameter is client-only")
 
 	server := ParamsInScope(LayerSession, ScopeServer)
 	assert.Equal(t, []string{"metrics_listen", "metrics_per_queue_prometheus"}, keys(server))
 
-	both := ParamsInScope(LayerSession, ScopeClient, ScopeBoth)
-	assert.Equal(t, len(Params(LayerSession))-len(server), len(both), "client and both scopes are the client-visible flags")
-	assert.False(t, slices.Contains(keys(both), "metrics_listen"), "a server-scope parameter leaked into the client flags")
+	both := keys(ParamsInScope(LayerSession, ScopeBoth))
+	assert.Contains(t, both, "max_conns", "max_conns configures both the client pool and the server cap")
+	assert.NotContains(t, both, "metrics_listen", "a server-only parameter leaked into both")
+
+	visible := ParamsInScope(LayerSession, ScopeClient, ScopeBoth)
+	assert.Equal(t, len(Params(LayerSession))-len(server), len(visible), "client and both scopes are the client-visible flags")
 }

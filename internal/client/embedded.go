@@ -36,6 +36,9 @@ func NewEmbedded(dir string, opts ...Option) (*embeddedClient, error) {
 	if cfg.DataDir != "" {
 		dir = cfg.DataDir
 	}
+	if err := spec.ValidateCreate(cfg.Spec.Effective(spec.Spec{}, spec.Builtin())); err != nil {
+		return nil, err
+	}
 
 	n, release, err := node.Acquire(dir, cfg.Spec, node.WithMetrics(cfg.metricsConfig()))
 	if err != nil {
