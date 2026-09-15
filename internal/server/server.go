@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/dmunish/mikyu/internal/node"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
@@ -20,6 +21,8 @@ type Server struct {
 	node      *node.Node
 	listener  net.Listener
 	tlsConfig *tls.Config
+	maxConns  int
+	slots     chan struct{}
 	mu        sync.Mutex
 	stopCh    chan struct{}
 	doneCh    chan struct{}
@@ -39,12 +42,22 @@ func New(n *node.Node, opts ...ServerOption) *Server {
 	for _, opt := range opts {
 		opt(s)
 	}
+	if s.maxConns > 0 {
+		s.slots = make(chan struct{}, s.maxConns)
+	}
 	return s
 }
 
 func WithTLS(tlsConfig *tls.Config) ServerOption {
 	return func(s *Server) {
 		s.tlsConfig = tlsConfig
+	}
+}
+
+// WithMaxConns caps concurrent client connections; zero or less means unlimited.
+func WithMaxConns(n int) ServerOption {
+	return func(s *Server) {
+		s.maxConns = n
 	}
 }
 
@@ -100,8 +113,50 @@ func (s *Server) Serve(ln net.Listener) error {
 				return err
 			}
 		}
-		go s.serveConn(conn)
+		if !s.acquireSlot() {
+			s.metrics.rejected.Inc()
+			go s.rejectConn(conn)
+			continue
+		}
+		go func() {
+			defer s.releaseSlot()
+			s.serveConn(conn)
+		}()
 	}
+}
+
+// acquireSlot reserves a connection slot, reporting false when the server is full.
+func (s *Server) acquireSlot() bool {
+	if s.slots == nil {
+		return true
+	}
+	select {
+	case s.slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) releaseSlot() {
+	if s.slots == nil {
+		return
+	}
+	<-s.slots
+}
+
+// rejectGrace bounds how long a rejected connection waits for the client's first frame.
+const rejectGrace = time.Second
+
+// rejectConn answers the client's first request with a connection-limit error and closes, so callers get a clear reason instead of a bare reset.
+func (s *Server) rejectConn(conn net.Conn) {
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(rejectGrace))
+	if _, _, err := protocol.ReadFrame(bufio.NewReader(conn)); err != nil {
+		return
+	}
+	msg := fmt.Sprintf("%s: limit %d reached", protocol.ErrTooManyConnections, s.maxConns)
+	_ = protocol.WriteFrame(conn, protocol.OpError, protocol.EncodeError(protocol.ErrCodeTooManyConnections, msg))
 }
 
 // Done returns a channel that is closed when the server shuts down.

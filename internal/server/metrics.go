@@ -53,6 +53,7 @@ func opLabel(op byte) string {
 // serverMetrics caches the server's per-op instruments.
 type serverMetrics struct {
 	connections *metrics.Gauge
+	rejected    *metrics.Counter
 	ops         map[byte]*metrics.Counter
 	durations   map[byte]*metrics.Histogram
 }
@@ -60,6 +61,7 @@ type serverMetrics struct {
 func newServerMetrics(scope *metrics.Scope) *serverMetrics {
 	sm := &serverMetrics{
 		connections: scope.Gauge("connections"),
+		rejected:    scope.Counter("connections_rejected"),
 		ops:         make(map[byte]*metrics.Counter, len(opLabels)),
 		durations:   make(map[byte]*metrics.Histogram, len(opLabels)),
 	}
