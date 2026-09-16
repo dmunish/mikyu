@@ -168,6 +168,12 @@ func OpenClient(sess spec.Session) (mikyu.Client, error) {
 	if err := spec.ApplyEnvSession(&sess, os.Getenv); err != nil {
 		return nil, err
 	}
+	if sess.AuthToken == "" && sess.AuthTokenFile == "" {
+		if tok, ok := LoadToken(sess.Target); ok {
+			sess.AuthToken = tok
+		}
+	}
+
 	opts = append(opts,
 		mikyu.WithAuthMethod(sess.AuthMethod),
 		mikyu.WithAuthToken(sess.AuthToken),

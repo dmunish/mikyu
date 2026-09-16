@@ -62,6 +62,8 @@ var handlers = map[string]func(*invocation, []string) error{
 	"dlq-ack":  (*invocation).handleDLQAck,
 	"metrics":  (*invocation).handleMetrics,
 	"shutdown": (*invocation).handleShutdown,
+	"login":    (*invocation).handleLogin,
+	"logout":   (*invocation).handleLogout,
 }
 
 // Run parses the global flags, resolves the client, and dispatches one verb.
@@ -546,6 +548,36 @@ func (in *invocation) trySubscribe() (<-chan mikyu.Metrics, func()) {
 		return s.SubscribeSnapshots()
 	}
 	return nil, func() {}
+}
+
+func (in *invocation) handleLogin(args []string) error {
+	fs := newFlagSet("login")
+	var target string
+	fs.StringVar(&target, "target", in.target, "target to authenticate against")
+	rest, err := command.ParseAnywhere(fs, args)
+	if err != nil || len(rest) != 0 {
+		return in.app.usage("usage: mikyu login --target <uri>")
+	}
+	if err := command.Login(in.ctx, target); err != nil {
+		return err
+	}
+	fmt.Fprintf(in.app.Stdout, "stored token for %s\n", target)
+	return nil
+}
+
+func (in *invocation) handleLogout(args []string) error {
+	fs := newFlagSet("logout")
+	var target string
+	fs.StringVar(&target, "target", in.target, "target to forget")
+	rest, err := command.ParseAnywhere(fs, args)
+	if err != nil || len(rest) != 0 {
+		return in.app.usage("usage: mikyu logout --target <uri>")
+	}
+	if err := command.Logout(target); err != nil {
+		return err
+	}
+	fmt.Fprintf(in.app.Stdout, "forgot token for %s\n", target)
+	return nil
 }
 
 func (in *invocation) handleShutdown(args []string) error {

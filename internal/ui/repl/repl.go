@@ -48,6 +48,8 @@ var replHandlers = map[string]func(*replSession, []string){
 	"truncate": (*replSession).handleTruncate,
 	"metrics":  (*replSession).handleMetrics,
 	"shutdown": (*replSession).handleShutdown,
+	"login":    (*replSession).handleLogin,
+	"logout":   (*replSession).handleLogout,
 
 	"enqueue": (*replSession).handleEnqueue,
 	"dequeue": (*replSession).handleDequeue,
@@ -469,6 +471,30 @@ func (s *replSession) handleMetrics(args []string) {
 		return
 	}
 	render(snap)
+}
+
+func (s *replSession) handleLogin(args []string) {
+	target := s.target
+	if len(args) == 1 {
+		target = args[0]
+	}
+	if err := command.Login(s.ctx, target); err != nil {
+		s.fail(err)
+		return
+	}
+	fmt.Println(successStyle.Render(fmt.Sprintf("● Stored token for %s.", target)))
+}
+
+func (s *replSession) handleLogout(args []string) {
+	target := s.target
+	if len(args) == 1 {
+		target = args[0]
+	}
+	if err := command.Logout(target); err != nil {
+		s.fail(err)
+		return
+	}
+	fmt.Println(successStyle.Render(fmt.Sprintf("● Forgot token for %s.", target)))
 }
 
 func (s *replSession) handleShutdown(args []string) {

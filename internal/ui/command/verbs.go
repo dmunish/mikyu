@@ -50,6 +50,8 @@ var Verbs = []Verb{
 
 	{Name: "metrics", Args: "[--json] [--watch] [--queue name]", Summary: "Show live node and queue metrics", Kind: KindAdmin},
 	{Name: "shutdown", Args: "[-y]", Summary: "Stop the daemon", Kind: KindAdmin},
+	{Name: "login", Args: "--target <uri>", Summary: "Store a token for a target", Kind: KindAdmin},
+	{Name: "logout", Args: "--target <uri>", Summary: "Forget a stored token", Kind: KindAdmin},
 }
 
 // LookupVerb finds a verb by name.
