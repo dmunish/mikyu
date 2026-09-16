@@ -118,6 +118,14 @@ func (v *sessionValue) String() string {
 		return strconv.FormatBool(v.session.MetricsPerQueuePrometheus)
 	case "metrics_histograms":
 		return strconv.FormatBool(v.session.MetricsHistograms)
+	case "auth_method":
+		return v.session.AuthMethod
+	case "auth_token_file":
+		return v.session.AuthTokenFile
+	case "auth_token":
+		return v.session.AuthToken
+	case "tls_client_ca_file":
+		return v.session.TLSClientCaFile
 	}
 	return ""
 }
@@ -157,12 +165,25 @@ func OpenClient(sess spec.Session) (mikyu.Client, error) {
 		return mikyu.Open(sess.DataDir, append(opts, mikyu.WithSessionSpec(s))...)
 	}
 
+	if err := spec.ApplyEnvSession(&sess, os.Getenv); err != nil {
+		return nil, err
+	}
+	opts = append(opts,
+		mikyu.WithAuthMethod(sess.AuthMethod),
+		mikyu.WithAuthToken(sess.AuthToken),
+		mikyu.WithAuthTokenFile(sess.AuthTokenFile),
+		mikyu.WithTLSClientCaFile(sess.TLSClientCaFile),
+	)
+
 	if err := daemon.EnsureDaemonRunning(daemon.SpawnOptions{
-		Target:      sess.Target,
-		DataDir:     sess.DataDir,
-		TLSEnabled:  sess.TLSEnabled,
-		TLSCertFile: sess.TLSCertFile,
-		TLSKeyFile:  sess.TLSKeyFile,
+		Target:          sess.Target,
+		DataDir:         sess.DataDir,
+		TLSEnabled:      sess.TLSEnabled,
+		TLSCertFile:     sess.TLSCertFile,
+		TLSKeyFile:      sess.TLSKeyFile,
+		AuthMethod:      sess.AuthMethod,
+		AuthTokenFile:   sess.AuthTokenFile,
+		TLSClientCaFile: sess.TLSClientCaFile,
 	}); err != nil {
 		return nil, err
 	}

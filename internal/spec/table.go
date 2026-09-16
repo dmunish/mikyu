@@ -290,6 +290,10 @@ var sessionSetters = map[string]func(*Session, Value){
 	"metrics_listen":               func(s *Session, v Value) { s.MetricsListen = v.Text() },
 	"metrics_per_queue_prometheus": func(s *Session, v Value) { s.MetricsPerQueuePrometheus = v.Bool() },
 	"metrics_histograms":           func(s *Session, v Value) { s.MetricsHistograms = v.Bool() },
+	"auth_method":                  func(s *Session, v Value) { s.AuthMethod = v.Text() },
+	"auth_token_file":              func(s *Session, v Value) { s.AuthTokenFile = v.Text() },
+	"auth_token":                   func(s *Session, v Value) { s.AuthToken = v.Text() },
+	"tls_client_ca_file":           func(s *Session, v Value) { s.TLSClientCaFile = v.Text() },
 }
 
 // getter reads one Spec field so presence lives beside the canonical keys.
@@ -375,6 +379,11 @@ func buildTable() []Param {
 		sessionParam("metrics_listen", KindString, ScopeServer),
 		sessionParam("metrics_per_queue_prometheus", KindBool, ScopeServer),
 		sessionParam("metrics_histograms", KindBool, ScopeBoth),
+
+		sessionParam("auth_method", KindString, ScopeServer),
+		sessionParam("auth_token_file", KindString, ScopeBoth),
+		sessionParam("auth_token", KindString, ScopeBoth),
+		sessionParam("tls_client_ca_file", KindString, ScopeServer),
 	}
 
 	for i := range table {

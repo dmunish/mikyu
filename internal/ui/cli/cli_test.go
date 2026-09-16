@@ -157,7 +157,6 @@ func TestCLIMetricsQueueFilter(t *testing.T) {
 	assert.NotEmpty(t, q.Name)
 }
 
-
 func TestCLINoInfoVerb(t *testing.T) {
 	app := newTestApp(t)
 	err := app.runErr(t, "info")

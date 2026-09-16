@@ -2,8 +2,11 @@
 package daemon
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -67,14 +70,19 @@ func Run(args []string) error {
 		if cfg.Server.TLSCertFile == "" || cfg.Server.TLSKeyFile == "" {
 			log.Printf("mikyu daemon: warning: TLS enabled without both cert and key files; generating an ephemeral self-signed certificate")
 		}
-		tlsCfg, err := server.DefaultTLSConfig(cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile)
+		tlsCfg, err := server.DefaultTLSConfig(cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile, cfg.Server.TLSClientCaFile)
 		if err != nil {
 			return fmt.Errorf("TLS setup: %w", err)
 		}
 		srvOpts = append(srvOpts, server.WithTLS(tlsCfg))
 	}
 
-	srvOpts = append(srvOpts, server.WithMaxConns(cfg.Server.MaxConns))
+	mode, err := server.NewAuthMode(cfg.Server)
+	if err != nil {
+		return fmt.Errorf("auth setup: %w", err)
+	}
+
+	srvOpts = append(srvOpts, server.WithAuth(mode), server.WithMaxConns(cfg.Server.MaxConns))
 
 	srv := server.New(n, srvOpts...)
 
@@ -178,6 +186,13 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 	metricsListen := fs.String("metrics-listen", "", "Listen address for the metrics HTTP server (off when empty)")
 	metricsPerQueuePrometheus := fs.Bool("metrics-per-queue-prometheus", false, "Emit per-queue series on the Prometheus endpoint")
 	metricsHistograms := fs.Bool("metrics-histograms", false, "Enable latency histograms in the metrics snapshot")
+
+	// Auth. --auth-token is registered so --help lists it, but rejected on use:
+	// a token on argv leaks via ps.
+	authMethod := fs.String("auth-method", "", "Auth mode: none|none-insecure|token|mtls")
+	authTokenFile := fs.String("auth-token-file", "", "File containing the bearer token")
+	fs.String("auth-token", "", "REJECTED on the daemon; use --auth-token-file")
+	tlsClientCAFile := fs.String("tls-client-ca-file", "", "Client CA bundle for mtls")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -296,6 +311,15 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 			cfg.Server.MetricsPerQueuePrometheus = *metricsPerQueuePrometheus
 		case "metrics-histograms":
 			cfg.Server.MetricsHistograms = *metricsHistograms
+		case "auth-method":
+			cfg.Server.AuthMethod = *authMethod
+		case "auth-token-file":
+			cfg.Server.AuthTokenFile = *authTokenFile
+		case "auth-token":
+			flagErr = errors.New("--auth-token is rejected on the daemon: a token on argv leaks via ps; use --auth-token-file")
+			return
+		case "tls-client-ca-file":
+			cfg.Server.TLSClientCaFile = *tlsClientCAFile
 		}
 	})
 	if flagErr != nil {
@@ -308,7 +332,35 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 		return nil, "", fmt.Errorf("%w: %v", ErrUsage, err)
 	}
 
+	if network, addr, perr := protocol.ParseTarget(cfg.Server.Target); perr == nil && network == "tcp" && !isLoopback(addr) {
+		switch cfg.Server.AuthMethod {
+		case "token":
+			if !cfg.Server.TLSEnabled {
+				return nil, "", fmt.Errorf("%w: --auth-method token requires --tls-enabled on non-loopback targets", ErrUsage)
+			}
+		case "mtls":
+			if !cfg.Server.TLSEnabled || cfg.Server.TLSClientCaFile == "" {
+				return nil, "", fmt.Errorf("%w: --auth-method mtls requires --tls-enabled and --tls-client-ca-file", ErrUsage)
+			}
+		case "", "none":
+			return nil, "", fmt.Errorf("%w: refusing non-loopback %s without auth; pass --auth-method token|mtls, or --auth-method none-insecure to opt out", ErrUsage, cfg.Server.Target)
+		}
+	}
+
 	return cfg, resolvedPath, nil
+}
+
+// isLoopback reports whether a tcp host:port binds to the local host.
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // logEffectiveConfig records the fully-resolved settings so the log of a
@@ -325,14 +377,17 @@ func logEffectiveConfig(cfg *config.Config, resolvedPath string) {
 	log.Printf("mikyu daemon: defaults %s", defaults)
 }
 
-// SpawnOptions carries the session settings a spawned daemon must inherit.
+// SpawnOptions carries the session settings a spawned daemon must inherit. AuthToken is deliberately absent: the daemon rejects it.
 type SpawnOptions struct {
-	Target      string
-	DataDir     string
-	TLSEnabled  bool
-	TLSCertFile string
-	TLSKeyFile  string
-	ExtraArgs   []string
+	Target          string
+	DataDir         string
+	TLSEnabled      bool
+	TLSCertFile     string
+	TLSKeyFile      string
+	AuthMethod      string
+	AuthTokenFile   string
+	TLSClientCaFile string
+	ExtraArgs       []string
 }
 
 // EnsureDaemonRunning spawns a detached daemon with opts when opts.Target is not already serving.
@@ -359,6 +414,15 @@ func EnsureDaemonRunning(opts SpawnOptions) error {
 	}
 	if opts.TLSKeyFile != "" {
 		args = append(args, "--tls-key-file", opts.TLSKeyFile)
+	}
+	if opts.AuthMethod != "" {
+		args = append(args, "--auth-method", opts.AuthMethod)
+	}
+	if opts.AuthTokenFile != "" {
+		args = append(args, "--auth-token-file", opts.AuthTokenFile)
+	}
+	if opts.TLSClientCaFile != "" {
+		args = append(args, "--tls-client-ca-file", opts.TLSClientCaFile)
 	}
 	args = append(args, opts.ExtraArgs...)
 	cmd := exec.Command(executable, args...)
@@ -391,19 +455,93 @@ func IsDaemonAlive(target string) bool {
 	return true
 }
 
-// SendShutdownSignal sends an OpShutdown frame to the daemon.
-func SendShutdownSignal(target string) error {
+// SendShutdownSignal authenticates against the daemon with the session's credential and sends an OpShutdown frame.
+func SendShutdownSignal(target string, sess spec.Session) error {
 	network, addr, err := protocol.ParseTarget(target)
 	if err != nil {
 		return err
 	}
-	conn, err := net.DialTimeout(network, addr, 2*time.Second)
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	var conn net.Conn
+	if network == "tcp" && sess.TLSEnabled {
+		tlsCfg, err := clientTLSConfig(sess)
+		if err != nil {
+			return err
+		}
+		conn, err = (&tls.Dialer{Config: tlsCfg, NetDialer: dialer}).Dial(network, addr)
+	} else {
+		conn, err = dialer.Dial(network, addr)
+	}
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	if err := protocol.WriteFrame(conn, protocol.OpShutdown, nil); err != nil {
+
+	method, cred, err := resolveShutdownCredential(sess)
+	if err != nil {
 		return err
 	}
-	return nil
+	var ab protocol.Buffer
+	protocol.EncodeAuth(&ab, method, cred)
+	if err := protocol.WriteFrame(conn, protocol.OpAuth, ab.Bytes()); err != nil {
+		return err
+	}
+	respOp, respBody, err := protocol.ReadFrame(bufio.NewReader(conn))
+	if err != nil {
+		return err
+	}
+	if respOp == protocol.OpError {
+		code, msg := protocol.DecodeError(respBody)
+		if code == protocol.ErrCodeUnauthorized {
+			return fmt.Errorf("auth for shutdown: %w: %s", protocol.ErrUnauthorized, msg)
+		}
+		return fmt.Errorf("shutdown handshake failed: %s (code 0x%02x)", msg, code)
+	}
+	return protocol.WriteFrame(conn, protocol.OpShutdown, nil)
+}
+
+// resolveShutdownCredential picks the credential a shutdown signal presents: token file over token over mTLS over anonymous.
+func resolveShutdownCredential(sess spec.Session) (byte, []byte, error) {
+	if sess.AuthTokenFile != "" {
+		data, err := os.ReadFile(sess.AuthTokenFile)
+		if err != nil {
+			return 0, nil, err
+		}
+		return protocol.AuthMethodToken, []byte(strings.TrimSpace(string(data))), nil
+	}
+	if sess.AuthToken != "" {
+		return protocol.AuthMethodToken, []byte(sess.AuthToken), nil
+	}
+	if sess.TLSEnabled {
+		return protocol.AuthMethodMTLS, nil, nil
+	}
+	return protocol.AuthMethodNone, nil, nil
+}
+
+// clientTLSConfig builds the shutdown dialer's TLS setup: the client cert authenticates against the CA bundle and is trusted as the server's root.
+func clientTLSConfig(sess spec.Session) (*tls.Config, error) {
+	if sess.TLSCertFile == "" || sess.TLSKeyFile == "" {
+		return nil, fmt.Errorf("tls_enabled needs tls_cert_file and tls_key_file")
+	}
+	pair, err := tls.LoadX509KeyPair(sess.TLSCertFile, sess.TLSKeyFile)
+	if err != nil {
+		return nil, err
+	}
+	caFile := sess.TLSClientCaFile
+	if caFile == "" {
+		caFile = sess.TLSCertFile
+	}
+	pem, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("no certificate found in %s", caFile)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{pair},
+		RootCAs:      pool,
+		MinVersion:   tls.VersionTLS13,
+	}, nil
 }

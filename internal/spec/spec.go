@@ -35,12 +35,16 @@ type TaskSpec struct {
 
 // Session carries the process-level parameters that never reach a queue spec or the wire.
 type Session struct {
-	Target      string `yaml:"target"`
-	DataDir     string `yaml:"data_dir"`
-	TLSEnabled  bool   `yaml:"tls_enabled"`
-	TLSCertFile string `yaml:"tls_cert_file"`
-	TLSKeyFile  string `yaml:"tls_key_file"`
-	MaxConns    int    `yaml:"max_conns"`
+	Target          string `yaml:"target"`
+	DataDir         string `yaml:"data_dir"`
+	TLSEnabled      bool   `yaml:"tls_enabled"`
+	TLSCertFile     string `yaml:"tls_cert_file"`
+	TLSKeyFile      string `yaml:"tls_key_file"`
+	MaxConns        int    `yaml:"max_conns"`
+	AuthMethod      string `yaml:"auth_method"`
+	AuthTokenFile   string `yaml:"auth_token_file"`
+	AuthToken       string `yaml:"auth_token"`
+	TLSClientCaFile string `yaml:"tls_client_ca_file"`
 
 	MetricsEnabled            bool     `yaml:"metrics_enabled"`
 	MetricsInterval           Duration `yaml:"metrics_interval"`
@@ -174,6 +178,7 @@ func BuiltinSession() Session {
 	return Session{
 		Target:                    builtinTarget,
 		MaxConns:                  builtinMaxConns,
+		AuthMethod:                "none",
 		MetricsEnabled:            builtinMetricsEnabled,
 		MetricsInterval:           builtinMetricsInterval,
 		MetricsHistory:            builtinMetricsHistory,

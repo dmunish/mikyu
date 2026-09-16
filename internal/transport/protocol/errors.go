@@ -18,6 +18,7 @@ const (
 	ErrCodeImmutableField byte = 0x05
 	ErrCodeSpecTooNew     byte = 0x06
 	ErrCodeSpecTooLarge   byte = 0x07
+	ErrCodeUnauthorized   byte = 0x09
 
 	// Storage block: log-segment reads and queue availability.
 	ErrCodeOffsetNotFound  byte = 0x11
@@ -44,6 +45,9 @@ const (
 
 // ErrTooManyConnections reports that a server is at its concurrent-connection limit.
 var ErrTooManyConnections = errors.New("too many connections")
+
+// ErrUnauthorized reports a rejected or missing credential.
+var ErrUnauthorized = errors.New("unauthorized")
 
 // EncodeError encodes an error byte code and string message into a wire payload.
 func EncodeError(code byte, msg string) []byte {

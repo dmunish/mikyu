@@ -12,6 +12,7 @@ import (
 	"github.com/dmunish/mikyu/internal/node"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
 	"github.com/dmunish/mikyu/internal/queue/taskqueue"
+	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/dmunish/mikyu/internal/transport/ipc"
 	"github.com/dmunish/mikyu/internal/transport/protocol"
 )
@@ -27,6 +28,7 @@ type Server struct {
 	stopCh    chan struct{}
 	doneCh    chan struct{}
 	metrics   *serverMetrics
+	auth      *authMode
 }
 
 type ServerOption func(*Server)
@@ -45,7 +47,18 @@ func New(n *node.Node, opts ...ServerOption) *Server {
 	if s.maxConns > 0 {
 		s.slots = make(chan struct{}, s.maxConns)
 	}
+	if s.auth == nil {
+		def, _ := NewAuthMode(spec.BuiltinSession())
+		s.auth = def
+	}
 	return s
+}
+
+// WithAuth sets the connection verifier; the default is an anonymous (none) mode.
+func WithAuth(m *authMode) ServerOption {
+	return func(s *Server) {
+		s.auth = m
+	}
 }
 
 func WithTLS(tlsConfig *tls.Config) ServerOption {
@@ -188,6 +201,45 @@ func (s *Server) serveConn(conn net.Conn) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	r := bufio.NewReader(conn)
+
+	// Auth handshake: read one frame. If it is OpAuth, verify and reply.
+	op, body, err := protocol.ReadFrame(r)
+	if err != nil {
+		cancel()
+		_ = conn.Close()
+		return
+	}
+	authenticated := false
+	if op == protocol.OpAuth {
+		method, cred, derr := protocol.DecodeAuth(protocol.NewReader(body))
+		if derr != nil || s.auth.Verify(method, cred, tlsStateOf(conn)) != nil {
+			_ = protocol.WriteFrame(conn, protocol.OpError,
+				protocol.EncodeError(protocol.ErrCodeUnauthorized, "authentication failed"))
+			cancel()
+			_ = conn.Close()
+			return
+		}
+		if err := protocol.WriteFrame(conn, protocol.OpAuth, nil); err != nil {
+			cancel()
+			_ = conn.Close()
+			return
+		}
+		authenticated = true
+		op, body, err = protocol.ReadFrame(r)
+		if err != nil {
+			cancel()
+			_ = conn.Close()
+			return
+		}
+	}
+	if s.auth.Required() && !authenticated {
+		_ = protocol.WriteFrame(conn, protocol.OpError,
+			protocol.EncodeError(protocol.ErrCodeUnauthorized, "authentication required"))
+		cancel()
+		_ = conn.Close()
+		return
+	}
+
 	reqCh := make(chan request) // unbuffered: one frame of lookahead, natural backpressure
 
 	var readerWG sync.WaitGroup
@@ -196,6 +248,11 @@ func (s *Server) serveConn(conn net.Conn) {
 		defer readerWG.Done()
 		defer close(reqCh)
 		defer cancel() // a dead reader must wake a handler parked on a long-poll
+		select {
+		case reqCh <- request{op: op, body: body}:
+		case <-ctx.Done():
+			return
+		}
 		var buf []byte
 		for {
 			op, body, next, err := protocol.ReadFrameInto(r, buf)
@@ -225,6 +282,15 @@ func (s *Server) serveConn(conn net.Conn) {
 	cancel()
 	_ = conn.Close()
 	readerWG.Wait()
+}
+
+// tlsStateOf returns the negotiated TLS state of conn, or nil for a plain connection.
+func tlsStateOf(conn net.Conn) *tls.ConnectionState {
+	if tc, ok := conn.(*tls.Conn); ok {
+		st := tc.ConnectionState()
+		return &st
+	}
+	return nil
 }
 
 type request struct {

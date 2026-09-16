@@ -17,6 +17,9 @@ var ErrProtocol = errors.New("protocol error")
 // ErrModeMismatch reports an option that does not apply in this client mode.
 var ErrModeMismatch = errors.New("option does not apply in this client mode")
 
+// ErrUnauthorized reports a credential the server rejected.
+var ErrUnauthorized = protocol.ErrUnauthorized
+
 // decodeKnown rebuilds a sentinel from a recognized wire code, preserving
 // the server's detail that follows the sentinel's own text (e.g. the field
 // name in an immutable-field error). A message with no extra detail yields
@@ -70,6 +73,8 @@ func decodeProtocolError(code byte, msg string) error {
 		return decodeKnown(engine.ErrNoData, msg)
 	case protocol.ErrCodeTooManyConnections:
 		return decodeKnown(protocol.ErrTooManyConnections, msg)
+	case protocol.ErrCodeUnauthorized:
+		return decodeKnown(protocol.ErrUnauthorized, msg)
 	default:
 		return fmt.Errorf("%w: %s", ErrProtocol, msg)
 	}

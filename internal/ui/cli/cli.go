@@ -33,11 +33,12 @@ func RunCLI(target string, args []string) error {
 
 // invocation carries one verb's resolved client and global flags.
 type invocation struct {
-	app    *App
-	ctx    context.Context
-	client mikyu.Client
-	dir    string
-	target string
+	app     *App
+	ctx     context.Context
+	client  mikyu.Client
+	dir     string
+	target  string
+	session spec.Session
 }
 
 // handlers maps every verb to its implementation.
@@ -101,11 +102,12 @@ func (a *App) Run(target string, args []string) error {
 	defer client.Close()
 
 	in := &invocation{
-		app:    a,
-		ctx:    context.Background(),
-		client: client,
-		dir:    global.Session.DataDir,
-		target: global.Session.Target,
+		app:     a,
+		ctx:     context.Background(),
+		client:  client,
+		dir:     global.Session.DataDir,
+		target:  global.Session.Target,
+		session: global.Session,
 	}
 	err = handler(in, args)
 	if errors.Is(err, mikyu.ErrLocked) {
@@ -563,7 +565,7 @@ func (in *invocation) handleShutdown(args []string) error {
 		return in.app.usage("shutdown needs a daemon: --dir runs embedded and has no daemon to stop")
 	}
 
-	executed, err := command.Shutdown(in.target, in.confirmFn("shutdown daemon? [y/N]: ", yes))
+	executed, err := command.Shutdown(in.target, in.session, in.confirmFn("shutdown daemon? [y/N]: ", yes))
 	if err != nil {
 		return err
 	}

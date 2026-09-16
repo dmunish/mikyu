@@ -29,6 +29,10 @@ func TestSessionScopeAssignments(t *testing.T) {
 		"metrics_listen":               ScopeServer,
 		"metrics_per_queue_prometheus": ScopeServer,
 		"metrics_histograms":           ScopeBoth,
+		"auth_method":                  ScopeServer,
+		"auth_token_file":              ScopeBoth,
+		"auth_token":                   ScopeBoth,
+		"tls_client_ca_file":           ScopeServer,
 	}
 
 	require.Len(t, want, len(Params(LayerSession)), "a session key was added or removed")
@@ -51,7 +55,7 @@ func TestParamsInScope(t *testing.T) {
 	assert.Empty(t, keys(client), "no session parameter is client-only")
 
 	server := ParamsInScope(LayerSession, ScopeServer)
-	assert.Equal(t, []string{"metrics_listen", "metrics_per_queue_prometheus"}, keys(server))
+	assert.Equal(t, []string{"metrics_listen", "metrics_per_queue_prometheus", "auth_method", "tls_client_ca_file"}, keys(server))
 
 	both := keys(ParamsInScope(LayerSession, ScopeBoth))
 	assert.Contains(t, both, "max_conns", "max_conns configures both the client pool and the server cap")

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -53,7 +54,7 @@ func startDaemon(tb *testing.T, target string, args ...string) (finish func()) {
 			return
 		}
 		finished = true
-		require.NoError(tb, SendShutdownSignal(target), "sending shutdown signal")
+		require.NoError(tb, SendShutdownSignal(target, spec.BuiltinSession()), "sending shutdown signal")
 		select {
 		case err := <-exited:
 			assert.NoError(tb, err, "graceful shutdown must return nil, letting deferred cleanup run")

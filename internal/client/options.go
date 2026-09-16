@@ -23,6 +23,11 @@ type SessionConfig struct {
 	TLSKeyFile  string
 	AutoStart   bool
 
+	AuthMethod      string
+	AuthToken       string
+	AuthTokenFile   string
+	TLSClientCaFile string
+
 	MetricsEnabled            bool
 	MetricsInterval           time.Duration
 	MetricsHistory            int
@@ -81,6 +86,26 @@ func WithTLSKeyFile(path string) Option {
 // WithAutoStart makes Dial spawn a daemon with the session's settings when the target is not already serving.
 func WithAutoStart(enabled bool) Option {
 	return func(c *SessionConfig) { c.AutoStart = enabled }
+}
+
+// WithAuthMethod sets the auth method the session presents to a server.
+func WithAuthMethod(method string) Option {
+	return func(c *SessionConfig) { c.AuthMethod = method }
+}
+
+// WithAuthToken sets the bearer token presented to a token-mode server.
+func WithAuthToken(tok string) Option {
+	return func(c *SessionConfig) { c.AuthToken = tok }
+}
+
+// WithAuthTokenFile sets a file containing the bearer token.
+func WithAuthTokenFile(path string) Option {
+	return func(c *SessionConfig) { c.AuthTokenFile = path }
+}
+
+// WithTLSClientCAFile sets the client CA bundle for mTLS servers.
+func WithTLSClientCaFile(path string) Option {
+	return func(c *SessionConfig) { c.TLSClientCaFile = path }
 }
 
 // WithMetricsEnabled turns the embedded node's live collector on or off; a remote client cannot configure the server's collector.

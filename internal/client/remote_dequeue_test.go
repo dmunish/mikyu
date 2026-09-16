@@ -190,26 +190,41 @@ func TestRemoteNackSendsModeZero(t *testing.T) {
 		}
 		defer conn.Close()
 
-		op, body, err := protocol.ReadFrame(bufio.NewReader(conn))
+		r := bufio.NewReader(conn)
+		hop, hbody, err := protocol.ReadFrame(r)
+		if err != nil || hop != protocol.OpAuth {
+			got <- captured{mode: 0xFF}
+			return
+		}
+		if _, _, err := protocol.DecodeAuth(protocol.NewReader(hbody)); err != nil {
+			got <- captured{mode: 0xFF}
+			return
+		}
+		if err := protocol.WriteFrame(conn, protocol.OpAuth, nil); err != nil {
+			got <- captured{mode: 0xFF}
+			return
+		}
+
+		op, body, err := protocol.ReadFrame(r)
 		if err != nil || op != protocol.OpNack {
 			got <- captured{mode: 0xFF}
 			return
 		}
-		r := protocol.NewReader(body)
-		if _, err := r.ReadBytes(); err != nil { // queue name
+		pr := protocol.NewReader(body)
+		if _, err := pr.ReadBytes(); err != nil { // queue name
 			got <- captured{mode: 0xFF}
 			return
 		}
-		if _, _, _, err := protocol.DecodeTaskRef(r); err != nil {
+		if _, _, _, err := protocol.DecodeTaskRef(pr); err != nil {
 			got <- captured{mode: 0xFF}
 			return
 		}
-		mode, err := protocol.ReadMode(r)
+		mode, err := protocol.ReadMode(pr)
 		if err != nil {
 			got <- captured{mode: 0xFF}
 			return
 		}
-		_, trailing := r.ReadU64() // inherit mode leaves nothing to read
+		_, trailing := pr.ReadU64() // inherit mode leaves nothing to read
 		got <- captured{mode: mode, trailing: trailing == nil}
 		_ = protocol.WriteFrame(conn, protocol.OpNack, nil)
 	}()

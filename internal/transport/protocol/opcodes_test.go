@@ -64,7 +64,7 @@ func TestOpcodeNibbleGrouping(t *testing.T) {
 		}
 	}
 	// Protocol-level ops must not collide with the frozen table either.
-	for _, op := range []byte{OpShutdown, OpError, OpReservedHandshake} {
+	for _, op := range []byte{OpShutdown, OpError, OpAuth} {
 		assert.Falsef(t, seen[op], "protocol-level opcode 0x%02X collides with the queue-op table", op)
 	}
 }

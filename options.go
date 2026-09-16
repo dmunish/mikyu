@@ -45,6 +45,18 @@ func WithTLSKeyFile(path string) ClientOption { return client.WithTLSKeyFile(pat
 // target is not already serving.
 func WithAutoStart(enabled bool) ClientOption { return client.WithAutoStart(enabled) }
 
+// WithAuthMethod sets the auth method the session presents to a server.
+func WithAuthMethod(method string) ClientOption { return client.WithAuthMethod(method) }
+
+// WithAuthToken sets the bearer token presented to a token-mode server.
+func WithAuthToken(tok string) ClientOption { return client.WithAuthToken(tok) }
+
+// WithAuthTokenFile sets a file containing the bearer token.
+func WithAuthTokenFile(path string) ClientOption { return client.WithAuthTokenFile(path) }
+
+// WithTLSClientCaFile sets the client CA bundle for mTLS servers.
+func WithTLSClientCaFile(path string) ClientOption { return client.WithTLSClientCaFile(path) }
+
 // WithMetricsEnabled turns the embedded node's live collector on or off; a
 // remote client cannot configure the server's collector.
 func WithMetricsEnabled(enabled bool) ClientOption { return client.WithMetricsEnabled(enabled) }

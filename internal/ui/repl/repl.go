@@ -21,10 +21,11 @@ import (
 )
 
 type replSession struct {
-	client mikyu.Client
-	target string
-	dir    string
-	ctx    context.Context
+	client  mikyu.Client
+	target  string
+	dir     string
+	session spec.Session
+	ctx     context.Context
 
 	activeQueue   string
 	lastTaskQueue string
@@ -78,10 +79,11 @@ func RunREPL(target string, args []string) error {
 	PrintREPLBanner(global.Session.Target, global.Session.DataDir)
 
 	sess := &replSession{
-		client: client,
-		target: global.Session.Target,
-		dir:    global.Session.DataDir,
-		ctx:    context.Background(),
+		client:  client,
+		target:  global.Session.Target,
+		dir:     global.Session.DataDir,
+		session: global.Session,
+		ctx:     context.Background(),
 	}
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -482,7 +484,7 @@ func (s *replSession) handleShutdown(args []string) {
 		return false, nil
 	}
 
-	executed, err := command.Shutdown(s.target, confirmFn)
+	executed, err := command.Shutdown(s.target, s.session, confirmFn)
 	if err != nil {
 		s.fail(err)
 		return

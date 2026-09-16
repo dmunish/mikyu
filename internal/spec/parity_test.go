@@ -42,6 +42,12 @@ func sampleText(p spec.Param) string {
 		if p.Key == "metrics_listen" {
 			return "127.0.0.1:9090"
 		}
+		if p.Key == "auth_method" {
+			return "none"
+		}
+		if p.Key == "auth_token" {
+			return "0123456789abcdef"
+		}
 		return "sample"
 	case spec.KindTime:
 		return "2020-01-01T00:00:00Z"

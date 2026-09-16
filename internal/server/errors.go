@@ -18,6 +18,8 @@ func opErr(code byte, msg string) (byte, []byte) {
 // message is preserved verbatim; the code is the stable contract.
 func taskErr(err error) (byte, []byte) {
 	switch {
+	case errors.Is(err, protocol.ErrUnauthorized):
+		return opErr(protocol.ErrCodeUnauthorized, err.Error())
 	case errors.Is(err, engine.ErrQueueNotFound):
 		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	case errors.Is(err, spec.ErrInvalidConfig):

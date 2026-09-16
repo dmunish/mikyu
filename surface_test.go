@@ -110,7 +110,7 @@ func startDaemon(t *testing.T, target, configPath, dataDir string) func() {
 			return
 		}
 		stopped = true
-		require.NoError(t, daemon.SendShutdownSignal(target))
+		require.NoError(t, daemon.SendShutdownSignal(target, spec.BuiltinSession()))
 		select {
 		case err := <-exited:
 			assert.NoError(t, err)
@@ -399,6 +399,7 @@ func TestSentinelUniqueness(t *testing.T) {
 		"ErrProtocol":                mikyu.ErrProtocol,
 		"ErrModeMismatch":            mikyu.ErrModeMismatch,
 		"ErrTooManyConnections":      mikyu.ErrTooManyConnections,
+		"ErrUnauthorized":            mikyu.ErrUnauthorized,
 	}
 
 	declared := exportedErrVars(t, ".")

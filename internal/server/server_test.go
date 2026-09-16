@@ -219,7 +219,7 @@ func TestServerTLSHandshake(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = release() }()
 
-	tlsCfg, err := DefaultTLSConfig("", "")
+	tlsCfg, err := DefaultTLSConfig("", "", "")
 	require.NoError(t, err)
 
 	srv := New(n, WithTLS(tlsCfg))

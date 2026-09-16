@@ -113,8 +113,26 @@ func TestCommandLifecycle(t *testing.T) {
 	assert.Empty(t, queues)
 }
 
+func TestOpenClientForwardsAuth(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("0123456789abcdef"), 0600))
+
+	sess := spec.BuiltinSession()
+	sess.DataDir = t.TempDir()
+	sess.AuthMethod = "token"
+	sess.AuthTokenFile = tokenPath
+
+	client, err := command.OpenClient(sess)
+	require.NoError(t, err)
+	defer client.Close()
+
+	queues, err := command.List(t.Context(), client)
+	require.NoError(t, err)
+	assert.Empty(t, queues)
+}
+
 func TestCommandShutdownConfirmationCancel(t *testing.T) {
-	executed, err := command.Shutdown("tcp://127.0.0.1:1", func() (bool, error) {
+	executed, err := command.Shutdown("tcp://127.0.0.1:1", spec.BuiltinSession(), func() (bool, error) {
 		return false, nil
 	})
 	assert.NoError(t, err)

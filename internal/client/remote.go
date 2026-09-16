@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -63,11 +65,14 @@ func NewRemote(target string, opts ...Option) (*remoteClient, error) {
 	}
 	if cfg.AutoStart {
 		if err := daemon.EnsureDaemonRunning(daemon.SpawnOptions{
-			Target:      target,
-			DataDir:     cfg.DataDir,
-			TLSEnabled:  cfg.TLSEnabled,
-			TLSCertFile: cfg.TLSCertFile,
-			TLSKeyFile:  cfg.TLSKeyFile,
+			Target:          target,
+			DataDir:         cfg.DataDir,
+			TLSEnabled:      cfg.TLSEnabled,
+			TLSCertFile:     cfg.TLSCertFile,
+			TLSKeyFile:      cfg.TLSKeyFile,
+			AuthMethod:      cfg.AuthMethod,
+			AuthTokenFile:   cfg.AuthTokenFile,
+			TLSClientCaFile: cfg.TLSClientCaFile,
 		}); err != nil {
 			return nil, err
 		}
@@ -124,7 +129,56 @@ func (c *remoteClient) dialConn(ctx context.Context) (*clientConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &clientConn{conn: conn, r: bufio.NewReader(conn)}, nil
+	method, cred, err := c.authCredential()
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	ch := &clientConn{conn: conn, r: bufio.NewReader(conn)}
+	if err := writeAuth(ch, method, cred); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return ch, nil
+}
+
+// authCredential resolves the method and credential this client presents; an explicit token wins over the implicit mTLS claim.
+func (c *remoteClient) authCredential() (byte, []byte, error) {
+	if c.cfg.AuthTokenFile != "" {
+		data, err := os.ReadFile(c.cfg.AuthTokenFile)
+		if err != nil {
+			return 0, nil, err
+		}
+		return protocol.AuthMethodToken, []byte(strings.TrimSpace(string(data))), nil
+	}
+	if c.cfg.AuthToken != "" {
+		return protocol.AuthMethodToken, []byte(c.cfg.AuthToken), nil
+	}
+	if c.tls != nil {
+		return protocol.AuthMethodMTLS, nil, nil
+	}
+	return protocol.AuthMethodNone, nil, nil
+}
+
+// writeAuth sends OpAuth and validates the reply.
+func writeAuth(ch *clientConn, method byte, cred []byte) error {
+	var b protocol.Buffer
+	protocol.EncodeAuth(&b, method, cred)
+	if err := protocol.WriteFrame(ch.conn, protocol.OpAuth, b.Bytes()); err != nil {
+		return err
+	}
+	respOp, respBody, err := protocol.ReadFrame(ch.r)
+	if err != nil {
+		return err
+	}
+	if respOp == protocol.OpError {
+		code, msg := protocol.DecodeError(respBody)
+		return decodeProtocolError(code, msg)
+	}
+	if respOp != protocol.OpAuth {
+		return ErrProtocol
+	}
+	return nil
 }
 
 func (c *remoteClient) release(ch *clientConn) {

@@ -37,6 +37,20 @@ func ValidateSession(s Session) error {
 			return fmt.Errorf("%w: metrics_listen must be host:port, got %q", ErrInvalidConfig, s.MetricsListen)
 		}
 	}
+	switch s.AuthMethod {
+	case "", "none", "none-insecure", "token", "mtls":
+	default:
+		return errInvalid("auth_method", "one of none|none-insecure|token|mtls", s.AuthMethod)
+	}
+	if s.AuthMethod == "token" && s.AuthToken == "" && s.AuthTokenFile == "" {
+		return errInvalid("auth_token_file", "be set when auth_method=token", "")
+	}
+	if s.AuthToken != "" && len(s.AuthToken) < 16 {
+		return errInvalid("auth_token", "be at least 16 bytes", "")
+	}
+	if s.AuthMethod == "mtls" && !s.TLSEnabled {
+		return errInvalid("tls_enabled", "be true when auth_method=mtls", s.TLSEnabled)
+	}
 	return nil
 }
 

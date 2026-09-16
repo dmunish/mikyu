@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -70,7 +71,7 @@ func TestEnsureDaemonRunningPassesTarget(t *testing.T) {
 	}, 10*time.Second, 100*time.Millisecond, "spawned daemon never honored the session's data directory")
 
 	t.Cleanup(func() {
-		_ = SendShutdownSignal(target)
+		_ = SendShutdownSignal(target, spec.BuiltinSession())
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) && IsDaemonAlive(target) {
 			time.Sleep(25 * time.Millisecond)

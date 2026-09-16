@@ -182,6 +182,8 @@ var (
 	ErrProtocol = client.ErrProtocol
 	// ErrModeMismatch reports an option that does not apply in this client mode.
 	ErrModeMismatch = client.ErrModeMismatch
+	// ErrUnauthorized reports a credential the server rejected.
+	ErrUnauthorized = client.ErrUnauthorized
 	// ErrTooManyConnections reports a server at its concurrent-connection limit.
 	ErrTooManyConnections = protocol.ErrTooManyConnections
 

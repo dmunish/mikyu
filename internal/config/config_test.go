@@ -116,6 +116,10 @@ func TestConfigEnvOverridesFromTable(t *testing.T) {
 		"metrics_listen":               "127.0.0.1:9090",
 		"metrics_per_queue_prometheus": "true",
 		"metrics_histograms":           "true",
+		"auth_method":                  "none",
+		"auth_token_file":              "token.txt",
+		"auth_token":                   "0123456789abcdef",
+		"tls_client_ca_file":           "ca.pem",
 	}
 	for _, p := range spec.Params(spec.LayerSession) {
 		t.Run(p.Key, func(t *testing.T) {
@@ -149,6 +153,14 @@ func TestConfigEnvOverridesFromTable(t *testing.T) {
 				assert.True(t, cfg.Server.MetricsPerQueuePrometheus)
 			case "metrics_histograms":
 				assert.True(t, cfg.Server.MetricsHistograms)
+			case "auth_method":
+				assert.Equal(t, values["auth_method"], cfg.Server.AuthMethod)
+			case "auth_token_file":
+				assert.Equal(t, values["auth_token_file"], cfg.Server.AuthTokenFile)
+			case "auth_token":
+				assert.Equal(t, values["auth_token"], cfg.Server.AuthToken)
+			case "tls_client_ca_file":
+				assert.Equal(t, values["tls_client_ca_file"], cfg.Server.TLSClientCaFile)
 			default:
 				t.Fatalf("session parameter %q has no assertion", p.Key)
 			}

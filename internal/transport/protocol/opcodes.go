@@ -54,9 +54,9 @@ const (
 
 	// Protocol-level ops outside the subsystem table.
 
-	OpShutdown          byte = 0x0C
-	OpError             byte = 0xFF // u8 code + bytes(message); see errors.go
-	OpReservedHandshake byte = 0x7E // reserved for future protocol negotiation
+	OpShutdown byte = 0x0C
+	OpError    byte = 0xFF // u8 code + bytes(message); see errors.go
+	OpAuth     byte = 0x7E // first frame on a connection; u8 method + bytes(credential); see auth.go
 )
 
 // ParseTarget converts target strings like "tcp://127.0.0.1:7420", "unix:///tmp/mikyu.sock", or "pipe://./pipe/mikyu" into network and address components for net.Dial/Listen.

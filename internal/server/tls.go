@@ -7,13 +7,15 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"fmt"
 	"math/big"
 	"net"
+	"os"
 	"time"
 )
 
-// DefaultTLSConfig returns a modern TLS 1.3 server configuration.
-func DefaultTLSConfig(certFile, keyFile string) (*tls.Config, error) {
+// DefaultTLSConfig returns a modern TLS 1.3 server configuration, verifying client certificates against clientCAFile when it is set.
+func DefaultTLSConfig(certFile, keyFile, clientCAFile string) (*tls.Config, error) {
 	var cert tls.Certificate
 	var err error
 
@@ -29,10 +31,23 @@ func DefaultTLSConfig(certFile, keyFile string) (*tls.Config, error) {
 		}
 	}
 
-	return &tls.Config{
+	cfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS13, // Force TLS 1.3 for hardware-accelerated ciphers
-	}, nil
+	}
+	if clientCAFile != "" {
+		pem, err := os.ReadFile(clientCAFile)
+		if err != nil {
+			return nil, err
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("no certificate found in %s", clientCAFile)
+		}
+		cfg.ClientCAs = pool
+		cfg.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+	return cfg, nil
 }
 
 func generateSelfSignedCert() (tls.Certificate, error) {

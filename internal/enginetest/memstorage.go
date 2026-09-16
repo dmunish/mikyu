@@ -31,19 +31,19 @@ type MemStorage struct {
 	maxSeg int64
 	msgs   []engine.Message
 	groups map[string]uint64
-	minOff  uint64
-	segs    []memSegment
-	closed  bool
-	notify  chan struct{}
+	minOff uint64
+	segs   []memSegment
+	closed bool
+	notify chan struct{}
 }
 
 func NewMemStorage(name string, maxMsg, maxSeg int64) *MemStorage {
 	return &MemStorage{
-		name:    name,
-		maxMsg:  maxMsg,
-		maxSeg:  maxSeg,
-		groups:  make(map[string]uint64),
-		notify:  make(chan struct{}),
+		name:   name,
+		maxMsg: maxMsg,
+		maxSeg: maxSeg,
+		groups: make(map[string]uint64),
+		notify: make(chan struct{}),
 	}
 }
 

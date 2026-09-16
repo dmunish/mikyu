@@ -228,6 +228,30 @@ func TestDaemonHelpListsEveryFlag(t *testing.T) {
 	}
 }
 
+func TestDaemonAuthFailClosedNonLoopbackNoAuth(t *testing.T) {
+	_, _, err := resolveConfig([]string{"--target", "tcp://192.0.2.1:7420"}, io.Discard, io.Discard)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUsage)
+}
+
+func TestDaemonAuthFailClosedTokenWithoutTLS(t *testing.T) {
+	_, _, err := resolveConfig([]string{"--target", "tcp://192.0.2.1:7420", "--auth-method", "token"}, io.Discard, io.Discard)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUsage)
+}
+
+func TestDaemonAuthRejectsTokenFlag(t *testing.T) {
+	_, _, err := resolveConfig([]string{"--auth-token", "secret"}, io.Discard, io.Discard)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUsage)
+}
+
+func TestDaemonAuthMTLSRequiresCAFile(t *testing.T) {
+	_, _, err := resolveConfig([]string{"--target", "tcp://192.0.2.1:7420", "--auth-method", "mtls", "--tls-enabled"}, io.Discard, io.Discard)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUsage)
+}
+
 func TestDaemonBootstrapWithoutConfigFile(t *testing.T) {
 	// The default config resolves next to the binary; under go test that is a
 	// throwaway temp dir, so nothing user-visible is ever touched.
