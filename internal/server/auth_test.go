@@ -194,7 +194,7 @@ func mTLSFixture(t *testing.T) (serverTLS *tls.Config, clientTLS *tls.Config) {
 	}
 
 	// CA-signed server leaf so the client can verify it.
-	srvLeaf, srvDER, srvKey := sign(2, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, []net.IP{net.ParseIP("127.0.0.1")})
+	_, srvDER, srvKey := sign(2, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, []net.IP{net.ParseIP("127.0.0.1")})
 	srvKeyDER, err := x509.MarshalECPrivateKey(srvKey)
 	require.NoError(t, err)
 	srvCertPath := pemFile("server.pem", "CERTIFICATE", srvDER)
@@ -209,7 +209,6 @@ func mTLSFixture(t *testing.T) (serverTLS *tls.Config, clientTLS *tls.Config) {
 
 	root := x509.NewCertPool()
 	root.AddCert(ca)
-	_ = srvLeaf
 	return srvCfg, &tls.Config{
 		Certificates: []tls.Certificate{clientLeaf},
 		RootCAs:      root,
@@ -225,24 +224,62 @@ func TestServerMTLSEndToEnd(t *testing.T) {
 	srvCfg, clientCfg := mTLSFixture(t)
 	mode, err := NewAuthMode(spec.Session{AuthMethod: "mtls"})
 	require.NoError(t, err)
-	srv := New(n, WithAuth(mode), WithTLS(srvCfg))
+
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	srv.listener = ln
-	go srv.Serve(ln)
+	tlsLn := tls.NewListener(ln, srvCfg)
+
+	srv := New(n, WithAuth(mode), WithTLS(srvCfg))
+	srv.listener = tlsLn
+	go srv.Serve(tlsLn)
 	defer srv.Stop()
 
-	// With mTLS, the server requires TLS and verifies client certificates.
-	require.NotNil(t, srvCfg)
-
-	// A bare connection without a client cert should fail at the transport layer.
-	bare, err := tls.Dial("tcp", ln.Addr().String(), &tls.Config{RootCAs: clientCfg.RootCAs, MinVersion: tls.VersionTLS13})
-	switch {
-	case err != nil:
-		assert.Error(t, err, "dial without client cert must fail")
-	default:
-		_, err = bare.Read(make([]byte, 1))
-		assert.Error(t, err, "connection without client cert must fail")
-		_ = bare.Close()
+	bare, err := tls.Dial("tcp", ln.Addr().String(), &tls.Config{
+		RootCAs:    clientCfg.RootCAs,
+		MinVersion: tls.VersionTLS13,
+	})
+	if err != nil {
+		return // handshake refused at dial time
 	}
+	defer bare.Close()
+	_, err = bare.Read(make([]byte, 1))
+	assert.Error(t, err, "connection without client cert must fail")
+}
+
+func TestServerMTLSAcceptsVerifiedClient(t *testing.T) {
+	n, release, err := node.Acquire(t.TempDir(), spec.Spec{})
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+
+	srvCfg, clientCfg := mTLSFixture(t)
+	mode, err := NewAuthMode(spec.Session{AuthMethod: "mtls"})
+	require.NoError(t, err)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	tlsLn := tls.NewListener(ln, srvCfg)
+
+	srv := New(n, WithAuth(mode), WithTLS(srvCfg))
+	srv.listener = tlsLn
+	go srv.Serve(tlsLn)
+	defer srv.Stop()
+
+	conn, err := tls.Dial("tcp", ln.Addr().String(), clientCfg)
+	require.NoError(t, err, "a client with a CA-signed cert must complete the handshake")
+	defer conn.Close()
+
+	var ab protocol.Buffer
+	protocol.EncodeAuth(&ab, protocol.AuthMethodMTLS, nil)
+	require.NoError(t, protocol.WriteFrame(conn, protocol.OpAuth, ab.Bytes()))
+
+	r := bufio.NewReader(conn)
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	op, _, err := protocol.ReadFrame(r)
+	require.NoError(t, err)
+	require.Equal(t, protocol.OpAuth, op, "server must accept an mTLS Auth frame from a verified cert")
+
+	require.NoError(t, protocol.WriteFrame(conn, protocol.OpListQueues, nil))
+	op, _, err = protocol.ReadFrame(r)
+	require.NoError(t, err)
+	assert.Equal(t, protocol.OpListQueues, op, "verified client must reach dispatch")
 }
