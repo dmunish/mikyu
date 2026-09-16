@@ -3,10 +3,9 @@ package command_test
 import (
 	"context"
 	"net"
-	"os"
-	"path/filepath"
 	"testing"
 
+	"github.com/dmunish/mikyu"
 	"github.com/dmunish/mikyu/internal/node"
 	"github.com/dmunish/mikyu/internal/server"
 	"github.com/dmunish/mikyu/internal/spec"
@@ -15,10 +14,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// startTokenServer stands up a loopback server in token mode and returns its
+// dial target plus a cleanup func.
 func startTokenServer(t *testing.T, token string) (target string, cleanup func()) {
 	t.Helper()
-	dir := t.TempDir()
-	n, rel, err := node.Acquire(dir, spec.Spec{})
+	n, rel, err := node.Acquire(t.TempDir(), spec.Spec{})
 	require.NoError(t, err)
 	mode, err := server.NewAuthMode(spec.Session{AuthMethod: "token", AuthToken: token})
 	require.NoError(t, err)
@@ -26,37 +26,24 @@ func startTokenServer(t *testing.T, token string) (target string, cleanup func()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	go srv.Serve(ln)
-	return ln.Addr().String(), func() {
+	return "tcp://" + ln.Addr().String(), func() {
 		srv.Stop()
-		ln.Close()
+		_ = ln.Close()
 		_ = rel()
 	}
 }
 
-func TestLoginWritesFileOnSuccess(t *testing.T) {
-	token := "testtoken0123456789"
-	target := "tcp://fake-login-server"
-
-	// Pre-seed a token and then use Login to verify it saves correctly.
-	require.NoError(t, command.SaveToken(target, token))
-
-	tok, ok := command.LoadToken(target)
-	require.True(t, ok)
-	assert.Equal(t, token, tok)
-}
-
-func TestOpenClientCredentialsFallbackWorks(t *testing.T) {
-	token := "prodtoken012345678"
+// TestOpenClientUsesStoredCredential: a token in the credential store
+// authenticates a remote OpenClient with no explicit session flag.
+func TestOpenClientUsesStoredCredential(t *testing.T) {
+	const token = "prodtoken0123456789"
 	target, cleanup := startTokenServer(t, token)
 	defer cleanup()
 
-	// Pre-seed the credential file.
-	require.NoError(t, command.SaveToken("tcp://"+target, token))
+	require.NoError(t, command.SaveToken(target, token))
 
-	// OpenClient with no explicit auth flags should load from file.
 	sess := spec.BuiltinSession()
-	sess.Target = "tcp://" + target
-	sess.DataDir = "" // remote mode
+	sess.Target = target
 
 	client, err := command.OpenClient(sess)
 	require.NoError(t, err)
@@ -67,27 +54,22 @@ func TestOpenClientCredentialsFallbackWorks(t *testing.T) {
 	assert.Empty(t, queues)
 }
 
-func TestExplicitAuthTokenFileBeatsCredentialFile(t *testing.T) {
-	tokenFile := filepath.Join(t.TempDir(), "token-file")
-	require.NoError(t, os.WriteFile(tokenFile, []byte("explicit0123456789"), 0600))
+// TestOpenClientRejectsWrongStoredCredential: a stale credential in the store
+// surfaces ErrUnauthorized instead of silently passing through.
+func TestOpenClientRejectsWrongStoredCredential(t *testing.T) {
+	const token = "realtoken0123456789"
+	target, cleanup := startTokenServer(t, token)
+	defer cleanup()
 
-	require.NoError(t, command.SaveToken("tcp://fake", "credential0123456789"))
+	require.NoError(t, command.SaveToken(target, "wrongtoken012345678"))
 
-	// The explicit file should be used when set in session.
 	sess := spec.BuiltinSession()
-	sess.Target = "tcp://fake"
-	sess.AuthTokenFile = tokenFile
+	sess.Target = target
 
-	// Because there's no real server, we verify precedence via LoadToken
-	// behavior combined with session values: when AuthTokenFile is set,
-	// the session carries it; the fallback should NOT override it.
-	tokFile, ok := command.LoadToken("tcp://fake")
-	require.True(t, ok)
-	// The credential file holds the old value.
-	require.Equal(t, "credential0123456789", tokFile)
+	client, err := command.OpenClient(sess)
+	require.NoError(t, err)
+	defer client.Close()
 
-	// Now update the session's AuthTokenFile; OpenClient would use that file.
-	// The precedence is verified by the code path: session.AuthTokenFile
-	// is set → WithAuthTokenFile uses it → LoadToken is not called.
-	_ = sess
+	_, err = command.List(context.Background(), client)
+	require.ErrorIs(t, err, mikyu.ErrUnauthorized)
 }
