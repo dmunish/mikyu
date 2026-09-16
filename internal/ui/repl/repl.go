@@ -26,6 +26,7 @@ type replSession struct {
 	dir     string
 	session spec.Session
 	ctx     context.Context
+	scanner *bufio.Scanner
 
 	activeQueue   string
 	lastTaskQueue string
@@ -80,15 +81,16 @@ func RunREPL(target string, args []string) error {
 	fmt.Print("\x1b[2J\x1b[H")
 	PrintREPLBanner(global.Session.Target, global.Session.DataDir)
 
+	scanner := bufio.NewScanner(os.Stdin)
 	sess := &replSession{
 		client:  client,
 		target:  global.Session.Target,
 		dir:     global.Session.DataDir,
 		session: global.Session,
 		ctx:     context.Background(),
+		scanner: scanner,
 	}
 
-	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print(sess.prompt())
 
@@ -473,18 +475,27 @@ func (s *replSession) handleMetrics(args []string) {
 	render(snap)
 }
 
+// handleLogin reads a token from the REPL's own scanner and verifies it
 func (s *replSession) handleLogin(args []string) {
 	target := s.target
 	if len(args) == 1 {
 		target = args[0]
 	}
-	if err := command.Login(s.ctx, target); err != nil {
+	fmt.Print("Token: ")
+	if !s.scanner.Scan() {
+		if err := s.scanner.Err(); err != nil {
+			s.fail(err)
+		} else {
+			fmt.Println(errStyle.Render("No token provided."))
+		}
+		return
+	}
+	if err := command.LoginWithToken(s.ctx, target, strings.TrimSpace(s.scanner.Text())); err != nil {
 		s.fail(err)
 		return
 	}
 	fmt.Println(successStyle.Render(fmt.Sprintf("● Stored token for %s.", target)))
 }
-
 func (s *replSession) handleLogout(args []string) {
 	target := s.target
 	if len(args) == 1 {
