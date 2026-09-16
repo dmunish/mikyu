@@ -29,6 +29,7 @@ The project ships as a **single binary** with four roles:
 - **Single source of truth for configuration.** Every queue and session parameter lives in `spec.Table` with a canonical key, path, kind, layer, mutability, env name, flag name, and option name. All layers (SDK, CLI, env, YAML, wire, storage) are driven from that one table, and the table itself is a published artifact: `mikyu.Schema()` returns it locally, `OpSchema` serves it over the wire.
 - **Live telemetry under one surface.** `internal/metrics` is the single observation point: a pull‑based `Collector` over a `Registry` of atomic instruments, materializing `Snapshot`s for the wire (`OpMetrics`), the CLI/REPL (`metrics`), and the daemon's Prometheus/JSON/SSE HTTP endpoints. There is no separate `Info`/`Stats` path.
 - **Enforced architecture.** `.go-arch-lint.yml` defines the package‑level dependency graph; `internal/audit` gates legacy names and comment style. CI fails on a violation.
+- **Authentication is a handshake, not a per‑op concern.** The first frame on every connection is `OpAuth`; the server verifies it once, then dispatches. `none`, `token`, and `mtls` are the only supported modes, and an unauthenticated non‑loopback daemon refuses to start.
 
 ### 1.2 Concurrency & Performance Snapshot
 
@@ -41,6 +42,7 @@ The project ships as a **single binary** with four roles:
 | WAL steady‑state flusher | 0 allocs/op, 3 B/op (double‑buffered swap) |
 | 64 KB protocol frame | 38.5 µs → 3.5 µs (pooled writer) |
 | Index RAM | `O(log S)` per read; footprint scales with segment count, not message count |
+| `OpAuth` handshake | one extra frame per connection; amortized to zero by the pooled client |
 
 ---
 
@@ -55,6 +57,7 @@ The project ships as a **single binary** with four roles:
 7. **Path escape is a compile‑time concern.** Every file operation in `engine` uses `os.Root` scoped to the data directory.
 8. **Refcount over teardown.** Embedded clients share one `node.Node` per absolute data directory. `Close` decrements; the last one releases the manager, drivers, lock, collector, and retention loop.
 9. **Errors are stable sentinels.** Wire codes map 1:1 to Go sentinels. Messages are human text, never contracts.
+10. **Auth is one handshake per connection.** Credentials are declared once in `OpAuth` and verified once in `authMode.Verify`; the rest of the protocol is credential‑free. The verifier lives in `internal/server/auth.go`, not in `dispatch.go`, so a future auth mode is one file.
 
 ---
 
@@ -82,7 +85,7 @@ The project ships as a **single binary** with four roles:
 ┌─────────────────────────────▼───────────────────────────────────────────────┐
 │  Layer 3 — Transport                                                        │
 │    internal/transport/protocol      internal/transport/ipc                  │
-│    internal/server                  internal/daemon (lifecycle)             │
+│    internal/server (dispatch + auth)                                        │
 └─────────────────────────────┬───────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────▼───────────────────────────────────────────────┐
@@ -105,7 +108,7 @@ Both drivers take an `engine.Storage` handle. A **single physical queue** can be
 | Aspect | `logqueue.LogQueue` | `taskqueue.TaskQueue` |
 |---|---|---|
 | Record shape | Raw `encodeRecord` from `engine` | `taskRecordMagic` + kind byte + task payload |
-| Foregin records | Yielded as opaque `engine.Message` | Ignored in `refreshLocked` (unknown kind) |
+| Foreign records | Yielded as opaque `engine.Message` | Ignored in `refreshLocked` (unknown kind) |
 | Consumer state | `group.Base` (HighWater) in memory | `active` map + `scheduleHeap` + `dlq` |
 | Durability anchor | Consumer group commit offsets | Chunked checkpoints (`recordCPCommit`) |
 | Retention floor | `min(HighWater)` across groups | `min(checkpointOffset, active offsets, uncheckpointed DLQ)` |
@@ -127,6 +130,26 @@ taskqueue.TruncateFloor  ──┘            │
 ```
 
 The coordinator holds a `Policy{Age, Bytes}` per queue. A policy shrink (`SetPolicy` reports it) triggers an immediate out‑of‑band reconcile, bounded by a 5‑minute context. Driver floors **cap** truncation but never mandate it: without a policy or an explicit `requested` floor, nothing is deleted.
+
+### 3.3 The Auth Boundary
+
+Authentication sits between the transport and dispatch. It is deliberately not a driver concern: the task and log drivers never see a credential, and the wire server never sees a stored token—only the `authMode.Verify` contract:
+
+```
+client dial ──► OpAuth(method, credential) ──► server serveConn
+                                                    │
+                                                    ▼
+                                          authMode.Verify(method, cred, tlsState)
+                                                    │
+                                        ┌───────────┴───────────┐
+                                        ▼                       ▼
+                                    OpAuth ack               OpError(0x09)
+                                        │
+                                        ▼
+                                     dispatch
+```
+
+The client presents an mTLS claim implicitly when its `tls.Config` carries a cert, a token claim when the session config carries a token or token file, and `none` otherwise. `internal/server/tls.go` is the only place that turns a session into a `tls.Config` that can satisfy an `mtls` verifier.
 
 ---
 
@@ -166,7 +189,7 @@ Everything downstream is driven from the table:
 |---|---|---|
 | `LayerCall` | Per call (`WithVisibility`, `WithRetryAfter`, `WithMaxAttempts`, `WithScheduledAt`) | Never persisted. Not a `Spec` field. No env var. |
 | `LayerSpec` | Per queue (`CreateQueue`/`UpdateQueue` options, `defaults:` block in YAML, `MIKYU_*` env) | `queues.json` and wire JSON. Has `Spec` fields. |
-| `LayerSession` | Per process / session (`--dir`, `--target`, `MIKYU_TARGET`, `--metrics-listen`, etc.) | `mikyu.yaml` `server:` block, or env. Never reaches the wire queue spec. |
+| `LayerSession` | Per process / session (`--dir`, `--target`, `MIKYU_TARGET`, `--metrics-listen`, `--auth-method`, etc.) | `mikyu.yaml` `server:` block, or env. Never reaches the wire queue spec. |
 
 ### 4.2 Effective Spec Resolution
 
@@ -198,6 +221,10 @@ effective = stored.Spec.Merge(session_defaults).Merge(spec.Builtin())
 | `server.target` | `tcp://127.0.0.1:7420` |
 | `server.data_dir` | `./data` |
 | `server.max_conns` | `10` |
+| `server.auth_method` | `none` |
+| `server.auth_token_file` | `""` |
+| `server.auth_token` | `""` |
+| `server.tls_client_ca_file` | `""` |
 | `server.metrics_enabled` | `true` |
 | `server.metrics_interval` | `1s` |
 | `server.metrics_history` | `300` |
@@ -220,6 +247,19 @@ The table is a first‑class SDK artifact. Three surfaces publish it:
 - **Codec.** The JSON and YAML encoders share the same struct tags; `TestJSONIsValidYAML` proves anything the wire sends is readable by the YAML config path.
 
 The net effect: a client can discover what a server accepts, decode a stored spec, and validate a patch without linking `internal/spec`.
+
+### 4.6 Session Validation
+
+`spec.ValidateSession` is the only place session‑level invariants are checked. Auth is one of them:
+
+- `max_conns` must be ≥ 1.
+- `metrics_interval` must be positive when metrics are enabled; `metrics_history` ≥ 1.
+- `metrics_listen`, when set, must be a `host:port`.
+- `auth_method` must be `""`, `none`, `none-insecure`, `token`, or `mtls`.
+- `token` mode requires `auth_token` or `auth_token_file`; a token shorter than 16 bytes is rejected.
+- `mtls` requires `tls_enabled`.
+
+`node.Acquire` and `config.Load` both call it, so a session that fails validation never reaches the wire server.
 
 ---
 
@@ -283,7 +323,7 @@ github.com/dmunish/mikyu/
     │
     ├── transport/
     │   ├── protocol/               # frames.go, bytes.go, opcodes.go, errors.go,
-    │   │                            # task.go, log.go, doc.go
+    │   │                            # auth.go, task.go, log.go, doc.go
     │   └── ipc/ipc.go              # Unix socket / named pipe listener & dialer
     │
     ├── node/                       # Process-wide shared local node
@@ -296,9 +336,11 @@ github.com/dmunish/mikyu/
     │   ├── lock.go  lock_unix.go  lock_windows.go
     │
     ├── server/                     # Wire server
-    │   ├── server.go  dispatch.go  tls.go  errors.go
+    │   ├── server.go  dispatch.go  errors.go
+    │   ├── auth.go                 # authMode: NewAuthMode, Verify
+    │   ├── tls.go                  # DefaultTLSConfig (client CA aware)
     │   ├── metrics.go              # Per-op counters + histograms
-    │   ├── handlers_admin.go  handlers_log.go  handlers_task.go
+    │   └── handlers_admin.go  handlers_log.go  handlers_task.go
     │
     ├── client/                     # Embedded and remote clients
     │   ├── embedded.go  embedded_queues.go  options.go  errors.go  types.go
@@ -306,11 +348,11 @@ github.com/dmunish/mikyu/
     │
     ├── daemon/                     # Daemon lifecycle
     │   ├── daemon.go  detach_unix.go  detach_windows.go
-    │   ├── metrics_http.go         # /metrics, /api/metrics, /api/history, /api/events
+    │   └── metrics_http.go         # /metrics, /api/metrics, /api/history, /api/events
     │
     └── ui/
-        ├── command/                # Shared verb + flag helpers (command.go,
-        │                            # task.go, flags.go, verbs.go)
+        ├── command/                # Shared verb + flag helpers (command.go, task.go,
+        │                            # flags.go, verbs.go, auth.go)
         ├── cli/                    # One-shot CLI (cli.go, task.go)
         └── repl/                   # Interactive REPL (repl.go, task.go, style.go,
                                      # vt_{other,windows}.go)
@@ -332,6 +374,8 @@ command                                             → mikyu, client, daemon, s
 cli, repl                                           → mikyu, client, daemon, command, spec
 cmd                                                 → mikyu, daemon, cli, repl
 ```
+
+`server` owns the auth verifier; `client` owns the credential resolution. Neither imports the other.
 
 ---
 
@@ -993,17 +1037,32 @@ Opcodes are **nibble‑grouped** by subsystem:
 | Admin | `0x0X` | `OpCreateQueue`, `OpDeleteQueue`, `OpListQueues`, `OpUpdateQueue`, `OpDescribeQueue`, `OpTruncate`, `OpMetrics` (0x07), `OpSchema` (0x08), `OpShutdown` (0x0C) |
 | Log | `0x1X` | `OpAppend`, `OpAppendBatch`, `OpRead`, `OpReadBatch`, `OpLastOffset`, `OpCommit`, `OpCommitted`, `OpFetch` |
 | Task | `0x2X` | `OpEnqueue`, `OpDequeue`, `OpAck`, `OpNack`, `OpExtend`, `OpDeadLetters`, `OpDeadLetterAck` |
-| Protocol‑level | — | `OpError` (0xFF), `OpReservedHandshake` (0x7E) |
+| Protocol‑level | — | `OpError` (0xFF), `OpAuth` (0x7E) |
 
-`OpMetrics` occupies `0x07`, the slot that was reserved before metrics landed; `OpSchema` occupies `0x08`, returning the parameter table. The `Info` opcode is retired and never reissued; the frozen table skips it. The table is **frozen**: opcodes are never reused. `TestOpcodeNibbleGrouping` asserts every op lives in its declared nibble and no collisions exist.
+`OpMetrics` occupies `0x07`, the slot that was reserved before metrics landed; `OpSchema` occupies `0x08`, returning the parameter table. `OpAuth` occupies `0x7E`, the protocol‑level handshake slot; it was reserved before auth landed and is now live. The `Info` opcode is retired and never reissued; the frozen table skips it. The table is **frozen**: opcodes are never reused. `TestOpcodeNibbleGrouping` asserts every op lives in its declared nibble and no collisions exist.
 
 `ParseTarget` supports `tcp://`, `unix://`, `pipe://`, and bare `host:port` (treated as TCP).
 
 #### 11.1.4 Errors — `errors.go`
 
-Codes are blocked by subsystem nibble: `0x01–0x0F` admin, `0x11–0x1F` storage, `0x21–0x2F` task, `0x31–0x3F` dead‑letter. `OpError` frames carry one code plus a human message; the code is the stable contract.
+Codes are blocked by subsystem nibble: `0x01–0x0F` admin, `0x11–0x1F` storage, `0x21–0x2F` task, `0x31–0x3F` dead‑letter, `0x41–0x4F` server. `0x09` (`ErrCodeUnauthorized`) is the auth rejection code; the server uses it for both a bad handshake and a missing handshake on an auth‑required server. `OpError` frames carry one code plus a human message; the code is the stable contract.
 
-#### 11.1.5 Task Wire — `task.go`
+#### 11.1.5 Auth Frames — `auth.go`
+
+```go
+const (
+    AuthMethodNone  byte = 0
+    AuthMethodToken byte = 1
+    AuthMethodMTLS  byte = 2
+)
+
+func EncodeAuth(b *Buffer, method byte, credential []byte)
+func DecodeAuth(r *Reader) (byte, []byte, error)
+```
+
+The `OpAuth` frame is `u8 method` followed by a length‑prefixed `credential` (empty for `none` and `mtls`). It is sent as the first frame on every connection; the server verifies it and replies with an empty `OpAuth` frame, or with `OpError(0x09, msg)` and closes. `DecodeAuth` uses the same bounds‑checked `Reader` as every other codec, so a truncated credential surfaces as `ErrTruncatedBody` and is rejected before dispatch.
+
+#### 11.1.6 Task Wire — `task.go`
 
 `EncodeTask` / `DecodeTask` serialize `Task` including `DeliveryID` and `Offset`. `DecodeTask` rejects malformed payloads (`ErrInvalidTask`), including non‑zero `Visibility` without a `DeliveryID`. `EncodeTaskRef` / `DecodeTaskRef` prefix a **mode byte**:
 
@@ -1012,7 +1071,7 @@ Codes are blocked by subsystem nibble: `0x01–0x0F` admin, `0x11–0x1F` storag
 
 `EncodeTaskDequeue` clamps negative timeouts to 0 so they decode as "non‑blocking" instead of a 64‑bit millisecond value. `EncodeTaskList` / `DecodeTaskList` handle `DeadLetters` responses with a `10,000,000` cap.
 
-#### 11.1.6 Log Wire — `log.go`
+#### 11.1.7 Log Wire — `log.go`
 
 The log wire DTO is `LogRecord{Offset, ID, Timestamp, Payload}`.
 
@@ -1033,18 +1092,34 @@ type Server struct {
     node      *node.Node
     listener  net.Listener
     tlsConfig *tls.Config
+    maxConns  int
+    slots     chan struct{}
     mu        sync.Mutex
     stopCh    chan struct{}
     doneCh    chan struct{}
     metrics   *serverMetrics
+    auth      *authMode
 }
+
+func New(n *node.Node, opts ...ServerOption) *Server
+func WithAuth(m *authMode) ServerOption
+func WithTLS(tlsConfig *tls.Config) ServerOption
+func WithMaxConns(n int) ServerOption
 ```
 
 - `getOrCreateLogQueue` / `getOrCreateTaskQueue` delegate to the node's stable cached handles.
 - `ListenAndServe(target)` picks `ipc.Listen` for `unix`/`pipe` or `net.Listen` for `tcp`, wraps `tcp` with TLS if configured, and calls `Serve`.
-- `Serve(ln)` accepts and spawns `serveConn` per connection.
+- `Serve(ln)` accepts and spawns `serveConn` per connection. Admission control uses `slots` (`maxConns > 0`); a rejected connection receives `OpError(ErrCodeTooManyConnections)` from `rejectConn`, which reads (and discards) one frame to make the client's write complete.
 - `serveConn` reads frames on a **single reader goroutine** feeding an unbuffered channel; the main goroutine dispatches each frame and writes the response. This gives one frame of lookahead and natural backpressure, and lets a dead connection cancel a long‑polling handler. `OpShutdown` sets `shouldShutdown`; the goroutine then launches `s.Stop()` and returns.
 - `Stop()` closes the stop channel and the listener; safe to call from any goroutine.
+
+`serveConn` begins with a **mandatory handshake read** before dispatch:
+
+1. `ReadFrame` the first frame.
+2. If it is `OpAuth`, `DecodeAuth` and call `s.auth.Verify(method, cred, tlsStateOf(conn))`. A rejection replies with `OpError(ErrCodeUnauthorized)` and closes; a success replies with `OpAuth, nil`, and the reader is re-armed for the next frame.
+3. Otherwise, if `s.auth.Required()` is set, the connection is refused with `OpError(ErrCodeUnauthorized)` and closed. Anonymous servers accept a first frame that is not `OpAuth` (legacy first‑frame clients still work when the server is anonymous).
+
+`tlsStateOf(conn)` returns the negotiated TLS state (or nil for plain connections) so `authMode.Verify` can require a verified client chain when the mode is `mtls`.
 
 `dispatch.go` routes every opcode and records each one's latency. `handlers_admin.go` covers queue lifecycle, `OpMetrics`, and `OpSchema`; `handlers_log.go` covers append/read/read‑batch/last‑offset/commit/committed/fetch; `handlers_task.go` covers enqueue/dequeue/ack/nack/extend/dead‑letters. Every response is either a success frame reusing the request opcode, or `OpError`.
 
@@ -1056,17 +1131,47 @@ type Server struct {
 
 `handleDequeue` caps server‑side long‑poll at `maxDequeueWait = 5 min` and reports `ErrCodeTaskNotAvailable` on clean context deadline, so clients re‑arm.
 
-`tls.go` `DefaultTLSConfig(certFile, keyFile)` loads a keypair or generates an ECDSA P‑256 self‑signed cert (`localhost`, `127.0.0.1`, `::1`, 1‑year validity), with `MinVersion: tls.VersionTLS13`.
+#### 11.3.1 Auth — `auth.go`
 
-`errors.go` `taskErr` maps each driver/spec/node sentinel to its wire code. Unknown errors map to `ErrCodeUnknown`.
+```go
+type authMode struct {
+    method byte
+    token  []byte
+}
 
-#### 11.3.1 Server Metrics — `metrics.go`
+func NewAuthMode(sess spec.Session) (*authMode, error)
+func (a *authMode) Required() bool
+func (a *authMode) Verify(method byte, cred []byte, tlsState *tls.ConnectionState) error
+```
+
+`NewAuthMode` resolves a session into a verifier:
+
+| `auth_method` | Verifier | Notes |
+|---|---|---|
+| `""`, `none`, `none-insecure` | `method: AuthMethodNone` | Accepts any first frame. |
+| `token` | `method: AuthMethodToken`, `token: []byte(tok)` | Reads `AuthTokenFile` when `AuthToken` is empty; the token must be ≥ 16 bytes. |
+| `mtls` | `method: AuthMethodMTLS` | Requires `tls_enabled` and, at the TLS layer, a verified client chain. |
+
+`Verify` is a constant‑time comparison for token mode; mTLS delegates the actual certificate check to the TLS handshake and asserts `tlsState.VerifiedChains` is non‑empty. Unknown modes fall through to `ErrUnauthorized`. This is the only place a credential is compared; nothing else in `server` (or anywhere else) inspects a token.
+
+`minTokenBytes = 16` is enforced both in `NewAuthMode` and `spec.ValidateSession`, so a short token fails at the process boundary as well as on the wire.
+
+#### 11.3.2 TLS — `tls.go`
+
+```go
+func DefaultTLSConfig(certFile, keyFile, clientCAFile string) (*tls.Config, error)
+```
+
+Loads a keypair or generates an ECDSA P‑256 self‑signed cert (`localhost`, `127.0.0.1`, `::1`, 1‑year validity), always with `MinVersion: tls.VersionTLS13`. When `clientCAFile` is non‑empty, the file's PEM bundle populates `ClientCAs` and `ClientAuth = tls.RequireAndVerifyClientCert`, which is what makes `AuthMethodMTLS` verifiable at the handshake layer.
+
+#### 11.3.3 Server Metrics — `metrics.go`
 
 The server caches a `serverMetrics` for its own scope, resolved once in `New`:
 
 ```go
 type serverMetrics struct {
     connections *metrics.Gauge
+    rejected    *metrics.Counter
     ops         map[byte]*metrics.Counter
     durations   map[byte]*metrics.Histogram
 }
@@ -1074,7 +1179,7 @@ type serverMetrics struct {
 
 `newServerMetrics` creates one counter and one histogram per opcode in `opLabels` (`op_<label>` and `op_<label>_duration`). `recordOp(op, start)` counts and observes each dispatched operation. The node **preregisters** every instrument before the collector ticks (§12.3), so the first tick already has a `"server"` scope to read and the Prometheus endpoint labels it correctly on an idle server.
 
-`connections` is a gauge the server maintains across `serveConn`: +1 on entry, −1 on exit.
+`connections` is a gauge the server maintains across `serveConn`: +1 on entry, −1 on exit. `rejected` counts connections turned away by the admission cap. `OpAuth` is deliberately not in `opLabels`: the handshake is recorded as part of `serveConn`, not as a dispatched op.
 
 ---
 
@@ -1167,7 +1272,7 @@ Scope readings (§7.5 `mergeScopes`) supply the counters and histograms from eac
 - The `"server"` scope is visible to a snapshot even on an idle process.
 - Two concurrent calls cannot race instrument creation inside `Scope.Histogram`.
 
-This mirrors the instruments the server's `opLabels` map declares, and it is why `TestMetricsHTTPPrometheusPerQueue` sees `queue="server"` series on a fresh daemon. `OpSchema` is deliberately not in `opLabels`: it is a schema‑discovery op, not a data‑path op, and the server records it through the generic dispatch path.
+This mirrors the instruments the server's `opLabels` map declares, and it is why `TestMetricsHTTPPrometheusPerQueue` sees `queue="server"` series on a fresh daemon. `OpSchema` is deliberately not in `opLabels`: it is a schema‑discovery op, not a data‑path op, and the server records it through the generic dispatch path. `OpAuth` is handled before dispatch and is therefore also absent from `opLabels`.
 
 ### 12.4 Runtime Source — `runtime_source.go`
 
@@ -1191,7 +1296,14 @@ func (s *RuntimeSource) Collect(_ context.Context, dst *metrics.Snapshot)
 
 ### 13.1 Options — `options.go`
 
-`SessionConfig` carries `Spec`, `Target`, `DataDir`, `MaxConns`, `TLSEnabled`, `TLSCertFile`, `TLSKeyFile`, `AutoStart`, and the six metrics settings. `WithSessionSpec` replaces the inherited defaults. `TLSConfig()` builds a `tls.Config` from a cert pair, using the client cert as its own root, `MinVersion: tls.VersionTLS13`.
+`SessionConfig` carries `Spec`, `Target`, `DataDir`, `MaxConns`, `TLSEnabled`, `TLSCertFile`, `TLSKeyFile`, `AutoStart`, `AuthMethod`, `AuthToken`, `AuthTokenFile`, `TLSClientCaFile`, and the six metrics settings. `WithSessionSpec` replaces the inherited defaults. `TLSConfig()` builds a `tls.Config` from a cert pair, using the client cert as its own root, `MinVersion: tls.VersionTLS13`.
+
+Auth options (each maps directly onto a session parameter):
+
+- `WithAuthMethod(method string)`
+- `WithAuthToken(tok string)`
+- `WithAuthTokenFile(path string)`
+- `WithTLSClientCAFile(path string)`
 
 Metrics options (each maps directly onto a session parameter):
 
@@ -1202,7 +1314,7 @@ Metrics options (each maps directly onto a session parameter):
 - `WithMetricsPerQueuePrometheus(enabled bool)`
 - `WithMetricsHistograms(enabled bool)`
 
-`WithAutoStart(enabled bool)` makes `Dial` spawn a daemon with the session's settings when the target is not already serving; it is a client‑composition helper, not a table row.
+`WithAutoStart(enabled bool)` makes `Dial` spawn a daemon with the session's settings when the target is not already serving; it is a client‑composition helper, not a table row. It forwards the auth settings through to the spawned daemon's `SpawnOptions` so a one‑call `Dial` to a token‑mode target reaches the right server.
 
 `QueueOption func(*spec.Spec)` — every queue option writes exactly one field, so the spec is sparse by construction. `applyQueueOptions` folds them.
 
@@ -1210,15 +1322,18 @@ Metrics options (each maps directly onto a session parameter):
 
 `embeddedClient` holds `*node.Node` and the release func from `node.Acquire`. Every method delegates to the node. `Metrics(ctx)` returns the node's snapshot. `Schema(ctx)` returns a fresh copy of `spec.Table`. `SubscribeSnapshots()` returns the node collector's subscription so the CLI/REPL `metrics --watch` can stream without polling. `Close` releases the reference.
 
+`NewEmbedded` rejects `WithTarget` with `ErrModeMismatch`; auth options are accepted but only `TLSClientCaFile`, `AuthMethod`, `AuthToken`, and `AuthTokenFile` are meaningful in the embedded case (they have no wire peer, so they simply flow into the session defaults and are ignored at this layer).
+
 ### 13.3 Remote — `remote.go`, `remote_logqueue.go`, `remote_taskqueue.go`, `remote_group.go`
 
 `remoteClient` holds a pooled `chan *clientConn` and a `connSem` counting semaphore sized to `MaxConns`:
 
 - `acquire(ctx)` — take a semaphore slot, then pop from the pool or dial fresh.
-- `dialConn` — `ipc.DialContext` for `unix`/`pipe`; `tls.Dialer` or `net.Dialer` for `tcp` with a 5 s timeout.
+- `dialConn` — `ipc.DialContext` for `unix`/`pipe`; `tls.Dialer` or `net.Dialer` for `tcp` with a 5 s timeout. **Immediately after the socket is up**, it calls `authCredential()` and sends the `OpAuth` handshake via `writeAuth`, reading back either an empty `OpAuth` frame or an `OpError`, which is decoded through the same `decodeProtocolError` the rest of the client uses.
+- `authCredential()` — resolves the method and credential the client presents: a token file wins over an inline token, which wins over the implicit mTLS claim (`c.tls != nil`), which wins over `none`.
 - `release(ch)` — return to pool unless closed or full.
 - `Close` — flip `closed`, drain the pool.
-- `exchange(ctx, op, body)` — acquire, set deadline from `ctx`, run a cancellation watcher that forces the socket deadline to a poisoned time on `ctx.Done()`, write frame, read frame, decode `OpError`. On cancellation or error, `discard` the connection (never return a connection with an unread response to the pool).
+- `exchange(ctx, op, body)` — acquire, set deadline from `ctx`, run a cancellation watcher that forces the socket deadline to a poisoned time on `ctx.Done()`, write frame, read frame, decode `OpError`. On cancellation or error, `discard` the connection (never return a connection with an unread response to the pool). A `ErrCodeTooManyConnections` reply always discards, because the server closed the connection after refusing.
 
 `Metrics(ctx)` decodes the `OpMetrics` response: `u16 specVersion` gated through `spec.CheckSpecVersion`, then a length‑prefixed JSON `metrics.Snapshot`, capped at `MaxSpecPayload`. Embedded and remote clients produce identical JSON (modulo timestamp and machine‑local values), verified by `TestEmbeddedMetricsMatchesRemote`.
 
@@ -1241,7 +1356,7 @@ Metrics options (each maps directly onto a session parameter):
 
 `remoteGroup` embeds `group.Base` with a `CommitFn` that exchanges `OpCommit`.
 
-`errors.go` `decodeProtocolError` maps each wire code back to the exact Go sentinel, preserving server detail after the sentinel text (so `ErrImmutableField: …segment_size…` still satisfies `errors.Is`). `ErrCodeNoData` maps to `engine.ErrNoData`.
+`errors.go` `decodeProtocolError` maps each wire code back to the exact Go sentinel, preserving server detail after the sentinel text (so `ErrImmutableField: …segment_size…` still satisfies `errors.Is`). `ErrCodeNoData` maps to `engine.ErrNoData`; `ErrCodeUnauthorized` maps to `protocol.ErrUnauthorized`, which the SDK re‑exports as `mikyu.ErrUnauthorized`.
 
 ---
 
@@ -1255,7 +1370,7 @@ The canonical CLI/REPL verb list:
 |---|---|
 | Log | `list`, `create`, `update`, `describe`, `delete`, `append`, `read`, `tail`, `truncate` |
 | Task | `enqueue`, `dequeue`, `ack`, `nack`, `extend`, `dlq`, `dlq-ack` |
-| Admin | `metrics`, `shutdown` |
+| Admin | `metrics`, `shutdown`, `login`, `logout` |
 
 `command.Verbs` is the single source; `cli.handlers` and `repl.replHandlers` are keyed by the same names, and `TestNamingLaw` in `mikyu/surface_test.go` asserts no retired vocabulary (`Produce`, `Publish`, `Pop`, `Stats`, `Info`, `DequeueNow`, `FetchOffset`, `OriginalOffset`, …) leaks into any verb or method.
 
@@ -1263,16 +1378,23 @@ The canonical CLI/REPL verb list:
 
 - Log: `List`, `Create`, `Update`, `Describe`, `Delete`, `Append`, `Read`, `Tail`, `Truncate`, `Metrics`, `Shutdown`.
 - Task: `Enqueue`, `Dequeue`, `TaskAck`, `TaskNack`, `TaskExtend`, `TaskDeadLetters`, `TaskAckDeadLetter`.
+- Auth (`auth.go`): `CredentialsPath`, `LoadToken`, `SaveToken`, `DeleteToken`, `Logout`, `Login`, `LoginWithToken`, `readTokenFrom`.
 - `ResolvePayload` — string, `@file`, or `-` (stdin).
 - `FormatSingleLinePayload` — escapes CR/LF/TAB, strips control chars, and truncates to a terminal‑width cell count via Lipgloss.
 - `TightensRetention(current, patch)` — used to decide whether to prompt before an irreversible update.
 - Flags: `SessionFlags`, `QueueFlagSet`, `QueuePatchFlagSet`, `EnqueueFlagSet`, `NackFlagSet`, plus `ParseAnywhere` for flags before/after positionals. All flag sets are driven by `spec.Params(layer)` and `spec.ParamsInScope(layer, scopes...)`.
 - `SpecOption(spec.Spec)` — the one bridge that hands a fully‑built spec to the SDK.
-- `OpenClient(session)` — embedded if `--dir`, otherwise ensures the daemon is running and dials.
+- `OpenClient(session)` — embedded if `--dir`, otherwise ensures the daemon is running and dials; before dialing it loads a stored credential for the target when the session has no explicit token.
+
+#### 14.2.1 Credential Store — `auth.go`
+
+`os.UserConfigDir()/mikyu/credentials` holds a YAML map of `target → token`, written atomically at mode `0o600`. `LoadToken`, `SaveToken`, and `DeleteToken` are the only accessors; a missing file reads as empty, and `writeCredentials` fsyncs the temp file before renaming so a crash leaves either the old map or the new one, never a torn file. `LoginWithToken` verifies a token against the target with a one‑shot `Dial` + `ListQueues` before persisting it; a bad token therefore never lands on disk. `Login` reads from `os.Stdin` (masked when a TTY), and `Logout` is a thin alias for `DeleteToken`. The store is the single place a session obtains a token when neither `--auth-token` nor `--auth-token-file` is set.
 
 ### 14.3 CLI — `internal/ui/cli`
 
 `App{Stdin, Stdout, Stderr, Confirm}` — testable stream surface. `Run(target, args)` parses global flags, looks up the verb, optionally prints per‑verb help from `spec.Params`, opens the client, and dispatches. `confirm` uses the injected `Confirm` in tests, otherwise prompts on a TTY and requires `-y/--yes` on non‑interactive input. Exit codes come from `cmd/mikyu` (`0` success, `1` general error, `2` usage error via `daemon.ErrUsage`).
+
+`handleLogin` reads a token from the process's stdin (via `command.Login`), verifies it, and stores it; `handleLogout` clears the stored entry. Both accept `--target` (default: the session's target) and are the only verbs that do not need a working client to complete their main effect.
 
 `handleMetrics` accepts `--json`, `--watch`, and `--queue <name>`. `--watch` first tries to subscribe to the embedded node's collector (`SubscribeSnapshots`); when the client is remote it polls `Metrics` on a one‑second ticker. `--json` always emits the full snapshot; the text form prints uptime, data dir, queue count, total bytes, then one line per queue with its gauges.
 
@@ -1283,10 +1405,12 @@ The canonical CLI/REPL verb list:
 `replSession` carries the client, target, dir, active queue, last task queue, last task ID, and a `done` flag. `dispatch` maps the first token:
 
 - Session commands: `use`, `help`, `exit`/`quit`.
-- Every verb from `command.Verbs`.
+- Every verb from `command.Verbs`, including `login` and `logout`.
 - Retired names (`produce`, `publish`, `pop`, `stats`, `info`) are explicitly unreachable (`TestREPLMatchesCLIVerbs`, `TestREPLNoInfoVerb`).
 
 `resolveQueue` and `queueFor` let `ack`/`nack`/`extend`/`dlq`/`dlq-ack` fall back to the active queue and then to the last dequeued task's queue. `taskRef` lets `ack`/`nack`/`extend` reuse `lastTaskID` when no argument is given.
+
+`handleLogin` reads a token from the REPL's own `bufio.Scanner` (rather than `os.Stdin`) so it composes with the interactive input loop, verifies it against the target, and stores it. `handleLogout` clears the stored entry.
 
 `handleMetrics` supports `--watch`, streaming snapshots every second until interrupted. The summary line is `Uptime: … | Data Dir: …` followed by `Queues: N | Total Storage: M Bytes`; the per‑queue breakdown is intentionally omitted in the interactive surface (the CLI's `metrics` prints it for scripted use).
 
@@ -1311,17 +1435,47 @@ run(args):
 
 ```go
 func Run(args []string) error
-func EnsureDaemonRunning(target string) error
+func EnsureDaemonRunning(opts SpawnOptions) error
 func IsDaemonAlive(target string) bool
-func SendShutdownSignal(target string) error
+func SendShutdownSignal(target string, sess spec.Session) error
 ```
 
 - `Run` resolves config (`resolveConfig` layers CLI flags > `MIKYU_*` env > `mikyu.yaml` > compiled defaults, only applying **explicitly set** flags via `fs.Visit`), opens the node, reconciles declared queues, optionally wraps the server in TLS, optionally starts the metrics HTTP server, serves, and blocks on `SIGINT`/`SIGTERM` or the serve result. A bind failure is reported through a buffered channel so deferred cleanups run.
-- `EnsureDaemonRunning` probes the target; if dead, spawns a detached copy of `os.Executable()` with `daemon` and waits up to 3 s.
+- `EnsureDaemonRunning` probes the target; if dead, spawns a detached copy of `os.Executable()` with `daemon` and waits up to 3 s. The spawn forwards `Target`, `DataDir`, TLS files, `AuthMethod`, `AuthTokenFile`, and `TLSClientCaFile`. It deliberately cannot forward `AuthToken`: the daemon rejects that flag.
 - `setDetachedProcessAttr` uses `Setsid: true` on Unix, `CREATE_NO_WINDOW` on Windows.
-- `SendShutdownSignal` writes an `OpShutdown` frame.
+- `SendShutdownSignal` authenticates with `resolveShutdownCredential` (token file > inline token > mTLS > `none`) and writes an `OpShutdown` frame; an `OpError(ErrCodeUnauthorized)` reply is surfaced as `ErrUnauthorized` so the caller can retry with credentials.
 
-### 15.1 Metrics HTTP — `metrics_http.go`
+### 15.1 Daemon Flags & Fail‑Closed Defaults
+
+| Flag | Field | Notes |
+|---|---|---|
+| `--config` | — | Path to `mikyu.yaml`. |
+| `--target` | `Server.Target` | Must parse via `protocol.ParseTarget`. |
+| `--data-dir` | `Server.DataDir` | Non-empty. |
+| `--tls-enabled` | `Server.TLSEnabled` | Boolean, honors explicit `=false`. |
+| `--tls-cert-file` | `Server.TLSCertFile` | PEM. |
+| `--tls-key-file` | `Server.TLSKeyFile` | PEM. |
+| `--tls-client-ca-file` | `Server.TLSClientCaFile` | Required for `mtls`. |
+| `--max-conns` | `Server.MaxConns` | > 0. |
+| `--auth-method` | `Server.AuthMethod` | `none` \| `none-insecure` \| `token` \| `mtls`. |
+| `--auth-token-file` | `Server.AuthTokenFile` | Read at `NewAuthMode`. |
+| `--auth-token` | — | **Rejected**: a token on argv leaks via `ps`. The flag is registered so `--help` lists it, but using it returns `ErrUsage`. |
+
+`resolveConfig` enforces the fail‑closed policy on `tcp://` targets whose address is not loopback:
+
+- `auth_method = token` requires `--tls-enabled`.
+- `auth_method = mtls` requires `--tls-enabled` and `--tls-client-ca-file`.
+- `auth_method = "" | none` is refused with a clear error; the operator must pass `--auth-method token|mtls`, or opt out explicitly with `--auth-method none-insecure`.
+
+Loopback targets are exempt, as are `unix://` and `pipe://` targets (the filesystem is the boundary). `isLoopback` matches `localhost`, `127.0.0.0/8`, and `::1`.
+
+`logEffectiveConfig` records the fully resolved settings (target, data dir, TLS, max connections, queue count, and the JSON defaults block) so a running daemon's log always shows what it actually started with.
+
+### 15.2 Auth Resolution
+
+After flag parsing, `Run` calls `server.NewAuthMode(cfg.Server)`. A `token` mode with a short or missing credential, or an unknown mode, is reported as `auth setup: …` and stops the daemon before the wire listener binds. The `authMode` is passed to the server via `server.WithAuth(mode)`; a server constructed without it falls back to an anonymous verifier (`spec.BuiltinSession()`), so existing tests and embedded hosts keep working.
+
+### 15.3 Metrics HTTP — `metrics_http.go`
 
 ```go
 type metricsServer struct {
@@ -1346,7 +1500,7 @@ Four fixed routes:
 | `GET /api/history` | `?limit=N` (positive int) slices the collector's tick history, newest last. |
 | `GET /api/events` | Server‑sent events, one `snapshot` event per collector tick, until the client disconnects. |
 
-`Stop` calls `http.Server.Shutdown` with the daemon's 5 s context, so scrapers racing shutdown are still answered. A slow SSE client never blocks the collector (§7.5 `fanout` drops extra frames) and never blocks a concurrent scraper (§15.1 `Stop`).
+`Stop` calls `http.Server.Shutdown` with the daemon's 5 s context, so scrapers racing shutdown are still answered. A slow SSE client never blocks the collector (§7.5 `fanout` drops extra frames) and never blocks a concurrent scraper (§15.1 `Stop`). The metrics endpoint is documentation‑secured, not firewall‑secured: it inherits the daemon's loopback‑by‑default posture.
 
 ---
 
@@ -1356,7 +1510,9 @@ Four fixed routes:
 
 - `Load(flagPath)` resolves the config file (flag → `mikyu.yaml` next to the executable, bootstrapping a commented template if absent), rejects legacy YAML keys (`max_segment_bytes`, `max_segment_age`) and legacy env names (`MIKYU_ENGINE_*`, `MIKYU_SERVER_*`, `MIKYU_ENGINE_FLUSH_INTERVAL`) with a hard error naming the replacement, parses with `DisallowUnknownField`, and applies `spec.ApplyEnvSession` + `spec.ApplyEnv`.
 - `DefaultConfig()` returns built‑in session defaults plus an empty queue map.
-- `DefaultConfigYAML` is the bootstrapped template; it carries the same schema as `spec.BuiltinSession()` and `spec.Builtin()`.
+- `DefaultConfigYAML` is the bootstrapped template; it carries the same schema as `spec.BuiltinSession()` and `spec.Builtin()`. Auth settings are intentionally absent from the template, so a fresh install runs anonymous on loopback and must be opted into token/mTLS.
+
+The credential store (`internal/ui/command/auth.go`) lives next to the config in `os.UserConfigDir()/mikyu/credentials`; it is not touched by `config.Load`, because tokens are session state, not configuration.
 
 ---
 
@@ -1371,7 +1527,11 @@ server:
   tls_enabled: false
   tls_cert_file: ""
   tls_key_file: ""
+  tls_client_ca_file: ""       # client CA bundle for mtls
   max_conns: 10
+  auth_method: "none"          # none | none-insecure | token | mtls
+  auth_token_file: ""          # path to a bearer token (token mode)
+  auth_token: ""               # inline bearer token (token mode; prefer the file)
   metrics_enabled: true
   metrics_interval: "1s"
   metrics_history: 300
@@ -1401,7 +1561,16 @@ queues: {}                     # declarative pre-created queues (sparse Specs)
 
 ### 17.2 Env Overrides
 
-Every `LayerSpec` and `LayerSession` param has a `MIKYU_<KEY>` env var. Examples: `MIKYU_TARGET`, `MIKYU_DATA_DIR`, `MIKYU_MAX_CONNS`, `MIKYU_BATCH_SIZE`, `MIKYU_SEGMENT_SIZE`, `MIKYU_FSYNC`, `MIKYU_RETENTION_AGE`, `MIKYU_DEFAULT_VISIBILITY`, `MIKYU_DEFAULT_MAX_ATTEMPTS`, `MIKYU_METRICS_ENABLED`, `MIKYU_METRICS_INTERVAL`, `MIKYU_METRICS_HISTORY`, `MIKYU_METRICS_LISTEN`, `MIKYU_METRICS_PER_QUEUE_PROMETHEUS`, `MIKYU_METRICS_HISTOGRAMS`. Legacy `MIKYU_ENGINE_*` and `MIKYU_SERVER_*` names are hard errors naming the replacement.
+Every `LayerSpec` and `LayerSession` param has a `MIKYU_<KEY>` env var. Examples: `MIKYU_TARGET`, `MIKYU_DATA_DIR`, `MIKYU_MAX_CONNS`, `MIKYU_BATCH_SIZE`, `MIKYU_SEGMENT_SIZE`, `MIKYU_FSYNC`, `MIKYU_RETENTION_AGE`, `MIKYU_DEFAULT_VISIBILITY`, `MIKYU_DEFAULT_MAX_ATTEMPTS`, `MIKYU_AUTH_METHOD`, `MIKYU_AUTH_TOKEN`, `MIKYU_AUTH_TOKEN_FILE`, `MIKYU_TLS_CLIENT_CA_FILE`, `MIKYU_METRICS_ENABLED`, `MIKYU_METRICS_INTERVAL`, `MIKYU_METRICS_HISTORY`, `MIKYU_METRICS_LISTEN`, `MIKYU_METRICS_PER_QUEUE_PROMETHEUS`, `MIKYU_METRICS_HISTOGRAMS`. Legacy `MIKYU_ENGINE_*` and `MIKYU_SERVER_*` names are hard errors naming the replacement.
+
+### 17.3 Auth Modes at a Glance
+
+| Mode | Wire | Server check | Client setup |
+|---|---|---|---|
+| `none` | `AuthMethodNone`, no credential | always accepts | default |
+| `none-insecure` | `AuthMethodNone`, no credential | alias for `none`, spelled to be refused loudly on non‑loopback | default |
+| `token` | `AuthMethodToken`, `[]byte(token)` | constant‑time compare against `authMode.token` | `--auth-token-file`, `--auth-token`, stored credential, or `WithAuthToken`/`WithAuthTokenFile` |
+| `mtls` | `AuthMethodMTLS`, no credential | requires a TLS handshake with a verified client chain | `--tls-enabled` + `--tls-cert-file`/`--tls-key-file`, or `WithTLSEnabled` + `WithTLSCertFile`/`WithTLSKeyFile` |
 
 ---
 
@@ -1409,15 +1578,22 @@ Every `LayerSpec` and `LayerSession` param has a `MIKYU_<KEY>` env var. Examples
 
 ```
 Client                                         Server
+  │  WriteFrame(conn, OpAuth, method+cred)      │
+  ├────────────────────────────────────────────►│  serveConn: DecodeAuth → authMode.Verify
+  │  ReadFrame(bufio.Reader)                    │
+  │◄────────────────────────────────────────────┤  OpAuth ack, or OpError(0x09) + close
+  │                                             │
   │  WriteFrame(conn, Op, body)                 │
-  ├────────────────────────────────────────────►│
-  │                                             │ dispatch → handler
+  ├────────────────────────────────────────────►│  dispatch → handler
   │                                             │
   │  ReadFrame(bufio.Reader)                    │
   │◄────────────────────────────────────────────┤
   │  OpError → decodeProtocolError              │
 ```
 
+- **First frame on every connection is `OpAuth`.** The server verifies it once, replies with an empty `OpAuth` on success or `OpError(ErrCodeUnauthorized)` on failure, and then transitions to ordinary dispatch. Anonymous servers accept a non‑`OpAuth` first frame for backwards compatibility; auth‑required servers do not.
 - **Admin frames** carry `bytes(name) u16 specVersion bytes(json Spec)`. The server checks `specVersion` **before** touching the JSON, so a future schema is rejected without interpretation (`ErrCodeSpecTooNew`).
 - **`OpDescribeQueue`** response is `u16 specVersion bytes(json QueueDescription)`. `QueueDescription` carries three specs (stored, effective, defaults) and no stats.
-- **`OpMetrics`** response is `u16 specVersion bytes(json metrics.Snapshot)`, the same envelope as `OpDescribeQueue`. There is no `OpInfo`
+- **`OpMetrics`** response is `u16 specVersion bytes(json metrics.Snapshot)`, the same envelope as `OpDescribeQueue`.
+- **`OpSchema`** response is `u16 specVersion bytes(json []Param)`, the same envelope. There is no `OpInfo`.
+- **`OpAuth`** request is `u8 method bytes(credential)`; the response is either an empty `OpAuth` frame or an `OpError(0x09)` frame. Error codes remain the stable contract; the human message after the code is not.
