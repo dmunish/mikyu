@@ -119,24 +119,18 @@ func DeleteToken(target string) error {
 // Logout forgets a stored token for target.
 func Logout(target string) error { return DeleteToken(target) }
 
-// Login prompts for a token on stdin, verifies it against target, and stores it.
+// Login prompts for a token on the CLI's stdin, verifies it, and stores it.
 func Login(ctx context.Context, target string) error {
-	fmt.Fprint(os.Stderr, "Token: ")
-	var tok string
-	if term.IsTerminal(int(os.Stdin.Fd())) {
-		b, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stderr)
-		if err != nil {
-			return err
-		}
-		tok = strings.TrimSpace(string(b))
-	} else {
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-		if err != nil {
-			return err
-		}
-		tok = strings.TrimSpace(line)
+	tok, err := readTokenFrom(os.Stdin)
+	if err != nil {
+		return err
 	}
+	return LoginWithToken(ctx, target, tok)
+}
+
+// LoginWithToken verifies an already-obtained token against target
+func LoginWithToken(ctx context.Context, target, tok string) error {
+	tok = strings.TrimSpace(tok)
 	if tok == "" {
 		return errors.New("empty token")
 	}
@@ -149,4 +143,22 @@ func Login(ctx context.Context, target string) error {
 		return err // ErrUnauthorized reaches the caller; nothing is saved
 	}
 	return SaveToken(target, tok)
+}
+
+// readTokenFrom prompts on stderr and reads one token from f
+func readTokenFrom(f *os.File) (string, error) {
+	fmt.Fprint(os.Stderr, "Token: ")
+	if term.IsTerminal(int(f.Fd())) {
+		b, err := term.ReadPassword(int(f.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(b)), nil
+	}
+	line, err := bufio.NewReader(f).ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
 }
