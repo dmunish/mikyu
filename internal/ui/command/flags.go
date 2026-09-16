@@ -123,7 +123,7 @@ func (v *sessionValue) String() string {
 	case "auth_token_file":
 		return v.session.AuthTokenFile
 	case "auth_token":
-		return v.session.AuthToken
+		return "<redacted>"
 	case "tls_client_ca_file":
 		return v.session.TLSClientCaFile
 	}
