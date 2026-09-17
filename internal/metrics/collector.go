@@ -3,6 +3,7 @@ package metrics
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -239,9 +240,7 @@ func mergeInt64(dst *map[string]int64, src map[string]int64) {
 	if *dst == nil {
 		*dst = make(map[string]int64, len(src))
 	}
-	for k, v := range src {
-		(*dst)[k] = v
-	}
+	maps.Copy((*dst), src)
 }
 
 func mergeHistograms(dst *map[string]HistogramSnapshot, src map[string]HistogramSnapshot) {
@@ -251,9 +250,7 @@ func mergeHistograms(dst *map[string]HistogramSnapshot, src map[string]Histogram
 	if *dst == nil {
 		*dst = make(map[string]HistogramSnapshot, len(src))
 	}
-	for k, v := range src {
-		(*dst)[k] = v
-	}
+	maps.Copy((*dst), src)
 }
 
 func computeRates(prev *Snapshot, next *Snapshot) {

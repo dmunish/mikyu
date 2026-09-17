@@ -73,10 +73,7 @@ func (m *MemStorage) Fetch(ctx context.Context, offset uint64, maxCount int, max
 		if offset < published {
 			m.mu.Lock()
 			start := offset
-			end := start + uint64(maxCount)
-			if end > published {
-				end = published
-			}
+			end := min(start+uint64(maxCount), published)
 			msgs := append([]engine.Record(nil), m.msgs[start:end]...)
 			m.mu.Unlock()
 			return msgs, nil

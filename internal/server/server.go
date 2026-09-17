@@ -243,9 +243,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	reqCh := make(chan request) // unbuffered: one frame of lookahead, natural backpressure
 
 	var readerWG sync.WaitGroup
-	readerWG.Add(1)
-	go func() {
-		defer readerWG.Done()
+	readerWG.Go(func() {
 		defer close(reqCh)
 		defer cancel() // a dead reader must wake a handler parked on a long-poll
 		select {
@@ -266,7 +264,7 @@ func (s *Server) serveConn(conn net.Conn) {
 				return
 			}
 		}
-	}()
+	})
 
 	for req := range reqCh {
 		respOp, respBody, shouldShutdown := s.dispatch(ctx, req.op, req.body)
