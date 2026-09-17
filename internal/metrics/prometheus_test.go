@@ -28,7 +28,7 @@ func goldenSnapshot() Snapshot {
 		Totals:  TotalsView{Queues: 1, Messages: 10, Bytes: 2048},
 		Queues: []QueueView{{
 			Name:     "events",
-			Kind:     "shared",
+			Kind:     "internal",
 			Counters: map[string]int64{"appends": 10, "reads": 4},
 			Gauges:   map[string]int64{"messages": 10, "size_bytes": 2048, "segments": 1},
 			Histograms: map[string]HistogramSnapshot{

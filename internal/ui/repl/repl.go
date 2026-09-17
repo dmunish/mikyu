@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -173,7 +172,14 @@ func (s *replSession) handleUse(args []string) {
 		return
 	}
 
-	if !slices.Contains(queues, name) {
+	found := false
+	for _, q := range queues {
+		if q.Name == name {
+			found = true
+			break
+		}
+	}
+	if !found {
 		fmt.Println(errStyle.Render(fmt.Sprintf("Queue %q not found.", name)))
 		return
 	}
@@ -195,13 +201,16 @@ func (s *replSession) handleList(args []string) {
 	fmt.Println(infoStyle.Render("Queues:"))
 	bullet := infoStyle.Render("●")
 	for _, q := range queues {
-		fmt.Printf("  %s %s\n", bullet, queueNameStyle.Render(q))
+		fmt.Printf("  %s %s (%s)\n", bullet, queueNameStyle.Render(q.Name), q.Kind)
 	}
 }
 
 func (s *replSession) handleCreate(args []string) {
 	var patch spec.Spec
-	rest, err := command.ParseAnywhere(command.QueueFlagSet("create", &patch), args)
+	var typeName string
+	fs := command.QueueFlagSet("create", &patch)
+	fs.StringVar(&typeName, "type", "log", "queue kind: log or task")
+	rest, err := command.ParseAnywhere(fs, args)
 	if err != nil {
 		s.usage("create [flags] <queue_name> (" + err.Error() + ")")
 		return
@@ -211,7 +220,12 @@ func (s *replSession) handleCreate(args []string) {
 		return
 	}
 	name := rest[0]
-	if err := command.Create(s.ctx, s.client, name, command.SpecOption(patch)); err != nil {
+	kind, err := command.KindFromName(typeName)
+	if err != nil {
+		s.usage("create [flags] <queue_name> (" + err.Error() + ")")
+		return
+	}
+	if err := command.Create(s.ctx, s.client, kind, name, command.SpecOption(patch)); err != nil {
 		s.fail(err)
 		return
 	}

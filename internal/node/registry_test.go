@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/dmunish/mikyu/internal/manager"
 	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,18 +14,22 @@ import (
 
 func TestRegistryRoundTrip(t *testing.T) {
 	dir := t.TempDir()
+	key := registryKey(manager.KindLog, "payments")
 	r := &registry{
-		Version: 1,
-		Queues: map[string]spec.Spec{
-			"payments": {Engine: spec.EngineSpec{BatchSize: new(7)}},
+		Version: registryVersion,
+		Queues: map[string]QueueEntry{
+			key: {Name: "payments", Kind: manager.KindLog, Spec: spec.Spec{Engine: spec.EngineSpec{BatchSize: new(7)}}},
 		},
 	}
 	require.NoError(t, saveRegistry(dir, r))
 
 	loaded, err := loadRegistry(dir)
 	require.NoError(t, err)
-	require.NotNil(t, loaded.Queues["payments"].Engine.BatchSize)
-	assert.Equal(t, 7, *loaded.Queues["payments"].Engine.BatchSize)
+	entry, ok := loaded.Queues[key]
+	require.True(t, ok)
+	assert.Equal(t, manager.KindLog, entry.Kind)
+	require.NotNil(t, entry.Spec.Engine.BatchSize)
+	assert.Equal(t, 7, *entry.Spec.Engine.BatchSize)
 }
 
 func TestRegistryMissingFileIsEmpty(t *testing.T) {
@@ -43,7 +48,7 @@ func TestRegistryCorruptRejects(t *testing.T) {
 func TestRegistryRejectsUnknownFields(t *testing.T) {
 	dir := t.TempDir()
 	body, _ := json.Marshal(map[string]any{
-		"version": 1,
+		"version": 2,
 		"queues":  map[string]any{},
 		"extra":   "field",
 	})

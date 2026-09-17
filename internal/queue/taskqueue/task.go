@@ -26,6 +26,7 @@ var (
 	ErrCheckpointCorrupt  = errors.New("task checkpoint is corrupt")
 	ErrDeadLetterNotFound = errors.New("dead letter task not found")
 	ErrDeadLetterStale    = errors.New("dead letter task is stale")
+	ErrQueueFull          = errors.New("task queue is full")
 )
 
 // Task represents a unit of work owned by a TaskQueue.

@@ -92,7 +92,7 @@ func TestManagerCollectShape(t *testing.T) {
 	mgr.Collect(ctx, &snap)
 	require.Len(t, snap.Queues, 2)
 	for _, qv := range snap.Queues {
-		assert.Equal(t, "shared", qv.Kind)
+		assert.Equal(t, "internal", qv.Kind)
 		assert.EqualValues(t, 1, qv.Gauges[GaugeRecords])
 		assert.EqualValues(t, 1, qv.Gauges[GaugeSegments])
 		assert.Positive(t, qv.Gauges[GaugeSizeBytes])

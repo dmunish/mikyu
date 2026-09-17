@@ -55,11 +55,11 @@ func TestServerTokenAuthAcceptsCorrectCredential(t *testing.T) {
 
 	assert.Equal(t, protocol.OpAuth, authFrame(t, conn, protocol.AuthMethodToken, []byte("0123456789abcdef")))
 
-	require.NoError(t, protocol.WriteFrame(conn, protocol.OpListQueues, nil))
+	require.NoError(t, protocol.WriteFrame(conn, protocol.OpList, nil))
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	op, _, err := protocol.ReadFrame(bufio.NewReader(conn))
 	require.NoError(t, err)
-	assert.Equal(t, protocol.OpListQueues, op)
+	assert.Equal(t, protocol.OpList, op)
 }
 
 func TestServerTokenAuthRejectsWrongAndAbsentCredential(t *testing.T) {
@@ -86,7 +86,7 @@ func TestServerTokenAuthRejectsWrongAndAbsentCredential(t *testing.T) {
 	silent, err := net.Dial("tcp", ln.Addr().String())
 	require.NoError(t, err)
 	defer silent.Close()
-	require.NoError(t, protocol.WriteFrame(silent, protocol.OpListQueues, nil))
+	require.NoError(t, protocol.WriteFrame(silent, protocol.OpList, nil))
 	_ = silent.SetReadDeadline(time.Now().Add(2 * time.Second))
 	op, body, err := protocol.ReadFrame(bufio.NewReader(silent))
 	require.NoError(t, err)
@@ -111,11 +111,11 @@ func TestServerAnonymousAcceptsAnyFirstFrame(t *testing.T) {
 	plain, err := net.Dial("tcp", ln.Addr().String())
 	require.NoError(t, err)
 	defer plain.Close()
-	require.NoError(t, protocol.WriteFrame(plain, protocol.OpListQueues, nil))
+	require.NoError(t, protocol.WriteFrame(plain, protocol.OpList, nil))
 	_ = plain.SetReadDeadline(time.Now().Add(2 * time.Second))
 	op, _, err := protocol.ReadFrame(bufio.NewReader(plain))
 	require.NoError(t, err)
-	assert.Equal(t, protocol.OpListQueues, op)
+	assert.Equal(t, protocol.OpList, op)
 
 	// And the handshake form as well.
 	hand, err := net.Dial("tcp", ln.Addr().String())
@@ -278,8 +278,9 @@ func TestServerMTLSAcceptsVerifiedClient(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, protocol.OpAuth, op, "server must accept an mTLS Auth frame from a verified cert")
 
-	require.NoError(t, protocol.WriteFrame(conn, protocol.OpListQueues, nil))
+	require.NoError(t, protocol.WriteFrame(conn, protocol.OpList, nil))
 	op, _, err = protocol.ReadFrame(r)
 	require.NoError(t, err)
-	assert.Equal(t, protocol.OpListQueues, op, "verified client must reach dispatch")
+	assert.Equal(t, protocol.OpList, op, "verified client must reach dispatch")
 }
+

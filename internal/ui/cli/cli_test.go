@@ -137,7 +137,7 @@ func TestCLIDescribeJSONMatchesSDK(t *testing.T) {
 func TestCLIMetricsJSON(t *testing.T) {
 	app := newTestApp(t)
 
-	app.run(t, "create", "q")
+	app.run(t, "create", "--type", "task", "q")
 
 	var snap mikyu.Metrics
 	require.NoError(t, json.Unmarshal([]byte(app.run(t, "metrics", "--json")), &snap))
@@ -147,7 +147,7 @@ func TestCLIMetricsJSON(t *testing.T) {
 
 func TestCLIMetricsQueueFilter(t *testing.T) {
 	app := newTestApp(t)
-	app.run(t, "create", "q")
+	app.run(t, "create", "--type", "task", "q")
 
 	out := app.run(t, "metrics", "--queue", "q", "--json")
 	var snap mikyu.Metrics
@@ -166,7 +166,7 @@ func TestCLINoInfoVerb(t *testing.T) {
 
 func TestCLIUpdateImmutable(t *testing.T) {
 	app := newTestApp(t)
-	app.run(t, "create", "q")
+	app.run(t, "create", "--type", "task", "q")
 
 	err := app.runErr(t, "update", "q", "--segment-size", "128")
 	require.ErrorIs(t, err, daemon.ErrUsage, "an immutable field on update is a usage mistake")
@@ -203,7 +203,7 @@ func TestCLIRetentionShrinkPrompts(t *testing.T) {
 
 func TestCLIEnqueueAllParams(t *testing.T) {
 	app := newTestApp(t)
-	app.run(t, "create", "q")
+	app.run(t, "create", "--type", "task", "q")
 
 	args := []string{"enqueue"}
 	for _, p := range spec.Params(spec.LayerCall) {
@@ -229,7 +229,7 @@ func TestCLIEnqueueAllParams(t *testing.T) {
 
 func TestCLINackAllParams(t *testing.T) {
 	app := newTestApp(t)
-	app.run(t, "create", "q")
+	app.run(t, "create", "--type", "task", "q")
 	app.run(t, "enqueue", "q", "hello")
 
 	var rec command.TaskRecord
@@ -252,7 +252,7 @@ func TestCLINackAllParams(t *testing.T) {
 
 func TestCLITaskRecordFeedsAck(t *testing.T) {
 	app := newTestApp(t)
-	app.run(t, "create", "q")
+	app.run(t, "create", "--type", "task", "q")
 	app.run(t, "enqueue", "q", "hello")
 
 	record := strings.TrimSpace(app.run(t, "dequeue", "q", "--json"))
@@ -266,7 +266,7 @@ func TestCLITaskRecordFeedsAck(t *testing.T) {
 
 func TestCLIDeadLetterRoundTrip(t *testing.T) {
 	app := newTestApp(t)
-	app.run(t, "create", "q")
+	app.run(t, "create", "--type", "task", "q")
 	app.run(t, "enqueue", "q", "doomed", "--max-attempts", "1")
 
 	var rec command.TaskRecord
@@ -372,3 +372,4 @@ func TestConfirmNonInteractive(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, ok)
 }
+

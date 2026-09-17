@@ -45,14 +45,14 @@ func TestDescribeAfterCreateWithFlags(t *testing.T) {
 	emb, err := NewEmbedded(t.TempDir())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = emb.Close() })
-	require.NoError(t, emb.CreateQueue(ctx, "q", opts...))
+	mustCreateLog(t, emb, "q", opts...)
 	embDesc, err := emb.DescribeQueue(ctx, "q")
 	require.NoError(t, err)
 	embJSON, err := json.Marshal(embDesc)
 	require.NoError(t, err)
 
 	rem := newLoopbackServer(t)
-	require.NoError(t, rem.CreateQueue(ctx, "q", opts...))
+	mustCreateLog(t, rem, "q", opts...)
 	remDesc, err := rem.DescribeQueue(ctx, "q")
 	require.NoError(t, err)
 	remJSON, err := json.Marshal(remDesc)
@@ -66,7 +66,7 @@ func TestDescribeAfterCreateWithFlags(t *testing.T) {
 func TestRemoteMetricsRoundTrip(t *testing.T) {
 	ctx := t.Context()
 	c := newLoopbackServer(t)
-	require.NoError(t, c.CreateQueue(ctx, "q"))
+	mustCreateLog(t, c, "q")
 
 	lq, err := c.LogQueue("q")
 	require.NoError(t, err)
@@ -91,7 +91,7 @@ func TestEmbeddedMetricsMatchesRemote(t *testing.T) {
 	emb, err := NewEmbedded(t.TempDir())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = emb.Close() })
-	require.NoError(t, emb.CreateQueue(ctx, "q"))
+	mustCreateLog(t, emb, "q")
 	embLq, err := emb.LogQueue("q")
 	require.NoError(t, err)
 	_, err = embLq.Append(ctx, []byte("a"))
@@ -100,7 +100,7 @@ func TestEmbeddedMetricsMatchesRemote(t *testing.T) {
 	require.NoError(t, err)
 
 	rem := newLoopbackServer(t)
-	require.NoError(t, rem.CreateQueue(ctx, "q"))
+	mustCreateLog(t, rem, "q")
 	remLq, err := rem.LogQueue("q")
 	require.NoError(t, err)
 	_, err = remLq.Append(ctx, []byte("a"))
@@ -122,7 +122,7 @@ func TestEmbeddedMetricsMatchesRemote(t *testing.T) {
 func TestRemoteMinOffsetUsesMetrics(t *testing.T) {
 	ctx := t.Context()
 	c := newLoopbackServer(t)
-	require.NoError(t, c.CreateQueue(ctx, "q"))
+	mustCreateLog(t, c, "q")
 
 	lq, err := c.LogQueue("q")
 	require.NoError(t, err)
@@ -142,13 +142,37 @@ func TestDescribeNoStats(t *testing.T) {
 	emb, err := NewEmbedded(t.TempDir())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = emb.Close() })
-	require.NoError(t, emb.CreateQueue(ctx, "q"))
+	mustCreateLog(t, emb, "q")
 
 	d, err := emb.DescribeQueue(ctx, "q")
 	require.NoError(t, err)
 	data, err := json.Marshal(d)
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), `"stats"`)
+}
+
+// TestListCarriesKind: embedded and remote ListQueues both report each
+// queue's kind, and the two surfaces agree.
+func TestListCarriesKind(t *testing.T) {
+	ctx := t.Context()
+	emb, err := NewEmbedded(t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = emb.Close() })
+	mustCreateLog(t, emb, "events")
+	mustCreateTask(t, emb, "events")
+	embInfos, err := emb.ListQueues(ctx)
+	require.NoError(t, err)
+
+	rem := newLoopbackServer(t)
+	mustCreateLog(t, rem, "events")
+	mustCreateTask(t, rem, "events")
+	remInfos, err := rem.ListQueues(ctx)
+	require.NoError(t, err)
+
+	require.Equal(t, embInfos, remInfos)
+	require.Len(t, embInfos, 2)
+	assert.Equal(t, QueueInfo{Name: "events", Kind: node.KindLog}, embInfos[0])
+	assert.Equal(t, QueueInfo{Name: "events", Kind: node.KindTask}, embInfos[1])
 }
 
 func jsonKeys(t *testing.T, v any) []string {
@@ -164,3 +188,4 @@ func jsonKeys(t *testing.T, v any) []string {
 	sort.Strings(keys)
 	return keys
 }
+

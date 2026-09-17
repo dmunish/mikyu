@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -91,14 +92,33 @@ func ResolvePayload(input string) ([]byte, error) {
 	return []byte(input), nil
 }
 
-// List returns the names of all active queues.
-func List(ctx context.Context, client mikyu.Client) ([]string, error) {
+// List returns every queue's name and kind.
+func List(ctx context.Context, client mikyu.Client) ([]mikyu.QueueInfo, error) {
 	return client.ListQueues(ctx)
 }
 
-// Create initializes a new queue from a sparse set of options.
-func Create(ctx context.Context, client mikyu.Client, name string, opts ...mikyu.QueueOption) error {
-	return client.CreateQueue(ctx, name, opts...)
+// KindFromName parses a queue kind from "log" or "task".
+func KindFromName(name string) (mikyu.QueueKind, error) {
+	switch name {
+	case "log":
+		return mikyu.QueueKindLog, nil
+	case "task":
+		return mikyu.QueueKindTask, nil
+	default:
+		return 0, fmt.Errorf("unknown queue kind %q", name)
+	}
+}
+
+// Create declares a queue of the given kind from a sparse set of options.
+func Create(ctx context.Context, client mikyu.Client, kind mikyu.QueueKind, name string, opts ...mikyu.QueueOption) error {
+	switch kind {
+	case mikyu.QueueKindTask:
+		_, err := client.CreateTaskQueue(ctx, name, opts...)
+		return err
+	default:
+		_, err := client.CreateLogQueue(ctx, name, opts...)
+		return err
+	}
 }
 
 // Update applies a sparse patch of mutable fields to a queue.

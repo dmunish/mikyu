@@ -445,58 +445,6 @@ func TestTaskQueueAppendAndConsumeUnderConcurrentLoad(t *testing.T) {
 	assert.Equal(t, producers*perProducer, count)
 }
 
-func TestTaskQueueIgnoresForeignLogRecords(t *testing.T) {
-	dir := t.TempDir()
-	mgr, err := engine.OpenManager(dir, engine.Config{}, nil)
-	require.NoError(t, err)
-	storage, err := mgr.Create("tasks")
-	require.NoError(t, err)
-	_, err = storage.Append(t.Context(), []byte("ordinary-log-record"))
-	require.NoError(t, err)
-
-	q := mustQueue(t, "tasks", storage)
-	defer q.Close()
-	_, err = q.Enqueue(t.Context(), []byte("real-task"))
-	require.NoError(t, err)
-	got, err := q.Dequeue(t.Context())
-	require.NoError(t, err)
-	assert.Equal(t, "real-task", string(got.Payload))
-	require.NoError(t, q.Ack(t.Context(), got))
-	require.NoError(t, mgr.Close())
-}
-
-func TestTaskQueueCheckpointIncludesForeignRecords(t *testing.T) {
-	dir := t.TempDir()
-	cfg := engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 1024, MaxMessageBytes: 1 << 20}
-	mgr, err := engine.OpenManager(dir, cfg, nil)
-	require.NoError(t, err)
-	storage, err := mgr.Create("tasks")
-	require.NoError(t, err)
-	q := mustQueue(t, "tasks", storage)
-
-	_, err = q.Enqueue(t.Context(), []byte("survivor"))
-	require.NoError(t, err)
-	_, err = storage.Append(t.Context(), []byte("foreign-log-record"))
-	require.NoError(t, err)
-	q.mu.Lock()
-	require.NoError(t, q.checkpointLocked(t.Context()))
-	q.mu.Unlock()
-	require.NoError(t, q.Close())
-	require.NoError(t, mgr.Close())
-
-	mgr2, err := engine.OpenManager(dir, cfg, nil)
-	require.NoError(t, err)
-	defer mgr2.Close()
-	storage2, err := mgr2.Get("tasks")
-	require.NoError(t, err)
-	q2 := mustQueue(t, "tasks", storage2)
-	defer q2.Close()
-
-	got, err := q2.Dequeue(t.Context())
-	require.NoError(t, err)
-	assert.Equal(t, "survivor", string(got.Payload))
-}
-
 func TestTaskQueueCorruptLatestCheckpointFallsBackToPriorCheckpoint(t *testing.T) {
 	dir := t.TempDir()
 	cfg := engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 1024, MaxMessageBytes: 1 << 20}

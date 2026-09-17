@@ -5,14 +5,13 @@ import (
 	"cmp"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"maps"
 	"slices"
 	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
 )
-
-var taskRecordMagic = [8]byte{'M', 'I', 'K', 'Y', 'U', 'T', 'Q', 1}
 
 const (
 	recordTask                 byte  = 1
@@ -21,10 +20,10 @@ const (
 	recordCPCommit             byte  = 4
 	recordDLQ                  byte  = 5
 	recordDLQAck               byte  = 6
-	checkpointVersion                = 2
+	checkpointVersion                = 3
 	maxCheckpointChunks              = 1 << 20
 	maxCheckpointBytes               = 512 << 20
-	checkpointChunkHeaderBytes int64 = 8 + 1 + 4 + 4
+	checkpointChunkHeaderBytes int64 = 1 + 4 + 4
 )
 
 type checkpointCommit struct {
@@ -144,16 +143,15 @@ func decodeDeadLetterAck(payload []byte) (string, uint64, uint32, error) {
 	return id, off, attempts, nil
 }
 
-func isTaskRecord(payload []byte) bool {
-	return len(payload) >= len(taskRecordMagic)+1 && bytes.Equal(payload[:len(taskRecordMagic)], taskRecordMagic[:])
-}
+// recordKind returns the 1-byte kind tag of a task record, or 0 when the
+// payload is empty. Task records are only ever read from task/ directories.
 func recordKind(payload []byte) byte {
-	if !isTaskRecord(payload) {
+	if len(payload) == 0 {
 		return 0
 	}
-	return payload[len(taskRecordMagic)]
+	return payload[0]
 }
-func writeHeader(b *bytes.Buffer, kind byte) { b.Write(taskRecordMagic[:]); b.WriteByte(kind) }
+func writeHeader(b *bytes.Buffer, kind byte) { b.WriteByte(kind) }
 
 func encodeCheckpointStart(coveredThrough uint64) []byte {
 	var b bytes.Buffer
@@ -578,10 +576,10 @@ func (q *queue) refreshLocked(ctx context.Context) error {
 			}
 		case recordCPStart, recordCPChunk, recordCPCommit:
 		default:
-			// This storage queue may also be used by the log driver.
-			// Unknown record types are owned by another driver and are
-			// intentionally ignored here; the retention coordinator keeps
-			// the drivers' truncation floors independent.
+			// A task queue's records carry a 1-byte kind tag. Anything else
+			// means the directory is not a task queue: report the corrupt
+			// record naming the queue rather than reinterpreting it.
+			return fmt.Errorf("%w: %q holds a non-task record at offset %d", engine.ErrCorruptRecord, q.name, msg.Offset)
 		}
 		q.scanNext++
 	}
@@ -612,10 +610,10 @@ func writeTime(b *bytes.Buffer, t time.Time) {
 type recordReader struct{ r *reader }
 
 func newRecordReader(data []byte, expected byte) (*recordReader, error) {
-	if len(data) < len(taskRecordMagic)+1 || !bytes.Equal(data[:len(taskRecordMagic)], taskRecordMagic[:]) || data[len(taskRecordMagic)] != expected {
+	if len(data) < 1 || data[0] != expected {
 		return nil, ErrCheckpointCorrupt
 	}
-	return &recordReader{newReader(data[len(taskRecordMagic)+1:])}, nil
+	return &recordReader{newReader(data[1:])}, nil
 }
 func (r *recordReader) readByte() (byte, error)      { return r.r.readByte() }
 func (r *recordReader) readU32() (uint32, error)     { return r.r.readU32() }

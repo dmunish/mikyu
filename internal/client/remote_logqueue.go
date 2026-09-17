@@ -142,15 +142,13 @@ func (q *remoteLogQueue) LastOffset(ctx context.Context) (uint64, error) {
 }
 
 func (q *remoteLogQueue) MinOffset(ctx context.Context) (uint64, error) {
-	snap, err := q.client.Metrics(ctx)
+	var body protocol.Buffer
+	body.WriteBytes([]byte(q.name))
+	resp, err := q.client.exchange(ctx, protocol.OpMinOffset, body.Bytes())
 	if err != nil {
 		return 0, err
 	}
-	qv, ok := snap.Queue(q.name)
-	if !ok {
-		return 0, engine.ErrQueueNotFound
-	}
-	return uint64(qv.Gauges[engine.GaugeMinOffset]), nil
+	return protocol.NewReader(resp).ReadU64()
 }
 
 func (q *remoteLogQueue) Truncate(ctx context.Context, minOffset uint64) (int64, error) {

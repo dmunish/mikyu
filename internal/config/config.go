@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/dmunish/mikyu/internal/manager"
 	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/goccy/go-yaml"
 )
@@ -31,11 +32,17 @@ defaults:                        # Session defaults inherited by new queues
 queues: {}                       # Declarative pre-created queues on startup
 `
 
+// QueueConfig declares one pre-created queue: its kind and its sparse spec.
+type QueueConfig struct {
+	Kind manager.Kind `yaml:"kind"`
+	Spec spec.Spec    `yaml:"spec"`
+}
+
 // Config is the loader's view of mikyu.yaml: one schema, two files.
 type Config struct {
-	Server   ServerConfig         `yaml:"server"`
-	Defaults spec.Spec            `yaml:"defaults"`
-	Queues   map[string]spec.Spec `yaml:"queues"`
+	Server   ServerConfig           `yaml:"server"`
+	Defaults spec.Spec              `yaml:"defaults"`
+	Queues   map[string]QueueConfig `yaml:"queues"`
 }
 
 // ServerConfig is the process-level server block, identical to the spec session type.
@@ -49,7 +56,7 @@ func DefaultConfig() Config {
 	}
 	return Config{
 		Server: sess,
-		Queues: map[string]spec.Spec{},
+		Queues: map[string]QueueConfig{},
 	}
 }
 
@@ -85,7 +92,7 @@ func Load(flagPath string) (*Config, string, error) {
 	}
 
 	if cfg.Queues == nil {
-		cfg.Queues = map[string]spec.Spec{}
+		cfg.Queues = map[string]QueueConfig{}
 	}
 
 	if err := applyEnvOverrides(&cfg); err != nil {

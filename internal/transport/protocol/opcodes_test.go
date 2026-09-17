@@ -51,9 +51,12 @@ func TestOpcodeNibbleGrouping(t *testing.T) {
 		subsystem byte
 		ops       []byte
 	}{
-		{SubsystemAdmin, []byte{OpCreateQueue, OpDeleteQueue, OpListQueues, OpUpdateQueue, OpDescribeQueue, OpTruncate, OpMetrics, OpSchema}},
-		{SubsystemLog, []byte{OpAppend, OpAppendBatch, OpRead, OpReadBatch, OpLastOffset, OpCommit, OpCommitted, OpFetch}},
-		{SubsystemTask, []byte{OpEnqueue, OpDequeue, OpAck, OpNack, OpExtend, OpDeadLetters, OpDeadLetterAck}},
+		{SubsystemAdmin, []byte{OpCreate, OpDelete, OpList, OpUpdate, OpDescribe, OpTruncate, OpMetrics, OpSchema, OpShutdown}},
+		{SubsystemLog, []byte{OpAppend, OpAppendBatch, OpRead, OpReadBatch, OpLastOffset, OpMinOffset, OpCommit, OpCommitted, OpFetch}},
+		{SubsystemTask, []byte{OpEnqueue, OpDequeue, OpAck, OpNack, OpExtend, OpArchive}},
+		{SubsystemDeadLetter, []byte{OpDeadLetters, OpDeadLetterAck}},
+		{SubsystemProtocol, []byte{OpAuth}},
+		{SubsystemError, []byte{OpError}},
 	}
 	seen := make(map[byte]bool)
 	for _, c := range cases {
@@ -62,9 +65,5 @@ func TestOpcodeNibbleGrouping(t *testing.T) {
 			assert.Falsef(t, seen[op], "duplicate opcode 0x%02X", op)
 			seen[op] = true
 		}
-	}
-	// Protocol-level ops must not collide with the frozen table either.
-	for _, op := range []byte{OpShutdown, OpError, OpAuth} {
-		assert.Falsef(t, seen[op], "protocol-level opcode 0x%02X collides with the queue-op table", op)
 	}
 }

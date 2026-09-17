@@ -43,6 +43,18 @@ func taskErr(err error) (byte, []byte) {
 		return opErr(protocol.ErrCodeOffsetTruncated, err.Error())
 	case errors.Is(err, engine.ErrMessageTooLarge):
 		return opErr(protocol.ErrCodeMessageTooLarge, err.Error())
+	case errors.Is(err, engine.ErrRecordTooLarge):
+		return opErr(protocol.ErrCodeRecordTooLarge, err.Error())
+	case errors.Is(err, engine.ErrRecordCompacted):
+		return opErr(protocol.ErrCodeRecordCompacted, err.Error())
+	case errors.Is(err, engine.ErrCorruptRecord):
+		return opErr(protocol.ErrCodeCorruptRecord, err.Error())
+	case errors.Is(err, engine.ErrDiskFull):
+		return opErr(protocol.ErrCodeDiskFull, err.Error())
+	case errors.Is(err, taskqueue.ErrQueueFull):
+		return opErr(protocol.ErrCodeQueueFull, err.Error())
+	case errors.Is(err, node.ErrWrongKind):
+		return opErr(protocol.ErrCodeWrongKind, err.Error())
 	case errors.Is(err, engine.ErrQueueClosed), errors.Is(err, taskqueue.ErrTaskClosed):
 		return opErr(protocol.ErrCodeQueueClosed, err.Error())
 	case errors.Is(err, engine.ErrNoData):

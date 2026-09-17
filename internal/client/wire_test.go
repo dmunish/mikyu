@@ -51,7 +51,7 @@ func TestRemoteEnqueueUsesQueueDefaults(t *testing.T) {
 	defer func() { _ = release() }()
 
 	oneMinute := spec.Duration(time.Minute)
-	err = n.CreateQueue(t.Context(), "tasks", spec.Spec{
+	_, err = n.CreateTaskQueue(t.Context(), "tasks", spec.Spec{
 		Engine: spec.EngineSpec{MaxMessageBytes: new(int64(1 << 20))},
 		Task:   spec.TaskSpec{DefaultVisibility: &oneMinute},
 	})
@@ -84,7 +84,7 @@ func TestRemoteEnqueueUsesQueueDefaults(t *testing.T) {
 // create-only field comes back as spec.ErrImmutableField naming the field.
 func TestUpdateQueueRejectsImmutableField(t *testing.T) {
 	c := newRemoteClient(t)
-	require.NoError(t, c.CreateQueue(t.Context(), "q"))
+	mustCreateLog(t, c, "q")
 
 	err := c.UpdateQueue(t.Context(), "q", WithSegmentSize(128))
 	require.Error(t, err)
@@ -96,7 +96,7 @@ func TestUpdateQueueRejectsImmutableField(t *testing.T) {
 // client's own QueueDescription with the built-in layer resolved.
 func TestDescribeQueueRoundTrip(t *testing.T) {
 	c := newRemoteClient(t)
-	require.NoError(t, c.CreateQueue(t.Context(), "q"))
+	mustCreateLog(t, c, "q")
 
 	d, err := c.DescribeQueue(t.Context(), "q")
 	require.NoError(t, err)
@@ -167,3 +167,4 @@ func TestDecodeProtocolErrorNewCodes(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrProtocol))
 	assert.Contains(t, err.Error(), "weird")
 }
+

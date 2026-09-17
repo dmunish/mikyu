@@ -37,10 +37,7 @@ func TestCoordinatorDriverFloorsCapRequests(t *testing.T) {
 	}
 
 	c := NewCoordinator(0)
-	a := floorDriver{floor: 8, constrained: true}
-	b := floorDriver{floor: 4, constrained: true}
-	c.RegisterDriver("coordinated", storage, a)
-	c.RegisterDriver("coordinated", storage, b)
+	c.RegisterTarget(&Target{Name: "coordinated", Storage: storage, Driver: floorDriver{floor: 4, constrained: true}})
 
 	// Requesting beyond the safe floor must be clamped to 4.
 	_, err = c.ReconcileAt(ctx, "coordinated", 100)
@@ -49,17 +46,17 @@ func TestCoordinatorDriverFloorsCapRequests(t *testing.T) {
 	require.LessOrEqual(t, storage.MinOffset(), uint64(4))
 	require.Greater(t, storage.MinOffset(), uint64(0))
 
-	// Unregistering the blocking driver permits the next safe floor to advance.
-	c.UnregisterDriver("coordinated", b)
+	// A looser driver permits the safe floor to advance.
+	c.RegisterTarget(&Target{Name: "coordinated", Storage: storage, Driver: floorDriver{floor: 8, constrained: true}})
 	_, err = c.ReconcileAt(ctx, "coordinated", 100)
 	require.NoError(t, err)
 	// Safe floor is now 8. MinOffset will advance further.
 	require.LessOrEqual(t, storage.MinOffset(), uint64(8))
 	require.Greater(t, storage.MinOffset(), uint64(3))
 
-	// With no constrained driver and no policy, nothing is deleted: driver
-	// floors cap deletability, they never mandate it.
-	c.UnregisterDriver("coordinated", a)
+	// With no driver and no policy, nothing is deleted: driver floors cap
+	// deletability, they never mandate it.
+	c.RegisterTarget(&Target{Name: "coordinated", Storage: storage})
 	before := storage.MinOffset()
 	_, err = c.ReconcileQueue(ctx, "coordinated")
 	require.NoError(t, err)
@@ -96,7 +93,7 @@ func TestRetentionCappedByLaggingGroup(t *testing.T) {
 
 		c := NewCoordinator(0)
 		// A consumer group that has only consumed through offset 2.
-		c.RegisterDriver("lagging", storage, floorDriver{floor: 3, constrained: true})
+		c.RegisterTarget(&Target{Name: "lagging", Storage: storage, Driver: floorDriver{floor: 3, constrained: true}})
 
 		// Age past the policy so it would drop everything...
 		synctest.Sleep(2 * time.Hour)

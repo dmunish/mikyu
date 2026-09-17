@@ -23,6 +23,7 @@ import (
 
 	"github.com/dmunish/mikyu/internal/config"
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/manager"
 	"github.com/dmunish/mikyu/internal/node"
 	"github.com/dmunish/mikyu/internal/server"
 	"github.com/dmunish/mikyu/internal/spec"
@@ -55,8 +56,17 @@ func Run(args []string) error {
 
 	// Reconcile declared queues.
 	bgCtx := context.Background()
-	for name, qSpec := range cfg.Queues {
-		if err := n.CreateQueue(bgCtx, name, qSpec); err != nil && !errors.Is(err, engine.ErrQueueExists) {
+	for name, qc := range cfg.Queues {
+		var err error
+		switch qc.Kind {
+		case manager.KindLog:
+			_, err = n.CreateLogQueue(bgCtx, name, qc.Spec)
+		case manager.KindTask:
+			_, err = n.CreateTaskQueue(bgCtx, name, qc.Spec)
+		default:
+			return fmt.Errorf("reconcile queue %q: unknown kind %q", name, qc.Kind)
+		}
+		if err != nil && !errors.Is(err, engine.ErrQueueExists) {
 			return fmt.Errorf("reconcile queue %q: %w", name, err)
 		}
 	}

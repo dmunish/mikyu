@@ -215,13 +215,13 @@ func (c *Collector) mergeScopes(snap *Snapshot) {
 		counters, gauges, histograms := scope.read()
 		pos, ok := index[scope.Name()]
 		if !ok {
-			snap.Queues = append(snap.Queues, QueueView{Name: scope.Name(), Kind: "shared"})
+			snap.Queues = append(snap.Queues, QueueView{Name: scope.Name(), Kind: "internal"})
 			pos = len(snap.Queues) - 1
 			index[scope.Name()] = pos
 		}
 		qv := &snap.Queues[pos]
 		if qv.Kind == "" {
-			qv.Kind = "shared"
+			qv.Kind = "internal"
 		}
 		// Sources and scopes both contribute instruments to the same queue view,
 		// so merge rather than replace: a source's gauges must survive.

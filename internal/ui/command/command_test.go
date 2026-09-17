@@ -58,13 +58,15 @@ func TestCommandLifecycle(t *testing.T) {
 	ctx := t.Context()
 
 	// 1. Create Queue
-	err = command.Create(ctx, client, "events")
+	err = command.Create(ctx, client, mikyu.QueueKindLog, "events")
 	require.NoError(t, err)
 
 	// 2. List Queues
 	queues, err := command.List(ctx, client)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"events"}, queues)
+	require.Len(t, queues, 1)
+	assert.Equal(t, "events", queues[0].Name)
+	assert.Equal(t, mikyu.QueueKindLog, queues[0].Kind)
 
 	// 3. Produce
 	off, size, err := command.Append(ctx, client, "events", "msg1")

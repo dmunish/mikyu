@@ -12,27 +12,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// createFrame builds a spec-bearing CreateQueue request:
-// bytes(name) u16 specVersion bytes(json).
-func createFrame(t *testing.T, name string, sp spec.Spec) []byte {
+// createFrame builds an OpCreate request: u8 kind, bytes(name), u16 specVersion, bytes(json).
+func createFrame(t *testing.T, kind node.Kind, name string, sp spec.Spec) []byte {
 	t.Helper()
 	data, err := spec.EncodeSpec(sp)
 	require.NoError(t, err)
 	var b protocol.Buffer
+	b.WriteU8(byte(kind))
 	b.WriteBytes([]byte(name))
 	b.WriteU16(spec.CurrentSpecVersion)
 	b.WriteBytes(data)
 	return b.Bytes()
 }
 
-func TestHandleCreateQueue(t *testing.T) {
+func TestHandleCreate(t *testing.T) {
 	n, release, _ := node.Acquire(t.TempDir(), spec.Spec{})
 	defer func() { _ = release() }()
 	srv := New(n)
 	defer srv.Stop()
 
-	respOp, respBody := srv.handleCreateQueue(t.Context(), createFrame(t, "newqueue", spec.Spec{}))
-	assert.Equal(t, protocol.OpCreateQueue, respOp)
+	respOp, respBody := srv.handleCreate(t.Context(), createFrame(t, node.KindLog, "newqueue", spec.Spec{}))
+	assert.Equal(t, protocol.OpCreate, respOp)
 	assert.Nil(t, respBody)
 }
 
@@ -43,10 +43,11 @@ func TestSpecVersionTooNew(t *testing.T) {
 	defer srv.Stop()
 
 	var b protocol.Buffer
+	b.WriteU8(byte(node.KindLog))
 	b.WriteBytes([]byte("newqueue"))
 	b.WriteU16(spec.CurrentSpecVersion + 1)
 	b.WriteBytes([]byte("{}"))
-	respOp, respBody := srv.handleCreateQueue(t.Context(), b.Bytes())
+	respOp, respBody := srv.handleCreate(t.Context(), b.Bytes())
 	assert.Equal(t, protocol.OpError, respOp)
 	code, msg := protocol.DecodeError(respBody)
 	assert.Equal(t, protocol.ErrCodeSpecTooNew, code)
@@ -62,19 +63,20 @@ func TestSpecPayloadTooLarge(t *testing.T) {
 	// A 2 MiB payload is inside the frame limit but far beyond
 	// spec.MaxSpecPayload; the size guard must fire before JSON parsing.
 	var b protocol.Buffer
+	b.WriteU8(byte(node.KindLog))
 	b.WriteBytes([]byte("newqueue"))
 	b.WriteU16(spec.CurrentSpecVersion)
 	b.WriteBytes(bytes.Repeat([]byte{'a'}, 2<<20))
-	respOp, respBody := srv.handleCreateQueue(t.Context(), b.Bytes())
+	respOp, respBody := srv.handleCreate(t.Context(), b.Bytes())
 	assert.Equal(t, protocol.OpError, respOp)
 	code, _ := protocol.DecodeError(respBody)
 	assert.Equal(t, protocol.ErrCodeSpecTooLarge, code)
 }
 
-func TestHandleUpdateQueueRejectsImmutableField(t *testing.T) {
+func TestHandleUpdateRejectsImmutableField(t *testing.T) {
 	n, release, _ := node.Acquire(t.TempDir(), spec.Spec{})
 	defer func() { _ = release() }()
-	err := n.CreateQueue(t.Context(), "q", spec.Spec{})
+	_, err := n.CreateLogQueue(t.Context(), "q", spec.Spec{})
 	require.NoError(t, err)
 	srv := New(n)
 	defer srv.Stop()
@@ -83,7 +85,7 @@ func TestHandleUpdateQueueRejectsImmutableField(t *testing.T) {
 	b.WriteBytes([]byte("q"))
 	b.WriteU16(spec.CurrentSpecVersion)
 	b.WriteBytes([]byte(`{"engine":{"segment_size":128}}`))
-	respOp, respBody := srv.handleUpdateQueue(t.Context(), b.Bytes())
+	respOp, respBody := srv.handleUpdate(t.Context(), b.Bytes())
 	assert.Equal(t, protocol.OpError, respOp)
 	code, msg := protocol.DecodeError(respBody)
 	assert.Equal(t, protocol.ErrCodeImmutableField, code)
@@ -110,7 +112,8 @@ func TestHandleReadOffsetNotFound(t *testing.T) {
 	defer func() { _ = release() }()
 	srv := New(n)
 	defer srv.Stop()
-	_, _ = n.Manager().Create("q")
+	_, err := n.CreateLogQueue(t.Context(), "q", spec.Spec{})
+	require.NoError(t, err)
 
 	var b protocol.Buffer
 	b.WriteBytes([]byte("q"))
@@ -126,7 +129,8 @@ func TestHandleFetch(t *testing.T) {
 	defer func() { _ = release() }()
 	srv := New(n)
 	defer srv.Stop()
-	_, _ = n.Manager().Create("q")
+	_, err := n.CreateLogQueue(t.Context(), "q", spec.Spec{})
+	require.NoError(t, err)
 
 	t.Run("empty non-blocking", func(t *testing.T) {
 		var b protocol.Buffer
@@ -153,8 +157,8 @@ func TestHandleFetch(t *testing.T) {
 		respOp, respBody := srv.handleFetch(t.Context(), b.Bytes())
 		assert.Equal(t, protocol.OpFetch, respOp)
 		r := protocol.NewReader(respBody)
-		n, _ := r.ReadU32()
-		assert.Equal(t, uint32(1), n)
+		got, _ := r.ReadU32()
+		assert.Equal(t, uint32(1), got)
 	})
 
 	t.Run("truncated", func(t *testing.T) {
@@ -166,25 +170,32 @@ func TestHandleFetch(t *testing.T) {
 		q, _ := srv.getOrCreateLogQueue("q")
 		_, err := q.Append(t.Context(), []byte("msg"))
 		require.NoError(t, err)
-		// Truncate should be tested separately; this fetch at 0 with 0 messages is not truncated.
 		respOp, _ := srv.handleFetch(t.Context(), b.Bytes())
 		assert.Equal(t, protocol.OpFetch, respOp)
 	})
 }
 
-func TestHandleListQueues(t *testing.T) {
+func TestHandleList(t *testing.T) {
 	n, release, _ := node.Acquire(t.TempDir(), spec.Spec{})
 	defer func() { _ = release() }()
 	srv := New(n)
 	defer srv.Stop()
-	_, _ = n.Manager().Create("q1")
-	_, _ = n.Manager().Create("q2")
+	_, err := n.CreateLogQueue(t.Context(), "q1", spec.Spec{})
+	require.NoError(t, err)
+	_, err = n.CreateTaskQueue(t.Context(), "q2", spec.Spec{})
+	require.NoError(t, err)
 
-	respOp, respBody := srv.handleListQueues()
-	assert.Equal(t, protocol.OpListQueues, respOp)
+	respOp, respBody := srv.handleList(t.Context())
+	assert.Equal(t, protocol.OpList, respOp)
 	r := protocol.NewReader(respBody)
 	count, _ := r.ReadU32()
 	assert.Equal(t, uint32(2), count)
+	name, err := r.ReadBytes()
+	require.NoError(t, err)
+	assert.Equal(t, "q1", string(name))
+	kind, err := r.ReadU8()
+	require.NoError(t, err)
+	assert.Equal(t, byte(node.KindLog), kind)
 }
 
 // TestHandleSchema serves OpSchema and verifies the u16 version envelope plus

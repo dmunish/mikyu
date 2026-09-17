@@ -35,7 +35,7 @@ func TestServerQueueHandleCaching(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = release() }()
 
-	_, err = n.Manager().Create("cached")
+	_, err = n.CreateLogQueue(t.Context(), "cached", spec.Spec{})
 	require.NoError(t, err)
 
 	srv := New(n)
@@ -94,13 +94,13 @@ func TestServerListenAndServe(t *testing.T) {
 
 	// Send a harmless op (e.g., OpListQueues) to verify the server responds,
 	// but do NOT send OpShutdown, which would trigger an async node.Close().
-	err = protocol.WriteFrame(conn, protocol.OpListQueues, nil)
+	err = protocol.WriteFrame(conn, protocol.OpList, nil)
 	require.NoError(t, err)
 
 	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 	respOp, _, err := protocol.ReadFrame(bufio.NewReader(conn))
 	require.NoError(t, err)
-	assert.Equal(t, protocol.OpListQueues, respOp)
+	assert.Equal(t, protocol.OpList, respOp)
 }
 
 func TestServerServeClosesOnStop(t *testing.T) {
@@ -140,16 +140,16 @@ func TestServerMaxConnsRejectsExtra(t *testing.T) {
 	// First connection occupies the only slot.
 	c1, err := net.Dial("tcp", ln.Addr().String())
 	require.NoError(t, err)
-	require.NoError(t, protocol.WriteFrame(c1, protocol.OpListQueues, nil))
+	require.NoError(t, protocol.WriteFrame(c1, protocol.OpList, nil))
 	_ = c1.SetReadDeadline(time.Now().Add(2 * time.Second))
 	op, _, err := protocol.ReadFrame(bufio.NewReader(c1))
 	require.NoError(t, err)
-	require.Equal(t, protocol.OpListQueues, op)
+	require.Equal(t, protocol.OpList, op)
 
 	// The second is refused with a clear error and then closed.
 	c2, err := net.Dial("tcp", ln.Addr().String())
 	require.NoError(t, err)
-	require.NoError(t, protocol.WriteFrame(c2, protocol.OpListQueues, nil))
+	require.NoError(t, protocol.WriteFrame(c2, protocol.OpList, nil))
 	_ = c2.SetReadDeadline(time.Now().Add(2 * time.Second))
 	op, body, err := protocol.ReadFrame(bufio.NewReader(c2))
 	require.NoError(t, err)
@@ -168,12 +168,12 @@ func TestServerMaxConnsRejectsExtra(t *testing.T) {
 			return false
 		}
 		defer c3.Close()
-		if err := protocol.WriteFrame(c3, protocol.OpListQueues, nil); err != nil {
+		if err := protocol.WriteFrame(c3, protocol.OpList, nil); err != nil {
 			return false
 		}
 		_ = c3.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
 		op, _, err := protocol.ReadFrame(bufio.NewReader(c3))
-		return err == nil && op == protocol.OpListQueues
+		return err == nil && op == protocol.OpList
 	}, 3*time.Second, 25*time.Millisecond)
 }
 
@@ -203,11 +203,11 @@ func TestServerMaxConnsUnlimitedByDefault(t *testing.T) {
 		c, err := net.Dial("tcp", ln.Addr().String())
 		require.NoError(t, err)
 		conns = append(conns, c)
-		require.NoError(t, protocol.WriteFrame(c, protocol.OpListQueues, nil))
+		require.NoError(t, protocol.WriteFrame(c, protocol.OpList, nil))
 		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
 		op, _, err := protocol.ReadFrame(bufio.NewReader(c))
 		require.NoError(t, err)
-		require.Equal(t, protocol.OpListQueues, op)
+		require.Equal(t, protocol.OpList, op)
 	}
 	assert.Zero(t, srv.metrics.rejected.Load())
 }
@@ -236,11 +236,12 @@ func TestServerTLSHandshake(t *testing.T) {
 	require.NoError(t, err)
 	defer conn.Close()
 
-	err = protocol.WriteFrame(conn, protocol.OpListQueues, nil)
+	err = protocol.WriteFrame(conn, protocol.OpList, nil)
 	require.NoError(t, err)
 
 	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 	respOp, _, err := protocol.ReadFrame(bufio.NewReader(conn))
 	require.NoError(t, err)
-	assert.Equal(t, protocol.OpListQueues, respOp)
+	assert.Equal(t, protocol.OpList, respOp)
 }
+

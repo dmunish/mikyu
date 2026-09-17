@@ -199,16 +199,19 @@ func assertQueuesJSON(t *testing.T) {
 	defer func() { _ = release() }()
 
 	full := fullSpec(t)
-	require.NoError(t, n.CreateQueue(t.Context(), "q", full))
+	_, err = n.CreateLogQueue(t.Context(), "q", full)
+	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(dir, "queues.json"))
 	require.NoError(t, err)
 
 	var doc struct {
-		Queues map[string]map[string]map[string]json.RawMessage `json:"queues"`
+		Queues map[string]struct {
+			Spec map[string]map[string]json.RawMessage `json:"spec"`
+		} `json:"queues"`
 	}
 	require.NoError(t, json.Unmarshal(data, &doc))
-	stored := doc.Queues["q"]
+	stored := doc.Queues["log/q"].Spec
 	require.NotNil(t, stored)
 
 	for _, p := range spec.Params(spec.LayerSpec) {

@@ -33,16 +33,17 @@ func TestServerOpCounters(t *testing.T) {
 
 	r := bufio.NewReader(conn)
 	for range 5 {
-		require.NoError(t, protocol.WriteFrame(conn, protocol.OpListQueues, nil))
+		require.NoError(t, protocol.WriteFrame(conn, protocol.OpList, nil))
 		_, _, err := protocol.ReadFrame(r)
 		require.NoError(t, err)
 	}
 
 	require.Eventually(t, func() bool {
-		return srv.metrics.ops[protocol.OpListQueues].Load() == 5
+		return srv.metrics.ops[protocol.OpList].Load() == 5
 	}, time.Second, time.Millisecond)
 	require.Eventually(t, func() bool {
 		return srv.metrics.connections.Load() >= 1
 	}, time.Second, time.Millisecond)
-	assert.EqualValues(t, 5, srv.metrics.durations[protocol.OpListQueues].Snapshot().Total)
+	assert.EqualValues(t, 5, srv.metrics.durations[protocol.OpList].Snapshot().Total)
 }
+

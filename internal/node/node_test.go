@@ -6,10 +6,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/manager"
 	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func createLog(t *testing.T, n *Node, name string, s spec.Spec) {
+	t.Helper()
+	_, err := n.CreateLogQueue(t.Context(), name, s)
+	require.NoError(t, err)
+}
+
+func createTask(t *testing.T, n *Node, name string, s spec.Spec) {
+	t.Helper()
+	_, err := n.CreateTaskQueue(t.Context(), name, s)
+	require.NoError(t, err)
+}
 
 func TestRestartPreservesSpec(t *testing.T) {
 	dir := t.TempDir()
@@ -22,7 +36,7 @@ func TestRestartPreservesSpec(t *testing.T) {
 			Fsync:     new(false),
 		},
 	}
-	require.NoError(t, n1.CreateQueue(t.Context(), "q", s))
+	createLog(t, n1, "q", s)
 	require.NoError(t, release1())
 
 	n2, release2, err := Acquire(dir, spec.Spec{})
@@ -41,7 +55,7 @@ func TestRegistryCorruptRefusesStartup(t *testing.T) {
 	dir := t.TempDir()
 	n, release, err := Acquire(dir, spec.Spec{})
 	require.NoError(t, err)
-	require.NoError(t, n.CreateQueue(t.Context(), "q", spec.Spec{}))
+	createLog(t, n, "q", spec.Spec{})
 	require.NoError(t, release())
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, registryFileName), []byte("{garbage"), 0o644))
@@ -54,11 +68,13 @@ func TestAdoptOrphanAndPurgeOrphan(t *testing.T) {
 	dir := t.TempDir()
 	n1, release1, err := Acquire(dir, spec.Spec{})
 	require.NoError(t, err)
-	require.NoError(t, n1.CreateQueue(t.Context(), "adopted", spec.Spec{}))
+	createLog(t, n1, "adopted", spec.Spec{})
 	require.NoError(t, release1())
 
 	// Overwrite the registry to include only a queue with no directory.
-	r := &registry{Version: 1, Queues: map[string]spec.Spec{"missing": {}}}
+	r := &registry{Version: registryVersion, Queues: map[string]QueueEntry{
+		registryKey(manager.KindLog, "missing"): {Name: "missing", Kind: manager.KindLog},
+	}}
 	require.NoError(t, saveRegistry(dir, r))
 
 	n2, release2, err := Acquire(dir, spec.Spec{})
@@ -66,13 +82,13 @@ func TestAdoptOrphanAndPurgeOrphan(t *testing.T) {
 	defer func() { _ = release2() }()
 
 	// "adopted" survived on disk.
-	_, err = n2.Manager().Get("adopted")
+	_, _, err = n2.Manager().Get("adopted")
 	require.NoError(t, err)
 
 	// "missing" was purged from the registry.
 	r2, err := loadRegistry(dir)
 	require.NoError(t, err)
-	_, ok := r2.Queues["missing"]
+	_, ok := r2.Queues[registryKey(manager.KindLog, "missing")]
 	assert.False(t, ok)
 }
 
@@ -83,7 +99,7 @@ func TestDescribeAfterCreateWithFlags(t *testing.T) {
 	defer func() { _ = release() }()
 
 	s := spec.Spec{Engine: spec.EngineSpec{BatchSize: new(7)}}
-	require.NoError(t, n.CreateQueue(t.Context(), "q", s))
+	createLog(t, n, "q", s)
 
 	d, err := n.DescribeQueue(t.Context(), "q")
 	require.NoError(t, err)
@@ -100,7 +116,7 @@ func TestUpdateQueueRejectsCreateOnly(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = release() }()
 
-	require.NoError(t, n.CreateQueue(t.Context(), "q", spec.Spec{}))
+	createLog(t, n, "q", spec.Spec{})
 	patch := spec.Spec{Engine: spec.EngineSpec{SegmentSize: new(int64(1024))}}
 	err = n.UpdateQueue(t.Context(), "q", patch)
 	require.ErrorIs(t, err, spec.ErrImmutableField)
@@ -112,7 +128,7 @@ func TestUpdateQueueMutable(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = release() }()
 
-	require.NoError(t, n.CreateQueue(t.Context(), "q", spec.Spec{}))
+	createLog(t, n, "q", spec.Spec{})
 	require.NoError(t, n.UpdateQueue(t.Context(), "q", spec.Spec{Engine: spec.EngineSpec{BatchSize: new(42)}}))
 
 	d, err := n.DescribeQueue(t.Context(), "q")
@@ -131,10 +147,10 @@ func TestRetentionShrinkTriggersImmediateReconcile(t *testing.T) {
 	segSize := int64(256)
 	maxMsg := int64(128)
 	hour := spec.Duration(time.Hour)
-	require.NoError(t, n.CreateQueue(ctx, "q", spec.Spec{
+	createLog(t, n, "q", spec.Spec{
 		Engine:    spec.EngineSpec{SegmentSize: &segSize, MaxMessageBytes: &maxMsg},
 		Retention: spec.RetentionSpec{Age: &hour},
-	}))
+	})
 	lq, err := n.LogQueue("q")
 	require.NoError(t, err)
 
@@ -165,7 +181,7 @@ func TestQueueDefaultUpdateAffectsFutureEnqueues(t *testing.T) {
 	ctx := t.Context()
 
 	minute := spec.Duration(time.Minute)
-	require.NoError(t, n.CreateQueue(ctx, "q", spec.Spec{Task: spec.TaskSpec{DefaultVisibility: &minute}}))
+	createTask(t, n, "q", spec.Spec{Task: spec.TaskSpec{DefaultVisibility: &minute}})
 	tq, err := n.TaskQueue("q")
 	require.NoError(t, err)
 
@@ -195,7 +211,7 @@ func TestQueueDefaultUpdateSurvivesRestart(t *testing.T) {
 	n1, r1, err := Acquire(dir, spec.Spec{})
 	require.NoError(t, err)
 	minute := spec.Duration(time.Minute)
-	require.NoError(t, n1.CreateQueue(t.Context(), "q", spec.Spec{Task: spec.TaskSpec{DefaultVisibility: &minute}}))
+	createTask(t, n1, "q", spec.Spec{Task: spec.TaskSpec{DefaultVisibility: &minute}})
 	require.NoError(t, r1())
 
 	n2, r2, err := Acquire(dir, spec.Spec{})
@@ -271,26 +287,29 @@ func TestNodeSnapshotIncludesQueueInstruments(t *testing.T) {
 	defer func() { _ = release() }()
 
 	ctx := t.Context()
-	require.NoError(t, n.CreateQueue(ctx, "q", spec.Spec{}))
+	createLog(t, n, "logs", spec.Spec{})
+	createTask(t, n, "tasks", spec.Spec{})
 
-	lq, err := n.LogQueue("q")
+	lq, err := n.LogQueue("logs")
 	require.NoError(t, err)
 	_, err = lq.Append(ctx, []byte("hello"))
 	require.NoError(t, err)
 
-	tq, err := n.TaskQueue("q")
+	tq, err := n.TaskQueue("tasks")
 	require.NoError(t, err)
 	_, err = tq.Enqueue(ctx, []byte("task"))
 	require.NoError(t, err)
 
 	snap, err := n.Metrics(ctx)
 	require.NoError(t, err)
-	qv, ok := snap.Queue("q")
+	qv, ok := snap.Queue("logs")
 	require.True(t, ok)
 	assert.Positive(t, qv.Gauges["messages"])
 	assert.Positive(t, qv.Counters["appends"])
-	assert.Positive(t, qv.Counters["enqueues"])
 	assert.Contains(t, qv.Histograms, "append_duration")
+	tqv, ok := snap.Queue("tasks")
+	require.True(t, ok)
+	assert.Positive(t, tqv.Counters["enqueues"])
 }
 
 func TestNodeCollectorDisabled(t *testing.T) {
@@ -318,7 +337,7 @@ func TestCreateQueueRejectsInheritedConflict(t *testing.T) {
 	defer func() { _ = release() }()
 
 	msg := int64(2 << 20)
-	err = n.CreateQueue(t.Context(), "q", spec.Spec{Engine: spec.EngineSpec{MaxMessageBytes: &msg}})
+	_, err = n.CreateLogQueue(t.Context(), "q", spec.Spec{Engine: spec.EngineSpec{MaxMessageBytes: &msg}})
 	require.ErrorIs(t, err, spec.ErrInvalidConfig)
 	assert.Contains(t, err.Error(), "max_message_bytes")
 	assert.Contains(t, err.Error(), "segment_size")
@@ -334,7 +353,7 @@ func TestUpdateQueueRejectsInheritedConflict(t *testing.T) {
 
 	n1, r1, err := Acquire(dir, spec.Spec{Engine: spec.EngineSpec{SegmentSize: &roomy}})
 	require.NoError(t, err)
-	require.NoError(t, n1.CreateQueue(t.Context(), "q", spec.Spec{Engine: spec.EngineSpec{MaxMessageBytes: &msg}}))
+	createLog(t, n1, "q", spec.Spec{Engine: spec.EngineSpec{MaxMessageBytes: &msg}})
 	require.NoError(t, r1())
 
 	small := int64(256 << 10)
@@ -356,7 +375,87 @@ func TestCreateQueueRejectsInvalidSessionDefault(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = release() }()
 
-	err = n.CreateQueue(t.Context(), "q", spec.Spec{})
+	_, err = n.CreateLogQueue(t.Context(), "q", spec.Spec{})
 	require.ErrorIs(t, err, spec.ErrInvalidConfig)
 	assert.Contains(t, err.Error(), "batch_size")
+}
+
+// TestWrongKindRefused: a task queue addressed as a log queue is refused by name.
+func TestWrongKindRefused(t *testing.T) {
+	n, release, err := Acquire(t.TempDir(), spec.Spec{})
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+
+	createTask(t, n, "jobs", spec.Spec{})
+	_, err = n.LogQueue("jobs")
+	require.ErrorIs(t, err, ErrWrongKind)
+	assert.Contains(t, err.Error(), "jobs")
+
+	createLog(t, n, "events", spec.Spec{})
+	_, err = n.TaskQueue("events")
+	require.ErrorIs(t, err, ErrWrongKind)
+}
+
+// TestListCarriesKind: the filesystem is the source of truth for kind.
+func TestListCarriesKind(t *testing.T) {
+	n, release, err := Acquire(t.TempDir(), spec.Spec{})
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+	ctx := t.Context()
+
+	createLog(t, n, "events", spec.Spec{})
+	createTask(t, n, "events", spec.Spec{})
+	createTask(t, n, "jobs", spec.Spec{})
+
+	infos, err := n.ListQueues(ctx)
+	require.NoError(t, err)
+	require.Len(t, infos, 3)
+	assert.Equal(t, QueueInfo{Name: "events", Kind: KindLog}, infos[0])
+	assert.Equal(t, QueueInfo{Name: "events", Kind: KindTask}, infos[1])
+	assert.Equal(t, QueueInfo{Name: "jobs", Kind: KindTask}, infos[2])
+}
+
+// TestCreateReturnsHandle: Create* returns a handle usable on the same call.
+func TestCreateReturnsHandle(t *testing.T) {
+	n, release, err := Acquire(t.TempDir(), spec.Spec{})
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+	ctx := t.Context()
+
+	lq, err := n.CreateLogQueue(ctx, "events", spec.Spec{})
+	require.NoError(t, err)
+	_, err = lq.Append(ctx, []byte("x"))
+	require.NoError(t, err)
+
+	tq, err := n.CreateTaskQueue(ctx, "jobs", spec.Spec{})
+	require.NoError(t, err)
+	_, err = tq.Enqueue(ctx, []byte("y"))
+	require.NoError(t, err)
+}
+
+// TestMoveQueueDirectoryFailsLoad: a log queue moved under task/ is a user
+// error; the task driver reports the corrupt record naming the directory.
+func TestMoveQueueDirectoryFailsLoad(t *testing.T) {
+	dir := t.TempDir()
+	n, release, err := Acquire(dir, spec.Spec{})
+	require.NoError(t, err)
+	createLog(t, n, "events", spec.Spec{})
+	lq, err := n.LogQueue("events")
+	require.NoError(t, err)
+	_, err = lq.Append(t.Context(), []byte("an ordinary log record"))
+	require.NoError(t, err)
+	require.NoError(t, release())
+
+	require.NoError(t, os.Rename(
+		filepath.Join(dir, "log", "events"),
+		filepath.Join(dir, "task", "events"),
+	))
+
+	n2, release2, err := Acquire(dir, spec.Spec{})
+	require.NoError(t, err)
+	defer func() { _ = release2() }()
+
+	_, err = n2.TaskQueue("events")
+	require.ErrorIs(t, err, engine.ErrCorruptRecord)
+	assert.Contains(t, err.Error(), "events")
 }

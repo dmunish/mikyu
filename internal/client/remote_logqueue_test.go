@@ -12,7 +12,7 @@ func TestRemoteStreamDrains(t *testing.T) {
 	c := newRemoteClient(t)
 	lq, err := c.LogQueue("q")
 	require.NoError(t, err)
-	require.NoError(t, c.CreateQueue(t.Context(), "q"))
+	mustCreateLog(t, c, "q")
 
 	for i := range 5 {
 		_, err := lq.Append(t.Context(), []byte("msg"))
@@ -37,7 +37,7 @@ func TestRemoteTailWakesOnAppend(t *testing.T) {
 	c := newRemoteClient(t)
 	lq, err := c.LogQueue("q")
 	require.NoError(t, err)
-	require.NoError(t, c.CreateQueue(t.Context(), "q"))
+	mustCreateLog(t, c, "q")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -72,7 +72,7 @@ func TestRemoteTailCancel(t *testing.T) {
 	c := newRemoteClient(t)
 	lq, err := c.LogQueue("q")
 	require.NoError(t, err)
-	require.NoError(t, c.CreateQueue(t.Context(), "q"))
+	mustCreateLog(t, c, "q")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -83,3 +83,4 @@ func TestRemoteTailCancel(t *testing.T) {
 		break
 	}
 }
+

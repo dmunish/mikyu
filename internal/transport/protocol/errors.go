@@ -21,11 +21,15 @@ const (
 	ErrCodeUnauthorized   byte = 0x09
 
 	// Storage block: log-segment reads and queue availability.
-	ErrCodeOffsetNotFound  byte = 0x11
-	ErrCodeOffsetTruncated byte = 0x12
-	ErrCodeMessageTooLarge byte = 0x13
-	ErrCodeQueueClosed     byte = 0x14
-	ErrCodeNoData          byte = 0x15
+	ErrCodeOffsetNotFound   byte = 0x11
+	ErrCodeOffsetTruncated  byte = 0x12
+	ErrCodeMessageTooLarge  byte = 0x13
+	ErrCodeQueueClosed      byte = 0x14
+	ErrCodeNoData           byte = 0x15
+	ErrCodeDiskFull         byte = 0x16
+	ErrCodeCorruptRecord    byte = 0x17
+	ErrCodeRecordTooLarge   byte = 0x18
+	ErrCodeRecordCompacted  byte = 0x19
 
 	// Task block: enqueue/dequeue and lease operations.
 	ErrCodeTaskNotAvailable  byte = 0x21
@@ -34,13 +38,15 @@ const (
 	ErrCodeTaskStale         byte = 0x24
 	ErrCodeTaskInvalid       byte = 0x25
 	ErrCodeCheckpointCorrupt byte = 0x26
+	ErrCodeQueueFull         byte = 0x27
 
 	// Dead-letter block.
 	ErrCodeDeadLetterNotFound byte = 0x31
 	ErrCodeDeadLetterStale    byte = 0x32
 
-	// Server block: connection admission.
+	// Server block: connection admission and queue-kind enforcement.
 	ErrCodeTooManyConnections byte = 0x41
+	ErrCodeWrongKind          byte = 0x42
 )
 
 // ErrTooManyConnections reports that a server is at its concurrent-connection limit.

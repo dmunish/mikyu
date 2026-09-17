@@ -19,7 +19,8 @@ func TestProcessPoolSharesNode(t *testing.T) {
 
 	// Release one ref; node stays alive and usable.
 	require.NoError(t, r1())
-	require.NoError(t, n2.CreateQueue(t.Context(), "q", spec.Spec{}))
+	_, err = n2.CreateLogQueue(t.Context(), "q", spec.Spec{})
+	require.NoError(t, err)
 
 	// Release the last ref; node closes.
 	require.NoError(t, r2())

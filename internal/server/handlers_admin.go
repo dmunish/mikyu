@@ -6,14 +6,15 @@ import (
 	"errors"
 
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/node"
 	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/dmunish/mikyu/internal/transport/protocol"
 )
 
-// decodeSpecFrame parses a spec-bearing admin request:
-// bytes(name) u16 specVersion bytes(json). The version is checked before the
-// payload is touched, so a frame claiming a schema this build cannot decode
-// is rejected without interpretation.
+// decodeSpecFrame parses a spec-bearing admin request after any leading
+// discriminator: bytes(name) u16 specVersion bytes(json). The version is
+// checked before the payload is touched, so a frame claiming a schema this
+// build cannot decode is rejected without interpretation.
 func decodeSpecFrame(r *protocol.Reader) (name string, data []byte, respOp byte, respErr []byte) {
 	nameBytes, err := r.ReadBytes()
 	if err != nil {
@@ -33,8 +34,13 @@ func decodeSpecFrame(r *protocol.Reader) (name string, data []byte, respOp byte,
 	return string(nameBytes), data, 0, nil
 }
 
-func (s *Server) handleCreateQueue(ctx context.Context, body []byte) (byte, []byte) {
+// handleCreate serves OpCreate: u8 kind, bytes(name), u16 specVersion, bytes(json).
+func (s *Server) handleCreate(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
+	kindByte, err := r.ReadU8()
+	if err != nil {
+		return opErr(protocol.ErrCodeInvalidConfig, err.Error())
+	}
 	name, data, op, errBody := decodeSpecFrame(r)
 	if errBody != nil {
 		return op, errBody
@@ -43,16 +49,25 @@ func (s *Server) handleCreateQueue(ctx context.Context, body []byte) (byte, []by
 	if err != nil {
 		return taskErr(err)
 	}
-	if err := s.node.CreateQueue(ctx, name, sp); err != nil {
+
+	switch node.Kind(kindByte) {
+	case node.KindLog:
+		_, err = s.node.CreateLogQueue(ctx, name, sp)
+	case node.KindTask:
+		_, err = s.node.CreateTaskQueue(ctx, name, sp)
+	default:
+		return opErr(protocol.ErrCodeInvalidConfig, "unknown queue kind")
+	}
+	if err != nil {
 		if errors.Is(err, engine.ErrQueueExists) {
 			return opErr(protocol.ErrCodeQueueExists, err.Error())
 		}
 		return taskErr(err)
 	}
-	return protocol.OpCreateQueue, nil
+	return protocol.OpCreate, nil
 }
 
-func (s *Server) handleUpdateQueue(ctx context.Context, body []byte) (byte, []byte) {
+func (s *Server) handleUpdate(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
 	name, data, op, errBody := decodeSpecFrame(r)
 	if errBody != nil {
@@ -65,10 +80,10 @@ func (s *Server) handleUpdateQueue(ctx context.Context, body []byte) (byte, []by
 	if err := s.node.UpdateQueue(ctx, name, patch); err != nil {
 		return taskErr(err)
 	}
-	return protocol.OpUpdateQueue, nil
+	return protocol.OpUpdate, nil
 }
 
-func (s *Server) handleDescribeQueue(ctx context.Context, body []byte) (byte, []byte) {
+func (s *Server) handleDescribe(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
 	name, err := r.ReadBytes()
 	if err != nil {
@@ -85,26 +100,31 @@ func (s *Server) handleDescribeQueue(ctx context.Context, body []byte) (byte, []
 	var buf protocol.Buffer
 	buf.WriteU16(spec.CurrentSpecVersion)
 	buf.WriteBytes(data)
-	return protocol.OpDescribeQueue, buf.Bytes()
+	return protocol.OpDescribe, buf.Bytes()
 }
 
-func (s *Server) handleListQueues() (byte, []byte) {
-	names := s.node.Manager().List()
-	buf := protocol.Buffer{}
-	buf.WriteU32(uint32(len(names)))
-	for _, n := range names {
-		buf.WriteBytes([]byte(n))
+// handleList serves OpList: u32 count, then per entry bytes(name) u8 kind.
+func (s *Server) handleList(ctx context.Context) (byte, []byte) {
+	infos, err := s.node.ListQueues(ctx)
+	if err != nil {
+		return taskErr(err)
 	}
-	return protocol.OpListQueues, buf.Bytes()
+	buf := protocol.Buffer{}
+	buf.WriteU32(uint32(len(infos)))
+	for _, info := range infos {
+		buf.WriteBytes([]byte(info.Name))
+		buf.WriteU8(byte(info.Kind))
+	}
+	return protocol.OpList, buf.Bytes()
 }
 
-func (s *Server) handleDeleteQueue(body []byte) (byte, []byte) {
+func (s *Server) handleDelete(body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
 	name, _ := r.ReadBytes()
 	if err := s.node.DeleteQueue(context.Background(), string(name)); err != nil {
-		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
+		return taskErr(err)
 	}
-	return protocol.OpDeleteQueue, nil
+	return protocol.OpDelete, nil
 }
 
 func (s *Server) handleTruncate(ctx context.Context, body []byte) (byte, []byte) {
@@ -117,14 +137,8 @@ func (s *Server) handleTruncate(ctx context.Context, body []byte) (byte, []byte)
 	if err != nil {
 		return opErr(protocol.ErrCodeInvalidConfig, err.Error())
 	}
-
-	// Truncate materializes both drivers so durable task state from a
-	// previous process lifetime is included in the retention floor.
 	reclaimed, err := s.node.Truncate(ctx, string(name), minOffset)
 	if err != nil {
-		if errors.Is(err, engine.ErrQueueNotFound) {
-			return opErr(protocol.ErrCodeQueueNotFound, err.Error())
-		}
 		return taskErr(err)
 	}
 
@@ -134,7 +148,7 @@ func (s *Server) handleTruncate(ctx context.Context, body []byte) (byte, []byte)
 }
 
 // handleMetrics serves OpMetrics: a u16 specVersion followed by the
-// JSON-encoded live snapshot, the same envelope as OpDescribeQueue.
+// JSON-encoded live snapshot, the same envelope as OpDescribe.
 func (s *Server) handleMetrics(ctx context.Context) (byte, []byte) {
 	snap, err := s.node.Metrics(ctx)
 	if err != nil {
@@ -151,7 +165,7 @@ func (s *Server) handleMetrics(ctx context.Context) (byte, []byte) {
 }
 
 // handleSchema serves OpSchema: a u16 specVersion followed by the JSON-encoded
-// parameter table, the same envelope as OpDescribeQueue and OpMetrics.
+// parameter table, the same envelope as OpDescribe and OpMetrics.
 func (s *Server) handleSchema() (byte, []byte) {
 	data, err := json.Marshal(spec.Table)
 	if err != nil {

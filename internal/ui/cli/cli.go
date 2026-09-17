@@ -215,24 +215,31 @@ func (in *invocation) handleList(args []string) error {
 		return err
 	}
 	for _, q := range queues {
-		fmt.Fprintln(in.app.Stdout, q)
+		fmt.Fprintf(in.app.Stdout, "%s\t%s\n", q.Name, q.Kind)
 	}
 	return nil
 }
 
 func (in *invocation) handleCreate(args []string) error {
 	var patch spec.Spec
-	rest, err := command.ParseAnywhere(command.QueueFlagSet("create", &patch), args)
+	var typeName string
+	fs := command.QueueFlagSet("create", &patch)
+	fs.StringVar(&typeName, "type", "log", "queue kind: log or task")
+	rest, err := command.ParseAnywhere(fs, args)
 	if err != nil {
 		return in.app.usage("create: %v", err)
 	}
 	if len(rest) != 1 {
-		return in.app.usage("usage: mikyu create [flags] <queue>")
+		return in.app.usage("usage: mikyu create [--type log|task] [flags] <queue>")
 	}
-	if err := command.Create(in.ctx, in.client, rest[0], command.SpecOption(patch)); err != nil {
+	kind, err := command.KindFromName(typeName)
+	if err != nil {
+		return in.app.usage("create: %v", err)
+	}
+	if err := command.Create(in.ctx, in.client, kind, rest[0], command.SpecOption(patch)); err != nil {
 		return err
 	}
-	fmt.Fprintf(in.app.Stdout, "created queue %q\n", rest[0])
+	fmt.Fprintf(in.app.Stdout, "created queue %q (%s)\n", rest[0], kind)
 	return nil
 }
 

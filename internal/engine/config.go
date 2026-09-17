@@ -11,9 +11,11 @@ var (
 	ErrOffsetNotFound  = errors.New("offset not found")
 	ErrMessageTooLarge = errors.New("message payload exceeds maximum allowed size")
 	ErrRecordTooLarge  = errors.New("record size exceeds max segment size")
-	ErrOffsetTruncated = errors.New("offset has been truncated from storage")
+	ErrOffsetTruncated  = errors.New("offset has been truncated from storage")
 	ErrQueueClosed     = errors.New("queue is closed")
 	ErrNoData          = errors.New("no data available")
+	ErrRecordCompacted = errors.New("record has been compacted")
+	ErrDiskFull        = errors.New("disk is full")
 )
 
 // Config holds per-queue configuration parameters.

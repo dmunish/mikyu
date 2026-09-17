@@ -176,9 +176,12 @@ func TestParityEndToEnd(t *testing.T) {
 			name := func(surface string) string { return surface + "-" + p.Key }
 			opt := mikyu.QueueOption(func(s *mikyu.Spec) { *s = specWith(t, p) })
 
-			require.NoError(t, emb.CreateQueue(ctx, name("emb"), opt))
-			require.NoError(t, rem.CreateQueue(ctx, name("rem"), opt))
-			require.NoError(t, rem.CreateQueue(ctx, name("yml")))
+			_, err = emb.CreateLogQueue(ctx, name("emb"), opt)
+			require.NoError(t, err)
+			_, err = rem.CreateLogQueue(ctx, name("rem"), opt)
+			require.NoError(t, err)
+			_, err = rem.CreateLogQueue(ctx, name("yml"))
+			require.NoError(t, err)
 
 			// Bool flags take their value with =, as the flag package requires.
 			flagArgs := []string{"--" + p.FlagName, sampleText(p)}
@@ -396,6 +399,10 @@ func TestSentinelUniqueness(t *testing.T) {
 		"ErrDeadLetterStale":         mikyu.ErrDeadLetterStale,
 		"ErrNoData":                  mikyu.ErrNoData,
 		"ErrRecordTooLarge":          mikyu.ErrRecordTooLarge,
+		"ErrRecordCompacted":         mikyu.ErrRecordCompacted,
+		"ErrDiskFull":                mikyu.ErrDiskFull,
+		"ErrWrongKind":               mikyu.ErrWrongKind,
+		"ErrQueueFull":               mikyu.ErrQueueFull,
 		"ErrProtocol":                mikyu.ErrProtocol,
 		"ErrModeMismatch":            mikyu.ErrModeMismatch,
 		"ErrTooManyConnections":      mikyu.ErrTooManyConnections,

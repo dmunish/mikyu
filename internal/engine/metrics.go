@@ -77,7 +77,7 @@ func (m *Manager) Collect(_ context.Context, dst *metrics.Snapshot) {
 		q.mu.RLock()
 		qv := metrics.QueueView{
 			Name: q.name,
-			Kind: "shared",
+			Kind: "internal",
 			Gauges: map[string]int64{
 				GaugeRecords:   int64(q.publishedOffset),
 				GaugeSegments:   int64(len(q.segments)),

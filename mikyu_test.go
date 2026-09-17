@@ -19,14 +19,25 @@ func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
 
+func createLog(t *testing.T, c mikyu.Client, name string, opts ...mikyu.QueueOption) {
+	t.Helper()
+	_, err := c.CreateLogQueue(t.Context(), name, opts...)
+	require.NoError(t, err)
+}
+
+func createTask(t *testing.T, c mikyu.Client, name string, opts ...mikyu.QueueOption) {
+	t.Helper()
+	_, err := c.CreateTaskQueue(t.Context(), name, opts...)
+	require.NoError(t, err)
+}
+
 func TestEmbeddedClientLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	client, err := mikyu.Open(dir)
 	require.NoError(t, err)
 	defer client.Close()
 
-	err = client.CreateQueue(t.Context(), "test")
-	require.NoError(t, err)
+	createLog(t, client, "test")
 
 	q, err := client.LogQueue("test")
 	require.NoError(t, err)
@@ -51,9 +62,9 @@ func TestEmbeddedClientDuplicateQueue(t *testing.T) {
 	client, _ := mikyu.Open(dir)
 	defer client.Close()
 
-	err := client.CreateQueue(t.Context(), "dup")
+	_, err := client.CreateLogQueue(t.Context(), "dup")
 	require.NoError(t, err)
-	err = client.CreateQueue(t.Context(), "dup")
+	_, err = client.CreateLogQueue(t.Context(), "dup")
 	assert.Error(t, err)
 }
 
@@ -62,7 +73,7 @@ func TestEmbeddedClientDeleteQueue(t *testing.T) {
 	client, _ := mikyu.Open(dir)
 	defer client.Close()
 
-	err := client.CreateQueue(t.Context(), "temp")
+	_, err := client.CreateLogQueue(t.Context(), "temp")
 	require.NoError(t, err)
 
 	err = client.DeleteQueue(t.Context(), "temp")
@@ -78,8 +89,7 @@ func TestEmbeddedClientConcurrentLogQueue(t *testing.T) {
 	require.NoError(t, err)
 	defer client.Close()
 
-	err = client.CreateQueue(t.Context(), "concurrent-q")
-	require.NoError(t, err)
+	createLog(t, client, "concurrent-q")
 
 	const goroutines = 10
 	var wg sync.WaitGroup
@@ -121,7 +131,7 @@ func TestTypedQueue(t *testing.T) {
 	client, _ := mikyu.Open(dir)
 	defer client.Close()
 
-	err := client.CreateQueue(t.Context(), "typed")
+	_, err := client.CreateLogQueue(t.Context(), "typed")
 	require.NoError(t, err)
 
 	q, err := client.LogQueue("typed")
@@ -152,7 +162,7 @@ func TestEmbeddedTaskQueueLifecycle(t *testing.T) {
 	client, err := mikyu.Open(dir)
 	require.NoError(t, err)
 	defer client.Close()
-	require.NoError(t, client.CreateQueue(t.Context(), "tasks"))
+	createTask(t, client, "tasks")
 
 	q, err := client.TaskQueue("tasks")
 	require.NoError(t, err)
@@ -169,7 +179,7 @@ func TestEmbeddedTaskQueueStableHandle(t *testing.T) {
 	client, err := mikyu.Open(t.TempDir())
 	require.NoError(t, err)
 	defer client.Close()
-	require.NoError(t, client.CreateQueue(t.Context(), "tasks"))
+	createTask(t, client, "tasks")
 
 	const n = 16
 	queues := make([]mikyu.TaskQueue, n)
@@ -210,7 +220,7 @@ func TestEmbeddedUpdateQueueImmutable(t *testing.T) {
 	client, err := mikyu.Open(t.TempDir())
 	require.NoError(t, err)
 	defer client.Close()
-	require.NoError(t, client.CreateQueue(t.Context(), "q"))
+	createLog(t, client, "q")
 
 	err = client.UpdateQueue(t.Context(), "q", mikyu.WithSegmentSize(128))
 	require.ErrorIs(t, err, mikyu.ErrImmutableField)
@@ -221,7 +231,7 @@ func TestRemoteUpdateQueueImmutable(t *testing.T) {
 	client, err := mikyu.Dial(newTestServer(t))
 	require.NoError(t, err)
 	defer client.Close()
-	require.NoError(t, client.CreateQueue(t.Context(), "q"))
+	createLog(t, client, "q")
 
 	err = client.UpdateQueue(t.Context(), "q", mikyu.WithSegmentSize(128))
 	require.ErrorIs(t, err, mikyu.ErrImmutableField)
@@ -283,10 +293,12 @@ func TestOpenDefaultsMatchSucceeds(t *testing.T) {
 	defer second.Close()
 
 	// Both handles reach the same shared node.
-	require.NoError(t, second.CreateQueue(t.Context(), "shared"))
+	createLog(t, second, "shared")
 	names, err := first.ListQueues(t.Context())
 	require.NoError(t, err)
-	assert.Contains(t, names, "shared")
+	require.Len(t, names, 1)
+	assert.Equal(t, "shared", names[0].Name)
+	assert.Equal(t, mikyu.QueueKindLog, names[0].Kind)
 }
 
 func TestOpenRejectsTarget(t *testing.T) {
@@ -408,7 +420,7 @@ func TestNackInheritBackoffEmbedded(t *testing.T) {
 	c, err := mikyu.Open(t.TempDir())
 	require.NoError(t, err)
 	defer c.Close()
-	require.NoError(t, c.CreateQueue(t.Context(), "tasks"))
+	createTask(t, c, "tasks")
 	q, err := c.TaskQueue("tasks")
 	require.NoError(t, err)
 
@@ -436,7 +448,7 @@ func TestNackInheritBackoffRemote(t *testing.T) {
 	c, err := mikyu.Dial(newTestServer(t))
 	require.NoError(t, err)
 	defer c.Close()
-	require.NoError(t, c.CreateQueue(t.Context(), "tasks"))
+	createTask(t, c, "tasks")
 	q, err := c.TaskQueue("tasks")
 	require.NoError(t, err)
 

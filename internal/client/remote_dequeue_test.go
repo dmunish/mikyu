@@ -26,7 +26,7 @@ func newRemoteTaskQueue(tb testing.TB) TaskQueue {
 	})
 	require.NoError(tb, err)
 	tb.Cleanup(func() { _ = release() })
-	_, err = n.Manager().Create("tasks")
+	_, err = n.CreateTaskQueue(context.Background(), "tasks", spec.Spec{})
 	require.NoError(tb, err)
 
 	srv := server.New(n)
@@ -105,7 +105,7 @@ func TestRemoteDequeueSurfacesQueueClose(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer func() { _ = release() }()
-	_, err = n.Manager().Create("tasks")
+	_, err = n.CreateTaskQueue(context.Background(), "tasks", spec.Spec{})
 	require.NoError(t, err)
 	srv := server.New(n)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -244,3 +244,4 @@ func TestRemoteNackSendsModeZero(t *testing.T) {
 		t.Fatal("server never saw the Nack frame")
 	}
 }
+

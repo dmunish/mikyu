@@ -21,6 +21,7 @@ components:
   spec:       { in: internal/spec }
   metrics:    { in: internal/metrics }
   engine:     { in: internal/engine }
+  manager:    { in: internal/manager }
   enginetest: { in: internal/enginetest }
   protocol:   { in: internal/transport/protocol }
   ipc:        { in: internal/transport/ipc }
@@ -50,6 +51,9 @@ deps:
   engine:
     mayDependOn: [metrics]
     anyVendorDeps: true
+  manager:
+    mayDependOn: [engine, metrics]
+    anyVendorDeps: true
   protocol:
     anyVendorDeps: true
   group:
@@ -71,7 +75,7 @@ deps:
 
   # ---- node: registry, pool, driver cache, retention wiring ----
   node:
-    mayDependOn: [spec, engine, logqueue, taskqueue, retention, metrics]
+    mayDependOn: [spec, engine, manager, logqueue, taskqueue, retention, metrics]
 
   # ---- remote/embedded adapters; client and server never meet ----
   client:
@@ -81,9 +85,9 @@ deps:
 
   # ---- configuration and process entry ----
   config:
-    mayDependOn: [spec]
+    mayDependOn: [spec, manager]
   daemon:
-    mayDependOn: [spec, config, engine, node, server, protocol, metrics]
+    mayDependOn: [spec, config, engine, manager, node, server, protocol, metrics]
 
   # ---- user surface ----
   mikyu:

@@ -15,7 +15,7 @@ import (
 const (
 	// CurrentSpecVersion is the schema number of the JSON encoded Spec.
 
-	CurrentSpecVersion uint16 = 1
+	CurrentSpecVersion uint16 = 2
 
 	// MaxSpecPayload bounds any encoded Spec, patch, or describe payload in bytes.
 	MaxSpecPayload = 1 << 20

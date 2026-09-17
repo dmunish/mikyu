@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/node"
 	"github.com/dmunish/mikyu/internal/queue/taskqueue"
 	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/dmunish/mikyu/internal/transport/protocol"
@@ -51,6 +52,18 @@ func decodeProtocolError(code byte, msg string) error {
 		return decodeKnown(engine.ErrOffsetTruncated, msg)
 	case protocol.ErrCodeMessageTooLarge:
 		return decodeKnown(engine.ErrMessageTooLarge, msg)
+	case protocol.ErrCodeRecordTooLarge:
+		return decodeKnown(engine.ErrRecordTooLarge, msg)
+	case protocol.ErrCodeRecordCompacted:
+		return decodeKnown(engine.ErrRecordCompacted, msg)
+	case protocol.ErrCodeCorruptRecord:
+		return decodeKnown(engine.ErrCorruptRecord, msg)
+	case protocol.ErrCodeDiskFull:
+		return decodeKnown(engine.ErrDiskFull, msg)
+	case protocol.ErrCodeQueueFull:
+		return decodeKnown(taskqueue.ErrQueueFull, msg)
+	case protocol.ErrCodeWrongKind:
+		return decodeKnown(node.ErrWrongKind, msg)
 	case protocol.ErrCodeQueueClosed:
 		return decodeKnown(taskqueue.ErrTaskClosed, msg)
 	case protocol.ErrCodeTaskNotAvailable:
