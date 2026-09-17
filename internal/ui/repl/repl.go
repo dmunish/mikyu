@@ -361,7 +361,7 @@ func (s *replSession) handleTail(args []string) {
 	statusText := dimStyle.Render(fmt.Sprintf("Tailing %q from offset %d (Press Ctrl+C to stop stream)...", name, startOffset))
 	fmt.Print(statusText)
 
-	err := command.Tail(sigCtx, s.client, name, startOffset, func(msg mikyu.Message) error {
+	err := command.Tail(sigCtx, s.client, name, startOffset, func(msg mikyu.Record) error {
 		fmt.Print("\r\x1b[2K")
 		fmt.Println(formatRecord(msg))
 		fmt.Print(statusText)
@@ -534,7 +534,7 @@ func (s *replSession) handleShutdown(args []string) {
 	s.done = true
 }
 
-func formatRecord(msg mikyu.Message) string {
+func formatRecord(msg mikyu.Record) string {
 	offsetStr := recordOffsetStyle.Render(fmt.Sprintf("[%d]", msg.Offset))
 	divider := recordDividerStyle.Render("|")
 

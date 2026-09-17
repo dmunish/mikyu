@@ -6,7 +6,7 @@ import (
 )
 
 // Fetch returns up to maxCount messages starting at offset, blocking up to maxWait.
-func (q *Queue) Fetch(ctx context.Context, offset uint64, maxCount int, maxWait time.Duration) ([]Message, error) {
+func (q *Queue) Fetch(ctx context.Context, offset uint64, maxCount int, maxWait time.Duration) ([]Record, error) {
 	if maxCount <= 0 {
 		return nil, nil
 	}

@@ -26,7 +26,7 @@ func newRemoteTaskQueue(tb testing.TB) TaskQueue {
 	})
 	require.NoError(tb, err)
 	tb.Cleanup(func() { _ = release() })
-	_, err = n.Manager().CreateQueue("tasks")
+	_, err = n.Manager().Create("tasks")
 	require.NoError(tb, err)
 
 	srv := server.New(n)
@@ -105,7 +105,7 @@ func TestRemoteDequeueSurfacesQueueClose(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer func() { _ = release() }()
-	_, err = n.Manager().CreateQueue("tasks")
+	_, err = n.Manager().Create("tasks")
 	require.NoError(t, err)
 	srv := server.New(n)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -235,7 +235,7 @@ func TestRemoteNackSendsModeZero(t *testing.T) {
 	tq, err := c.TaskQueue("tasks")
 	require.NoError(t, err)
 
-	require.NoError(t, tq.Nack(t.Context(), taskqueue.TaskID("task-1")))
+	require.NoError(t, tq.Nack(t.Context(), taskqueue.ID("task-1")))
 	select {
 	case cap := <-got:
 		assert.Equal(t, protocol.NackModeInherit, cap.mode)

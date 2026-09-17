@@ -83,7 +83,7 @@ func schedDown(h scheduleHeap, i0, n int) {
 	}
 }
 
-func (q *TaskQueue) pushScheduleLocked(state *taskState) {
+func (q *queue) pushScheduleLocked(state *taskState) {
 	due := state.nextAt
 	if state.inFlight {
 		due = state.task.Visibility
@@ -95,7 +95,7 @@ func (q *TaskQueue) pushScheduleLocked(state *taskState) {
 	schedPush(&q.schedule, &scheduleItem{id: state.task.ID, due: due, version: state.version, seq: q.sequence})
 }
 
-func (q *TaskQueue) pruneScheduleLocked() {
+func (q *queue) pruneScheduleLocked() {
 	max := len(q.active)*3 + 1024
 	if len(q.schedule) <= max {
 		return

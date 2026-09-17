@@ -16,10 +16,10 @@ import (
 // newMemLogQueue builds a LogQueue over the in-memory enginetest storage so
 // tail tests can run inside a testing/synctest bubble with a virtual clock and
 // no real file I/O.
-func newMemLogQueue(t *testing.T, name string) *logqueue.LogQueue {
+func newMemLogQueue(t *testing.T, name string) logqueue.Log {
 	t.Helper()
 	storage := enginetest.NewMemStorage(name, 1<<20, 1<<20)
-	return logqueue.NewLogQueue(name, storage)
+	return logqueue.New(name, storage)
 }
 
 func TestLogQueueTailContinuous(t *testing.T) {

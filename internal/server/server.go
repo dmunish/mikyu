@@ -76,12 +76,12 @@ func WithMaxConns(n int) ServerOption {
 
 // getOrCreateLogQueue returns the stable server-side handle for name. The
 // cache and retention registration live in the node.
-func (s *Server) getOrCreateLogQueue(name string) (*logqueue.LogQueue, error) {
+func (s *Server) getOrCreateLogQueue(name string) (logqueue.Log, error) {
 	return s.node.LogQueue(name)
 }
 
 // getOrCreateTaskQueue returns the stable server-side task handle for name.
-func (s *Server) getOrCreateTaskQueue(name string) (*taskqueue.TaskQueue, error) {
+func (s *Server) getOrCreateTaskQueue(name string) (taskqueue.Queue, error) {
 	return s.node.TaskQueue(name)
 }
 

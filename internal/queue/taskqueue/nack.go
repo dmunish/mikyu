@@ -6,7 +6,7 @@ import (
 )
 
 // Nack re-queues a task for redelivery, or moves it to the DLQ when its attempt budget is exhausted.
-func (q *TaskQueue) Nack(ctx context.Context, ref TaskRef, opts ...NackOption) error {
+func (q *queue) Nack(ctx context.Context, ref Ref, opts ...NackOption) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}

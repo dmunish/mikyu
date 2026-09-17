@@ -313,7 +313,7 @@ func TestQueueProduceMessageTooLarge(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrMessageTooLarge))
 }
 
-func TestQueueProduceBatchMessageExceedsSegmentSize(t *testing.T) {
+func TestQueueProduceBatchRecordExceedsSegmentSize(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
@@ -323,7 +323,7 @@ func TestQueueProduceBatchMessageExceedsSegmentSize(t *testing.T) {
 
 	payloads := [][]byte{make([]byte, 100), []byte("ok")}
 	_, err = q.AppendBatch(t.Context(), payloads)
-	assert.ErrorIs(t, err, ErrRecordTooLarge)
+	assert.ErrorIs(t, err, ErrMessageTooLarge)
 }
 
 func TestQueueCommitOffset(t *testing.T) {

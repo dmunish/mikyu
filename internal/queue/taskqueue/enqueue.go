@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func (q *TaskQueue) Enqueue(ctx context.Context, payload []byte, opts ...EnqueueOption) (Task, error) {
+func (q *queue) Enqueue(ctx context.Context, payload []byte, opts ...EnqueueOption) (Task, error) {
 	if err := ctx.Err(); err != nil {
 		return Task{}, err
 	}
@@ -16,7 +16,7 @@ func (q *TaskQueue) Enqueue(ctx context.Context, payload []byte, opts ...Enqueue
 	if visibilityTimeout <= 0 || maxAttempts == 0 || scheduledAt.IsZero() {
 		return Task{}, ErrInvalidTask
 	}
-	id := newTaskID()
+	id := newID()
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.closed || q.closing {

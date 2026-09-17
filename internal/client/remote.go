@@ -482,7 +482,7 @@ var _ interface {
 	CreateQueue(context.Context, string, ...QueueOption) error
 	UpdateQueue(context.Context, string, ...QueueOption) error
 	DescribeQueue(context.Context, string) (QueueDescription, error)
-	LogQueue(string) (logqueue.ClientLogQueue, error)
+	LogQueue(string) (logqueue.Log, error)
 	TaskQueue(string) (TaskQueue, error)
 	ListQueues(context.Context) ([]string, error)
 	DeleteQueue(context.Context, string) error

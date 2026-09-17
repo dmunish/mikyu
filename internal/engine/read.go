@@ -6,10 +6,10 @@ import (
 	"time"
 )
 
-func (q *Queue) readFromSegment(seg *segment, offset uint64) (Message, error) {
+func (q *Queue) readFromSegment(seg *segment, offset uint64) (Record, error) {
 	pos, recLen, err := seg.readIndexEntry(offset)
 	if err != nil || recLen < (minRecordSize-recordLengthSize) {
-		return Message{}, ErrOffsetNotFound
+		return Record{}, ErrOffsetNotFound
 	}
 
 	var buf []byte
@@ -18,21 +18,21 @@ func (q *Queue) readFromSegment(seg *segment, offset uint64) (Message, error) {
 	} else {
 		buf = make([]byte, recLen)
 		if _, err := seg.logFile.ReadAt(buf, pos); err != nil {
-			return Message{}, err
+			return Record{}, err
 		}
 	}
 
 	id, ts, payload, err := decodeRecord(buf[recordLengthSize:])
 	if err != nil {
-		return Message{}, err
+		return Record{}, err
 	}
-	return Message{Offset: offset, ID: id, Timestamp: ts, Payload: payload}, nil
+	return Record{Offset: offset, ID: id, Timestamp: ts, Payload: payload}, nil
 }
 
 // Read implements Storage.Read.
-func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
+func (q *Queue) Read(ctx context.Context, offset uint64) (Record, error) {
 	if err := ctx.Err(); err != nil {
-		return Message{}, err
+		return Record{}, err
 	}
 	start := time.Now()
 
@@ -40,11 +40,11 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 	closed := q.closed
 	q.mu.RUnlock()
 	if closed {
-		return Message{}, ErrQueueClosed
+		return Record{}, ErrQueueClosed
 	}
 
 	if offset < q.MinOffset() {
-		return Message{}, ErrOffsetTruncated
+		return Record{}, ErrOffsetTruncated
 	}
 
 	// 1. Fast Path: Check in-memory ring cache first (~10 ns)
@@ -56,19 +56,19 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Message, error) {
 	// 2. Disk / MMap Path: Fall back to historical log segments
 	seg, err := q.locateSegment(offset)
 	if err != nil {
-		return Message{}, err
+		return Record{}, err
 	}
 
 	msg, err := q.readFromSegment(seg, offset)
 	if err != nil {
-		return Message{}, err
+		return Record{}, err
 	}
 	q.recordRead(1, int64(len(msg.Payload)), start)
 	return msg, nil
 }
 
 // ReadBatch implements Storage.ReadBatch.
-func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, error) {
+func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Record, error) {
 	if n <= 0 {
 		return nil, nil
 	}
@@ -98,7 +98,7 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Message, 
 	end := min(start+uint64(n), total)
 
 	count := int(end - start)
-	msgs := make([]Message, 0, count)
+	msgs := make([]Record, 0, count)
 
 	var currentSeg *segment
 	for off := start; off < end; off++ {

@@ -40,38 +40,50 @@ type Task struct {
 	Offset      uint64
 }
 
-// TaskRef identifies a task for Ack/Nack/Extend/AckDeadLetter.
-type TaskRef interface {
+// Ref identifies a task for Ack/Nack/Extend/AckDeadLetter.
+type Ref interface {
 	taskRef()
 	taskID() string
 }
 
-// TaskID is a bare task identifier (no strict lease check).
-type TaskID string
+// ID is a bare task identifier (no strict lease check).
+type ID string
 
-func (TaskID) taskRef() {}
+func (ID) taskRef() {}
 
-func (id TaskID) taskID() string { return string(id) }
+func (id ID) taskID() string { return string(id) }
 
 func (Task) taskRef() {}
 
 func (t Task) taskID() string { return t.ID }
 
-// ClientTaskQueue is the task-side client API.
-type ClientTaskQueue interface {
+// Queue is the task-side client API.
+type Queue interface {
 	Name() string
 
 	Enqueue(ctx context.Context, payload []byte, opts ...EnqueueOption) (Task, error)
 	Dequeue(ctx context.Context) (Task, error)
+	TryDequeue(ctx context.Context) (Task, error)
 
-	Ack(ctx context.Context, ref TaskRef) error
-	Nack(ctx context.Context, ref TaskRef, opts ...NackOption) error
+	Ack(ctx context.Context, ref Ref) error
+	Nack(ctx context.Context, ref Ref, opts ...NackOption) error
 
 	// Extend renews the current delivery lease. It never creates a new delivery.
-	Extend(ctx context.Context, ref TaskRef, timeout time.Duration) error
+	Extend(ctx context.Context, ref Ref, timeout time.Duration) error
 
 	DeadLetters(ctx context.Context) ([]Task, error)
-	AckDeadLetter(ctx context.Context, ref TaskRef) error
+	AckDeadLetter(ctx context.Context, ref Ref) error
+
+	SetDefaults(d Defaults)
+	TruncateFloor(ctx context.Context) (uint64, bool, error)
+}
+
+// Close stops a driver's checkpoint loop and writes a final checkpoint when dirty.
+func Close(q Queue) error {
+	if c, ok := q.(interface{ Close() error }); ok {
+		return c.Close()
+	}
+	return nil
 }
 
 // EnqueueOption configures a task at enqueue time.
@@ -84,7 +96,7 @@ type enqueueOptions struct {
 }
 
 // resolveEnqueueOptionsLocked applies opts over this queue's live defaults.
-func (q *TaskQueue) resolveEnqueueOptionsLocked(opts ...EnqueueOption) (visibilityTimeout time.Duration, maxAttempts uint32, scheduledAt time.Time) {
+func (q *queue) resolveEnqueueOptionsLocked(opts ...EnqueueOption) (visibilityTimeout time.Duration, maxAttempts uint32, scheduledAt time.Time) {
 	o := enqueueOptions{
 		visibilityTimeout: q.defaultVisibility,
 		maxAttempts:       q.defaultMaxAttempts,

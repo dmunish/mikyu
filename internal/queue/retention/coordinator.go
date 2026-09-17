@@ -11,8 +11,8 @@ import (
 	"github.com/dmunish/mikyu/internal/engine"
 )
 
-// DriverProvider defines the interface required from consumption drivers.
-type DriverProvider interface {
+// FloorProvider defines the interface required from consumption drivers.
+type FloorProvider interface {
 	TruncateFloor(ctx context.Context) (floor uint64, constrained bool, err error)
 }
 
@@ -41,11 +41,11 @@ func tighter[D ~int64](new, old D) bool {
 	}
 }
 
-// QueueTarget pairs a physical storage engine queue with its active drivers and its retention policy.
-type QueueTarget struct {
+// Target pairs a physical storage engine queue with its active drivers and its retention policy.
+type Target struct {
 	Name    string
 	Storage engine.Storage
-	Drivers []DriverProvider
+	Drivers []FloorProvider
 	Policy  Policy
 	mu      sync.Mutex
 }
@@ -53,7 +53,7 @@ type QueueTarget struct {
 // Coordinator arbitrates retention truncation across queues and drivers.
 type Coordinator struct {
 	mu       sync.RWMutex
-	targets  map[string]*QueueTarget
+	targets  map[string]*Target
 	interval time.Duration
 }
 
@@ -63,13 +63,13 @@ func NewCoordinator(interval time.Duration) *Coordinator {
 		interval = 30 * time.Second
 	}
 	return &Coordinator{
-		targets:  make(map[string]*QueueTarget),
+		targets:  make(map[string]*Target),
 		interval: interval,
 	}
 }
 
 // RegisterTarget registers or replaces the complete driver set for a queue.
-func (c *Coordinator) RegisterTarget(target *QueueTarget) {
+func (c *Coordinator) RegisterTarget(target *Target) {
 	if target == nil || target.Name == "" || target.Storage == nil {
 		return
 	}
@@ -79,7 +79,7 @@ func (c *Coordinator) RegisterTarget(target *QueueTarget) {
 }
 
 // RegisterDriver adds a driver to a queue's retention target.
-func (c *Coordinator) RegisterDriver(name string, storage engine.Storage, driver DriverProvider) {
+func (c *Coordinator) RegisterDriver(name string, storage engine.Storage, driver FloorProvider) {
 	if name == "" || storage == nil || driver == nil {
 		return
 	}
@@ -88,7 +88,7 @@ func (c *Coordinator) RegisterDriver(name string, storage engine.Storage, driver
 
 	target := c.targets[name]
 	if target == nil {
-		target = &QueueTarget{Name: name, Storage: storage}
+		target = &Target{Name: name, Storage: storage}
 		c.targets[name] = target
 	}
 	target.mu.Lock()
@@ -110,7 +110,7 @@ func (c *Coordinator) SetPolicy(name string, p Policy) (shrunk bool) {
 	c.mu.Lock()
 	target := c.targets[name]
 	if target == nil {
-		target = &QueueTarget{Name: name}
+		target = &Target{Name: name}
 		c.targets[name] = target
 	}
 	c.mu.Unlock()
@@ -122,7 +122,7 @@ func (c *Coordinator) SetPolicy(name string, p Policy) (shrunk bool) {
 }
 
 // UnregisterDriver removes a driver from a queue's retention target.
-func (c *Coordinator) UnregisterDriver(name string, driver DriverProvider) {
+func (c *Coordinator) UnregisterDriver(name string, driver FloorProvider) {
 	if name == "" || driver == nil {
 		return
 	}
@@ -162,11 +162,11 @@ func (c *Coordinator) UnregisterTarget(name string) {
 
 // ReconcileQueue applies the queue's policy-driven floor.
 func (c *Coordinator) ReconcileQueue(ctx context.Context, name string) (int64, error) {
-	return c.ReconcileQueueAt(ctx, name, 0)
+	return c.ReconcileAt(ctx, name, 0)
 }
 
-// ReconcileQueueAt truncates a queue toward the floor its retention policy (and an optional explicit requested floor) allows, capped by the floor the constrained drivers agree is safe.
-func (c *Coordinator) ReconcileQueueAt(ctx context.Context, name string, requested uint64) (int64, error) {
+// ReconcileAt truncates a queue toward the floor its retention policy (and an optional explicit requested floor) allows, capped by the floor the constrained drivers agree is safe.
+func (c *Coordinator) ReconcileAt(ctx context.Context, name string, requested uint64) (int64, error) {
 	c.mu.RLock()
 	target, ok := c.targets[name]
 	c.mu.RUnlock()
@@ -217,7 +217,7 @@ func (c *Coordinator) ReconcileQueueAt(ctx context.Context, name string, request
 // policyFloor computes how far this target's retention policy permits
 // deletion, including an explicit requested floor. A zero result means the
 // policy permits no deletion.
-func (t *QueueTarget) policyFloor(ctx context.Context, requested uint64) (uint64, error) {
+func (t *Target) policyFloor(ctx context.Context, requested uint64) (uint64, error) {
 	var floor uint64
 	if t.Policy.Age > 0 {
 		f, err := t.Storage.FloorOlderThan(ctx, time.Now().Add(-t.Policy.Age))

@@ -23,8 +23,8 @@ var errNodeClosed = errors.New("node is closed")
 type Node struct {
 	mgr        *engine.Manager
 	retention  *retention.Coordinator
-	logQueues  map[string]*logqueue.LogQueue
-	taskQueues map[string]*taskqueue.TaskQueue
+	logQueues  map[string]logqueue.Log
+	taskQueues map[string]taskqueue.Queue
 	mu         sync.RWMutex
 
 	retentionCtx    context.Context
@@ -78,8 +78,8 @@ func openNode(dir string, defaults spec.Spec, mc MetricsConfig) (*Node, error) {
 	n := &Node{
 		mgr:             mgr,
 		retention:       retention.NewCoordinator(0),
-		logQueues:       make(map[string]*logqueue.LogQueue),
-		taskQueues:      make(map[string]*taskqueue.TaskQueue),
+		logQueues:       make(map[string]logqueue.Log),
+		taskQueues:      make(map[string]taskqueue.Queue),
 		retentionCtx:    ctx,
 		retentionCancel: cancel,
 		dir:             dir,
@@ -114,7 +114,7 @@ func (n *Node) closeInternal() error {
 	n.mu.Lock()
 	var firstErr error
 	for name, tq := range n.taskQueues {
-		if err := tq.Close(); err != nil && firstErr == nil {
+		if err := taskqueue.Close(tq); err != nil && firstErr == nil {
 			firstErr = err
 		}
 		delete(n.taskQueues, name)
@@ -155,7 +155,7 @@ func (n *Node) CreateQueue(ctx context.Context, name string, s spec.Spec) error 
 	if err := spec.ValidateCreate(eff); err != nil {
 		return err
 	}
-	storage, err := n.mgr.CreateQueue(name, toEngineConfig(eff))
+	storage, err := n.mgr.Create(name, toEngineConfig(eff))
 	if err != nil {
 		return err
 	}
@@ -163,11 +163,11 @@ func (n *Node) CreateQueue(ctx context.Context, name string, s spec.Spec) error 
 	n.registry.Queues[name] = s
 	if err := saveRegistry(n.dir, n.registry); err != nil {
 		delete(n.registry.Queues, name)
-		_ = n.mgr.DeleteQueue(name)
+		_ = n.mgr.Delete(name)
 		return err
 	}
 
-	lq := logqueue.NewLogQueue(name, storage)
+	lq := logqueue.New(name, storage)
 	n.logQueues[name] = lq
 	n.retention.RegisterDriver(name, storage, lq)
 	n.retention.SetPolicy(name, policyFor(eff))
@@ -191,7 +191,7 @@ func (n *Node) UpdateQueue(ctx context.Context, name string, patch spec.Spec) er
 
 	current, ok := n.registry.Queues[name]
 	if !ok {
-		if _, err := n.mgr.GetQueue(name); err != nil {
+		if _, err := n.mgr.Get(name); err != nil {
 			return engine.ErrQueueNotFound
 		}
 		// Orphan directory: adopt it, then update.
@@ -210,7 +210,7 @@ func (n *Node) UpdateQueue(ctx context.Context, name string, patch spec.Spec) er
 		return err
 	}
 
-	storage, err := n.mgr.GetQueue(name)
+	storage, err := n.mgr.Get(name)
 	if err != nil {
 		return err
 	}
@@ -223,7 +223,7 @@ func (n *Node) UpdateQueue(ctx context.Context, name string, patch spec.Spec) er
 	// adopts orphan queues whose directories UpdateQueue found on disk.
 	lq := n.logQueues[name]
 	if lq == nil {
-		lq = logqueue.NewLogQueue(name, storage)
+		lq = logqueue.New(name, storage)
 		n.logQueues[name] = lq
 	}
 	n.retention.RegisterDriver(name, storage, lq)
@@ -264,7 +264,7 @@ func (n *Node) DescribeQueue(ctx context.Context, name string) (QueueDescription
 	if n.closed {
 		return QueueDescription{}, errNodeClosed
 	}
-	if _, err := n.mgr.GetQueue(name); err != nil {
+	if _, err := n.mgr.Get(name); err != nil {
 		return QueueDescription{}, err
 	}
 	builtin := spec.Builtin()
@@ -277,7 +277,7 @@ func (n *Node) DescribeQueue(ctx context.Context, name string) (QueueDescription
 }
 
 // LogQueue returns the cached log-queue driver for name, materializing it on first use and registering its retention driver.
-func (n *Node) LogQueue(name string) (*logqueue.LogQueue, error) {
+func (n *Node) LogQueue(name string) (logqueue.Log, error) {
 	n.mu.RLock()
 	if lq, ok := n.logQueues[name]; ok {
 		n.mu.RUnlock()
@@ -290,24 +290,24 @@ func (n *Node) LogQueue(name string) (*logqueue.LogQueue, error) {
 	if lq, ok := n.logQueues[name]; ok {
 		return lq, nil
 	}
-	storage, err := n.mgr.GetQueue(name)
+	storage, err := n.mgr.Get(name)
 	if err != nil {
 		return nil, err
 	}
-	lq := logqueue.NewLogQueue(name, storage)
+	lq := logqueue.New(name, storage)
 	n.logQueues[name] = lq
 	n.retention.RegisterDriver(name, storage, lq)
 	return lq, nil
 }
 
 // TaskQueue returns the cached task-queue driver for name, materializing it on first use (recovering any durable task state) and registering its retention driver.
-func (n *Node) TaskQueue(name string) (*taskqueue.TaskQueue, error) {
+func (n *Node) TaskQueue(name string) (taskqueue.Queue, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if tq, ok := n.taskQueues[name]; ok {
 		return tq, nil
 	}
-	storage, err := n.mgr.GetQueue(name)
+	storage, err := n.mgr.Get(name)
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +315,7 @@ func (n *Node) TaskQueue(name string) (*taskqueue.TaskQueue, error) {
 	if stored, known := n.registry.Queues[name]; known {
 		d = taskDefaultsFor(stored.Effective(n.defaults, spec.Builtin()))
 	}
-	tq, err := taskqueue.NewTaskQueue(name, storage, d, n.metrics.Registry().Scope(name))
+	tq, err := taskqueue.New(name, storage, d, n.metrics.Registry().Scope(name))
 	if err != nil {
 		return nil, err
 	}
@@ -331,14 +331,14 @@ func (n *Node) DeleteQueue(ctx context.Context, name string) error {
 	}
 	n.mu.Lock()
 	if tq, ok := n.taskQueues[name]; ok {
-		_ = tq.Close()
+		_ = taskqueue.Close(tq)
 		delete(n.taskQueues, name)
 	}
 	delete(n.logQueues, name)
 	n.mu.Unlock()
 	n.retention.UnregisterTarget(name)
 
-	if err := n.mgr.DeleteQueue(name); err != nil {
+	if err := n.mgr.Delete(name); err != nil {
 		return err
 	}
 	n.mu.Lock()
@@ -359,7 +359,7 @@ func (n *Node) Truncate(ctx context.Context, name string, minOffset uint64) (int
 	if _, err := n.TaskQueue(name); err != nil {
 		return 0, err
 	}
-	return n.retention.ReconcileQueueAt(ctx, name, minOffset)
+	return n.retention.ReconcileAt(ctx, name, minOffset)
 }
 
 // ListQueues returns the names of all queues in the node's data directory.
@@ -367,7 +367,7 @@ func (n *Node) ListQueues(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return n.mgr.ListQueues(), nil
+	return n.mgr.List(), nil
 }
 
 // taskDefaultsFor converts an effective spec's task block into driver defaults.

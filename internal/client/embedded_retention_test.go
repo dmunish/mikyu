@@ -15,7 +15,7 @@ func TestEmbeddedRetentionCoordinatesLogAndTaskDrivers(t *testing.T) {
 	ctx := t.Context()
 	name := "shared"
 	require.NoError(t, client.CreateQueue(ctx, name, WithSegmentSize(128), WithMaxMessageBytes(128)))
-	storage, err := client.node.Manager().GetQueue(name)
+	storage, err := client.node.Manager().Get(name)
 	require.NoError(t, err)
 	// Register the task driver first and put an active task at offset 0.
 	// Subsequent log records are deliberately ahead of that task.

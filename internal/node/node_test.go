@@ -66,7 +66,7 @@ func TestAdoptOrphanAndPurgeOrphan(t *testing.T) {
 	defer func() { _ = release2() }()
 
 	// "adopted" survived on disk.
-	_, err = n2.Manager().GetQueue("adopted")
+	_, err = n2.Manager().Get("adopted")
 	require.NoError(t, err)
 
 	// "missing" was purged from the registry.

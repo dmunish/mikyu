@@ -110,7 +110,7 @@ func TestHandleReadOffsetNotFound(t *testing.T) {
 	defer func() { _ = release() }()
 	srv := New(n)
 	defer srv.Stop()
-	_, _ = n.Manager().CreateQueue("q")
+	_, _ = n.Manager().Create("q")
 
 	var b protocol.Buffer
 	b.WriteBytes([]byte("q"))
@@ -126,7 +126,7 @@ func TestHandleFetch(t *testing.T) {
 	defer func() { _ = release() }()
 	srv := New(n)
 	defer srv.Stop()
-	_, _ = n.Manager().CreateQueue("q")
+	_, _ = n.Manager().Create("q")
 
 	t.Run("empty non-blocking", func(t *testing.T) {
 		var b protocol.Buffer
@@ -177,8 +177,8 @@ func TestHandleListQueues(t *testing.T) {
 	defer func() { _ = release() }()
 	srv := New(n)
 	defer srv.Stop()
-	_, _ = n.Manager().CreateQueue("q1")
-	_, _ = n.Manager().CreateQueue("q2")
+	_, _ = n.Manager().Create("q1")
+	_, _ = n.Manager().Create("q2")
 
 	respOp, respBody := srv.handleListQueues()
 	assert.Equal(t, protocol.OpListQueues, respOp)

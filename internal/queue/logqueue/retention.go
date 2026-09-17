@@ -4,8 +4,8 @@ import (
 	"context"
 )
 
-// TruncateFloor reports the consumer-lag floor for this LogQueue: the minimum high-water mark across its consumer groups.
-func (q *LogQueue) TruncateFloor(ctx context.Context) (uint64, bool, error) {
+// TruncateFloor reports the consumer-lag floor for this queue: the minimum high-water mark across its consumer groups.
+func (q *queue) TruncateFloor(ctx context.Context) (uint64, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, false, err
 	}
@@ -31,7 +31,7 @@ func (q *LogQueue) TruncateFloor(ctx context.Context) (uint64, bool, error) {
 }
 
 // Truncate executes physical segment truncation before minOffset.
-func (q *LogQueue) Truncate(ctx context.Context, minOffset uint64) (int64, error) {
+func (q *queue) Truncate(ctx context.Context, minOffset uint64) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}

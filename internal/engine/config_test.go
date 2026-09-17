@@ -16,9 +16,9 @@ func TestPerQueueConfigAppliesOnLoad(t *testing.T) {
 
 	mgr1, err := OpenManager(dir, Config{}, nil)
 	require.NoError(t, err)
-	_, err = mgr1.CreateQueue("small", Config{MaxMessageBytes: 100})
+	_, err = mgr1.Create("small", Config{MaxMessageBytes: 100})
 	require.NoError(t, err)
-	_, err = mgr1.CreateQueue("large", Config{MaxMessageBytes: 10000})
+	_, err = mgr1.Create("large", Config{MaxMessageBytes: 10000})
 	require.NoError(t, err)
 	require.NoError(t, mgr1.Close())
 
@@ -30,9 +30,9 @@ func TestPerQueueConfigAppliesOnLoad(t *testing.T) {
 	require.NoError(t, err)
 	defer mgr2.Close()
 
-	small, err := mgr2.GetQueue("small")
+	small, err := mgr2.Get("small")
 	require.NoError(t, err)
-	large, err := mgr2.GetQueue("large")
+	large, err := mgr2.Get("large")
 	require.NoError(t, err)
 
 	_, err = small.Append(t.Context(), make([]byte, 101))

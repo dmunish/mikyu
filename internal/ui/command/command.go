@@ -158,16 +158,16 @@ func Append(ctx context.Context, client mikyu.Client, name string, input string)
 }
 
 // Read retrieves the message at a specific logical offset.
-func Read(ctx context.Context, client mikyu.Client, name string, offset uint64) (mikyu.Message, error) {
+func Read(ctx context.Context, client mikyu.Client, name string, offset uint64) (mikyu.Record, error) {
 	q, err := client.LogQueue(name)
 	if err != nil {
-		return mikyu.Message{}, err
+		return mikyu.Record{}, err
 	}
 	return q.Read(ctx, offset)
 }
 
 // Tail streams records continuously starting from startOffset and calls onMessage for each message.
-func Tail(ctx context.Context, client mikyu.Client, name string, startOffset uint64, onMessage func(msg mikyu.Message) error) error {
+func Tail(ctx context.Context, client mikyu.Client, name string, startOffset uint64, onMessage func(msg mikyu.Record) error) error {
 	q, err := client.LogQueue(name)
 	if err != nil {
 		return err

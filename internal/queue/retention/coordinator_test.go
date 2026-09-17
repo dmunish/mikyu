@@ -28,7 +28,7 @@ func TestCoordinatorDriverFloorsCapRequests(t *testing.T) {
 	mgr, err := engine.OpenManager(dir, engine.Config{SegmentSize: 128}, nil)
 	require.NoError(t, err)
 	defer mgr.Close()
-	storage, err := mgr.CreateQueue("coordinated")
+	storage, err := mgr.Create("coordinated")
 	require.NoError(t, err)
 	ctx := t.Context()
 	for range 16 {
@@ -43,7 +43,7 @@ func TestCoordinatorDriverFloorsCapRequests(t *testing.T) {
 	c.RegisterDriver("coordinated", storage, b)
 
 	// Requesting beyond the safe floor must be clamped to 4.
-	_, err = c.ReconcileQueueAt(ctx, "coordinated", 100)
+	_, err = c.ReconcileAt(ctx, "coordinated", 100)
 	require.NoError(t, err)
 	// Truncation happens at segment boundaries, so MinOffset will be <= 4 and > 0.
 	require.LessOrEqual(t, storage.MinOffset(), uint64(4))
@@ -51,7 +51,7 @@ func TestCoordinatorDriverFloorsCapRequests(t *testing.T) {
 
 	// Unregistering the blocking driver permits the next safe floor to advance.
 	c.UnregisterDriver("coordinated", b)
-	_, err = c.ReconcileQueueAt(ctx, "coordinated", 100)
+	_, err = c.ReconcileAt(ctx, "coordinated", 100)
 	require.NoError(t, err)
 	// Safe floor is now 8. MinOffset will advance further.
 	require.LessOrEqual(t, storage.MinOffset(), uint64(8))
@@ -127,7 +127,7 @@ func TestOffsetTruncatedAfterPolicyTruncation(t *testing.T) {
 		require.Equal(t, 2, len(storage.Segments()))
 		c := NewCoordinator(0)
 		// No drivers on this queue: the policy floor applies uncapped.
-		c.RegisterTarget(&QueueTarget{Name: "truncated", Storage: storage})
+		c.RegisterTarget(&Target{Name: "truncated", Storage: storage})
 		synctest.Sleep(2 * time.Hour)
 		c.SetPolicy("truncated", Policy{Age: time.Hour})
 

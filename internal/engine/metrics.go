@@ -9,7 +9,7 @@ import (
 
 // Gauge names the engine publishes for every live queue.
 const (
-	GaugeMessages   = "messages"
+	GaugeRecords   = "messages"
 	GaugeSegments   = "segments"
 	GaugeSizeBytes  = "size_bytes"
 	GaugeLastOffset = "last_offset"
@@ -79,7 +79,7 @@ func (m *Manager) Collect(_ context.Context, dst *metrics.Snapshot) {
 			Name: q.name,
 			Kind: "shared",
 			Gauges: map[string]int64{
-				GaugeMessages:   int64(q.publishedOffset),
+				GaugeRecords:   int64(q.publishedOffset),
 				GaugeSegments:   int64(len(q.segments)),
 				GaugeSizeBytes:  q.onDiskSizeLocked(),
 				GaugeLastOffset: int64(q.nextOffset),

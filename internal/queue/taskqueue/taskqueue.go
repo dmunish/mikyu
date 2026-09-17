@@ -9,8 +9,8 @@ import (
 	"github.com/dmunish/mikyu/internal/metrics"
 )
 
-// TaskQueue implements at-least-once task processing over engine.Storage.
-type TaskQueue struct {
+// Queue implements at-least-once task processing over engine.Storage.
+type queue struct {
 	name    string
 	storage engine.Storage
 
@@ -43,10 +43,10 @@ type Defaults struct {
 	MaxAttempts uint32
 }
 
-var _ ClientTaskQueue = (*TaskQueue)(nil)
+var _ Queue = (*queue)(nil)
 
-// NewTaskQueue opens a task driver over existing engine storage with optional metrics scope.
-func NewTaskQueue(name string, storage engine.Storage, defaults Defaults, scopes ...*metrics.Scope) (*TaskQueue, error) {
+// New opens a task driver over existing engine storage with optional metrics scope.
+func New(name string, storage engine.Storage, defaults Defaults, scopes ...*metrics.Scope) (Queue, error) {
 	if storage == nil {
 		return nil, engine.ErrQueueNotFound
 	}
@@ -62,7 +62,7 @@ func NewTaskQueue(name string, storage engine.Storage, defaults Defaults, scopes
 	if maxAttempts == 0 {
 		maxAttempts = defaultMaxAttempts
 	}
-	q := &TaskQueue{
+	q := &queue{
 		name:               name,
 		storage:            storage,
 		active:             make(map[string]*taskState),
@@ -91,10 +91,10 @@ func NewTaskQueue(name string, storage engine.Storage, defaults Defaults, scopes
 	return q, nil
 }
 
-func (q *TaskQueue) Name() string { return q.name }
+func (q *queue) Name() string { return q.name }
 
 // SetDefaults changes the fallback visibility and attempts for future enqueues.
-func (q *TaskQueue) SetDefaults(d Defaults) {
+func (q *queue) SetDefaults(d Defaults) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if d.Visibility > 0 {
@@ -105,7 +105,7 @@ func (q *TaskQueue) SetDefaults(d Defaults) {
 	}
 }
 
-func (q *TaskQueue) Close() error {
+func (q *queue) Close() error {
 	q.mu.Lock()
 	if q.closed {
 		q.mu.Unlock()
@@ -131,7 +131,7 @@ func (q *TaskQueue) Close() error {
 	return err
 }
 
-func (q *TaskQueue) checkpointLoop() {
+func (q *queue) checkpointLoop() {
 	defer q.wg.Done()
 	t := time.NewTicker(defaultCheckpointInterval)
 	defer t.Stop()

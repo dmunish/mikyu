@@ -71,9 +71,9 @@ func (s *Server) handleFetch(ctx context.Context, body []byte) (byte, []byte) {
 	if err != nil {
 		return logReadErr(err)
 	}
-	recs := make([]protocol.LogRecord, len(msgs))
+	recs := make([]protocol.Record, len(msgs))
 	for i, msg := range msgs {
-		recs[i] = protocol.LogRecord{
+		recs[i] = protocol.Record{
 			Offset:    msg.Offset,
 			ID:        msg.ID,
 			Timestamp: msg.Timestamp,
@@ -81,7 +81,7 @@ func (s *Server) handleFetch(ctx context.Context, body []byte) (byte, []byte) {
 		}
 	}
 	var buf protocol.Buffer
-	protocol.WriteLogRecordList(&buf, recs)
+	protocol.WriteRecordList(&buf, recs)
 	return protocol.OpFetch, buf.Bytes()
 }
 

@@ -18,10 +18,10 @@ type Group interface {
 
 type queueGroup struct {
 	group.Base
-	q *LogQueue
+	q *queue
 }
 
-func newQueueGroup(q *LogQueue, name string) *queueGroup {
+func newQueueGroup(q *queue, name string) *queueGroup {
 	g := &queueGroup{q: q}
 	g.Base.Name = name
 	g.Base.CommitFn = func(ctx context.Context, offset uint64) error {

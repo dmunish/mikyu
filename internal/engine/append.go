@@ -67,7 +67,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 		recLen := int64(len(rec))
 		if recLen > q.cfg.SegmentSize {
 			q.mu.Unlock()
-			return nil, ErrRecordTooLarge
+			return nil, ErrMessageTooLarge
 		}
 		ids[i], recs[i], recLens[i] = id, rec, recLen
 	}
@@ -89,7 +89,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 
 	commitAsync := func(b *stagedBatch) error {
 		for i, rec := range b.recs {
-			q.cache.Put(Message{
+			q.cache.Put(Record{
 				Offset:    b.offsets[i],
 				ID:        b.ids[i].String(),
 				Timestamp: ts,

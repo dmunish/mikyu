@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newTestTaskQueue(t *testing.T) (*TaskQueue, *engine.Manager, engine.Storage) {
+func newTestTaskQueue(t *testing.T) (*queue, *engine.Manager, engine.Storage) {
 	t.Helper()
 	dir := t.TempDir()
 	mgr, err := engine.OpenManager(dir, engine.Config{
@@ -27,10 +27,11 @@ func newTestTaskQueue(t *testing.T) (*TaskQueue, *engine.Manager, engine.Storage
 		Fsync:           false,
 	}, nil)
 	require.NoError(t, err)
-	storage, err := mgr.CreateQueue("tasks")
+	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
-	q, err := NewTaskQueue("tasks", storage, Defaults{})
+	queueIface, err := New("tasks", storage, Defaults{})
 	require.NoError(t, err)
+	q := queueIface.(*queue)
 	t.Cleanup(func() {
 		_ = q.Close()
 		_ = mgr.Close()
@@ -39,16 +40,26 @@ func newTestTaskQueue(t *testing.T) (*TaskQueue, *engine.Manager, engine.Storage
 }
 
 // newMemTaskQueue builds a TaskQueue over in-memory storage for synctest-bubble tests.
-func newMemTaskQueue(t *testing.T, name string) *TaskQueue {
+func newMemTaskQueue(t *testing.T, name string) *queue {
 	t.Helper()
 	storage := enginetest.NewMemStorage(name, 1<<20, 1<<20)
-	q, err := NewTaskQueue(name, storage, Defaults{})
+	queueIface, err := New(name, storage, Defaults{})
 	require.NoError(t, err)
+	q := queueIface.(*queue)
 	t.Cleanup(func() { _ = q.Close() })
 	return q
 }
 
-func dequeueWithTimeout(t *testing.T, q *TaskQueue, d time.Duration) (Task, error) {
+// mustQueue opens a task driver and returns the concrete handle for tests that
+// inspect unexported state.
+func mustQueue(t *testing.T, name string, storage engine.Storage) *queue {
+	t.Helper()
+	queueIface, err := New(name, storage, Defaults{})
+	require.NoError(t, err)
+	return queueIface.(*queue)
+}
+
+func dequeueWithTimeout(t *testing.T, q *queue, d time.Duration) (Task, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), d)
 	defer cancel()
@@ -223,10 +234,9 @@ func TestTaskQueueCheckpointRecovery(t *testing.T) {
 	dir := t.TempDir()
 	mgr, err := engine.OpenManager(dir, engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 256, MaxMessageBytes: 1 << 20}, nil)
 	require.NoError(t, err)
-	storage, err := mgr.CreateQueue("tasks")
+	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
-	q, err := NewTaskQueue("tasks", storage, Defaults{})
-	require.NoError(t, err)
+	q := mustQueue(t, "tasks", storage)
 
 	inflightSource, err := q.Enqueue(t.Context(), []byte("inflight"), WithVisibility(50*time.Millisecond))
 	require.NoError(t, err)
@@ -255,10 +265,9 @@ func TestTaskQueueCheckpointRecovery(t *testing.T) {
 	mgr2, err := engine.OpenManager(dir, engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 256, MaxMessageBytes: 1 << 20}, nil)
 	require.NoError(t, err)
 	defer mgr2.Close()
-	storage2, err := mgr2.GetQueue("tasks")
+	storage2, err := mgr2.Get("tasks")
 	require.NoError(t, err)
-	q2, err := NewTaskQueue("tasks", storage2, Defaults{})
-	require.NoError(t, err)
+	q2 := mustQueue(t, "tasks", storage2)
 	defer q2.Close()
 
 	firstAfterRestart, err := q2.Dequeue(t.Context())
@@ -278,10 +287,9 @@ func TestTaskQueueCheckpointPreservesActiveDeliveryLease(t *testing.T) {
 	cfg := engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 256, MaxMessageBytes: 1 << 20}
 	mgr, err := engine.OpenManager(dir, cfg, nil)
 	require.NoError(t, err)
-	storage, err := mgr.CreateQueue("tasks")
+	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
-	q, err := NewTaskQueue("tasks", storage, Defaults{})
-	require.NoError(t, err)
+	q := mustQueue(t, "tasks", storage)
 
 	// A generous lease keeps the test deterministic: what is under test is
 	// lease survival across restart, not expiry under package-load latency.
@@ -300,10 +308,9 @@ func TestTaskQueueCheckpointPreservesActiveDeliveryLease(t *testing.T) {
 	mgr2, err := engine.OpenManager(dir, cfg, nil)
 	require.NoError(t, err)
 	defer mgr2.Close()
-	storage2, err := mgr2.GetQueue("tasks")
+	storage2, err := mgr2.Get("tasks")
 	require.NoError(t, err)
-	q2, err := NewTaskQueue("tasks", storage2, Defaults{})
-	require.NoError(t, err)
+	q2 := mustQueue(t, "tasks", storage2)
 	defer q2.Close()
 
 	assert.NoError(t, q2.Extend(t.Context(), leased, time.Second))
@@ -442,13 +449,12 @@ func TestTaskQueueIgnoresForeignLogRecords(t *testing.T) {
 	dir := t.TempDir()
 	mgr, err := engine.OpenManager(dir, engine.Config{}, nil)
 	require.NoError(t, err)
-	storage, err := mgr.CreateQueue("tasks")
+	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
 	_, err = storage.Append(t.Context(), []byte("ordinary-log-record"))
 	require.NoError(t, err)
 
-	q, err := NewTaskQueue("tasks", storage, Defaults{})
-	require.NoError(t, err)
+	q := mustQueue(t, "tasks", storage)
 	defer q.Close()
 	_, err = q.Enqueue(t.Context(), []byte("real-task"))
 	require.NoError(t, err)
@@ -464,10 +470,9 @@ func TestTaskQueueCheckpointIncludesForeignRecords(t *testing.T) {
 	cfg := engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 1024, MaxMessageBytes: 1 << 20}
 	mgr, err := engine.OpenManager(dir, cfg, nil)
 	require.NoError(t, err)
-	storage, err := mgr.CreateQueue("tasks")
+	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
-	q, err := NewTaskQueue("tasks", storage, Defaults{})
-	require.NoError(t, err)
+	q := mustQueue(t, "tasks", storage)
 
 	_, err = q.Enqueue(t.Context(), []byte("survivor"))
 	require.NoError(t, err)
@@ -482,10 +487,9 @@ func TestTaskQueueCheckpointIncludesForeignRecords(t *testing.T) {
 	mgr2, err := engine.OpenManager(dir, cfg, nil)
 	require.NoError(t, err)
 	defer mgr2.Close()
-	storage2, err := mgr2.GetQueue("tasks")
+	storage2, err := mgr2.Get("tasks")
 	require.NoError(t, err)
-	q2, err := NewTaskQueue("tasks", storage2, Defaults{})
-	require.NoError(t, err)
+	q2 := mustQueue(t, "tasks", storage2)
 	defer q2.Close()
 
 	got, err := q2.Dequeue(t.Context())
@@ -498,10 +502,9 @@ func TestTaskQueueCorruptLatestCheckpointFallsBackToPriorCheckpoint(t *testing.T
 	cfg := engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 1024, MaxMessageBytes: 1 << 20}
 	mgr, err := engine.OpenManager(dir, cfg, nil)
 	require.NoError(t, err)
-	storage, err := mgr.CreateQueue("tasks")
+	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
-	q, err := NewTaskQueue("tasks", storage, Defaults{})
-	require.NoError(t, err)
+	q := mustQueue(t, "tasks", storage)
 
 	_, err = q.Enqueue(t.Context(), []byte("survivor"))
 	require.NoError(t, err)
@@ -517,10 +520,9 @@ func TestTaskQueueCorruptLatestCheckpointFallsBackToPriorCheckpoint(t *testing.T
 	mgr2, err := engine.OpenManager(dir, cfg, nil)
 	require.NoError(t, err)
 	defer mgr2.Close()
-	storage2, err := mgr2.GetQueue("tasks")
+	storage2, err := mgr2.Get("tasks")
 	require.NoError(t, err)
-	q2, err := NewTaskQueue("tasks", storage2, Defaults{})
-	require.NoError(t, err)
+	q2 := mustQueue(t, "tasks", storage2)
 	defer q2.Close()
 
 	got, err := q2.Dequeue(t.Context())
@@ -533,10 +535,9 @@ func TestTaskQueueIncompleteCheckpointIsIgnored(t *testing.T) {
 	cfg := engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 1024, MaxMessageBytes: 1 << 20}
 	mgr, err := engine.OpenManager(dir, cfg, nil)
 	require.NoError(t, err)
-	storage, err := mgr.CreateQueue("tasks")
+	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
-	q, err := NewTaskQueue("tasks", storage, Defaults{})
-	require.NoError(t, err)
+	q := mustQueue(t, "tasks", storage)
 
 	_, err = q.Enqueue(t.Context(), []byte("survivor"))
 	require.NoError(t, err)
@@ -548,17 +549,16 @@ func TestTaskQueueIncompleteCheckpointIsIgnored(t *testing.T) {
 	last := storage.LastOffset()
 	_, err = storage.Append(t.Context(), encodeCheckpointStart(last))
 	require.NoError(t, err)
-	_, err = mgr.GetQueue("tasks")
+	_, err = mgr.Get("tasks")
 	require.NoError(t, err)
 	require.NoError(t, mgr.Close())
 
 	mgr2, err := engine.OpenManager(dir, cfg, nil)
 	require.NoError(t, err)
 	defer mgr2.Close()
-	storage2, err := mgr2.GetQueue("tasks")
+	storage2, err := mgr2.Get("tasks")
 	require.NoError(t, err)
-	q2, err := NewTaskQueue("tasks", storage2, Defaults{})
-	require.NoError(t, err)
+	q2 := mustQueue(t, "tasks", storage2)
 	defer q2.Close()
 
 	got, err := q2.Dequeue(t.Context())
@@ -626,10 +626,9 @@ func TestTaskQueueLargeCheckpointChunksRecover(t *testing.T) {
 	cfg := engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 256 * 1024, MaxMessageBytes: 512 * 1024}
 	mgr, err := engine.OpenManager(dir, cfg, nil)
 	require.NoError(t, err)
-	storage, err := mgr.CreateQueue("tasks")
+	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
-	q, err := NewTaskQueue("tasks", storage, Defaults{})
-	require.NoError(t, err)
+	q := mustQueue(t, "tasks", storage)
 
 	payload := make([]byte, 200*1024)
 	for i := range payload {
@@ -646,10 +645,9 @@ func TestTaskQueueLargeCheckpointChunksRecover(t *testing.T) {
 	mgr2, err := engine.OpenManager(dir, cfg, nil)
 	require.NoError(t, err)
 	defer mgr2.Close()
-	storage2, err := mgr2.GetQueue("tasks")
+	storage2, err := mgr2.Get("tasks")
 	require.NoError(t, err)
-	q2, err := NewTaskQueue("tasks", storage2, Defaults{})
-	require.NoError(t, err)
+	q2 := mustQueue(t, "tasks", storage2)
 	defer q2.Close()
 
 	got, err := q2.Dequeue(t.Context())
@@ -661,10 +659,9 @@ func TestTaskQueueDeadLetterPersistsAndCanBeAcked(t *testing.T) {
 	dir := t.TempDir()
 	mgr, err := engine.OpenManager(dir, engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 256, MaxMessageBytes: 1 << 20}, nil)
 	require.NoError(t, err)
-	storage, err := mgr.CreateQueue("tasks")
+	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
-	q, err := NewTaskQueue("tasks", storage, Defaults{})
-	require.NoError(t, err)
+	q := mustQueue(t, "tasks", storage)
 
 	task, err := q.Enqueue(t.Context(), []byte("poison"), WithMaxAttempts(1))
 	require.NoError(t, err)
@@ -689,10 +686,9 @@ func TestTaskQueueDeadLetterPersistsAndCanBeAcked(t *testing.T) {
 	mgr2, err := engine.OpenManager(dir, engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 256, MaxMessageBytes: 1 << 20}, nil)
 	require.NoError(t, err)
 	defer mgr2.Close()
-	storage2, err := mgr2.GetQueue("tasks")
+	storage2, err := mgr2.Get("tasks")
 	require.NoError(t, err)
-	q2, err := NewTaskQueue("tasks", storage2, Defaults{})
-	require.NoError(t, err)
+	q2 := mustQueue(t, "tasks", storage2)
 	defer q2.Close()
 
 	dls, err = q2.DeadLetters(t.Context())

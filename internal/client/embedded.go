@@ -13,7 +13,7 @@ import (
 )
 
 // TaskQueue is the client-facing task driver interface.
-type TaskQueue = taskqueue.ClientTaskQueue
+type TaskQueue = taskqueue.Queue
 
 // embeddedClient implements the client on top of a reference-counted
 // node.Node from the process pool. It owns one reference; Close releases it.
@@ -109,7 +109,7 @@ var _ interface {
 	CreateQueue(context.Context, string, ...QueueOption) error
 	UpdateQueue(context.Context, string, ...QueueOption) error
 	DescribeQueue(context.Context, string) (QueueDescription, error)
-	LogQueue(string) (logqueue.ClientLogQueue, error)
+	LogQueue(string) (logqueue.Log, error)
 	TaskQueue(string) (TaskQueue, error)
 	ListQueues(context.Context) ([]string, error)
 	DeleteQueue(context.Context, string) error

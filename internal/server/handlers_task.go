@@ -160,11 +160,11 @@ func decodeTaskRef(r *protocol.Reader) (taskID string, task *protocol.Task, err 
 }
 
 // refFromWire converts a decoded wire ref into the driver's TaskRef.
-func refFromWire(taskID string, wt *protocol.Task) taskqueue.TaskRef {
+func refFromWire(taskID string, wt *protocol.Task) taskqueue.Ref {
 	if wt != nil {
 		return fromWireTask(*wt)
 	}
-	return taskqueue.TaskID(taskID)
+	return taskqueue.ID(taskID)
 }
 
 func (s *Server) handleAck(ctx context.Context, body []byte) (byte, []byte) {

@@ -12,7 +12,7 @@ import (
 )
 
 // newTaskQueueWithDefaults builds a queue with explicit per-queue defaults.
-func newTaskQueueWithDefaults(t *testing.T, d Defaults) *TaskQueue {
+func newTaskQueueWithDefaults(t *testing.T, d Defaults) *queue {
 	t.Helper()
 	dir := t.TempDir()
 	mgr, err := engine.OpenManager(dir, engine.Config{
@@ -24,10 +24,11 @@ func newTaskQueueWithDefaults(t *testing.T, d Defaults) *TaskQueue {
 		Fsync:           false,
 	}, nil)
 	require.NoError(t, err)
-	storage, err := mgr.CreateQueue("tasks")
+	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
-	q, err := NewTaskQueue("tasks", storage, d)
+	queueIface, err := New("tasks", storage, d)
 	require.NoError(t, err)
+	q := queueIface.(*queue)
 	t.Cleanup(func() {
 		_ = q.Close()
 		_ = mgr.Close()
@@ -85,7 +86,7 @@ func TestDefaultsUpdateAfterUpdateQueue(t *testing.T) {
 	assert.LessOrEqual(t, left, 35*time.Second)
 }
 
-func TestAckViaTaskRef(t *testing.T) {
+func TestAckViaRef(t *testing.T) {
 	q, _, _ := newTestTaskQueue(t)
 	ctx := t.Context()
 
@@ -98,13 +99,13 @@ func TestAckViaTaskRef(t *testing.T) {
 	stale.DeliveryID = "stale"
 	assert.ErrorIs(t, q.Ack(ctx, stale), ErrTaskStale)
 
-	require.NoError(t, q.Ack(ctx, TaskID(got.ID)))
+	require.NoError(t, q.Ack(ctx, ID(got.ID)))
 
 	_, err = q.TryDequeue(ctx)
 	assert.ErrorIs(t, err, ErrTaskNotAvailable)
 }
 
-func TestNackViaTaskRef(t *testing.T) {
+func TestNackViaRef(t *testing.T) {
 	q, _, _ := newTestTaskQueue(t)
 	ctx := t.Context()
 
@@ -117,14 +118,14 @@ func TestNackViaTaskRef(t *testing.T) {
 	stale.Attempts = 99
 	assert.ErrorIs(t, q.Nack(ctx, stale, WithRetryAfter(0)), ErrTaskStale)
 
-	require.NoError(t, q.Nack(ctx, TaskID(got.ID), WithRetryAfter(0)))
+	require.NoError(t, q.Nack(ctx, ID(got.ID), WithRetryAfter(0)))
 	redelivered, err := q.Dequeue(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, got.ID, redelivered.ID)
 	assert.Equal(t, uint32(2), redelivered.Attempts)
 }
 
-func TestExtendViaTaskRef(t *testing.T) {
+func TestExtendViaRef(t *testing.T) {
 	q, _, _ := newTestTaskQueue(t)
 	ctx := t.Context()
 
@@ -133,7 +134,7 @@ func TestExtendViaTaskRef(t *testing.T) {
 	got, err := q.Dequeue(ctx)
 	require.NoError(t, err)
 
-	require.NoError(t, q.Extend(ctx, TaskID(got.ID), 2*time.Second))
+	require.NoError(t, q.Extend(ctx, ID(got.ID), 2*time.Second))
 
 	stale := got
 	stale.DeliveryID = "stale"
@@ -143,7 +144,7 @@ func TestExtendViaTaskRef(t *testing.T) {
 	require.NoError(t, q.Ack(ctx, got))
 }
 
-func TestDeadLetterAckViaTaskRef(t *testing.T) {
+func TestDeadLetterAckViaRef(t *testing.T) {
 	q, _, _ := newTestTaskQueue(t)
 	ctx := t.Context()
 
@@ -151,7 +152,7 @@ func TestDeadLetterAckViaTaskRef(t *testing.T) {
 	require.NoError(t, err)
 	leased, err := q.Dequeue(ctx)
 	require.NoError(t, err)
-	require.NoError(t, q.Nack(ctx, TaskID(leased.ID), WithRetryAfter(0)))
+	require.NoError(t, q.Nack(ctx, ID(leased.ID), WithRetryAfter(0)))
 
 	dls, err := q.DeadLetters(ctx)
 	require.NoError(t, err)
@@ -160,7 +161,7 @@ func TestDeadLetterAckViaTaskRef(t *testing.T) {
 	stale := dls[0]
 	stale.Offset = dls[0].Offset + 1
 	assert.ErrorIs(t, q.AckDeadLetter(ctx, stale), ErrDeadLetterStale)
-	require.NoError(t, q.AckDeadLetter(ctx, TaskID(created.ID)))
+	require.NoError(t, q.AckDeadLetter(ctx, ID(created.ID)))
 
 	dls, err = q.DeadLetters(ctx)
 	require.NoError(t, err)
@@ -178,15 +179,15 @@ func TestTryDequeueNonBlocking(t *testing.T) {
 }
 
 func TestNoIDMethods(t *testing.T) {
-	it := reflect.TypeFor[ClientTaskQueue]()
+	it := reflect.TypeFor[Queue]()
 	for method := range it.Methods() {
 		name := method.Name
-		assert.False(t, strings.HasSuffix(name, "ID"), "ClientTaskQueue must not expose %s", name)
+		assert.False(t, strings.HasSuffix(name, "ID"), "Queue must not expose %s", name)
 	}
 }
 
 func TestNoCloseOnDriver(t *testing.T) {
-	it := reflect.TypeFor[ClientTaskQueue]()
+	it := reflect.TypeFor[Queue]()
 	for method := range it.Methods() {
 		assert.NotEqual(t, "Close", method.Name)
 	}

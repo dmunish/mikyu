@@ -89,7 +89,7 @@ func (s *Server) handleDescribeQueue(ctx context.Context, body []byte) (byte, []
 }
 
 func (s *Server) handleListQueues() (byte, []byte) {
-	names := s.node.Manager().ListQueues()
+	names := s.node.Manager().List()
 	buf := protocol.Buffer{}
 	buf.WriteU32(uint32(len(names)))
 	for _, n := range names {

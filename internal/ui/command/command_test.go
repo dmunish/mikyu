@@ -81,7 +81,7 @@ func TestCommandLifecycle(t *testing.T) {
 	tailCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
 	var received []string
-	_ = command.Tail(tailCtx, client, "events", 0, func(m mikyu.Message) error {
+	_ = command.Tail(tailCtx, client, "events", 0, func(m mikyu.Record) error {
 		received = append(received, string(m.Payload))
 		return nil
 	})

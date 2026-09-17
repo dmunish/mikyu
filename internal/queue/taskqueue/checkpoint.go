@@ -389,7 +389,7 @@ func decodeSnapshot(data []byte) ([]taskState, map[string]Task, error) {
 	return states, dlq, nil
 }
 
-func (q *TaskQueue) checkpointLocked(ctx context.Context) error {
+func (q *queue) checkpointLocked(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -452,7 +452,7 @@ func (q *TaskQueue) checkpointLocked(ctx context.Context) error {
 	return nil
 }
 
-func (q *TaskQueue) loadCheckpointLocked(ctx context.Context) (bool, error) {
+func (q *queue) loadCheckpointLocked(ctx context.Context) (bool, error) {
 	last, min := q.storage.LastOffset(), q.storage.MinOffset()
 	if last <= min {
 		return false, nil
@@ -536,7 +536,7 @@ func (q *TaskQueue) loadCheckpointLocked(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-func (q *TaskQueue) refreshLocked(ctx context.Context) error {
+func (q *queue) refreshLocked(ctx context.Context) error {
 	last := q.storage.LastOffset()
 	for q.scanNext < last {
 		if err := ctx.Err(); err != nil {

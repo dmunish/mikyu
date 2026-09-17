@@ -72,7 +72,7 @@ func OpenManager(dir string, cfg Config, perQueue map[string]Config, regs ...*me
 }
 
 // CreateQueue creates a new queue and returns it as a Storage.
-func (m *Manager) CreateQueue(name string, opts ...Config) (Storage, error) {
+func (m *Manager) Create(name string, opts ...Config) (Storage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -108,7 +108,7 @@ func scopeRegistry(regs []*metrics.Registry) *metrics.Registry {
 }
 
 // GetQueue returns an existing queue as a Storage.
-func (m *Manager) GetQueue(name string) (Storage, error) {
+func (m *Manager) Get(name string) (Storage, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -120,14 +120,14 @@ func (m *Manager) GetQueue(name string) (Storage, error) {
 }
 
 // ListQueues returns the names of all active queues.
-func (m *Manager) ListQueues() []string {
+func (m *Manager) List() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return slices.Sorted(maps.Keys(m.queues))
 }
 
 // DeleteQueue closes and removes a queue and its data.
-func (m *Manager) DeleteQueue(name string) error {
+func (m *Manager) Delete(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

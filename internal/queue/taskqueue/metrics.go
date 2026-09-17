@@ -37,13 +37,13 @@ func newTaskMetrics(scope *metrics.Scope) *taskMetrics {
 }
 
 // recordEnqueue updates the enqueue counters and latency histogram.
-func (q *TaskQueue) recordEnqueue(start time.Time) {
+func (q *queue) recordEnqueue(start time.Time) {
 	q.m.enqueues.Inc()
 	q.m.enqueueDur.Observe(time.Since(start).Seconds())
 }
 
 // recordDequeue updates the dequeue counter and the wait before delivery.
-func (q *TaskQueue) recordDequeue(due time.Time) {
+func (q *queue) recordDequeue(due time.Time) {
 	q.m.dequeues.Inc()
 	wait := time.Since(due).Seconds()
 	if wait < 0 {

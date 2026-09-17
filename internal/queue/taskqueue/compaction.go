@@ -3,7 +3,7 @@ package taskqueue
 import "context"
 
 // TruncateFloor reports the highest offset this task queue allows Storage.TruncateBefore to reach: the checkpoint, lowered by every in-flight task and every uncheckpointed dead letter that still anchors its record.
-func (q *TaskQueue) TruncateFloor(ctx context.Context) (uint64, bool, error) {
+func (q *queue) TruncateFloor(ctx context.Context) (uint64, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, false, err
 	}

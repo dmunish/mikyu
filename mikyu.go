@@ -109,11 +109,11 @@ type TaskSpec = spec.TaskSpec
 // Duration is a time span that serializes as a Go duration string such as "10ms".
 type Duration = spec.Duration
 
-// Message is one record read from a log queue.
-type Message = engine.Message
+// Record is one record read from a log queue.
+type Record = engine.Record
 
 // LogQueue provides log-oriented operations (append, streaming, tailing, groups).
-type LogQueue = logqueue.ClientLogQueue
+type LogQueue = logqueue.Log
 
 // Group tracks consumer offsets for a log queue.
 type Group = logqueue.Group
@@ -128,10 +128,10 @@ type Task = taskqueue.Task
 
 // TaskRef identifies a task for Ack, Nack, Extend, and AckDeadLetter. Pass a
 // Task for the strict stale-lease check; pass a TaskID to skip that check.
-type TaskRef = taskqueue.TaskRef
+type TaskRef = taskqueue.Ref
 
 // TaskID is a bare task identifier.
-type TaskID = taskqueue.TaskID
+type TaskID = taskqueue.ID
 
 // QueueDescription is the full truth about one queue: its stored spec, its
 // effective spec, and the session defaults it inherits from.
@@ -207,4 +207,4 @@ var (
 	ErrDeadLetterStale = taskqueue.ErrDeadLetterStale
 )
 
-type _ = iter.Seq2[Message, error]
+type _ = iter.Seq2[Record, error]

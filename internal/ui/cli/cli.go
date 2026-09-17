@@ -382,7 +382,7 @@ func (in *invocation) handleTail(args []string) error {
 		}
 	}
 
-	err := command.Tail(in.ctx, in.client, args[0], start, func(msg mikyu.Message) error {
+	err := command.Tail(in.ctx, in.client, args[0], start, func(msg mikyu.Record) error {
 		prefix := fmt.Sprintf("offset=%d id=%s ts=%s payload=", msg.Offset, msg.ID, msg.Timestamp.Format(time.RFC3339Nano))
 		termWidth := command.GetTerminalWidth()
 		avail := -1

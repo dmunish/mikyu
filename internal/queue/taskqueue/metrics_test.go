@@ -17,11 +17,12 @@ func TestTaskQueueCounters(t *testing.T) {
 	require.NoError(t, err)
 	defer mgr.Close()
 
-	storage, err := mgr.CreateQueue("tasks")
+	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
 
-	q, err := NewTaskQueue("tasks", storage, Defaults{}, reg.Scope("tasks"))
+	queueIface, err := New("tasks", storage, Defaults{}, reg.Scope("tasks"))
 	require.NoError(t, err)
+	q := queueIface.(*queue)
 	defer q.Close()
 
 	ctx := t.Context()

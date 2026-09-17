@@ -35,7 +35,7 @@ func TestServerQueueHandleCaching(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = release() }()
 
-	_, err = n.Manager().CreateQueue("cached")
+	_, err = n.Manager().Create("cached")
 	require.NoError(t, err)
 
 	srv := New(n)
@@ -65,7 +65,7 @@ func TestServerQueueHandleCaching(t *testing.T) {
 		if err, ok := value.(error); ok {
 			t.Fatalf("getOrCreateLogQueue failed: %v", err)
 		}
-		q, ok := value.(*logqueue.LogQueue)
+		q, ok := value.(logqueue.Log)
 		require.True(t, ok, "unexpected cache result type")
 		assert.Same(t, first, q)
 	}
