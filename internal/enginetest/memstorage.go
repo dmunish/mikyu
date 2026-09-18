@@ -47,6 +47,17 @@ func NewMemStorage(name string, maxMsg, maxSeg int64) *MemStorage {
 	}
 }
 
+// Close marks the storage closed and wakes any parked Fetch.
+func (m *MemStorage) Close() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return
+	}
+	m.closed = true
+	m.broadcastLocked()
+}
+
 // Fetch returns up to maxCount messages starting at offset, blocking up to maxWait.
 func (m *MemStorage) Fetch(ctx context.Context, offset uint64, maxCount int, maxWait time.Duration) ([]engine.Record, error) {
 	if maxCount <= 0 {

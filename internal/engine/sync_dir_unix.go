@@ -2,9 +2,13 @@
 
 package engine
 
-import "os"
+import (
+	"os"
+
+	"golang.org/x/sys/unix"
+)
 
 // syncDirOS fsyncs a directory through its root file descriptor.
 func syncDirOS(root *os.Root) error {
-	return syncData(root.Fd())
+	return unix.Fsync(int(root.Fd()))
 }

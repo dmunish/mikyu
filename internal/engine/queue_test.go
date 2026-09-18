@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -323,7 +324,7 @@ func TestQueueProduceBatchRecordExceedsSegmentSize(t *testing.T) {
 
 	payloads := [][]byte{make([]byte, 100), []byte("ok")}
 	_, err = q.AppendBatch(t.Context(), payloads)
-	assert.ErrorIs(t, err, ErrMessageTooLarge)
+	assert.ErrorIs(t, err, ErrRecordTooLarge)
 }
 
 func TestQueueCommitOffset(t *testing.T) {
@@ -383,6 +384,9 @@ func TestQueueRealCrashRecovery(t *testing.T) {
 		t.Helper()
 		dir := os.Getenv("MIKYU_CRASH_DIR")
 		marker := os.Getenv("MIKYU_CRASH_MARKER")
+		syncsFile := os.Getenv("MIKYU_CRASH_SYNCS")
+		var syncs atomic.Int64
+		SyncDirHook = func() { syncs.Add(1) }
 		store, err := openOffsetStore(dir)
 		if err != nil {
 			t.Fatal(err)
@@ -405,6 +409,10 @@ func TestQueueRealCrashRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			if (i+1)%100 == 0 {
+				// Publish the fsync count first so the parent never observes a marker without it.
+				if err := os.WriteFile(syncsFile, []byte(strconv.FormatInt(syncs.Load(), 10)), 0o600); err != nil {
+					t.Fatal(err)
+				}
 				if err := os.WriteFile(marker, []byte(strconv.Itoa(i+1)), 0o600); err != nil {
 					t.Fatal(err)
 				}
@@ -415,17 +423,21 @@ func TestQueueRealCrashRecovery(t *testing.T) {
 
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "progress")
+	syncsFile := filepath.Join(dir, "syncs")
 	cmd := exec.Command(os.Args[0], "-test.run", "^TestQueueRealCrashRecovery$")
 	cmd.Env = append(os.Environ(),
 		"MIKYU_CRASH_HELPER=1",
 		"MIKYU_CRASH_DIR="+dir,
 		"MIKYU_CRASH_MARKER="+marker,
+		"MIKYU_CRASH_SYNCS="+syncsFile,
 	)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 
-	deadline := time.Now().Add(15 * time.Second)
+	// 30s: the durable path blocks on fsyncs, and the child competes with
+	// the rest of the suite for disk under parallel runs.
+	deadline := time.Now().Add(30 * time.Second)
 	var completed int
 	for time.Now().Before(deadline) {
 		data, err := os.ReadFile(marker)
@@ -442,6 +454,12 @@ func TestQueueRealCrashRecovery(t *testing.T) {
 		_ = cmd.Wait()
 		t.Fatalf("child did not reach durable progress marker; completed=%d", completed)
 	}
+
+	// The durable path must have fsynced segment directories while appending.
+	syncsData, err := os.ReadFile(syncsFile)
+	require.NoError(t, err)
+	syncs, _ := strconv.Atoi(strings.TrimSpace(string(syncsData)))
+	require.Greater(t, syncs, 0, "durable appends must fsync segment directories")
 
 	// Kill the child abruptly: no Queue.Close, WAL stop, segment trim, or
 	// manager cleanup is allowed to run.

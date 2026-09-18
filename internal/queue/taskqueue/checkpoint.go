@@ -411,7 +411,7 @@ func (q *queue) checkpointLocked(ctx context.Context) error {
 	}
 	storagePayloadLimit := q.storage.MaxAppendPayloadBytes()
 	if storagePayloadLimit <= checkpointChunkHeaderBytes {
-		return engine.ErrRecordTooLarge
+		return fmt.Errorf("%w: checkpoint chunk header exceeds storage payload limit", engine.ErrRecordTooLarge)
 	}
 
 	maxChunkBytes := min(storagePayloadLimit-checkpointChunkHeaderBytes, int64(checkpointChunkBytes))

@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"time"
 	"uuid"
 )
@@ -59,7 +60,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 	for i, payload := range payloads {
 		if int64(len(payload)) > q.cfg.MaxMessageBytes {
 			q.mu.Unlock()
-			return nil, ErrMessageTooLarge
+			return nil, fmt.Errorf("%w: queue %q payload of %d bytes exceeds max_message_bytes %d", ErrMessageTooLarge, q.name, len(payload), q.cfg.MaxMessageBytes)
 		}
 		totalBytes += int64(len(payload))
 		id := uuid.NewV7()
@@ -67,7 +68,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 		recLen := int64(len(rec))
 		if recLen > q.cfg.SegmentSize {
 			q.mu.Unlock()
-			return nil, ErrMessageTooLarge
+			return nil, fmt.Errorf("%w: queue %q record of %d bytes exceeds segment_size %d", ErrRecordTooLarge, q.name, recLen, q.cfg.SegmentSize)
 		}
 		ids[i], recs[i], recLens[i] = id, rec, recLen
 	}
@@ -89,13 +90,16 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 
 	commitAsync := func(b *stagedBatch) error {
 		for i, rec := range b.recs {
+			entry := asyncEntry{seg: b.seg, rec: rec, pos: b.positions[i], recLen: b.recLens[i], offset: b.offsets[i]}
+			if err := b.w.pushAsync(ctx, entry); err != nil {
+				return err
+			}
 			q.cache.Put(Record{
 				Offset:    b.offsets[i],
 				ID:        b.ids[i].String(),
 				Timestamp: ts,
 				Payload:   bytes.Clone(payloads[b.startIdx+i]),
 			})
-			b.w.asyncChan <- asyncEntry{seg: b.seg, rec: rec, pos: b.positions[i], recLen: b.recLens[i], offset: b.offsets[i]}
 		}
 		b.seg.pos += b.totalLen
 		last := b.offsets[len(b.offsets)-1]

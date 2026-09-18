@@ -7,11 +7,39 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/enginetest"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestShutdownWakesTail parks a Tail and asserts closing the storage yields ErrQueueClosed once and stops.
+func TestShutdownWakesTail(t *testing.T) {
+	storage := enginetest.NewMemStorage("tail-shutdown", 1<<20, 1<<20)
+	lq := logqueue.New("tail-shutdown", storage)
+
+	errCh := make(chan error, 1)
+	go func() {
+		for _, err := range lq.Tail(context.Background(), 0) {
+			if err != nil {
+				errCh <- err
+				return
+			}
+		}
+		errCh <- nil
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	storage.Close()
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, engine.ErrQueueClosed)
+	case <-time.After(2 * time.Second):
+		t.Fatal("parked Tail did not stop on storage close")
+	}
+}
 
 // newMemLogQueue builds a LogQueue over the in-memory enginetest storage so
 // tail tests can run inside a testing/synctest bubble with a virtual clock and

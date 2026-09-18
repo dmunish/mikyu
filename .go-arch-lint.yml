@@ -20,6 +20,7 @@ excludeFiles:
 components:
   spec:       { in: internal/spec }
   metrics:    { in: internal/metrics }
+  errs:       { in: internal/errs }
   engine:     { in: internal/engine }
   manager:    { in: internal/manager }
   enginetest: { in: internal/enginetest }
@@ -77,11 +78,15 @@ deps:
   node:
     mayDependOn: [spec, engine, manager, logqueue, taskqueue, retention, metrics]
 
+  # ---- errs: the shared sentinel<->wire-code taxonomy ----
+  errs:
+    mayDependOn: [spec, engine, manager, node, logqueue, taskqueue, protocol]
+
   # ---- remote/embedded adapters; client and server never meet ----
   client:
-    mayDependOn: [spec, engine, node, group, logqueue, taskqueue, ipc, protocol, metrics, daemon]
+    mayDependOn: [spec, engine, node, group, logqueue, taskqueue, ipc, protocol, metrics, daemon, errs]
   server:
-    mayDependOn: [spec, engine, node, logqueue, taskqueue, ipc, protocol, metrics]
+    mayDependOn: [spec, engine, node, logqueue, taskqueue, ipc, protocol, metrics, errs]
 
   # ---- configuration and process entry ----
   config:

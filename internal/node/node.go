@@ -21,6 +21,10 @@ import (
 
 var errNodeClosed = errors.New("node is closed")
 
+// Shutdown contract: closeInternal stops new operations, wakes every parked
+// waiter with ErrQueueClosed, drains each task checkpoint, closes every queue
+// (final WAL sync and active-segment truncate), and releases the directory lock.
+
 // Node is the shared local-node core: one data directory, its kind-partitioned queues, cached drivers, and retention lifecycle.
 type Node struct {
 	mgr        *manager.Manager

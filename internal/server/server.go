@@ -17,6 +17,12 @@ import (
 	"github.com/dmunish/mikyu/internal/transport/protocol"
 )
 
+// Shutdown contract: Stop stops accepting and drains in-flight handlers, then
+// the node is released. Parked waiters wake deterministically: an in-flight
+// WAL.push completes or fails with ErrQueueClosed, a parked Fetch or Dequeue
+// wakes with ErrQueueClosed, and a parked Tail or Stream yields ErrQueueClosed
+// once and stops.
+
 // Server accepts client connections and dispatches wire protocol frames to a local node.Node.
 type Server struct {
 	node      *node.Node

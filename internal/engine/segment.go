@@ -38,19 +38,38 @@ func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, erro
 	}
 	defer root.Close()
 
+	logCreated := false
+	if _, err := root.Stat(logName); errors.Is(err, fs.ErrNotExist) {
+		logCreated = true
+	}
 	logFile, err := root.OpenFile(logName, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, err
 	}
 
 	if info, err := logFile.Stat(); err == nil && info.Size() == 0 && preallocSize > 0 {
-		_ = logFile.Truncate(preallocSize)
+		if err := logFile.Truncate(preallocSize); err != nil {
+			_ = logFile.Close()
+			return nil, err
+		}
 	}
 
+	idxCreated := false
+	if _, err := root.Stat(idxName); errors.Is(err, fs.ErrNotExist) {
+		idxCreated = true
+	}
 	idxFile, err := root.OpenFile(idxName, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		_ = logFile.Close()
 		return nil, err
+	}
+
+	if logCreated || idxCreated {
+		if err := syncDir(root); err != nil {
+			_ = logFile.Close()
+			_ = idxFile.Close()
+			return nil, err
+		}
 	}
 
 	createdAt := time.Now()
@@ -130,6 +149,7 @@ func (s *segment) readIndexEntry(offset uint64) (pos int64, length int64, err er
 	return entry.pos, entry.len, nil
 }
 
+// writeIndex appends an index entry during recovery, before the WAL flusher starts.
 func (s *segment) writeIndex(pos, len int64) error {
 	var buf [rawIndexEntrySize]byte
 	rawIndexEntry{pos: pos, len: len}.MarshalBinary(&buf)
@@ -137,6 +157,7 @@ func (s *segment) writeIndex(pos, len int64) error {
 	return err
 }
 
+// writeIndexAt writes an index entry; only the WAL flusher calls it on a live segment.
 func (s *segment) writeIndexAt(idxPos, pos, len int64) error {
 	var buf [rawIndexEntrySize]byte
 	rawIndexEntry{pos: pos, len: len}.MarshalBinary(&buf)
@@ -335,12 +356,7 @@ func (s *segment) destroy() (int64, error) {
 }
 
 func (s *segment) Close() error {
-	// Trim unused pre-allocated capacity to match actual written bytes
-	if s.logFile != nil && s.pos >= 0 {
-		_ = s.logFile.Truncate(s.pos)
-		_ = s.logFile.Sync()
-	}
-
+	// Unmap first: Windows refuses to truncate a file with a mapped section open.
 	var mmapErr error
 	if s.mmapData != nil {
 		mmapErr = s.mmapData.Unmap()
@@ -353,14 +369,40 @@ func (s *segment) Close() error {
 		s.idxMMap = nil
 	}
 
-	err1 := s.logFile.Close()
-	err2 := s.idxFile.Close()
+	var firstErr error
+	// Trim unused pre-allocated capacity; a real shrink makes the directory entry worth syncing.
+	if s.logFile != nil && s.pos >= 0 {
+		if info, err := s.logFile.Stat(); err == nil && info.Size() != s.pos {
+			if err := s.logFile.Truncate(s.pos); err != nil {
+				firstErr = err
+			} else if err := syncData(s.logFile); err != nil {
+				firstErr = err
+			} else if s.dir != "" {
+				if root, err := os.OpenRoot(s.dir); err != nil {
+					firstErr = err
+				} else {
+					if err := syncDir(root); err != nil {
+						firstErr = err
+					}
+					_ = root.Close()
+				}
+			}
+		}
+	}
 
-	if mmapErr != nil {
-		return mmapErr
+	if s.logFile != nil {
+		if err := s.logFile.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	if err1 != nil {
-		return err1
+	if s.idxFile != nil {
+		if err := s.idxFile.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return err2
+
+	if mmapErr != nil && firstErr == nil {
+		firstErr = mmapErr
+	}
+	return firstErr
 }

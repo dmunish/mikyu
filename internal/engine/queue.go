@@ -226,7 +226,9 @@ func (q *Queue) roll() error {
 		if err := q.active.logFile.Truncate(q.active.pos); err != nil {
 			return err
 		}
-		_ = q.active.logFile.Sync()
+		if err := syncData(q.active.logFile); err != nil {
+			return err
+		}
 
 		if err := q.active.enableMMap(); err != nil {
 			return err

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -24,7 +25,7 @@ func (q *Queue) readFromSegment(seg *segment, offset uint64) (Record, error) {
 
 	id, ts, payload, err := decodeRecord(buf[recordLengthSize:])
 	if err != nil {
-		return Record{}, err
+		return Record{}, fmt.Errorf("%w: offset %d: %v", ErrCorruptRecord, offset, err)
 	}
 	return Record{Offset: offset, ID: id, Timestamp: ts, Payload: payload}, nil
 }

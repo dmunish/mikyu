@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/manager"
 	"github.com/dmunish/mikyu/internal/spec"
 )
@@ -76,30 +77,34 @@ func saveRegistry(dir string, r *registry) error {
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(dir, registryTmpName)
-	final := filepath.Join(dir, registryFileName)
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+
+	f, err := root.OpenFile(registryTmpName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
-		_ = os.Remove(tmp)
+		_ = root.Remove(registryTmpName)
 		return err
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		_ = os.Remove(tmp)
+		_ = root.Remove(registryTmpName)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
+		_ = root.Remove(registryTmpName)
 		return err
 	}
-	if err := os.Rename(tmp, final); err != nil {
+	if err := root.Rename(registryTmpName, registryFileName); err != nil {
 		return err
 	}
-	return nil
+	return engine.SyncDir(root)
 }
 
 // reconcileRegistry corrects the cache to the filesystem: entries whose
