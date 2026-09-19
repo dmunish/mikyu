@@ -13,13 +13,15 @@ import (
 func toWireTask(t taskqueue.Task) protocol.Task {
 	return protocol.Task{
 		ID:          t.ID,
-		Payload:     t.Payload, // zero-copy: payload is not mutated after encode
+		Payload:     t.Payload,
 		Attempts:    t.Attempts,
 		MaxAttempts: t.MaxAttempts,
 		Visibility:  t.Visibility,
 		ScheduledAt: t.ScheduledAt,
 		DeliveryID:  t.DeliveryID,
 		Offset:      t.Offset,
+		Key:         t.Key,
+		Stalled:     t.Stalled,
 	}
 }
 
@@ -28,6 +30,7 @@ func fromWireTask(t protocol.Task) taskqueue.Task {
 	return taskqueue.NewTaskFromWire(
 		t.ID, t.Payload, t.Attempts, t.MaxAttempts,
 		t.Visibility, t.ScheduledAt, t.DeliveryID, t.Offset,
+		t.Key, t.Stalled,
 	)
 }
 
@@ -209,5 +212,14 @@ func (q *remoteTaskQueue) AckDeadLetter(ctx context.Context, ref taskqueue.Ref) 
 	b.WriteBytes([]byte(q.name))
 	protocol.EncodeTaskRef(&b, toWireRef(ref))
 	_, err := q.client.exchange(ctx, protocol.OpDeadLetterAck, b.Bytes())
+	return err
+}
+
+// Archive moves an in-flight or DLQ task to the archive log.
+func (q *remoteTaskQueue) Archive(ctx context.Context, ref taskqueue.Ref) error {
+	var b protocol.Buffer
+	b.WriteBytes([]byte(q.name))
+	protocol.EncodeTaskRef(&b, toWireRef(ref))
+	_, err := q.client.exchange(ctx, protocol.OpArchive, b.Bytes())
 	return err
 }

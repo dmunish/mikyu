@@ -63,6 +63,8 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byt
 		respOp, respBody = s.handleDeadLetters(ctx, body)
 	case protocol.OpDeadLetterAck:
 		respOp, respBody = s.handleDeadLetterAck(ctx, body)
+	case protocol.OpArchive:
+		respOp, respBody = s.handleArchive(ctx, body)
 
 	case protocol.OpShutdown:
 		return protocol.OpShutdown, nil, true

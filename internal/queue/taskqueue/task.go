@@ -39,6 +39,8 @@ type Task struct {
 	ScheduledAt time.Time
 	DeliveryID  string
 	Offset      uint64
+	Key         []byte
+	Stalled     uint32
 }
 
 // Ref identifies a task for Ack/Nack/Extend/AckDeadLetter.
@@ -75,6 +77,9 @@ type Queue interface {
 	DeadLetters(ctx context.Context) ([]Task, error)
 	AckDeadLetter(ctx context.Context, ref Ref) error
 
+	// Archive moves an in-flight or DLQ task to a durable archive log.
+	Archive(ctx context.Context, ref Ref) error
+
 	SetDefaults(d Defaults)
 	TruncateFloor(ctx context.Context) (uint64, bool, error)
 }
@@ -94,10 +99,11 @@ type enqueueOptions struct {
 	visibilityTimeout time.Duration
 	maxAttempts       uint32
 	scheduledAt       time.Time
+	key               []byte
 }
 
 // resolveEnqueueOptionsLocked applies opts over this queue's live defaults.
-func (q *queue) resolveEnqueueOptionsLocked(opts ...EnqueueOption) (visibilityTimeout time.Duration, maxAttempts uint32, scheduledAt time.Time) {
+func (q *queue) resolveEnqueueOptionsLocked(opts ...EnqueueOption) (visibilityTimeout time.Duration, maxAttempts uint32, scheduledAt time.Time, key []byte) {
 	o := enqueueOptions{
 		visibilityTimeout: q.defaultVisibility,
 		maxAttempts:       q.defaultMaxAttempts,
@@ -108,7 +114,7 @@ func (q *queue) resolveEnqueueOptionsLocked(opts ...EnqueueOption) (visibilityTi
 			opt(&o)
 		}
 	}
-	return o.visibilityTimeout, o.maxAttempts, o.scheduledAt
+	return o.visibilityTimeout, o.maxAttempts, o.scheduledAt, o.key
 }
 
 // ResolveWireEnqueueOptions applies opts over unset zeros so wire clients send "inherit" for unset values.
@@ -140,6 +146,13 @@ func WithMaxAttempts(n uint32) EnqueueOption {
 	}
 }
 
+// WithKey associates a key with the task for compaction or archival.
+func WithKey(k []byte) EnqueueOption {
+	return func(o *enqueueOptions) {
+		o.key = append([]byte(nil), k...)
+	}
+}
+
 // WithScheduledAt delays the first delivery until the supplied time.
 func WithScheduledAt(at time.Time) EnqueueOption {
 	return func(o *enqueueOptions) {
@@ -150,10 +163,11 @@ func WithScheduledAt(at time.Time) EnqueueOption {
 }
 
 // NewTaskFromWire reconstructs a task from wire values, copying the payload so the driver owns its bytes.
-func NewTaskFromWire(id string, payload []byte, attempts, maxAttempts uint32, visibility, scheduledAt time.Time, deliveryID string, offset uint64) Task {
+func NewTaskFromWire(id string, payload []byte, attempts, maxAttempts uint32, visibility, scheduledAt time.Time, deliveryID string, offset uint64, key []byte, stalled uint32) Task {
 	return Task{
 		ID: id, Payload: append([]byte(nil), payload...), Attempts: attempts,
 		MaxAttempts: maxAttempts, Visibility: visibility, ScheduledAt: scheduledAt, DeliveryID: deliveryID, Offset: offset,
+		Key: append([]byte(nil), key...), Stalled: stalled,
 	}
 }
 

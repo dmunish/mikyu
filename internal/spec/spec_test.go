@@ -288,6 +288,8 @@ retention:
 task:
   default_visibility: "30s"
   default_max_attempts: 5
+  max_in_flight: 100000
+  max_dlq: 100000
 `
 	s, err := DecodeSpecYAML([]byte(doc))
 	require.NoError(t, err)

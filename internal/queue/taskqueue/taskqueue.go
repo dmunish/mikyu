@@ -34,6 +34,13 @@ type queue struct {
 	defaultVisibility  time.Duration
 	defaultMaxAttempts uint32
 
+	// Bounds: 0 means unlimited.
+	maxInFlight uint32
+	maxDLQ      uint32
+
+	// archiveLog creates or returns the archive log queue for source.
+	archiveLog ArchiveLogFor
+
 	m *taskMetrics
 }
 
@@ -41,12 +48,25 @@ type queue struct {
 type Defaults struct {
 	Visibility  time.Duration
 	MaxAttempts uint32
+	MaxInFlight uint32
+	MaxDLQ      uint32
 }
+
+// ArchiveAppender is the minimal interface for writing archive envelopes.
+type ArchiveAppender interface {
+	Append(ctx context.Context, payload []byte) (uint64, error)
+}
+
+// ArchiveLogFor creates or returns the archive log queue for a source queue.
+type ArchiveLogFor func(ctx context.Context, source string) (ArchiveAppender, error)
 
 var _ Queue = (*queue)(nil)
 
+// Name returns the queue's name.
+func (q *queue) Name() string { return q.name }
+
 // New opens a task driver over existing engine storage with optional metrics scope.
-func New(name string, storage engine.Storage, defaults Defaults, scopes ...*metrics.Scope) (Queue, error) {
+func New(name string, storage engine.Storage, defaults Defaults, archiveLog ArchiveLogFor, scopes ...*metrics.Scope) (Queue, error) {
 	if storage == nil {
 		return nil, engine.ErrQueueNotFound
 	}
@@ -72,7 +92,12 @@ func New(name string, storage engine.Storage, defaults Defaults, scopes ...*metr
 		stopCh:             make(chan struct{}),
 		defaultVisibility:  visibility,
 		defaultMaxAttempts: maxAttempts,
+		maxInFlight:        defaults.MaxInFlight,
+		maxDLQ:             defaults.MaxDLQ,
 		m:                  newTaskMetrics(scope),
+	}
+	if archiveLog != nil {
+		q.archiveLog = archiveLog
 	}
 	schedInit(q.schedule)
 	q.mu.Lock()
@@ -91,9 +116,7 @@ func New(name string, storage engine.Storage, defaults Defaults, scopes ...*metr
 	return q, nil
 }
 
-func (q *queue) Name() string { return q.name }
-
-// SetDefaults changes the fallback visibility and attempts for future enqueues.
+// SetDefaults changes the fallback visibility, attempts, and bounds for future enqueues.
 func (q *queue) SetDefaults(d Defaults) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -103,6 +126,8 @@ func (q *queue) SetDefaults(d Defaults) {
 	if d.MaxAttempts > 0 {
 		q.defaultMaxAttempts = d.MaxAttempts
 	}
+	q.maxInFlight = d.MaxInFlight
+	q.maxDLQ = d.MaxDLQ
 }
 
 func (q *queue) Close() error {

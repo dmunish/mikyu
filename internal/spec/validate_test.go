@@ -26,6 +26,8 @@ func TestValidateRejectsOutOfRange(t *testing.T) {
 		{"retention_bytes", NewBytes(-1)},
 		{"default_visibility", NewDuration(0)},
 		{"default_max_attempts", NewUint32(0)},
+		{"max_in_flight", NewUint32(0)},
+		{"max_dlq", NewUint32(0)},
 	}
 
 	covered := map[string]bool{}

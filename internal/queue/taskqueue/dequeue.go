@@ -108,6 +108,9 @@ func (q *queue) takeDueLocked(ctx context.Context, now time.Time) (*taskState, t
 			q.pruneScheduleLocked()
 			continue
 		}
+		if state.inFlight {
+			state.task.Stalled++
+		}
 		deliveryID := newID()
 		state.inFlight = true
 		state.task.Attempts++
@@ -117,6 +120,7 @@ func (q *queue) takeDueLocked(ctx context.Context, now time.Time) (*taskState, t
 		q.pushScheduleLocked(state)
 		q.dirty++
 		q.broadcastLocked()
+		q.pruneScheduleLocked()
 		q.recordDequeue(due)
 		return state, time.Time{}, true, nil
 	}

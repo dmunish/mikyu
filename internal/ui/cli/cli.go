@@ -60,6 +60,7 @@ var handlers = map[string]func(*invocation, []string) error{
 	"extend":   (*invocation).handleExtend,
 	"dlq":      (*invocation).handleDLQ,
 	"dlq-ack":  (*invocation).handleDLQAck,
+	"archive":  (*invocation).handleArchive,
 	"metrics":  (*invocation).handleMetrics,
 	"shutdown": (*invocation).handleShutdown,
 	"login":    (*invocation).handleLogin,

@@ -43,6 +43,7 @@ const (
 	// Dead-letter block.
 	ErrCodeDeadLetterNotFound byte = 0x31
 	ErrCodeDeadLetterStale    byte = 0x32
+	ErrCodeArchiveFailed      byte = 0x33
 
 	// Server block: connection admission and queue-kind enforcement.
 	ErrCodeTooManyConnections byte = 0x41

@@ -47,6 +47,7 @@ var Verbs = []Verb{
 	{Name: "extend", Args: "<queue> <task|json|id> <timeout>", Summary: "Extend a task lease", Kind: KindTask},
 	{Name: "dlq", Args: "<queue> [--json]", Summary: "List dead-lettered tasks", Kind: KindTask},
 	{Name: "dlq-ack", Args: "<queue> <task|json|id>", Summary: "Remove a dead-lettered task", Kind: KindTask},
+	{Name: "archive", Args: "<queue> <task|json|id>", Summary: "Archive a task to its archive log", Kind: KindTask},
 
 	{Name: "metrics", Args: "[--json] [--watch] [--queue name]", Summary: "Show live node and queue metrics", Kind: KindAdmin},
 	{Name: "shutdown", Args: "[-y]", Summary: "Stop the daemon", Kind: KindAdmin},

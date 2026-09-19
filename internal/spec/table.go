@@ -275,6 +275,8 @@ var specSetters = map[string]func(*Spec, Value){
 	"retention_bytes":      func(s *Spec, v Value) { s.Retention.Bytes = new(v.Bytes()) },
 	"default_visibility":   func(s *Spec, v Value) { s.Task.DefaultVisibility = new(Duration(v.Duration())) },
 	"default_max_attempts": func(s *Spec, v Value) { s.Task.DefaultMaxAttempts = new(v.Uint32()) },
+	"max_in_flight":        func(s *Spec, v Value) { s.Task.MaxInFlight = new(v.Uint32()) },
+	"max_dlq":              func(s *Spec, v Value) { s.Task.MaxDLQ = new(v.Uint32()) },
 }
 
 var sessionSetters = map[string]func(*Session, Value){
@@ -320,6 +322,8 @@ var specGetters = map[string]func(*Spec) (Value, bool){
 	"retention_bytes":      getter(func(s *Spec) *int64 { return s.Retention.Bytes }, NewBytes),
 	"default_visibility":   getter(func(s *Spec) *Duration { return s.Task.DefaultVisibility }, NewSpecDuration),
 	"default_max_attempts": getter(func(s *Spec) *uint32 { return s.Task.DefaultMaxAttempts }, NewUint32),
+	"max_in_flight":        getter(func(s *Spec) *uint32 { return s.Task.MaxInFlight }, NewUint32),
+	"max_dlq":              getter(func(s *Spec) *uint32 { return s.Task.MaxDLQ }, NewUint32),
 }
 
 // Field returns the value p holds in s and whether s sets it.
@@ -360,6 +364,8 @@ func buildTable() []Param {
 		specParam("retention", "retention_bytes", KindBytes, MutMutable),
 		specParam("task", "default_visibility", KindDuration, MutMutable),
 		specParam("task", "default_max_attempts", KindUint32, MutMutable),
+		specParam("task", "max_in_flight", KindUint32, MutMutable),
+		specParam("task", "max_dlq", KindUint32, MutMutable),
 
 		callParam("visibility", KindDuration),
 		callParam("max_attempts", KindUint32),
@@ -467,7 +473,7 @@ func pascal(s string) string {
 }
 
 // initialisms keeps generated option names in Go's capitalization style.
-var initialisms = map[string]string{"tls": "TLS"}
+var initialisms = map[string]string{"tls": "TLS", "dlq": "DLQ"}
 
 // Value is a kind-tagged parameter value, as parsed from a flag, env var, or option.
 type Value struct {

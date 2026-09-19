@@ -58,6 +58,7 @@ var replHandlers = map[string]func(*replSession, []string){
 	"extend":  (*replSession).handleExtend,
 	"dlq":     (*replSession).handleDLQ,
 	"dlq-ack": (*replSession).handleDLQAck,
+	"archive": (*replSession).handleArchive,
 }
 
 // RunREPL starts the interactive REPL: embedded with --dir, remote otherwise.

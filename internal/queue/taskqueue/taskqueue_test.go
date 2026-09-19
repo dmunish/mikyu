@@ -29,7 +29,7 @@ func newTestTaskQueue(t *testing.T) (*queue, *engine.Manager, engine.Storage) {
 	require.NoError(t, err)
 	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
-	queueIface, err := New("tasks", storage, Defaults{})
+	queueIface, err := New("tasks", storage, Defaults{}, func(ctx context.Context, source string) (ArchiveAppender, error) { return nil, nil })
 	require.NoError(t, err)
 	q := queueIface.(*queue)
 	t.Cleanup(func() {
@@ -43,7 +43,7 @@ func newTestTaskQueue(t *testing.T) (*queue, *engine.Manager, engine.Storage) {
 func newMemTaskQueue(t *testing.T, name string) *queue {
 	t.Helper()
 	storage := enginetest.NewMemStorage(name, 1<<20, 1<<20)
-	queueIface, err := New(name, storage, Defaults{})
+	queueIface, err := New(name, storage, Defaults{}, func(ctx context.Context, source string) (ArchiveAppender, error) { return nil, nil })
 	require.NoError(t, err)
 	q := queueIface.(*queue)
 	t.Cleanup(func() { _ = q.Close() })
@@ -54,7 +54,7 @@ func newMemTaskQueue(t *testing.T, name string) *queue {
 // inspect unexported state.
 func mustQueue(t *testing.T, name string, storage engine.Storage) *queue {
 	t.Helper()
-	queueIface, err := New(name, storage, Defaults{})
+	queueIface, err := New(name, storage, Defaults{}, func(ctx context.Context, source string) (ArchiveAppender, error) { return nil, nil })
 	require.NoError(t, err)
 	return queueIface.(*queue)
 }

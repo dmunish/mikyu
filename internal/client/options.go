@@ -238,6 +238,16 @@ func WithDefaultMaxAttempts(n uint32) QueueOption {
 	return func(s *spec.Spec) { s.Task.DefaultMaxAttempts = new(n) }
 }
 
+// WithMaxInFlight caps the number of tasks that can be in flight at once.
+func WithMaxInFlight(n uint32) QueueOption {
+	return func(s *spec.Spec) { s.Task.MaxInFlight = new(n) }
+}
+
+// WithMaxDLQ caps the durable dead-letter queue; overflow drops the oldest entry.
+func WithMaxDLQ(n uint32) QueueOption {
+	return func(s *spec.Spec) { s.Task.MaxDLQ = new(n) }
+}
+
 // applyQueueOptions folds options into a sparse spec.
 func applyQueueOptions(opts []QueueOption) spec.Spec {
 	var s spec.Spec

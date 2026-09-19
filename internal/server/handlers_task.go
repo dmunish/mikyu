@@ -13,13 +13,15 @@ import (
 func toWireTask(t taskqueue.Task) protocol.Task {
 	return protocol.Task{
 		ID:          t.ID,
-		Payload:     t.Payload, // zero-copy: payload is not mutated after encode
+		Payload:     t.Payload,
 		Attempts:    t.Attempts,
 		MaxAttempts: t.MaxAttempts,
 		Visibility:  t.Visibility,
 		ScheduledAt: t.ScheduledAt,
 		DeliveryID:  t.DeliveryID,
 		Offset:      t.Offset,
+		Key:         t.Key,
+		Stalled:     t.Stalled,
 	}
 }
 
@@ -29,6 +31,7 @@ func fromWireTask(t protocol.Task) taskqueue.Task {
 	return taskqueue.NewTaskFromWire(
 		t.ID, t.Payload, t.Attempts, t.MaxAttempts,
 		t.Visibility, t.ScheduledAt, t.DeliveryID, t.Offset,
+		t.Key, t.Stalled,
 	)
 }
 
@@ -289,4 +292,25 @@ func (s *Server) handleDeadLetterAck(ctx context.Context, body []byte) (byte, []
 		return taskErr(dlErr)
 	}
 	return protocol.OpDeadLetterAck, nil
+}
+
+func (s *Server) handleArchive(ctx context.Context, body []byte) (byte, []byte) {
+	r := protocol.NewReader(body)
+	name, err := r.ReadBytes()
+	if err != nil {
+		return opErr(protocol.ErrCodeTaskInvalid, err.Error())
+	}
+	taskID, wt, err := decodeTaskRef(r)
+	if err != nil {
+		return opErr(protocol.ErrCodeTaskInvalid, err.Error())
+	}
+	q, err := s.getOrCreateTaskQueue(string(name))
+	if err != nil {
+		return taskErr(err)
+	}
+	archiveErr := q.Archive(ctx, refFromWire(taskID, wt))
+	if archiveErr != nil {
+		return taskErr(archiveErr)
+	}
+	return protocol.OpArchive, nil
 }

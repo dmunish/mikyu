@@ -73,6 +73,8 @@ var queueSamples = map[string]string{
 	"retention_bytes":      "1073741824",
 	"default_visibility":   "1m",
 	"default_max_attempts": "3",
+	"max_in_flight":        "100",
+	"max_dlq":              "100",
 }
 
 // flagArgs renders one parameter as the flag text the CLI accepts.

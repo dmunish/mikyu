@@ -56,6 +56,7 @@ func declaredSentinelValues() map[string]error {
 		"taskqueue.ErrDeadLetterNotFound": taskqueue.ErrDeadLetterNotFound,
 		"taskqueue.ErrDeadLetterStale":    taskqueue.ErrDeadLetterStale,
 		"taskqueue.ErrQueueFull":          taskqueue.ErrQueueFull,
+		"taskqueue.ErrArchiveFailed":      taskqueue.ErrArchiveFailed,
 
 		"protocol.ErrTooManyConnections": protocol.ErrTooManyConnections,
 		"protocol.ErrUnauthorized":       protocol.ErrUnauthorized,

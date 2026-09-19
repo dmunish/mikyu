@@ -51,6 +51,7 @@ var Table = []Entry{
 
 	{taskqueue.ErrDeadLetterNotFound, protocol.ErrCodeDeadLetterNotFound},
 	{taskqueue.ErrDeadLetterStale, protocol.ErrCodeDeadLetterStale},
+	{taskqueue.ErrArchiveFailed, protocol.ErrCodeArchiveFailed},
 
 	{protocol.ErrTooManyConnections, protocol.ErrCodeTooManyConnections},
 	{manager.ErrWrongKind, protocol.ErrCodeWrongKind},

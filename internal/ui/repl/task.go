@@ -229,6 +229,22 @@ func (s *replSession) handleDLQAck(args []string) {
 	fmt.Println(successStyle.Render(fmt.Sprintf("● Removed dead-letter task %s", shortID(id))))
 }
 
+func (s *replSession) handleArchive(args []string) {
+	ref, id, _, ok := s.taskRef(args)
+	if !ok {
+		s.usage("archive [queue] <task|json|id>")
+		return
+	}
+
+	queue := s.queueFor(args)
+	if err := command.TaskArchive(s.ctx, s.client, queue, ref); err != nil {
+		s.fail(err)
+		return
+	}
+
+	fmt.Println(successStyle.Render(fmt.Sprintf("● Archived task %s", shortID(id))))
+}
+
 func renderTaskCard(task mikyu.Task) string {
 	lease := "pending"
 	leaseStyle := taskPendingStyle

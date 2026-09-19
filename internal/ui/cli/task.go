@@ -214,3 +214,22 @@ func (in *invocation) handleDLQAck(args []string) error {
 	fmt.Fprintf(in.app.Stdout, "removed dead-letter task %s\n", shortTaskID(id))
 	return nil
 }
+
+func (in *invocation) handleArchive(args []string) error {
+	var queueName string
+	fs := newFlagSet("archive")
+	fs.StringVar(&queueName, "queue", "", "queue name")
+	rest, err := command.ParseAnywhere(fs, args)
+	if err != nil {
+		return in.app.usage("archive: %v", err)
+	}
+	if len(rest) != 1 || queueName == "" {
+		return in.app.usage("usage: mikyu archive <task|json|id> --queue <name>")
+	}
+	ref, id := command.ParseTaskRef(rest[0])
+	if err := command.TaskArchive(in.ctx, in.client, queueName, ref); err != nil {
+		return err
+	}
+	fmt.Fprintf(in.app.Stdout, "archived task %s\n", shortTaskID(id))
+	return nil
+}

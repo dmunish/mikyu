@@ -19,6 +19,7 @@ type taskMetrics struct {
 	nacks       *metrics.Counter
 	extends     *metrics.Counter
 	dlqAcks     *metrics.Counter
+	dlqOverflow *metrics.Counter
 	enqueueDur  *metrics.Histogram
 	dequeueWait *metrics.Histogram
 }
@@ -31,6 +32,7 @@ func newTaskMetrics(scope *metrics.Scope) *taskMetrics {
 		nacks:       scope.Counter("nacks"),
 		extends:     scope.Counter("extends"),
 		dlqAcks:     scope.Counter("dlq_acks"),
+		dlqOverflow: scope.Counter("dlq_overflow"),
 		enqueueDur:  scope.Histogram("enqueue_duration", taskDurationBounds),
 		dequeueWait: scope.Histogram("dequeue_wait", taskDurationBounds),
 	}

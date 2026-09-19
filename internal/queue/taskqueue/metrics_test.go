@@ -1,6 +1,7 @@
 package taskqueue
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ func TestTaskQueueCounters(t *testing.T) {
 	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
 
-	queueIface, err := New("tasks", storage, Defaults{}, reg.Scope("tasks"))
+	queueIface, err := New("tasks", storage, Defaults{}, func(ctx context.Context, source string) (ArchiveAppender, error) { return nil, nil }, reg.Scope("tasks"))
 	require.NoError(t, err)
 	q := queueIface.(*queue)
 	defer q.Close()

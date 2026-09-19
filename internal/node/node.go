@@ -209,7 +209,7 @@ func (n *Node) CreateTaskQueue(ctx context.Context, name string, s spec.Spec) (t
 	if err != nil {
 		return nil, err
 	}
-	tq, err := taskqueue.New(name, storage, taskDefaultsFor(eff), n.metrics.Registry().Scope(name))
+	tq, err := taskqueue.New(name, storage, taskDefaultsFor(eff), n.archiveLogFor(), n.metrics.Registry().Scope(name))
 	if err != nil {
 		return nil, err
 	}
@@ -218,6 +218,28 @@ func (n *Node) CreateTaskQueue(ctx context.Context, name string, s spec.Spec) (t
 	n.mu.Unlock()
 	n.retention.RegisterTarget(&retention.Target{Name: name, Storage: storage, Driver: tq})
 	return tq, nil
+}
+
+// archiveLogFor returns a factory that lazily creates or returns the archive log queue for a source queue name.
+func (n *Node) archiveLogFor() taskqueue.ArchiveLogFor {
+	return func(ctx context.Context, source string) (taskqueue.ArchiveAppender, error) {
+		name := source + taskqueue.ArchivePrefix
+		_, kind, err := n.mgr.Get(name)
+		switch {
+		case err == nil && kind == manager.KindLog:
+			lq, err := n.LogQueue(name)
+			if err != nil {
+				return nil, err
+			}
+			return lq, nil
+		case err == nil && kind != manager.KindLog:
+			return nil, fmt.Errorf("%w: %q exists as a %s queue", ErrWrongKind, name, kind)
+		case errors.Is(err, engine.ErrQueueNotFound):
+			return n.CreateLogQueue(ctx, name, spec.Spec{})
+		default:
+			return nil, err
+		}
+	}
 }
 
 // UpdateQueue merges patch into the queue's stored spec, persists the result, and applies the mutable fields to the live engine queue.
@@ -375,7 +397,7 @@ func (n *Node) TaskQueue(name string) (taskqueue.Queue, error) {
 	if entry, ok := n.registry.Queues[registryKey(manager.KindTask, name)]; ok {
 		d = taskDefaultsFor(entry.Spec.Effective(n.defaults, spec.Builtin()))
 	}
-	tq, err := taskqueue.New(name, storage, d, n.metrics.Registry().Scope(name))
+	tq, err := taskqueue.New(name, storage, d, n.archiveLogFor(), n.metrics.Registry().Scope(name))
 	if err != nil {
 		return nil, err
 	}
@@ -441,6 +463,12 @@ func taskDefaultsFor(s spec.Spec) taskqueue.Defaults {
 	}
 	if s.Task.DefaultMaxAttempts != nil {
 		d.MaxAttempts = *s.Task.DefaultMaxAttempts
+	}
+	if s.Task.MaxInFlight != nil {
+		d.MaxInFlight = *s.Task.MaxInFlight
+	}
+	if s.Task.MaxDLQ != nil {
+		d.MaxDLQ = *s.Task.MaxDLQ
 	}
 	return d
 }

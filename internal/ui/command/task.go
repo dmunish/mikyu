@@ -127,6 +127,15 @@ func TaskAckDeadLetter(ctx context.Context, client mikyu.Client, queue string, r
 	return tq.AckDeadLetter(ctx, ref)
 }
 
+func TaskArchive(ctx context.Context, client mikyu.Client, queue string, ref mikyu.TaskRef) error {
+	tq, err := client.TaskQueue(queue)
+	if err != nil {
+		return err
+	}
+
+	return tq.Archive(ctx, ref)
+}
+
 // TaskRecord is the JSON shape a task takes on the CLI, and the shape the task verbs accept back: `dequeue --json` feeds straight into ack, nack, extend, and dlq-ack, carrying the delivery token that enables the strict check.
 type TaskRecord struct {
 	ID          string    `json:"id"`
@@ -137,6 +146,8 @@ type TaskRecord struct {
 	DeliveryID  string    `json:"delivery_id"`
 	Offset      uint64    `json:"offset"`
 	Payload     string    `json:"payload"`
+	Key         []byte    `json:"key,omitempty"`
+	Stalled     uint32    `json:"stalled"`
 }
 
 // Record renders a task as its CLI record shape.
@@ -150,6 +161,8 @@ func Record(t mikyu.Task) TaskRecord {
 		DeliveryID:  t.DeliveryID,
 		Offset:      t.Offset,
 		Payload:     string(t.Payload),
+		Key:         t.Key,
+		Stalled:     t.Stalled,
 	}
 }
 
@@ -166,6 +179,8 @@ func ParseTaskRef(arg string) (mikyu.TaskRef, string) {
 			ScheduledAt: rec.ScheduledAt,
 			DeliveryID:  rec.DeliveryID,
 			Offset:      rec.Offset,
+			Key:         rec.Key,
+			Stalled:     rec.Stalled,
 		}, rec.ID
 	}
 	return mikyu.TaskID(arg), arg

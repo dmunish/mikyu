@@ -27,10 +27,12 @@ type RetentionSpec struct {
 	Bytes *int64    `json:"bytes,omitempty" yaml:"bytes,omitempty"`
 }
 
-// TaskSpec holds the task-queue defaults resolved under per-call options.
+// TaskSpec holds the task-queue defaults and bounds resolved under per-call options.
 type TaskSpec struct {
 	DefaultVisibility  *Duration `json:"default_visibility,omitempty" yaml:"default_visibility,omitempty"`
 	DefaultMaxAttempts *uint32   `json:"default_max_attempts,omitempty" yaml:"default_max_attempts,omitempty"`
+	MaxInFlight        *uint32   `json:"max_in_flight,omitempty" yaml:"max_in_flight,omitempty"`
+	MaxDLQ             *uint32   `json:"max_dlq,omitempty" yaml:"max_dlq,omitempty"`
 }
 
 // Session carries the process-level parameters that never reach a queue spec or the wire.
@@ -113,6 +115,12 @@ func (t TaskSpec) merge(o TaskSpec) TaskSpec {
 	if t.DefaultMaxAttempts == nil {
 		t.DefaultMaxAttempts = o.DefaultMaxAttempts
 	}
+	if t.MaxInFlight == nil {
+		t.MaxInFlight = o.MaxInFlight
+	}
+	if t.MaxDLQ == nil {
+		t.MaxDLQ = o.MaxDLQ
+	}
 	return t
 }
 
@@ -138,6 +146,8 @@ const (
 	builtinRetentionBytes            = int64(0)
 	builtinDefaultVisibility         = Duration(DefaultVisibility)
 	builtinDefaultMaxAttempts        = DefaultMaxAttempts
+	builtinMaxInFlight               = uint32(100_000)
+	builtinMaxDLQ                    = uint32(100_000)
 	builtinTarget                    = "tcp://127.0.0.1:7420"
 	builtinDataDir                   = "./data"
 	builtinMaxConns                  = 10
@@ -169,6 +179,8 @@ func Builtin() Spec {
 		Task: TaskSpec{
 			DefaultVisibility:  new(builtinDefaultVisibility),
 			DefaultMaxAttempts: new(builtinDefaultMaxAttempts),
+			MaxInFlight:        new(builtinMaxInFlight),
+			MaxDLQ:             new(builtinMaxDLQ),
 		},
 	}
 }

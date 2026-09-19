@@ -1,6 +1,7 @@
 package taskqueue
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -26,7 +27,7 @@ func newTaskQueueWithDefaults(t *testing.T, d Defaults) *queue {
 	require.NoError(t, err)
 	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
-	queueIface, err := New("tasks", storage, d)
+	queueIface, err := New("tasks", storage, d, func(ctx context.Context, source string) (ArchiveAppender, error) { return nil, nil })
 	require.NoError(t, err)
 	q := queueIface.(*queue)
 	t.Cleanup(func() {

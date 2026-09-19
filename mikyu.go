@@ -232,6 +232,8 @@ var (
 	ErrDeadLetterNotFound = taskqueue.ErrDeadLetterNotFound
 	// ErrDeadLetterStale reports a dead-letter ack whose task changed.
 	ErrDeadLetterStale = taskqueue.ErrDeadLetterStale
+	// ErrArchiveFailed reports a failure archiving a task.
+	ErrArchiveFailed = taskqueue.ErrArchiveFailed
 )
 
 type _ = iter.Seq2[Record, error]
