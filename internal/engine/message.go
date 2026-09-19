@@ -7,5 +7,6 @@ type Record struct {
 	Offset    uint64
 	ID        string
 	Timestamp time.Time
+	Group     []byte
 	Payload   []byte
 }

@@ -218,6 +218,11 @@ func WithFsync(enabled bool) QueueOption {
 	return func(s *spec.Spec) { s.Engine.Fsync = new(enabled) }
 }
 
+// WithCompaction enables roll-time compaction of superseded keyed records (create-only, log queues only).
+func WithCompaction(enabled bool) QueueOption {
+	return func(s *spec.Spec) { s.Engine.Compaction = new(enabled) }
+}
+
 // WithRetentionAge deletes records older than d, capped by consumer lag.
 func WithRetentionAge(d time.Duration) QueueOption {
 	return func(s *spec.Spec) { s.Retention.Age = new(spec.Duration(d)) }

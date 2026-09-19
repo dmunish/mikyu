@@ -1,6 +1,7 @@
 package logqueue_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"testing"
@@ -176,4 +177,41 @@ func TestLogQueueTailBugProof(t *testing.T) {
 			t.Fatal("Tail() died after msg-0 and failed to tail msg-1!")
 		}
 	})
+}
+
+// TestStreamSkipsCompactedOffsets: Stream yields only live records.
+func TestStreamSkipsCompactedOffsets(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := engine.OpenManager(dir, engine.Config{
+		BatchSize:       16,
+		MaxInterval:     10 * time.Millisecond,
+		SegmentSize:     256,
+		MaxMessageBytes: 1024 * 1024,
+		Fsync:           false,
+		Compaction:      true,
+	}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = mgr.Close() })
+
+	storage, err := mgr.Create("stream-skip")
+	require.NoError(t, err)
+	lq := logqueue.New("stream-skip", storage)
+	ctx := t.Context()
+
+	// 100B payloads with a 256B segment cap: one record per segment, so the
+	// three same-key versions force two rolls and two compactions.
+	key := []byte("user-42")
+	for i := range 3 {
+		_, err := lq.Append(ctx, bytes.Repeat([]byte{byte('v' + i)}, 100), logqueue.WithKey(key))
+		require.NoError(t, err)
+	}
+
+	var got []engine.Record
+	for rec, err := range lq.Stream(ctx, 0) {
+		require.NoError(t, err)
+		got = append(got, rec)
+	}
+	require.Len(t, got, 1)
+	assert.Equal(t, uint64(2), got[0].Offset)
+	assert.Equal(t, key, got[0].Group)
 }

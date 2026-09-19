@@ -53,7 +53,19 @@ func (c *embeddedClient) CreateLogQueue(ctx context.Context, name string, opts .
 
 // CreateTaskQueue declares a task queue from a sparse spec and returns its handle.
 func (c *embeddedClient) CreateTaskQueue(ctx context.Context, name string, opts ...QueueOption) (taskqueue.Queue, error) {
-	return c.node.CreateTaskQueue(ctx, name, applyQueueOptions(opts))
+	s := applyQueueOptions(opts)
+	if err := rejectCompaction(s); err != nil {
+		return nil, err
+	}
+	return c.node.CreateTaskQueue(ctx, name, s)
+}
+
+// rejectCompaction enforces at the SDK boundary that compaction is a log-queue setting.
+func rejectCompaction(s spec.Spec) error {
+	if s.Engine.Compaction != nil && *s.Engine.Compaction {
+		return fmt.Errorf("%w: compaction is a log-queue setting", spec.ErrInvalidConfig)
+	}
+	return nil
 }
 
 // UpdateQueue merges a sparse patch into the queue's stored spec and applies the mutable fields to the live queue.

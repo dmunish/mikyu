@@ -42,3 +42,17 @@ func (r *ringCache) EvictBefore(minOffset uint64) {
 		}
 	}
 }
+
+// Evict removes the specific offsets dropped out of order by compaction.
+func (r *ringCache) Evict(offsets ...uint64) {
+	if len(offsets) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, off := range offsets {
+		if r.slots[off&r.mask].Offset == off {
+			r.slots[off&r.mask] = Record{}
+		}
+	}
+}

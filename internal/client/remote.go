@@ -324,7 +324,11 @@ func (c *remoteClient) CreateLogQueue(ctx context.Context, name string, opts ...
 
 // CreateTaskQueue declares a task queue and returns its handle.
 func (c *remoteClient) CreateTaskQueue(ctx context.Context, name string, opts ...QueueOption) (taskqueue.Queue, error) {
-	data, err := spec.EncodeSpec(applyQueueOptions(opts))
+	s := applyQueueOptions(opts)
+	if err := rejectCompaction(s); err != nil {
+		return nil, err
+	}
+	data, err := spec.EncodeSpec(s)
 	if err != nil {
 		return nil, err
 	}

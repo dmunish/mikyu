@@ -14,6 +14,7 @@ const (
 	GaugeSizeBytes  = "size_bytes"
 	GaugeLastOffset = "last_offset"
 	GaugeMinOffset  = "min_offset"
+	GaugeKeyIndex   = "key_index"
 )
 
 // ioDurationBounds are latency buckets, in seconds, for storage operations.
@@ -31,6 +32,7 @@ type queueMetrics struct {
 	groupCommits *metrics.Counter
 	appendDur    *metrics.Histogram
 	readDur      *metrics.Histogram
+	keyIndexSize *metrics.Gauge
 }
 
 func newQueueMetrics(scope *metrics.Scope) *queueMetrics {
@@ -43,6 +45,7 @@ func newQueueMetrics(scope *metrics.Scope) *queueMetrics {
 		groupCommits: scope.Counter("group_commits"),
 		appendDur:    scope.Histogram("append_duration", ioDurationBounds),
 		readDur:      scope.Histogram("read_duration", ioDurationBounds),
+		keyIndexSize: scope.Gauge("key_index"),
 	}
 }
 
@@ -80,10 +83,11 @@ func (m *Manager) Collect(_ context.Context, dst *metrics.Snapshot) {
 			Kind: "internal",
 			Gauges: map[string]int64{
 				GaugeRecords:   int64(q.publishedOffset),
-				GaugeSegments:   int64(len(q.segments)),
-				GaugeSizeBytes:  q.onDiskSizeLocked(),
+				GaugeSegments:  int64(len(q.segments)),
+				GaugeSizeBytes: q.onDiskSizeLocked(),
 				GaugeLastOffset: int64(q.nextOffset),
 				GaugeMinOffset:  int64(q.minOffset),
+				GaugeKeyIndex:   int64(len(q.keyIndex)),
 			},
 		}
 		q.mu.RUnlock()

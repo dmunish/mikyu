@@ -103,7 +103,7 @@ func TestValidateUpdateRejectsCreateOnly(t *testing.T) {
 		require.ErrorIs(t, err, mikyu.ErrImmutableField, p.Key)
 		assert.Contains(t, err.Error(), p.Key)
 	}
-	assert.Equal(t, 4, createOnly, "the table gained or lost a create-only spec parameter")
+	assert.Equal(t, 5, createOnly, "the table gained or lost a create-only spec parameter")
 }
 
 func TestBuiltinIsTotal(t *testing.T) {

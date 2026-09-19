@@ -19,6 +19,7 @@ type EngineSpec struct {
 	MaxMessageBytes *int64    `json:"max_message_bytes,omitempty" yaml:"max_message_bytes,omitempty"`
 	Encrypted       *bool     `json:"encrypted,omitempty" yaml:"encrypted,omitempty"`
 	Fsync           *bool     `json:"fsync,omitempty" yaml:"fsync,omitempty"`
+	Compaction      *bool     `json:"compaction,omitempty" yaml:"compaction,omitempty"`
 }
 
 // RetentionSpec caps how much history may be deleted. Zero means unlimited.
@@ -95,6 +96,9 @@ func (e EngineSpec) merge(o EngineSpec) EngineSpec {
 	if e.Fsync == nil {
 		e.Fsync = o.Fsync
 	}
+	if e.Compaction == nil {
+		e.Compaction = o.Compaction
+	}
 	return e
 }
 
@@ -142,6 +146,7 @@ const (
 	builtinMaxMessageBytes           = int64(1 << 20)
 	builtinEncrypted                 = false
 	builtinFsync                     = true
+	builtinCompaction                = false
 	builtinRetentionAge              = Duration(0)
 	builtinRetentionBytes            = int64(0)
 	builtinDefaultVisibility         = Duration(DefaultVisibility)
@@ -171,6 +176,7 @@ func Builtin() Spec {
 			MaxMessageBytes: new(builtinMaxMessageBytes),
 			Encrypted:       new(builtinEncrypted),
 			Fsync:           new(builtinFsync),
+			Compaction:      new(builtinCompaction),
 		},
 		Retention: RetentionSpec{
 			Age:   new(builtinRetentionAge),

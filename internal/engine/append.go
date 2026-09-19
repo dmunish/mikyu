@@ -8,8 +8,32 @@ import (
 	"uuid"
 )
 
-func (q *Queue) Append(ctx context.Context, payload []byte) (uint64, error) {
-	offs, err := q.AppendBatch(ctx, [][]byte{payload})
+// appendOptions carries the effective per-call append settings.
+type appendOptions struct {
+	group []byte
+}
+
+// AppendOption configures the record(s) being appended.
+type AppendOption func(*appendOptions)
+
+// WithGroup associates a compaction group with the appended record(s).
+func WithGroup(g []byte) AppendOption {
+	return func(o *appendOptions) { o.group = append([]byte(nil), g...) }
+}
+
+// ResolveAppendOptions folds a set of append options into their effective values.
+func ResolveAppendOptions(opts ...AppendOption) (group []byte) {
+	var o appendOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+	return o.group
+}
+
+func (q *Queue) Append(ctx context.Context, payload []byte, opts ...AppendOption) (uint64, error) {
+	offs, err := q.AppendBatch(ctx, [][]byte{payload}, opts...)
 	if err != nil {
 		return 0, err
 	}
@@ -17,7 +41,8 @@ func (q *Queue) Append(ctx context.Context, payload []byte) (uint64, error) {
 }
 
 // AppendBatch implements Storage.AppendBatch.
-func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error) {
+func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...AppendOption) ([]uint64, error) {
+	group := ResolveAppendOptions(opts...)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -64,7 +89,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 		}
 		totalBytes += int64(len(payload))
 		id := uuid.NewV7()
-		rec := encodeRecord(id, ts, payload)
+		rec := encodeRecord(id, ts, group, payload)
 		recLen := int64(len(rec))
 		if recLen > q.cfg.SegmentSize {
 			q.mu.Unlock()
@@ -98,6 +123,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 				Offset:    b.offsets[i],
 				ID:        b.ids[i].String(),
 				Timestamp: ts,
+				Group:     group,
 				Payload:   bytes.Clone(payloads[b.startIdx+i]),
 			})
 		}
@@ -172,8 +198,15 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, e
 		staged.offsets = append(staged.offsets, q.nextOffset)
 		staged.ids = append(staged.ids, ids[i])
 		staged.totalLen += recLen
+		if group != nil && q.keyIndex != nil {
+			q.keyIndex[string(group)] = q.nextOffset
+		}
 		q.nextOffset++
 		offsets[i] = q.nextOffset - 1
+	}
+
+	if group != nil && q.keyIndex != nil {
+		q.warnKeyIndexSizeLocked()
 	}
 
 	if !q.cfg.Fsync {

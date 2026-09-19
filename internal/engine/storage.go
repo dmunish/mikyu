@@ -10,9 +10,9 @@ type Storage interface {
 	// Name returns the queue name.
 	Name() string
 	// Append stores a single payload and returns its offset.
-	Append(ctx context.Context, payload []byte) (uint64, error)
+	Append(ctx context.Context, payload []byte, opts ...AppendOption) (uint64, error)
 	// AppendBatch stores multiple payloads and returns their offsets.
-	AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
+	AppendBatch(ctx context.Context, payloads [][]byte, opts ...AppendOption) ([]uint64, error)
 	// Read retrieves a single message by offset .
 	Read(ctx context.Context, offset uint64) (Record, error)
 	// ReadBatch retrieves a batch of messages starting at offset.

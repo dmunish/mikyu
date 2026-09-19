@@ -7,14 +7,16 @@ type Record struct {
 	Offset    uint64
 	ID        string
 	Timestamp time.Time
+	Group     []byte
 	Payload   []byte
 }
 
-// WriteRecord appends offset, ID, timestamp, and payload.
+// WriteRecord appends offset, ID, timestamp, group, and payload.
 func WriteRecord(b *Buffer, rec Record) {
 	b.WriteU64(rec.Offset)
 	b.WriteBytes([]byte(rec.ID))
 	b.WriteU64(uint64(rec.Timestamp.UnixNano()))
+	b.WriteBytes(rec.Group)
 	b.WriteBytes(rec.Payload)
 }
 
@@ -32,6 +34,10 @@ func ReadRecord(r *Reader) (Record, error) {
 	if err != nil {
 		return Record{}, err
 	}
+	group, err := r.ReadBytes()
+	if err != nil {
+		return Record{}, err
+	}
 	payload, err := r.ReadBytes()
 	if err != nil {
 		return Record{}, err
@@ -40,6 +46,7 @@ func ReadRecord(r *Reader) (Record, error) {
 		Offset:    off,
 		ID:        string(id),
 		Timestamp: time.Unix(0, int64(ts)),
+		Group:     group,
 		Payload:   payload,
 	}, nil
 }

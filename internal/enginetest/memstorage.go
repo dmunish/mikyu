@@ -10,8 +10,8 @@ import (
 )
 
 // recordOverhead is the per-record fixed cost mirrored from the engine's
-// minimum record size (length, CRC, id, timestamp fields).
-const recordOverhead = 34
+// minimum record size (length, CRC, id, timestamp, group-length fields).
+const recordOverhead = 36
 
 // memSegment mirrors one physical log segment of engine.Queue: a contiguous
 // span of offsets capped by the queue's maxSeg, with the newest record's
@@ -117,15 +117,16 @@ func (m *MemStorage) broadcastLocked() {
 	close(old)
 }
 
-func (m *MemStorage) Append(ctx context.Context, payload []byte) (uint64, error) {
-	offs, err := m.AppendBatch(ctx, [][]byte{payload})
+func (m *MemStorage) Append(ctx context.Context, payload []byte, opts ...engine.AppendOption) (uint64, error) {
+	offs, err := m.AppendBatch(ctx, [][]byte{payload}, opts...)
 	if err != nil {
 		return 0, err
 	}
 	return offs[0], nil
 }
 
-func (m *MemStorage) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error) {
+func (m *MemStorage) AppendBatch(ctx context.Context, payloads [][]byte, opts ...engine.AppendOption) ([]uint64, error) {
+	group := engine.ResolveAppendOptions(opts...)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -150,6 +151,7 @@ func (m *MemStorage) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint
 		off := uint64(len(m.msgs))
 		m.msgs = append(m.msgs, engine.Record{
 			Offset:  off,
+			Group:   group,
 			Payload: append([]byte(nil), p...),
 		})
 		cur := &m.segs[len(m.segs)-1]

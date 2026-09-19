@@ -42,14 +42,14 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 		case OpCreate:
 			b.WriteU8(1) // kind: log
 			b.WriteBytes([]byte("payments"))
-			b.WriteU16(2)
+			b.WriteU16(3)
 			b.WriteBytes([]byte(`{"engine":{"fsync":true}}`))
 		case OpDelete:
 			b.WriteBytes([]byte("payments"))
 		case OpList:
 		case OpUpdate:
 			b.WriteBytes([]byte("payments"))
-			b.WriteU16(2)
+			b.WriteU16(3)
 			b.WriteBytes([]byte(`{"engine":{"batch_size":64}}`))
 		case OpDescribe:
 			b.WriteBytes([]byte("payments"))
@@ -60,9 +60,11 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 		case OpAppend:
 			b.WriteBytes([]byte("events"))
 			b.WriteBytes([]byte("hello"))
+			b.WriteBytes([]byte("user-42"))
 		case OpAppendBatch:
 			b.WriteBytes([]byte("events"))
 			b.WriteU32(2)
+			b.WriteBytes([]byte("user-42"))
 			b.WriteBytes([]byte("one"))
 			b.WriteBytes([]byte("two"))
 		case OpRead:
@@ -136,7 +138,7 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 				assert.Equal(t, "payments", string(name))
 				version, err := r.ReadU16()
 				require.NoError(t, err)
-				assert.Equal(t, uint16(2), version)
+				assert.Equal(t, uint16(3), version)
 				data, err := r.ReadBytes()
 				require.NoError(t, err)
 				assert.JSONEq(t, `{"engine":{"fsync":true}}`, string(data))
@@ -146,7 +148,7 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 				assert.Equal(t, "payments", string(name))
 				version, err := r.ReadU16()
 				require.NoError(t, err)
-				assert.Equal(t, uint16(2), version)
+				assert.Equal(t, uint16(3), version)
 				data, err := r.ReadBytes()
 				require.NoError(t, err)
 				assert.JSONEq(t, `{"engine":{"batch_size":64}}`, string(data))
@@ -157,6 +159,7 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 			case OpAppend:
 				assert.Equal(t, "events", string(mustReadBytes(t, r)))
 				assert.Equal(t, "hello", string(mustReadBytes(t, r)))
+				assert.Equal(t, "user-42", string(mustReadBytes(t, r)))
 			case OpTruncate:
 				assert.NotEmpty(t, mustReadBytes(t, r))
 				off, err := r.ReadU64()
@@ -233,6 +236,7 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 				n, err := r.ReadU32()
 				require.NoError(t, err)
 				assert.Equal(t, uint32(2), n)
+				assert.Equal(t, "user-42", string(mustReadBytes(t, r)))
 				for range n {
 					assert.NotEmpty(t, mustReadBytes(t, r))
 				}
@@ -281,4 +285,21 @@ func mustReadBytes(t *testing.T, r *Reader) []byte {
 	b, err := r.ReadBytes()
 	require.NoError(t, err)
 	return b
+}
+
+func TestRecordRoundTripCarriesGroup(t *testing.T) {
+	rec := Record{Offset: 7, ID: "id-1", Timestamp: time.Unix(0, 123), Group: []byte("user-42"), Payload: []byte("hello")}
+	var b Buffer
+	WriteRecord(&b, rec)
+	got, err := ReadRecord(NewReader(b.Bytes()))
+	require.NoError(t, err)
+	assert.Equal(t, rec, got)
+
+	var bl Buffer
+	WriteRecordList(&bl, []Record{rec, {Offset: 8, Payload: []byte("no-group")}})
+	list, err := ReadRecordList(NewReader(bl.Bytes()))
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	assert.Equal(t, rec, list[0])
+	assert.Empty(t, list[1].Group)
 }

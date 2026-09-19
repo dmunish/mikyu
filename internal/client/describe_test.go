@@ -136,6 +136,45 @@ func TestRemoteMinOffsetUsesMetrics(t *testing.T) {
 	require.ErrorIs(t, err, engine.ErrQueueNotFound)
 }
 
+// TestOpMinOffsetRoundTrip: remote MinOffset (via OpMinOffset) reports the same
+// value as embedded MinOffset after the same operations.
+func TestOpMinOffsetRoundTrip(t *testing.T) {
+	ctx := t.Context()
+	opts := []QueueOption{WithSegmentSize(128), WithMaxMessageBytes(128)}
+
+	c := newLoopbackServer(t)
+	mustCreateLog(t, c, "q", opts...)
+	lq, err := c.LogQueue("q")
+	require.NoError(t, err)
+	for range 8 {
+		_, err := lq.Append(ctx, []byte("payload"))
+		require.NoError(t, err)
+	}
+	_, err = lq.Truncate(ctx, 4)
+	require.NoError(t, err)
+	remoteMin, err := lq.MinOffset(ctx)
+	require.NoError(t, err)
+	assert.Greater(t, remoteMin, uint64(0))
+	assert.LessOrEqual(t, remoteMin, uint64(4))
+
+	emb, err := NewEmbedded(t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = emb.Close() })
+	mustCreateLog(t, emb, "q", opts...)
+	elq, err := emb.LogQueue("q")
+	require.NoError(t, err)
+	for range 8 {
+		_, err := elq.Append(ctx, []byte("payload"))
+		require.NoError(t, err)
+	}
+	_, err = elq.Truncate(ctx, 4)
+	require.NoError(t, err)
+	embeddedMin, err := elq.MinOffset(ctx)
+	require.NoError(t, err)
+
+	assert.Equal(t, embeddedMin, remoteMin)
+}
+
 // TestDescribeNoStats: describe no longer carries per-queue storage stats.
 func TestDescribeNoStats(t *testing.T) {
 	ctx := t.Context()

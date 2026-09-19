@@ -28,6 +28,7 @@ defaults:                        # Session defaults inherited by new queues
     segment_age: "1h"            # Max time before rolling inactive segment
     encrypted: false             # Enable OS transparent directory encryption
     fsync: true                  # Perform physical disk fsync on produce
+    compaction: false            # Drop superseded keyed records at segment roll (log queues)
 
 queues: {}                       # Declarative pre-created queues on startup
 `

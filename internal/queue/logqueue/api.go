@@ -11,8 +11,8 @@ import (
 // Log is the queue-driver interface exposed through the public client API.
 type Log interface {
 	Name() string
-	Append(ctx context.Context, payload []byte) (uint64, error)
-	AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
+	Append(ctx context.Context, payload []byte, opts ...AppendOption) (uint64, error)
+	AppendBatch(ctx context.Context, payloads [][]byte, opts ...AppendOption) ([]uint64, error)
 	Read(ctx context.Context, offset uint64) (engine.Record, error)
 	ReadBatch(ctx context.Context, startOffset uint64, count int) ([]engine.Record, error)
 	LastOffset(ctx context.Context) (uint64, error)

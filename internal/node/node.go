@@ -174,6 +174,9 @@ func (n *Node) createQueue(ctx context.Context, name string, kind manager.Kind, 
 	if err := spec.ValidateCreate(eff); err != nil {
 		return nil, spec.Spec{}, err
 	}
+	if kind == manager.KindTask && eff.Engine.Compaction != nil && *eff.Engine.Compaction {
+		return nil, spec.Spec{}, fmt.Errorf("%w: compaction is a log-queue setting", spec.ErrInvalidConfig)
+	}
 	storage, err := n.mgr.Create(ctx, name, kind, toEngineConfig(eff))
 	if err != nil {
 		return nil, spec.Spec{}, err
@@ -220,6 +223,15 @@ func (n *Node) CreateTaskQueue(ctx context.Context, name string, s spec.Spec) (t
 	return tq, nil
 }
 
+// archiveAppender adapts a log queue to the task driver's archive writer.
+type archiveAppender struct {
+	l logqueue.Log
+}
+
+func (a archiveAppender) Append(ctx context.Context, payload []byte) (uint64, error) {
+	return a.l.Append(ctx, payload)
+}
+
 // archiveLogFor returns a factory that lazily creates or returns the archive log queue for a source queue name.
 func (n *Node) archiveLogFor() taskqueue.ArchiveLogFor {
 	return func(ctx context.Context, source string) (taskqueue.ArchiveAppender, error) {
@@ -231,11 +243,15 @@ func (n *Node) archiveLogFor() taskqueue.ArchiveLogFor {
 			if err != nil {
 				return nil, err
 			}
-			return lq, nil
+			return archiveAppender{lq}, nil
 		case err == nil && kind != manager.KindLog:
 			return nil, fmt.Errorf("%w: %q exists as a %s queue", ErrWrongKind, name, kind)
 		case errors.Is(err, engine.ErrQueueNotFound):
-			return n.CreateLogQueue(ctx, name, spec.Spec{})
+			lq, err := n.CreateLogQueue(ctx, name, spec.Spec{})
+			if err != nil {
+				return nil, err
+			}
+			return archiveAppender{lq}, nil
 		default:
 			return nil, err
 		}
@@ -512,6 +528,9 @@ func toEngineConfig(s spec.Spec) engine.Config {
 	}
 	if s.Engine.Fsync != nil {
 		cfg.Fsync = *s.Engine.Fsync
+	}
+	if s.Engine.Compaction != nil {
+		cfg.Compaction = *s.Engine.Compaction
 	}
 	return cfg
 }

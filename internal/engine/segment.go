@@ -235,7 +235,7 @@ func (s *segment) rebuild() ([]rawIndexEntry, error) {
 			break // torn write tail
 		}
 
-		if _, _, _, err := decodeRecord(body); err != nil {
+		if _, _, _, _, err := decodeRecord(body); err != nil {
 			break // checksum mismatch
 		}
 
@@ -292,14 +292,7 @@ func (s *segment) nextOffset() uint64 {
 // lastTimestamp returns the timestamp of the segment's newest record. ok is
 // false when the segment holds no records or its tail cannot be read.
 func (s *segment) lastTimestamp() (time.Time, bool) {
-	count := 0
-	if len(s.idxMMap) > 0 {
-		count = len(s.idxMMap) / rawIndexEntrySize
-	} else if s.idxFile != nil {
-		if info, err := s.idxFile.Stat(); err == nil {
-			count = int(info.Size() / rawIndexEntrySize)
-		}
-	}
+	count := s.indexCount()
 	if count == 0 {
 		return time.Time{}, false
 	}
@@ -322,11 +315,40 @@ func (s *segment) lastTimestamp() (time.Time, bool) {
 	} else if _, err := s.logFile.ReadAt(rec, entry.pos); err != nil {
 		return time.Time{}, false
 	}
-	_, ts, _, err := decodeRecord(rec[recordLengthSize:])
+	_, ts, _, _, err := decodeRecord(rec[recordLengthSize:])
 	if err != nil {
 		return time.Time{}, false
 	}
 	return ts, true
+}
+
+// indexCount returns the number of index slots the segment holds.
+func (s *segment) indexCount() int {
+	if len(s.idxMMap) > 0 {
+		return len(s.idxMMap) / rawIndexEntrySize
+	}
+	if s.idxFile != nil {
+		if info, err := s.idxFile.Stat(); err == nil {
+			return int(info.Size() / rawIndexEntrySize)
+		}
+	}
+	return 0
+}
+
+// unmap releases the segment's read mappings so its files can be rewritten.
+func (s *segment) unmap() error {
+	var err error
+	if s.mmapData != nil {
+		err = s.mmapData.Unmap()
+		s.mmapData = nil
+	}
+	if s.idxMMap != nil {
+		if e := s.idxMMap.Unmap(); e != nil && err == nil {
+			err = e
+		}
+		s.idxMMap = nil
+	}
+	return err
 }
 
 func (s *segment) destroy() (int64, error) {

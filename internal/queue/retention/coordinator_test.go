@@ -114,9 +114,9 @@ func TestRetentionCappedByLaggingGroup(t *testing.T) {
 func TestOffsetTruncatedAfterPolicyTruncation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := t.Context()
-		// 128B cap with 41B records: 3 per segment, so 6 records span one
+		// 130B cap with 43B records: 3 per segment, so 6 records span one
 		// closed segment [0,3) and an active one [3,6).
-		storage := enginetest.NewMemStorage("truncated", 1<<20, 128)
+		storage := enginetest.NewMemStorage("truncated", 1<<20, 130)
 		for range 6 {
 			_, err := storage.Append(ctx, []byte("payload"))
 			require.NoError(t, err)

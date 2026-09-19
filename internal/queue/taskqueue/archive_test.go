@@ -21,6 +21,15 @@ func (f *failingArchiveAppender) Append(ctx context.Context, payload []byte) (ui
 	return 0, errors.New("archive append failed")
 }
 
+// logArchiveAppender adapts a log queue to the archive writer interface.
+type logArchiveAppender struct {
+	l logqueue.Log
+}
+
+func (a logArchiveAppender) Append(ctx context.Context, payload []byte) (uint64, error) {
+	return a.l.Append(ctx, payload)
+}
+
 // newTestQueueWithBounds creates a queue with maxInFlight and maxDLQ bounds.
 func newTestQueueWithBounds(t *testing.T, maxInFlight, maxDLQ uint32) (*queue, *engine.Manager, engine.Storage) {
 	t.Helper()
@@ -216,7 +225,7 @@ func TestArchiveAutoCreatesLogQueue(t *testing.T) {
 		lq := logqueue.New(name, storage)
 		createdLogName = name
 		createdLog = lq
-		return lq, nil
+		return logArchiveAppender{lq}, nil
 	}
 
 	q, err := New("tasks", storage, Defaults{}, archiveLog)
@@ -260,7 +269,7 @@ func TestArchiveExplicitPreCreationWins(t *testing.T) {
 	archiveLog := func(ctx context.Context, source string) (ArchiveAppender, error) {
 		name := source + "-archive"
 		lq := logqueue.New(name, archiveStorage)
-		return lq, nil
+		return logArchiveAppender{lq}, nil
 	}
 
 	q, err := New("tasks", storage, Defaults{}, archiveLog)
@@ -397,7 +406,7 @@ func TestWithKeyTaskRoundTrip(t *testing.T) {
 func newArchiveLogAppender(t *testing.T) ArchiveAppender {
 	t.Helper()
 	storage := enginetest.NewMemStorage("archive", 1<<20, 1<<20)
-	return logqueue.New("archive", storage)
+	return logArchiveAppender{logqueue.New("archive", storage)}
 }
 
 // TestMaxInFlightZeroMeansUnlimited verifies that maxInFlight=0 allows unlimited enqueues.

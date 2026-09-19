@@ -69,6 +69,7 @@ var queueSamples = map[string]string{
 	"max_message_bytes":    "1048576",
 	"encrypted":            "true",
 	"fsync":                "false",
+	"compaction":           "true",
 	"retention_age":        "72h",
 	"retention_bytes":      "1073741824",
 	"default_visibility":   "1m",

@@ -23,16 +23,40 @@ func New(name string, storage engine.Storage) Log {
 	}
 }
 
+// appendOptions carries the effective per-call append settings.
+type appendOptions struct {
+	key []byte
+}
+
+// AppendOption configures the record(s) being appended.
+type AppendOption func(*appendOptions)
+
+// WithKey associates a compaction key with the appended record(s); only the newest survives compaction.
+func WithKey(k []byte) AppendOption {
+	return func(o *appendOptions) { o.key = append([]byte(nil), k...) }
+}
+
+// ResolveAppendOptions folds a set of append options into their effective values.
+func ResolveAppendOptions(opts ...AppendOption) (key []byte) {
+	var o appendOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+	return o.key
+}
+
 func (q *queue) Name() string {
 	return q.name
 }
 
-func (q *queue) Append(ctx context.Context, payload []byte) (uint64, error) {
-	return q.storage.Append(ctx, payload)
+func (q *queue) Append(ctx context.Context, payload []byte, opts ...AppendOption) (uint64, error) {
+	return q.storage.Append(ctx, payload, engine.WithGroup(ResolveAppendOptions(opts...)))
 }
 
-func (q *queue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error) {
-	return q.storage.AppendBatch(ctx, payloads)
+func (q *queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...AppendOption) ([]uint64, error) {
+	return q.storage.AppendBatch(ctx, payloads, engine.WithGroup(ResolveAppendOptions(opts...)))
 }
 
 func (q *queue) Read(ctx context.Context, offset uint64) (engine.Record, error) {

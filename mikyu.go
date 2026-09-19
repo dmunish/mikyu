@@ -121,6 +121,9 @@ type Record = engine.Record
 // LogQueue provides log-oriented operations (append, streaming, tailing, groups).
 type LogQueue = logqueue.Log
 
+// AppendOption configures a record being appended to a log queue.
+type AppendOption = logqueue.AppendOption
+
 // Group tracks consumer offsets for a log queue.
 type Group = logqueue.Group
 

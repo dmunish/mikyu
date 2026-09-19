@@ -10,6 +10,10 @@ import (
 func (q *Queue) readFromSegment(seg *segment, offset uint64) (Record, error) {
 	pos, recLen, err := seg.readIndexEntry(offset)
 	if err != nil || recLen < (minRecordSize-recordLengthSize) {
+		// A zeroed slot in a compactable queue means compaction dropped the record.
+		if q.cfg.Compaction {
+			return Record{}, ErrRecordCompacted
+		}
 		return Record{}, ErrOffsetNotFound
 	}
 
@@ -23,11 +27,11 @@ func (q *Queue) readFromSegment(seg *segment, offset uint64) (Record, error) {
 		}
 	}
 
-	id, ts, payload, err := decodeRecord(buf[recordLengthSize:])
+	id, ts, group, payload, err := decodeRecord(buf[recordLengthSize:])
 	if err != nil {
 		return Record{}, fmt.Errorf("%w: offset %d: %v", ErrCorruptRecord, offset, err)
 	}
-	return Record{Offset: offset, ID: id, Timestamp: ts, Payload: payload}, nil
+	return Record{Offset: offset, ID: id, Timestamp: ts, Group: group, Payload: payload}, nil
 }
 
 // Read implements Storage.Read.
@@ -50,6 +54,9 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Record, error) {
 
 	// 1. Fast Path: Check in-memory ring cache first (~10 ns)
 	if msg, ok := q.cache.Get(offset); ok {
+		if q.superseded(msg.Group, offset) {
+			return Record{}, ErrRecordCompacted
+		}
 		q.recordRead(1, int64(len(msg.Payload)), start)
 		return msg, nil
 	}
@@ -63,6 +70,9 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Record, error) {
 	msg, err := q.readFromSegment(seg, offset)
 	if err != nil {
 		return Record{}, err
+	}
+	if q.superseded(msg.Group, offset) {
+		return Record{}, ErrRecordCompacted
 	}
 	q.recordRead(1, int64(len(msg.Payload)), start)
 	return msg, nil
@@ -105,7 +115,9 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Record, e
 	for off := start; off < end; off++ {
 		// 2. Fast Path: Check in-memory ring cache first (~10 ns)
 		if msg, ok := q.cache.Get(off); ok {
-			msgs = append(msgs, msg)
+			if !q.superseded(msg.Group, off) {
+				msgs = append(msgs, msg)
+			}
 			continue
 		}
 
@@ -123,6 +135,9 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Record, e
 
 		msg, err := q.readFromSegment(currentSeg, off)
 		if err != nil {
+			if errors.Is(err, ErrRecordCompacted) {
+				continue
+			}
 			// Offset crossed current segment boundary, locate new segment
 			seg, err := q.locateSegment(off)
 			if err != nil {
@@ -134,8 +149,14 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Record, e
 			currentSeg = seg
 			msg, err = q.readFromSegment(currentSeg, off)
 			if err != nil {
+				if errors.Is(err, ErrRecordCompacted) {
+					continue
+				}
 				break
 			}
+		}
+		if q.superseded(msg.Group, off) {
+			continue
 		}
 		msgs = append(msgs, msg)
 	}

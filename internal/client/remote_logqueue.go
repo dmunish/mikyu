@@ -17,6 +17,17 @@ const (
 	pollMargin  = 5 * time.Second
 )
 
+// toEngineRecord converts a wire record to its engine form.
+func toEngineRecord(rec protocol.Record) engine.Record {
+	return engine.Record{
+		Offset:    rec.Offset,
+		ID:        rec.ID,
+		Timestamp: rec.Timestamp,
+		Group:     rec.Group,
+		Payload:   rec.Payload,
+	}
+}
+
 func (c *remoteClient) LogQueue(name string) (logqueue.Log, error) {
 	return &remoteLogQueue{client: c, name: name}, nil
 }
@@ -28,10 +39,11 @@ type remoteLogQueue struct {
 
 func (q *remoteLogQueue) Name() string { return q.name }
 
-func (q *remoteLogQueue) Append(ctx context.Context, payload []byte) (uint64, error) {
+func (q *remoteLogQueue) Append(ctx context.Context, payload []byte, opts ...logqueue.AppendOption) (uint64, error) {
 	body := protocol.Buffer{}
 	body.WriteBytes([]byte(q.name))
 	body.WriteBytes(payload)
+	body.WriteBytes(logqueue.ResolveAppendOptions(opts...))
 	resp, err := q.client.exchange(ctx, protocol.OpAppend, body.Bytes())
 	if err != nil {
 		return 0, err
@@ -40,10 +52,11 @@ func (q *remoteLogQueue) Append(ctx context.Context, payload []byte) (uint64, er
 	return r.ReadU64()
 }
 
-func (q *remoteLogQueue) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error) {
+func (q *remoteLogQueue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...logqueue.AppendOption) ([]uint64, error) {
 	body := protocol.Buffer{}
 	body.WriteBytes([]byte(q.name))
 	body.WriteU32(uint32(len(payloads)))
+	body.WriteBytes(logqueue.ResolveAppendOptions(opts...))
 	for _, p := range payloads {
 		body.WriteBytes(p)
 	}
@@ -75,29 +88,11 @@ func (q *remoteLogQueue) Read(ctx context.Context, offset uint64) (engine.Record
 	if err != nil {
 		return engine.Record{}, err
 	}
-	r := protocol.NewReader(resp)
-	off, err := r.ReadU64()
+	rec, err := protocol.ReadRecord(protocol.NewReader(resp))
 	if err != nil {
 		return engine.Record{}, err
 	}
-	idBytes, err := r.ReadBytes()
-	if err != nil {
-		return engine.Record{}, err
-	}
-	tsNano, err := r.ReadU64()
-	if err != nil {
-		return engine.Record{}, err
-	}
-	payload, err := r.ReadBytes()
-	if err != nil {
-		return engine.Record{}, err
-	}
-	return engine.Record{
-		Offset:    off,
-		ID:        string(idBytes),
-		Timestamp: time.Unix(0, int64(tsNano)),
-		Payload:   payload,
-	}, nil
+	return toEngineRecord(rec), nil
 }
 
 func (q *remoteLogQueue) ReadBatch(ctx context.Context, startOffset uint64, count int) ([]engine.Record, error) {
@@ -109,23 +104,13 @@ func (q *remoteLogQueue) ReadBatch(ctx context.Context, startOffset uint64, coun
 	if err != nil {
 		return nil, err
 	}
-	r := protocol.NewReader(resp)
-	n, err := r.ReadU32()
+	recs, err := protocol.ReadRecordList(protocol.NewReader(resp))
 	if err != nil {
 		return nil, err
 	}
-	msgs := make([]engine.Record, 0, n)
-	for range n {
-		off, _ := r.ReadU64()
-		idBytes, _ := r.ReadBytes()
-		tsNano, _ := r.ReadU64()
-		payload, _ := r.ReadBytes()
-		msgs = append(msgs, engine.Record{
-			Offset:    off,
-			ID:        string(idBytes),
-			Timestamp: time.Unix(0, int64(tsNano)),
-			Payload:   payload,
-		})
+	msgs := make([]engine.Record, len(recs))
+	for i, rec := range recs {
+		msgs[i] = toEngineRecord(rec)
 	}
 	return msgs, nil
 }
@@ -179,12 +164,7 @@ func (q *remoteLogQueue) fetch(ctx context.Context, start uint64, maxCount int, 
 	}
 	msgs := make([]engine.Record, len(recs))
 	for i, rec := range recs {
-		msgs[i] = engine.Record{
-			Offset:    rec.Offset,
-			ID:        rec.ID,
-			Timestamp: rec.Timestamp,
-			Payload:   rec.Payload,
-		}
+		msgs[i] = toEngineRecord(rec)
 	}
 	return msgs, nil
 }
