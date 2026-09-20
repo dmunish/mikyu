@@ -701,29 +701,11 @@ func formatHelpArgs(raw string, width int) string {
 	if raw == "" {
 		return strings.Repeat(" ", width)
 	}
-
-	var sb strings.Builder
-	visibleLen := 0
-
-	first := true
-	for token := range strings.SplitSeq(raw, " ") {
-		if !first {
-			sb.WriteString(" ")
-			visibleLen++
-		}
-		first = false
-		if strings.HasPrefix(token, "<") && strings.HasSuffix(token, ">") {
-			sb.WriteString(cmdReqArgStyle.Render(token))
-		} else {
-			sb.WriteString(cmdArgStyle.Render(token))
-		}
-		visibleLen += len(token)
+	pad := width - len(raw)
+	if pad < 0 {
+		pad = 0
 	}
-
-	if visibleLen < width {
-		sb.WriteString(strings.Repeat(" ", width-visibleLen))
-	}
-	return sb.String()
+	return command.FormatArgsStyled(raw, true) + strings.Repeat(" ", pad)
 }
 
 func (s *replSession) prompt() string {

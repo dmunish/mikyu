@@ -17,7 +17,6 @@ type RenderOptions struct {
 
 // WriteIndex writes the top-level command list: one line per verb, no flags.
 func WriteIndex(w io.Writer, opts RenderOptions) error {
-	width := resolveWidth(opts.Width)
 	s := newHelpStyles(opts.Color)
 
 	if _, err := fmt.Fprintln(w); err != nil {
@@ -36,51 +35,30 @@ func WriteIndex(w io.Writer, opts RenderOptions) error {
 			return err
 		}
 
-		nameWidth := 0
-		argWidth := 0
+		nameWidth := 10
+		argWidth := 12
 		for _, v := range verbs {
-			line := v.Name
-			if v.Args != "" {
-				line += " " + v.Args
+			if n := len(v.Name) + 2; n > nameWidth {
+				nameWidth = n
 			}
-			if len(v.Name) > nameWidth {
-				nameWidth = len(v.Name)
+			if v.Args != "" && len(v.Args)+2 > argWidth {
+				argWidth = len(v.Args) + 2
 			}
-			if v.Args != "" && len(v.Args) > argWidth {
-				argWidth = len(v.Args)
-			}
-		}
-		nameWidth += 2
-		argWidth += 2
-		if nameWidth < 10 {
-			nameWidth = 10
-		}
-		if argWidth < 12 {
-			argWidth = 12
 		}
 
 		for _, v := range verbs {
-			visibleName := v.Name
-			visibleArgs := v.Args
-			namePad := nameWidth - len(visibleName)
-			if namePad < 1 {
-				namePad = 1
-			}
-			argPad := argWidth - len(visibleArgs)
-			if argPad < 1 {
-				argPad = 1
-			}
 			var b strings.Builder
+			b.WriteString("    ")
 			b.WriteString(s.name.Render(v.Name))
-			b.WriteString(strings.Repeat(" ", namePad))
+			b.WriteString(strings.Repeat(" ", nameWidth-len(v.Name)))
 			if v.Args != "" {
 				b.WriteString(formatArgsStyled(v.Args, s))
-				b.WriteString(strings.Repeat(" ", argPad))
+				b.WriteString(strings.Repeat(" ", argWidth-len(v.Args)))
 			} else {
 				b.WriteString(strings.Repeat(" ", argWidth))
 			}
 			b.WriteString(s.summary.Render(v.Summary))
-			if _, err := fmt.Fprintf(w, "    %s\n", b.String()); err != nil {
+			if _, err := fmt.Fprintln(w, b.String()); err != nil {
 				return err
 			}
 		}
@@ -93,28 +71,43 @@ func WriteIndex(w io.Writer, opts RenderOptions) error {
 	if opts.Mode&ModeCLI == 0 {
 		hint = "Run `<verb> help` for flags and examples."
 	}
-	_ = width
 	_, err := fmt.Fprintf(w, "  %s\n", s.dim.Render(hint))
 	return err
 }
 
-// WriteVerb writes one verb's detail page: long form, usage, examples, and flags.
+// WriteVerb writes one verb's detail page.
 func WriteVerb(w io.Writer, v Verb, opts RenderOptions) error {
 	width := resolveWidth(opts.Width)
 	s := newHelpStyles(opts.Color)
 
-	header := v.Name
-	if v.Args != "" {
-		header += " " + v.Args
-	}
 	if _, err := fmt.Fprintln(w); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "  %s %s\n\n", s.header.Render("●"), s.name.Render(header)); err != nil {
+
+	// Header: enqueue <queue> <payload>
+	var head strings.Builder
+	head.WriteString("  ")
+	head.WriteString(s.name.Render(v.Name))
+	if v.Args != "" {
+		head.WriteString(" ")
+		head.WriteString(formatArgsStyled(v.Args, s))
+	}
+	if _, err := fmt.Fprintln(w, head.String()); err != nil {
 		return err
 	}
 
+	// Summary: same column as the index's summary.
+	if v.Summary != "" {
+		if _, err := fmt.Fprintf(w, "    %s\n", s.summary.Render(v.Summary)); err != nil {
+			return err
+		}
+	}
+
+	// Long prose, wrapped.
 	if v.Long != "" {
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
 		for _, line := range wrapParagraphs(v.Long, wrapWidth(width)) {
 			if line == "" {
 				if _, err := fmt.Fprintln(w); err != nil {
@@ -126,31 +119,21 @@ func WriteVerb(w io.Writer, v Verb, opts RenderOptions) error {
 				return err
 			}
 		}
-		if _, err := fmt.Fprintln(w); err != nil {
+	}
+
+	// FLAGS, grouped by layer, three columns wide.
+	if groups := buildFlagGroups(v); len(groups) > 0 {
+		if _, err := fmt.Fprintf(w, "\n  %s\n", s.section.Render("FLAGS")); err != nil {
+			return err
+		}
+		if err := writeFlagGroups(w, groups, s); err != nil {
 			return err
 		}
 	}
 
-	if len(v.Usage) > 0 {
-		if _, err := fmt.Fprintf(w, "  %s\n", s.section.Render("USAGE")); err != nil {
-			return err
-		}
-		prefix := ""
-		if opts.Mode&ModeCLI != 0 {
-			prefix = "mikyu "
-		}
-		for _, u := range v.Usage {
-			if _, err := fmt.Fprintf(w, "    %s\n", s.usage.Render(prefix+u)); err != nil {
-				return err
-			}
-		}
-		if _, err := fmt.Fprintln(w); err != nil {
-			return err
-		}
-	}
-
+	// EXAMPLES last: one `> <invocation>` line per example, no comment.
 	if len(v.Examples) > 0 {
-		if _, err := fmt.Fprintf(w, "  %s\n", s.section.Render("EXAMPLES")); err != nil {
+		if _, err := fmt.Fprintf(w, "\n  %s\n", s.section.Render("EXAMPLES")); err != nil {
 			return err
 		}
 		prefix := ""
@@ -158,35 +141,17 @@ func WriteVerb(w io.Writer, v Verb, opts RenderOptions) error {
 			prefix = "mikyu "
 		}
 		for _, ex := range v.Examples {
-			if _, err := fmt.Fprintf(w, "    %s\n", s.exampleC.Render(ex.Comment)); err != nil {
+			if _, err := fmt.Fprintf(w, "    %s %s\n",
+				s.flagSection.Render(">"),
+				s.name.Render(prefix+ex.Invocation),
+			); err != nil {
 				return err
 			}
-			if _, err := fmt.Fprintf(w, "      %s\n", s.example.Render(prefix+ex.Invocation)); err != nil {
-				return err
-			}
-		}
-		if _, err := fmt.Fprintln(w); err != nil {
-			return err
 		}
 	}
 
-	params := paramsFor(v)
-	if len(params) > 0 || len(v.ExtraFlags) > 0 {
-		if _, err := fmt.Fprintf(w, "  %s\n", s.section.Render("FLAGS")); err != nil {
-			return err
-		}
-		var rows []flagRow
-		rows = append(rows, collectExtraRows(v.ExtraFlags)...)
-		rows = append(rows, collectSpecRows(params)...)
-		if err := writeFlagRows(w, rows, s); err != nil {
-			return err
-		}
-		if _, err := fmt.Fprintln(w); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	_, err := fmt.Fprintln(w)
+	return err
 }
 
 // paramsFor returns the spec parameters a verb renders in its FLAGS section.
@@ -205,7 +170,8 @@ func paramsFor(v Verb) []spec.Param {
 	}
 }
 
-// pickCallParams returns the call-layer params whose keys are in keys, in table order.
+// pickCallParams returns the call-layer params whose keys are in keys, in
+// table order.
 func pickCallParams(keys ...string) []spec.Param {
 	want := make(map[string]bool, len(keys))
 	for _, k := range keys {
@@ -220,15 +186,24 @@ func pickCallParams(keys ...string) []spec.Param {
 	return out
 }
 
-// flagRow is one rendered flag line before grouping.
+// flagRow is one rendered flag line before grouping. name and kind are kept
+// separate so the renderer can align them into distinct columns.
 type flagRow struct {
 	group string
-	left  string
+	name  string // "--visibility"
+	kind  string // "<duration>"; empty for boolean flags
 	doc   string
 	def   string
 }
 
-// collectSpecRows turns spec params into flag rows keyed by their path prefix.
+// flagGroup is a titled block of flag rows inside the FLAGS section.
+type flagGroup struct {
+	name string
+	rows []flagRow
+}
+
+// collectSpecRows turns spec params into flag rows keyed by their path
+// prefix: `engine.batch_size` lands in the "engine" group.
 func collectSpecRows(params []spec.Param) []flagRow {
 	rows := make([]flagRow, 0, len(params))
 	for _, p := range params {
@@ -238,7 +213,8 @@ func collectSpecRows(params []spec.Param) []flagRow {
 		}
 		rows = append(rows, flagRow{
 			group: g,
-			left:  fmt.Sprintf("--%s <%s>", p.FlagName, p.Kind.String()),
+			name:  "--" + p.FlagName,
+			kind:  "<" + p.Kind.String() + ">",
 			doc:   p.Doc,
 			def:   defaultString(p),
 		})
@@ -246,17 +222,18 @@ func collectSpecRows(params []spec.Param) []flagRow {
 	return rows
 }
 
-// collectExtraRows turns presentation flags into flag rows under one group.
+// collectExtraRows turns presentation flags into flag rows under "options".
 func collectExtraRows(extras []FlagDoc) []flagRow {
 	rows := make([]flagRow, 0, len(extras))
 	for _, f := range extras {
-		left := "--" + f.Name
+		var kind string
 		if f.Kind != "" {
-			left += " <" + f.Kind + ">"
+			kind = "<" + f.Kind + ">"
 		}
 		rows = append(rows, flagRow{
 			group: "options",
-			left:  left,
+			name:  "--" + f.Name,
+			kind:  kind,
 			doc:   f.Doc,
 			def:   f.Default,
 		})
@@ -264,48 +241,90 @@ func collectExtraRows(extras []FlagDoc) []flagRow {
 	return rows
 }
 
-// writeFlagRows renders rows grouped by first appearance, aligned on the widest left column.
-func writeFlagRows(w io.Writer, rows []flagRow, s helpStyles) error {
-	if len(rows) == 0 {
+// buildFlagGroups assembles a verb's flag groups: spec params first (kept in
+// table order, grouped by their path prefix), then presentation flags.
+func buildFlagGroups(v Verb) []flagGroup {
+	var groups []flagGroup
+	index := map[string]int{}
+
+	add := func(row flagRow) {
+		if i, ok := index[row.group]; ok {
+			groups[i].rows = append(groups[i].rows, row)
+			return
+		}
+		index[row.group] = len(groups)
+		groups = append(groups, flagGroup{name: row.group, rows: []flagRow{row}})
+	}
+
+	for _, r := range collectSpecRows(paramsFor(v)) {
+		add(r)
+	}
+	for _, r := range collectExtraRows(v.ExtraFlags) {
+		add(r)
+	}
+	return groups
+}
+
+// humanGroup renders a flag group's key as its display label.
+func humanGroup(name string) string {
+	if name == "" {
+		return "OPTIONS"
+	}
+	return strings.ToUpper(name)
+}
+
+func writeFlagGroups(w io.Writer, groups []flagGroup, s helpStyles) error {
+	if len(groups) == 0 {
 		return nil
 	}
-	maxLeft := 0
-	for _, r := range rows {
-		if len(r.left) > maxLeft {
-			maxLeft = len(r.left)
-		}
-	}
-	maxLeft += 2
-	if maxLeft > 42 {
-		maxLeft = 42
-	}
 
-	var groups []string
-	seen := map[string]bool{}
-	for _, r := range rows {
-		if !seen[r.group] {
-			seen[r.group] = true
-			groups = append(groups, r.group)
-		}
-	}
-
+	// Global column widths: aligned across every group, not per-group.
+	maxName, maxKind := 0, 0
 	for _, g := range groups {
-		if _, err := fmt.Fprintf(w, "\n    %s\n", s.section.Render(g)); err != nil {
-			return err
+		for _, r := range g.rows {
+			if n := len(r.name); n > maxName {
+				maxName = n
+			}
+			if n := len(r.kind); n > maxKind {
+				maxKind = n
+			}
 		}
-		for _, r := range rows {
-			if r.group != g {
-				continue
+	}
+	nameCol := maxName + 2
+	kindCol := maxKind + 2
+
+	multi := len(groups) > 1
+	indent := "    "
+	if multi {
+		indent = "      "
+	}
+
+	for gi, g := range groups {
+		if gi > 0 {
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
 			}
-			pad := maxLeft - len(r.left)
-			if pad < 1 {
-				pad = 1
+		}
+		if multi {
+			if _, err := fmt.Fprintf(w, "    %s\n", s.flagSection.Render(humanGroup(g.name))); err != nil {
+				return err
 			}
-			line := s.flagName.Render(r.left) + strings.Repeat(" ", pad) + s.flagDoc.Render(r.doc)
+		}
+		for _, r := range g.rows {
+			var b strings.Builder
+			b.WriteString(indent)
+			b.WriteString(s.flagName.Render(r.name))
+			b.WriteString(strings.Repeat(" ", nameCol-len(r.name)))
+			if r.kind != "" {
+				b.WriteString(s.reqArg.Render(r.kind))
+			}
+			b.WriteString(strings.Repeat(" ", kindCol-len(r.kind)))
+			b.WriteString(s.flagDoc.Render(r.doc))
 			if r.def != "" {
-				line += " " + s.flagDef.Render("(default "+r.def+")")
+				b.WriteString(" ")
+				b.WriteString(s.flagDef.Render("(default " + r.def + ")"))
 			}
-			if _, err := fmt.Fprintf(w, "      %s\n", line); err != nil {
+			if _, err := fmt.Fprintln(w, b.String()); err != nil {
 				return err
 			}
 		}
@@ -322,7 +341,8 @@ func defaultString(p spec.Param) string {
 	return formatDefault(v)
 }
 
-// formatDefault renders one built-in value, mapping zero durations and bytes to "unlimited".
+// formatDefault renders one built-in value, mapping zero durations and bytes
+// to "unlimited".
 func formatDefault(v spec.Value) string {
 	switch v.Kind() {
 	case spec.KindBytes:
@@ -356,17 +376,53 @@ func humanBytes(b int64) string {
 	return fmt.Sprintf("%.0f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
-// formatArgsStyled renders a verb's positional shape with required args highlighted.
+// formatArgsStyled renders a positional argument shape, styling <required>
+// args in the danger color and [optional] args in muted grey. A single
+// scanner handles both `<queue> <msg>` and `[--key <key>]` shapes — the old
+// Fields-based split mis-rendered the latter.
 func formatArgsStyled(raw string, s helpStyles) string {
-	var out []string
-	for _, tok := range strings.Fields(raw) {
-		if strings.HasPrefix(tok, "<") && strings.HasSuffix(tok, ">") {
-			out = append(out, s.reqArg.Render(tok))
-			continue
+	var sb strings.Builder
+	sb.Grow(len(raw))
+
+	i := 0
+	for i < len(raw) {
+		switch raw[i] {
+		case '<':
+			end := strings.IndexByte(raw[i:], '>')
+			if end < 0 {
+				sb.WriteString(s.arg.Render(raw[i:]))
+				return sb.String()
+			}
+			end += i + 1
+			sb.WriteString(s.reqArg.Render(raw[i:end]))
+			i = end
+		case '[':
+			end := strings.IndexByte(raw[i:], ']')
+			if end < 0 {
+				sb.WriteString(s.arg.Render(raw[i:]))
+				return sb.String()
+			}
+			end += i + 1
+			sb.WriteString(s.optArg.Render(raw[i:end]))
+			i = end
+		default:
+			next := strings.IndexAny(raw[i:], "<[")
+			if next < 0 {
+				sb.WriteString(s.arg.Render(raw[i:]))
+				return sb.String()
+			}
+			sb.WriteString(s.arg.Render(raw[i : i+next]))
+			i += next
 		}
-		out = append(out, s.arg.Render(tok))
 	}
-	return strings.Join(out, " ")
+	return sb.String()
+}
+
+// FormatArgsStyled is the exported, color-bool form of formatArgsStyled for
+// callers outside the help renderer (the REPL banner). It is the single
+// source of argument styling across the ui tree.
+func FormatArgsStyled(raw string, color bool) string {
+	return formatArgsStyled(raw, newHelpStyles(color))
 }
 
 // resolveWidth returns opts.Width, or the terminal width, or 80.

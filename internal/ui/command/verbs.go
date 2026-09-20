@@ -58,7 +58,6 @@ type FlagDoc struct {
 // Example is one invocation-and-comment pair on a verb's detail page.
 type Example struct {
 	Invocation string
-	Comment    string
 }
 
 // Verb is one row of the command registry: the single source of truth for dispatch, help, and the naming-law tests.
@@ -95,8 +94,8 @@ var Verbs = []Verb{
 			"when the name is omitted. `use -` clears the selection.",
 		Usage: []string{"use <queue>", "use -"},
 		Examples: []Example{
-			{Invocation: "use events", Comment: "Select the log queue events"},
-			{Invocation: "use -", Comment: "Clear the active queue"},
+			{Invocation: "use events"},
+			{Invocation: "use -"},
 		},
 	},
 	{
@@ -125,8 +124,8 @@ var Verbs = []Verb{
 			"create --type task [flags] <queue>",
 		},
 		Examples: []Example{
-			{Invocation: "create --type log events", Comment: "Create a log queue with default engine settings"},
-			{Invocation: "create --type task jobs --default-visibility 60s", Comment: "Create a task queue with a 60s lease"},
+			{Invocation: "create --type log events"},
+			{Invocation: "create --type task jobs --default-visibility 60s"},
 		},
 		ExtraFlags: []FlagDoc{
 			{Name: "type", Kind: "string", Doc: "Queue kind: log or task"},
@@ -141,8 +140,8 @@ var Verbs = []Verb{
 			"returns ErrImmutableField. Shrinking retention prompts before applying.",
 		Usage: []string{"update [flags] <queue>"},
 		Examples: []Example{
-			{Invocation: "update events --retention-age 24h", Comment: "Keep 24 hours of history"},
-			{Invocation: "update events --retention-age 1h --yes", Comment: "Shrink retention without a prompt"},
+			{Invocation: "update events --retention-age 24h"},
+			{Invocation: "update events --retention-age 1h --yes"},
 		},
 		ExtraFlags: []FlagDoc{
 			{Name: "yes", Kind: "bool", Doc: "Skip the retention-shrink confirmation"},
@@ -177,8 +176,8 @@ var Verbs = []Verb{
 			"may be a literal string, `@path` to read a file, or `-` to read stdin.",
 		Usage: []string{"append [--key <key>] <queue> <payload|@file|->"},
 		Examples: []Example{
-			{Invocation: "append events \"hello world\"", Comment: "Append a literal payload"},
-			{Invocation: "append events @event.json", Comment: "Append a file's contents"},
+			{Invocation: "append events \"hello world\""},
+			{Invocation: "append events @event.json"},
 		},
 		ExtraFlags: []FlagDoc{
 			{Name: "key", Kind: "string", Doc: "Subject key this record belongs to"},
@@ -198,8 +197,8 @@ var Verbs = []Verb{
 			"stops the stream cleanly.",
 		Usage: []string{"tail <queue> [offset]"},
 		Examples: []Example{
-			{Invocation: "tail events", Comment: "Follow events from the beginning"},
-			{Invocation: "tail events 42", Comment: "Follow events from offset 42"},
+			{Invocation: "tail events"},
+			{Invocation: "tail events 42"},
 		},
 	},
 	{
@@ -222,8 +221,8 @@ var Verbs = []Verb{
 			"read stdin. Per-call flags override the queue's defaults.",
 		Usage: []string{"enqueue [flags] <queue> <payload|@file|->"},
 		Examples: []Example{
-			{Invocation: "enqueue jobs \"send email\"", Comment: "Enqueue with the queue's defaults"},
-			{Invocation: "enqueue jobs @job.json --scheduled-at 2030-01-01T00:00:00Z", Comment: "Delay the first delivery"},
+			{Invocation: "enqueue jobs \"send email\""},
+			{Invocation: "enqueue jobs @job.json --scheduled-at 2030-01-01T00:00:00Z"},
 		},
 		ExtraFlags: []FlagDoc{
 			{Name: "key", Kind: "string", Doc: "Subject key this task belongs to"},
@@ -238,8 +237,8 @@ var Verbs = []Verb{
 			"nack, extend, and dlq-ack.",
 		Usage: []string{"dequeue <queue> [--timeout 30s] [--json]"},
 		Examples: []Example{
-			{Invocation: "dequeue jobs", Comment: "Wait up to 30s for a due task"},
-			{Invocation: "dequeue jobs --json > task.json", Comment: "Capture the record for a later ack"},
+			{Invocation: "dequeue jobs"},
+			{Invocation: "dequeue jobs --json > task.json"},
 		},
 		ExtraFlags: []FlagDoc{
 			{Name: "timeout", Kind: "duration", Doc: "How long to wait for a due task", Default: "30s"},
@@ -270,7 +269,7 @@ var Verbs = []Verb{
 			"increments the attempt count.",
 		Usage: []string{"extend <queue> <task|json|id> <timeout>"},
 		Examples: []Example{
-			{Invocation: "extend jobs task.json 5m", Comment: "Give the handler another 5 minutes"},
+			{Invocation: "extend jobs task.json 5m"},
 		},
 	},
 	{
