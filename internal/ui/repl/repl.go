@@ -34,9 +34,10 @@ type replSession struct {
 	done          bool
 }
 
-// replHandlers maps every verb to its REPL implementation, plus the session
-// commands only the REPL has. It shares command.Verbs with the CLI.
+// replHandlers maps every REPL-exposed verb to its implementation.
 var replHandlers = map[string]func(*replSession, []string){
+	"help":     (*replSession).handleHelp,
+	"exit":     (*replSession).handleExit,
 	"use":      (*replSession).handleUse,
 	"list":     (*replSession).handleList,
 	"create":   (*replSession).handleCreate,
@@ -69,7 +70,7 @@ func RunREPL(target string, args []string) error {
 		return err
 	}
 	if global.Help {
-		printREPLHelp()
+		_ = command.WriteIndex(os.Stdout, command.RenderOptions{Mode: command.ModeREPL, Color: true})
 		return nil
 	}
 
@@ -122,13 +123,17 @@ func (s *replSession) dispatch(line string) bool {
 	}
 	cmd := strings.ToLower(args[0])
 
-	switch cmd {
-	case "exit", "quit":
-		fmt.Println("Goodbye!")
-		return true
-	case "help":
-		printREPLHelp()
-		return false
+	// <verb> help | <verb> -h | <verb> --help → detail page.
+	if len(args) == 2 && (args[1] == "help" || args[1] == "-h" || args[1] == "--help") {
+		if v, ok := command.LookupVerb(cmd); ok {
+			_ = command.WriteVerb(os.Stdout, v, command.RenderOptions{Mode: command.ModeREPL, Color: true})
+			return false
+		}
+	}
+
+	// Resolve aliases (quit → exit).
+	if v, ok := command.LookupVerb(cmd); ok {
+		cmd = v.Name
 	}
 
 	if handler, ok := replHandlers[cmd]; ok {
@@ -138,6 +143,26 @@ func (s *replSession) dispatch(line string) bool {
 
 	fmt.Println(errStyle.Render(fmt.Sprintf("Unknown command %q. Type 'help' for options.", cmd)))
 	return false
+}
+
+// handleHelp prints the index, or one verb's detail page.
+func (s *replSession) handleHelp(args []string) {
+	opts := command.RenderOptions{Mode: command.ModeREPL, Color: true}
+	if len(args) > 0 {
+		if v, ok := command.LookupVerb(args[0]); ok {
+			_ = command.WriteVerb(os.Stdout, v, opts)
+			return
+		}
+		fmt.Println(errStyle.Render(fmt.Sprintf("Unknown command %q.", args[0])))
+		return
+	}
+	_ = command.WriteIndex(os.Stdout, opts)
+}
+
+// handleExit closes the session cleanly.
+func (s *replSession) handleExit(args []string) {
+	fmt.Println("Goodbye!")
+	s.done = true
 }
 
 // fail reports an error in the session's style.
@@ -518,7 +543,7 @@ func (s *replSession) handleMetrics(args []string) {
 	render(snap)
 }
 
-// handleLogin reads a token from the REPL's own scanner and verifies it
+// handleLogin reads a token from the REPL's own scanner and verifies it.
 func (s *replSession) handleLogin(args []string) {
 	target := s.target
 	if len(args) == 1 {
@@ -539,6 +564,7 @@ func (s *replSession) handleLogin(args []string) {
 	}
 	fmt.Println(successStyle.Render(fmt.Sprintf("● Stored token for %s.", target)))
 }
+
 func (s *replSession) handleLogout(args []string) {
 	target := s.target
 	if len(args) == 1 {
@@ -670,65 +696,7 @@ func confirm(prompt string) bool {
 	return isConfirmed
 }
 
-func printREPLHelp() {
-	var b strings.Builder
-
-	b.WriteString("\n")
-	b.WriteString(infoStyle.Render("  Log Commands:"))
-	b.WriteString("\n")
-	writeVerbHelp(&b, command.KindLog)
-
-	b.WriteString("\n")
-	b.WriteString(infoStyle.Render("  Task Commands:"))
-	b.WriteString("\n")
-	writeVerbHelp(&b, command.KindTask)
-
-	b.WriteString("\n")
-	b.WriteString(infoStyle.Render("  Admin Commands:"))
-	b.WriteString("\n")
-	writeVerbHelp(&b, command.KindAdmin)
-
-	b.WriteString("\n")
-	writeHelpCommands(&b, []struct {
-		cmd  string
-		arg  string
-		desc string
-	}{
-		{"use", "<q>", "Set active session queue context"},
-		{"help", "", "Show this command list"},
-		{"exit / quit", "", "Close the interactive shell"},
-	})
-
-	b.WriteString("\n")
-	fmt.Print(b.String())
-}
-
-// writeVerbHelp prints one verb kind from the shared table.
-func writeVerbHelp(b *strings.Builder, kind command.VerbKind) {
-	for _, v := range command.VerbsOfKind(kind) {
-		prefix := cmdPrefixStyle.Render("  > ")
-		name := cmdNameStyle.Render(fmt.Sprintf("%-12s", v.Name))
-		argsFormatted := formatHelpArgs(v.Args, 24)
-		desc := cmdDescStyle.Render(v.Summary)
-		b.WriteString(fmt.Sprintf("%s%s %s %s\n", prefix, name, argsFormatted, desc))
-	}
-}
-
-func writeHelpCommands(b *strings.Builder, cmds []struct {
-	cmd  string
-	arg  string
-	desc string
-}) {
-	for _, c := range cmds {
-		prefix := cmdPrefixStyle.Render("  > ")
-		name := cmdNameStyle.Render(fmt.Sprintf("%-12s", c.cmd))
-		argsFormatted := formatHelpArgs(c.arg, 24)
-		desc := cmdDescStyle.Render(c.desc)
-
-		b.WriteString(fmt.Sprintf("%s%s %s %s\n", prefix, name, argsFormatted, desc))
-	}
-}
-
+// formatHelpArgs pads a styled arg string for the banner's two-column layout.
 func formatHelpArgs(raw string, width int) string {
 	if raw == "" {
 		return strings.Repeat(" ", width)

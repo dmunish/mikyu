@@ -24,7 +24,7 @@ type Global struct {
 func SessionFlags(sess *spec.Session, help *bool) *flag.FlagSet {
 	fs := NewFlagSet("mikyu")
 	for _, p := range spec.ParamsInScope(spec.LayerSession, spec.ScopeClient, spec.ScopeBoth) {
-		fs.Var(&sessionValue{param: p, session: sess}, p.FlagName, p.Key)
+		fs.Var(&sessionValue{param: p, session: sess}, p.FlagName, p.Doc)
 	}
 	if p, ok := spec.Lookup("data_dir"); ok {
 		fs.Var(&sessionValue{param: p, session: sess}, "dir", "data directory (embedded mode)")
@@ -271,10 +271,10 @@ func queueFlagSet(name string, s *spec.Spec, params []spec.Param) *flag.FlagSet 
 	for _, p := range params {
 		value := &paramValue{param: p, spec: s}
 		if p.Kind == spec.KindBool {
-			fs.Var(&boolParamValue{*value}, p.FlagName, p.Key)
+			fs.Var(&boolParamValue{*value}, p.FlagName, p.Doc)
 			continue
 		}
-		fs.Var(value, p.FlagName, p.Key)
+		fs.Var(value, p.FlagName, p.Doc)
 	}
 	return fs
 }
@@ -295,19 +295,19 @@ func EnqueueFlagSet(name string, o *EnqueueOptions) *flag.FlagSet {
 				kind: p.Kind,
 				str:  func() string { return o.Visibility.String() },
 				set:  func(v spec.Value) { o.Visibility = v.Duration() },
-			}, p.FlagName, "how long the task stays leased once dequeued")
+			}, p.FlagName, p.Doc)
 		case "max_attempts":
 			fs.Var(&valueFunc{
 				kind: p.Kind,
 				str:  func() string { return fmt.Sprint(o.MaxAttempts) },
 				set:  func(v spec.Value) { o.MaxAttempts = v.Uint32() },
-			}, p.FlagName, "deliveries before dead-lettering")
+			}, p.FlagName, p.Doc)
 		case "scheduled_at":
 			fs.Var(&valueFunc{
 				kind: p.Kind,
 				str:  func() string { return o.ScheduledAt.Format(time.RFC3339) },
 				set:  func(v spec.Value) { o.ScheduledAt = v.Time() },
-			}, p.FlagName, "delay the first delivery until this RFC3339 time")
+			}, p.FlagName, p.Doc)
 		}
 	}
 	return fs
@@ -328,7 +328,7 @@ func NackFlagSet(name string, retryAfter *time.Duration, explicit *bool) *flag.F
 				*retryAfter = v.Duration()
 				*explicit = true
 			},
-		}, p.FlagName, "delay before the task becomes available again")
+		}, p.FlagName, p.Doc)
 	}
 	return fs
 }

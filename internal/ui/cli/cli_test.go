@@ -330,6 +330,12 @@ func TestNoLegacyVerbs(t *testing.T) {
 	}
 
 	for _, v := range command.Verbs {
+		if v.Intercepted {
+			continue
+		}
+		if v.Modes&command.ModeCLI == 0 {
+			continue
+		}
 		_, ok := handlers[v.Name]
 		assert.True(t, ok, "verb %q has no CLI handler", v.Name)
 	}
@@ -345,9 +351,12 @@ func TestCLIUsageErrors(t *testing.T) {
 	err = app.Run("", nil)
 	require.ErrorIs(t, err, daemon.ErrUsage)
 
-	// Global help succeeds and lists every verb.
+	// Global help succeeds and lists every CLI-visible verb.
 	out := app.run(t, "--help")
 	for _, v := range command.Verbs {
+		if v.Modes&command.ModeCLI == 0 {
+			continue
+		}
 		assert.Contains(t, out, v.Name)
 	}
 
@@ -406,4 +415,3 @@ func TestConfirmNonInteractive(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, ok)
 }
-

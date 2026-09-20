@@ -189,8 +189,8 @@ func (s *Scope) UnmarshalJSON(data []byte) error {
 
 // Param is one entry of the parameter table: the single source of truth for how a configuration value is named and set in every layer that can reach it.
 type Param struct {
-	Key        string     `json:"key"`  // canonical flat key: identity of env, flag, option, and patch
-	Path       string     `json:"path"` // location in the nested spec, e.g. "engine.batch_size"
+	Key        string     `json:"key"`
+	Path       string     `json:"path"`
 	Kind       Kind       `json:"kind"`
 	Layer      Layer      `json:"layer"`
 	Scope      Scope      `json:"scope"`
@@ -198,6 +198,7 @@ type Param struct {
 	EnvName    string     `json:"env_name"`
 	FlagName   string     `json:"flag_name"`
 	OptionName string     `json:"option_name"`
+	Doc        string     `json:"doc"`
 
 	Apply        func(*Spec, Value)    `json:"-"`
 	ApplySession func(*Session, Value) `json:"-"`
@@ -214,11 +215,8 @@ func (p Param) Parse(text string) (Value, error) {
 	return v, nil
 }
 
-// specParam declares a queue-scoped parameter grouped under group. The nested
-// leaf key is the canonical key with a redundant group prefix removed, so
-// retention.age stays readable inside its block while retention_age stays
-// globally unique for env vars, flags, and patches.
-func specParam(group, key string, kind Kind, mut Mutability) Param {
+// specParam declares a queue-scoped parameter grouped under group.
+func specParam(group, key string, kind Kind, mut Mutability, doc string) Param {
 	return Param{
 		Key:        key,
 		Path:       group + "." + strings.TrimPrefix(key, group+"_"),
@@ -228,11 +226,12 @@ func specParam(group, key string, kind Kind, mut Mutability) Param {
 		EnvName:    envName(key),
 		FlagName:   flagName(key),
 		OptionName: optionName(key),
+		Doc:        doc,
 	}
 }
 
 // sessionParam declares a process-only parameter living in the server block.
-func sessionParam(key string, kind Kind, scope Scope) Param {
+func sessionParam(key string, kind Kind, scope Scope, doc string) Param {
 	return Param{
 		Key:        key,
 		Path:       "server." + key,
@@ -243,12 +242,12 @@ func sessionParam(key string, kind Kind, scope Scope) Param {
 		EnvName:    envName(key),
 		FlagName:   flagName(key),
 		OptionName: optionName(key),
+		Doc:        doc,
 	}
 }
 
-// callParam declares an ephemeral per-call parameter. Per-call values are
-// arguments, not config, so they have no env var and no persisted path.
-func callParam(key string, kind Kind) Param {
+// callParam declares an ephemeral per-call parameter.
+func callParam(key string, kind Kind, doc string) Param {
 	return Param{
 		Key:        key,
 		Path:       key,
@@ -257,6 +256,7 @@ func callParam(key string, kind Kind) Param {
 		Mutability: MutNotApplicable,
 		FlagName:   flagName(key),
 		OptionName: optionName(key),
+		Doc:        doc,
 	}
 }
 
@@ -337,6 +337,14 @@ func (s Spec) Field(p Param) (Value, bool) {
 	return get(&s)
 }
 
+// Default returns p's built-in value, or (Value{}, false) for non-spec layers.
+func (p Param) Default() (Value, bool) {
+	if p.Layer != LayerSpec {
+		return Value{}, false
+	}
+	return Builtin().Field(p)
+}
+
 // Equal compares spec-layer fields with pointer presence significant.
 func Equal(a, b Spec) bool {
 	for _, p := range Params(LayerSpec) {
@@ -354,45 +362,80 @@ var Table = buildTable()
 
 func buildTable() []Param {
 	table := []Param{
-		specParam("engine", "batch_size", KindInt, MutMutable),
-		specParam("engine", "max_interval", KindDuration, MutMutable),
-		specParam("engine", "min_interval", KindDuration, MutMutable),
-		specParam("engine", "segment_size", KindBytes, MutCreateOnly),
-		specParam("engine", "segment_age", KindDuration, MutMutable),
-		specParam("engine", "max_message_bytes", KindBytes, MutCreateOnly),
-		specParam("engine", "encrypted", KindBool, MutCreateOnly),
-		specParam("engine", "fsync", KindBool, MutCreateOnly),
-		specParam("engine", "compaction", KindBool, MutCreateOnly),
-		specParam("retention", "retention_age", KindDuration, MutMutable),
-		specParam("retention", "retention_bytes", KindBytes, MutMutable),
-		specParam("task", "default_visibility", KindDuration, MutMutable),
-		specParam("task", "default_max_attempts", KindUint32, MutMutable),
-		specParam("task", "max_in_flight", KindUint32, MutMutable),
-		specParam("task", "max_dlq", KindUint32, MutMutable),
+		specParam("engine", "batch_size", KindInt, MutMutable,
+			"Records per WAL flush"),
+		specParam("engine", "max_interval", KindDuration, MutMutable,
+			"Longest a batch waits before flushing"),
+		specParam("engine", "min_interval", KindDuration, MutMutable,
+			"Shortest linger before an adaptive flush"),
+		specParam("engine", "segment_size", KindBytes, MutCreateOnly,
+			"Bytes per segment file"),
+		specParam("engine", "segment_age", KindDuration, MutMutable,
+			"Maximum age before a segment rolls"),
+		specParam("engine", "max_message_bytes", KindBytes, MutCreateOnly,
+			"Largest payload an append accepts"),
+		specParam("engine", "encrypted", KindBool, MutCreateOnly,
+			"Use the OS directory encryption at rest"),
+		specParam("engine", "fsync", KindBool, MutCreateOnly,
+			"Fsync every batch before returning the offset"),
+		specParam("engine", "compaction", KindBool, MutCreateOnly,
+			"Drop superseded keys when a segment closes"),
+		specParam("retention", "retention_age", KindDuration, MutMutable,
+			"Drop closed segments older than this"),
+		specParam("retention", "retention_bytes", KindBytes, MutMutable,
+			"Keep at most this many bytes of history"),
+		specParam("task", "default_visibility", KindDuration, MutMutable,
+			"Lease length assigned to a dequeued task"),
+		specParam("task", "default_max_attempts", KindUint32, MutMutable,
+			"Deliveries before a task is dead-lettered"),
+		specParam("task", "max_in_flight", KindUint32, MutMutable,
+			"Concurrent-lease upper bound"),
+		specParam("task", "max_dlq", KindUint32, MutMutable,
+			"Dead-letter upper bound"),
 
-		callParam("visibility", KindDuration),
-		callParam("max_attempts", KindUint32),
-		callParam("scheduled_at", KindTime),
-		callParam("retry_after", KindDuration),
+		callParam("visibility", KindDuration,
+			"Lease length for this task only"),
+		callParam("max_attempts", KindUint32,
+			"Attempt budget for this task only"),
+		callParam("scheduled_at", KindTime,
+			"Delay the first delivery until this RFC3339 time"),
+		callParam("retry_after", KindDuration,
+			"Delay before this task becomes available again"),
 
-		sessionParam("target", KindString, ScopeBoth),
-		sessionParam("data_dir", KindString, ScopeBoth),
-		sessionParam("tls_enabled", KindBool, ScopeBoth),
-		sessionParam("tls_cert_file", KindString, ScopeBoth),
-		sessionParam("tls_key_file", KindString, ScopeBoth),
-		sessionParam("max_conns", KindInt, ScopeBoth),
+		sessionParam("target", KindString, ScopeBoth,
+			"Daemon target (tcp://, unix://, pipe://)"),
+		sessionParam("data_dir", KindString, ScopeBoth,
+			"Data directory for embedded mode"),
+		sessionParam("tls_enabled", KindBool, ScopeBoth,
+			"Wrap the wire in TLS 1.3"),
+		sessionParam("tls_cert_file", KindString, ScopeBoth,
+			"TLS server certificate file"),
+		sessionParam("tls_key_file", KindString, ScopeBoth,
+			"TLS server key file"),
+		sessionParam("max_conns", KindInt, ScopeBoth,
+			"Connection pool size"),
 
-		sessionParam("metrics_enabled", KindBool, ScopeBoth),
-		sessionParam("metrics_interval", KindDuration, ScopeBoth),
-		sessionParam("metrics_history", KindInt, ScopeBoth),
-		sessionParam("metrics_listen", KindString, ScopeServer),
-		sessionParam("metrics_per_queue_prometheus", KindBool, ScopeServer),
-		sessionParam("metrics_histograms", KindBool, ScopeBoth),
+		sessionParam("metrics_enabled", KindBool, ScopeBoth,
+			"Enable the collector"),
+		sessionParam("metrics_interval", KindDuration, ScopeBoth,
+			"Collector tick interval"),
+		sessionParam("metrics_history", KindInt, ScopeBoth,
+			"Snapshots kept in the tick ring"),
+		sessionParam("metrics_listen", KindString, ScopeServer,
+			"HTTP bind address for /metrics and /api/*"),
+		sessionParam("metrics_per_queue_prometheus", KindBool, ScopeServer,
+			"Emit per-queue labeled Prometheus series"),
+		sessionParam("metrics_histograms", KindBool, ScopeBoth,
+			"Include histograms in snapshots"),
 
-		sessionParam("auth_method", KindString, ScopeServer),
-		sessionParam("auth_token_file", KindString, ScopeBoth),
-		sessionParam("auth_token", KindString, ScopeBoth),
-		sessionParam("tls_client_ca_file", KindString, ScopeServer),
+		sessionParam("auth_method", KindString, ScopeServer,
+			"One of none, none-insecure, token, mtls"),
+		sessionParam("auth_token_file", KindString, ScopeBoth,
+			"File to read the token from"),
+		sessionParam("auth_token", KindString, ScopeBoth,
+			"Token to present; --auth-token-file wins"),
+		sessionParam("tls_client_ca_file", KindString, ScopeServer,
+			"Client CA bundle for mTLS"),
 	}
 
 	for i := range table {

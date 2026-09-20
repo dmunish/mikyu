@@ -41,7 +41,7 @@ type invocation struct {
 	session spec.Session
 }
 
-// handlers maps every verb to its implementation.
+// handlers maps every dispatched verb to its implementation.
 var handlers = map[string]func(*invocation, []string) error{
 	"list":     (*invocation).handleList,
 	"create":   (*invocation).handleCreate,
@@ -73,26 +73,51 @@ func (a *App) Run(target string, args []string) error {
 	if err != nil {
 		return a.usage("%v", err)
 	}
+	opts := command.RenderOptions{
+		Mode:  command.ModeCLI,
+		Color: isWriterTerminal(a.Stdout),
+	}
+
 	if global.Help {
-		a.printUsage()
+		_ = command.WriteIndex(a.Stdout, opts)
 		return nil
 	}
 	if len(rest) == 0 {
-		a.printUsage()
+		_ = command.WriteIndex(a.Stdout, opts)
 		return a.usage("no command given")
 	}
 
-	verb, args := rest[0], rest[1:]
-	handler, ok := handlers[verb]
-	if !ok {
-		a.printUsage()
-		return a.usage("unknown command: %s", verb)
+	verb, vargs := rest[0], rest[1:]
+
+	// `mikyu help [verb]` — index, or one verb's detail page.
+	if verb == "help" {
+		if len(vargs) > 0 {
+			if v, ok := command.LookupVerb(vargs[0]); ok {
+				_ = command.WriteVerb(a.Stdout, v, opts)
+				return nil
+			}
+		}
+		_ = command.WriteIndex(a.Stdout, opts)
+		return nil
 	}
-	for _, arg := range args {
-		if arg == "-h" || arg == "--help" {
-			a.printVerbUsage(verb)
+
+	// `mikyu <verb> help` / `-h` / `--help` — detail page, no dispatch.
+	for _, arg := range vargs {
+		if arg == "help" || arg == "-h" || arg == "--help" {
+			v, ok := command.LookupVerb(verb)
+			if !ok {
+				_ = command.WriteIndex(a.Stdout, opts)
+				return a.usage("unknown command: %s", verb)
+			}
+			_ = command.WriteVerb(a.Stdout, v, opts)
 			return nil
 		}
+	}
+
+	handler, ok := handlers[verb]
+	if !ok {
+		_ = command.WriteIndex(a.Stdout, opts)
+		return a.usage("unknown command: %s", verb)
 	}
 
 	client, err := command.OpenClient(global.Session)
@@ -112,7 +137,7 @@ func (a *App) Run(target string, args []string) error {
 		target:  global.Session.Target,
 		session: global.Session,
 	}
-	err = handler(in, args)
+	err = handler(in, vargs)
 	if errors.Is(err, mikyu.ErrLocked) {
 		return fmt.Errorf("%w (use --target to connect to the running daemon)", err)
 	}
@@ -145,56 +170,6 @@ func (a *App) confirm(prompt string, skip bool) (bool, error) {
 	return answer == "y" || answer == "yes", nil
 }
 
-func (a *App) printUsage() {
-	fmt.Fprintf(a.Stdout, "Usage: mikyu [--dir <path> | --target <uri>] <command> [args]\n\n")
-	for _, kind := range []command.VerbKind{command.KindLog, command.KindTask, command.KindAdmin} {
-		fmt.Fprintf(a.Stdout, "%s commands:\n", strings.ToUpper(kind.String()[:1])+kind.String()[1:])
-		for _, v := range command.VerbsOfKind(kind) {
-			line := v.Name
-			if v.Args != "" {
-				line += " " + v.Args
-			}
-			fmt.Fprintf(a.Stdout, "  %-42s %s\n", line, v.Summary)
-		}
-		fmt.Fprintln(a.Stdout)
-	}
-	fmt.Fprintf(a.Stdout, "Global flags:\n")
-	fmt.Fprintf(a.Stdout, "  %-24s %s\n", "--dir <path>", "run embedded against a data directory")
-	for _, p := range spec.ParamsInScope(spec.LayerSession, spec.ScopeClient, spec.ScopeBoth) {
-		fmt.Fprintf(a.Stdout, "  %-24s %s\n", "--"+p.FlagName+" <"+p.Kind.String()+">", p.Path)
-	}
-}
-
-// printVerbUsage lists a verb's flags, which come from spec.Table.
-func (a *App) printVerbUsage(verb string) {
-	v, _ := command.LookupVerb(verb)
-	fmt.Fprintf(a.Stdout, "Usage: mikyu %s %s\n\n%s\n", v.Name, v.Args, v.Summary)
-
-	var fs interface {
-		SetOutput(io.Writer)
-		PrintDefaults()
-	}
-	switch verb {
-	case "create":
-		var s spec.Spec
-		fs = command.QueueFlagSet(verb, &s)
-	case "update":
-		var s spec.Spec
-		fs = command.QueuePatchFlagSet(verb, &s)
-	case "enqueue":
-		fs = command.EnqueueFlagSet(verb, &command.EnqueueOptions{})
-	case "nack":
-		var retry time.Duration
-		var explicit bool
-		fs = command.NackFlagSet(verb, &retry, &explicit)
-	default:
-		return
-	}
-	fmt.Fprintln(a.Stdout, "\nFlags:")
-	fs.SetOutput(a.Stdout)
-	fs.PrintDefaults()
-}
-
 func isTerminal(f *os.File) bool {
 	fi, err := f.Stat()
 	if err != nil {
@@ -203,8 +178,7 @@ func isTerminal(f *os.File) bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-// newFlagSet returns a silent flag set for the presentation flags that are not
-// spec parameters (--json, -y, --timeout).
+// newFlagSet returns a silent flag set for the presentation flags that are not spec parameters (--json, -y, --timeout).
 func newFlagSet(name string) *flag.FlagSet { return command.NewFlagSet(name) }
 
 func (in *invocation) handleList(args []string) error {
@@ -640,8 +614,7 @@ func (in *invocation) handleShutdown(args []string) error {
 	return nil
 }
 
-// confirmFn returns the confirmation callback for command helpers: nil when the
-// prompt was skipped with -y.
+// confirmFn returns the confirmation callback for command helpers: nil when the prompt was skipped with -y.
 func (in *invocation) confirmFn(prompt string, skip bool) func() (bool, error) {
 	if skip {
 		return nil

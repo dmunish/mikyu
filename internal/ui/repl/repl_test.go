@@ -29,9 +29,15 @@ func TestFormatHelpArgs(t *testing.T) {
 	assert.Equal(t, 10, len(empty))
 }
 
-// The REPL mirrors every verb the CLI has, plus its session commands.
+// The REPL mirrors every REPL-visible verb the CLI has, plus its session commands.
 func TestREPLMatchesCLIVerbs(t *testing.T) {
 	for _, v := range command.Verbs {
+		if v.Intercepted {
+			continue
+		}
+		if v.Modes&command.ModeREPL == 0 {
+			continue
+		}
 		_, ok := replHandlers[v.Name]
 		assert.True(t, ok, "verb %q is missing from the REPL", v.Name)
 	}
@@ -41,7 +47,7 @@ func TestREPLMatchesCLIVerbs(t *testing.T) {
 		assert.False(t, ok, "retired verb %q must not be dispatchable", name)
 	}
 
-	for _, name := range []string{"use"} {
+	for _, name := range []string{"use", "exit"} {
 		_, ok := replHandlers[name]
 		assert.True(t, ok, "session command %q is missing", name)
 	}

@@ -2,10 +2,10 @@ package repl
 
 import (
 	"fmt"
-	"image/color"
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/dmunish/mikyu/internal/ui/command"
 )
 
 const mikyuASCII = `
@@ -17,28 +17,17 @@ const mikyuASCII = `
 ╚═╝     ╚═╝╚═╝╚═╝  ╚═╝   ╚═╝    ╚═════╝
 `
 
-// Palette & Colors
-var (
-	logoGradient = []color.Color{
-		lipgloss.Color("#ffca86"),
-		lipgloss.Color("#ff7a55"),
-		lipgloss.Color("#e33f6a"),
-		lipgloss.Color("#a12789"),
-		lipgloss.Color("#5b0f89"),
-		lipgloss.Color("#170d44"),
-	}
-	accentColor = lipgloss.Color("#ffca86")
-)
+// The palette lives in command so the CLI and the help renderer share it.
 
 // General Output & Messages
 var (
-	promptStyle    = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
-	infoStyle      = lipgloss.NewStyle().Foreground(accentColor)
+	promptStyle    = lipgloss.NewStyle().Foreground(command.AccentColor).Bold(true)
+	infoStyle      = lipgloss.NewStyle().Foreground(command.AccentColor)
 	successStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
 	errStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
 	dimStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 	warnStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
-	warnTagStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#e33f6a")).Bold(true)
+	warnTagStyle   = lipgloss.NewStyle().Foreground(command.DangerColor).Bold(true)
 	queueNameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
 )
 
@@ -46,7 +35,7 @@ var (
 var (
 	recordOffsetStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 	recordDividerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-	recordHeaderStyle  = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+	recordHeaderStyle  = lipgloss.NewStyle().Foreground(command.AccentColor).Bold(true)
 	recordValueStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
 )
 
@@ -54,7 +43,7 @@ var (
 var (
 	taglineStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("243")).MarginBottom(1)
 	tryLabelStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Bold(true)
-	tryCmdStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffca86"))
+	tryCmdStyle       = lipgloss.NewStyle().Foreground(command.AccentColor)
 	statusStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 	statusTargetStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("248")).Underline(true)
 )
@@ -64,14 +53,14 @@ var (
 	cmdPrefixStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 	cmdNameStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Bold(true)
 	cmdArgStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	cmdReqArgStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#e33f6a"))
+	cmdReqArgStyle = lipgloss.NewStyle().Foreground(command.DangerColor)
 	cmdDescStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 )
 
 // Confirmation Prompts
 var (
-	confirmArrow         = lipgloss.NewStyle().Foreground(lipgloss.Color("#e33f6a")).Bold(true).Render(">")
-	confirmFocusedButton = lipgloss.NewStyle().Foreground(lipgloss.Color("#e33f6a")).Bold(true).Padding(0, 1)
+	confirmArrow         = lipgloss.NewStyle().Foreground(command.DangerColor).Bold(true).Render(">")
+	confirmFocusedButton = lipgloss.NewStyle().Foreground(command.DangerColor).Bold(true).Padding(0, 1)
 	confirmBlurredButton = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Padding(0, 1)
 )
 
@@ -88,20 +77,20 @@ var (
 	taskDeadStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 )
 
+// PrintREPLBanner draws the welcome screen: logo, quickstart card, footer.
 func PrintREPLBanner(target, dir string) {
 	var b strings.Builder
 
-	// 1. Logo & Tagline — per-line fire gradient
 	lines := strings.Split(strings.TrimSpace(mikyuASCII), "\n")
 	var logoLines []string
 	for i, line := range lines {
-		colorIdx := i
-		if colorIdx >= len(logoGradient) {
-			colorIdx = len(logoGradient) - 1
+		idx := i
+		if idx >= len(command.LogoGradient) {
+			idx = len(command.LogoGradient) - 1
 		}
 		logoLines = append(logoLines,
 			lipgloss.NewStyle().
-				Foreground(logoGradient[colorIdx]).
+				Foreground(command.LogoGradient[idx]).
 				Bold(true).
 				Render(line))
 	}
@@ -114,7 +103,6 @@ func PrintREPLBanner(target, dir string) {
 	b.WriteString(header)
 	b.WriteString("\n\n")
 
-	// 2. Command Reference Table — essential commands for first-time onboarding
 	commands := []struct {
 		cmd  string
 		arg  string
@@ -138,12 +126,10 @@ func PrintREPLBanner(target, dir string) {
 
 	b.WriteString("\n")
 
-	// 3. Quickstart Hint — yellow accent for the example command
 	tryLabel := tryLabelStyle.Render("try: ")
 	tryCmd := tryCmdStyle.Render(`append events "hello world"`)
 	b.WriteString(fmt.Sprintf("  %s%s\n\n", tryLabel, tryCmd))
 
-	// 4. Connection Status Footer
 	statusText := statusStyle.Render("Connected to daemon at ")
 	where := target
 	if dir != "" {
