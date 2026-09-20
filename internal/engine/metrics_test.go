@@ -16,7 +16,7 @@ func TestEngineAppendCounters(t *testing.T) {
 	require.NoError(t, err)
 	defer mgr.Close()
 
-	storage, err := mgr.CreateQueue("q")
+	storage, err := mgr.Create("q")
 	require.NoError(t, err)
 
 	ctx := t.Context()
@@ -38,7 +38,7 @@ func TestEngineReadCounters(t *testing.T) {
 	require.NoError(t, err)
 	defer mgr.Close()
 
-	storage, err := mgr.CreateQueue("q")
+	storage, err := mgr.Create("q")
 	require.NoError(t, err)
 
 	ctx := t.Context()
@@ -62,7 +62,7 @@ func TestWALFlushCounter(t *testing.T) {
 	require.NoError(t, err)
 	defer mgr.Close()
 
-	storage, err := mgr.CreateQueue("q")
+	storage, err := mgr.Create("q")
 	require.NoError(t, err)
 	_, err = storage.Append(t.Context(), []byte("x"))
 	require.NoError(t, err)
@@ -78,9 +78,9 @@ func TestManagerCollectShape(t *testing.T) {
 	require.NoError(t, err)
 	defer mgr.Close()
 
-	a, err := mgr.CreateQueue("a")
+	a, err := mgr.Create("a")
 	require.NoError(t, err)
-	b, err := mgr.CreateQueue("b")
+	b, err := mgr.Create("b")
 	require.NoError(t, err)
 	ctx := t.Context()
 	_, err = a.Append(ctx, []byte("hello"))
@@ -92,8 +92,8 @@ func TestManagerCollectShape(t *testing.T) {
 	mgr.Collect(ctx, &snap)
 	require.Len(t, snap.Queues, 2)
 	for _, qv := range snap.Queues {
-		assert.Equal(t, "shared", qv.Kind)
-		assert.EqualValues(t, 1, qv.Gauges[GaugeMessages])
+		assert.Equal(t, "internal", qv.Kind)
+		assert.EqualValues(t, 1, qv.Gauges[GaugeRecords])
 		assert.EqualValues(t, 1, qv.Gauges[GaugeSegments])
 		assert.Positive(t, qv.Gauges[GaugeSizeBytes])
 		assert.EqualValues(t, 1, qv.Gauges[GaugeLastOffset])
@@ -118,7 +118,7 @@ func benchmarkQueueAppend(b *testing.B, withMetrics bool) {
 	require.NoError(b, err)
 	defer mgr.Close()
 
-	storage, err := mgr.CreateQueue("bench")
+	storage, err := mgr.Create("bench")
 	require.NoError(b, err)
 	payload := []byte("payload")
 	ctx := b.Context()

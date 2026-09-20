@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"strings"
@@ -16,7 +15,9 @@ import (
 
 	"github.com/dmunish/mikyu/internal/daemon"
 	"github.com/dmunish/mikyu/internal/metrics"
+	"github.com/dmunish/mikyu/internal/node"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
+	"github.com/dmunish/mikyu/internal/queue/taskqueue"
 	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/dmunish/mikyu/internal/transport/ipc"
 	"github.com/dmunish/mikyu/internal/transport/protocol"
@@ -299,13 +300,42 @@ func writeSpecFrame(name string, data []byte) []byte {
 	return body.Bytes()
 }
 
-func (c *remoteClient) CreateQueue(ctx context.Context, name string, opts ...QueueOption) error {
+// writeCreateFrame encodes OpCreate: u8 kind, then the spec frame.
+func writeCreateFrame(kind node.Kind, name string, data []byte) []byte {
+	var body protocol.Buffer
+	body.WriteU8(byte(kind))
+	body.WriteBytes([]byte(name))
+	body.WriteU16(spec.CurrentSpecVersion)
+	body.WriteBytes(data)
+	return body.Bytes()
+}
+
+// CreateLogQueue declares a log queue and returns its handle.
+func (c *remoteClient) CreateLogQueue(ctx context.Context, name string, opts ...QueueOption) (logqueue.Log, error) {
 	data, err := spec.EncodeSpec(applyQueueOptions(opts))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	_, err = c.exchange(ctx, protocol.OpCreateQueue, writeSpecFrame(name, data))
-	return err
+	if _, err := c.exchange(ctx, protocol.OpCreate, writeCreateFrame(node.KindLog, name, data)); err != nil {
+		return nil, err
+	}
+	return &remoteLogQueue{client: c, name: name}, nil
+}
+
+// CreateTaskQueue declares a task queue and returns its handle.
+func (c *remoteClient) CreateTaskQueue(ctx context.Context, name string, opts ...QueueOption) (taskqueue.Queue, error) {
+	s := applyQueueOptions(opts)
+	if err := rejectCompaction(s); err != nil {
+		return nil, err
+	}
+	data, err := spec.EncodeSpec(s)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := c.exchange(ctx, protocol.OpCreate, writeCreateFrame(node.KindTask, name, data)); err != nil {
+		return nil, err
+	}
+	return &remoteTaskQueue{client: c, name: name}, nil
 }
 
 func (c *remoteClient) UpdateQueue(ctx context.Context, name string, opts ...QueueOption) error {
@@ -313,14 +343,14 @@ func (c *remoteClient) UpdateQueue(ctx context.Context, name string, opts ...Que
 	if err != nil {
 		return err
 	}
-	_, err = c.exchange(ctx, protocol.OpUpdateQueue, writeSpecFrame(name, data))
+	_, err = c.exchange(ctx, protocol.OpUpdate, writeSpecFrame(name, data))
 	return err
 }
 
 func (c *remoteClient) DescribeQueue(ctx context.Context, name string) (QueueDescription, error) {
 	body := protocol.Buffer{}
 	body.WriteBytes([]byte(name))
-	resp, err := c.exchange(ctx, protocol.OpDescribeQueue, body.Bytes())
+	resp, err := c.exchange(ctx, protocol.OpDescribe, body.Bytes())
 	if err != nil {
 		return QueueDescription{}, err
 	}
@@ -433,8 +463,8 @@ func (c *remoteClient) Schema(ctx context.Context) ([]spec.Param, error) {
 	return params, nil
 }
 
-func (c *remoteClient) ListQueues(ctx context.Context) ([]string, error) {
-	body, err := c.exchange(ctx, protocol.OpListQueues, nil)
+func (c *remoteClient) ListQueues(ctx context.Context) ([]QueueInfo, error) {
+	body, err := c.exchange(ctx, protocol.OpList, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -443,21 +473,25 @@ func (c *remoteClient) ListQueues(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, count)
+	infos := make([]QueueInfo, 0, count)
 	for range count {
 		name, err := r.ReadBytes()
 		if err != nil {
 			return nil, err
 		}
-		names = append(names, string(name))
+		kind, err := r.ReadU8()
+		if err != nil {
+			return nil, err
+		}
+		infos = append(infos, QueueInfo{Name: string(name), Kind: node.Kind(kind)})
 	}
-	return names, nil
+	return infos, nil
 }
 
 func (c *remoteClient) DeleteQueue(ctx context.Context, name string) error {
 	body := protocol.Buffer{}
 	body.WriteBytes([]byte(name))
-	_, err := c.exchange(ctx, protocol.OpDeleteQueue, body.Bytes())
+	_, err := c.exchange(ctx, protocol.OpDelete, body.Bytes())
 	return err
 }
 
@@ -477,17 +511,4 @@ func (c *remoteClient) Truncate(ctx context.Context, name string, minOffset uint
 	return int64(reclaimed), nil
 }
 
-var _ interface {
-	io.Closer
-	CreateQueue(context.Context, string, ...QueueOption) error
-	UpdateQueue(context.Context, string, ...QueueOption) error
-	DescribeQueue(context.Context, string) (QueueDescription, error)
-	LogQueue(string) (logqueue.ClientLogQueue, error)
-	TaskQueue(string) (TaskQueue, error)
-	ListQueues(context.Context) ([]string, error)
-	DeleteQueue(context.Context, string) error
-	Truncate(context.Context, string, uint64) (int64, error)
-	Metrics(context.Context) (metrics.Snapshot, error)
-	Schema(context.Context) ([]spec.Param, error)
-	SubscribeSnapshots() (<-chan metrics.Snapshot, func())
-} = (*remoteClient)(nil)
+var _ Client = (*remoteClient)(nil)

@@ -24,6 +24,17 @@ var bannedIdentifiers = []string{
 	"OpProduce", "OpPublish", "OpPop", "OpStats", "OpTail", "OpFetchOffset",
 	// metrics.md retirements: Metrics replaces Info, nothing invents Stats types.
 	"Info", "EngineStats", "QueueStats", "InfoResult", "MetricsResult", "OpInfo",
+	// split-era names: the old concrete types and manager verbs must not leak.
+	"LogQueue", "TaskQueue", "TaskRef", "TaskID", "Message",
+	"MIKYUTQ", "GetQueue", "CreateQueue", "DeleteQueue", "ListQueues",
+}
+
+// sdkSurfaceNames stay legal as Client interface methods, driver method names,
+// selector references, and the SDK's own type aliases; they are banned as
+// plain type or value references anywhere else.
+var sdkSurfaceNames = map[string]bool{
+	"LogQueue": true, "TaskQueue": true, "TaskRef": true, "TaskID": true,
+	"DeleteQueue": true, "ListQueues": true,
 }
 
 var bannedOpPattern = regexp.MustCompile(`^OpTask[A-Za-z]*ByID$`)
@@ -33,6 +44,46 @@ func isBanned(name string) bool {
 		return true
 	}
 	return bannedOpPattern.MatchString(name)
+}
+
+// surfacePositions marks the identifier positions where a banned name is still
+// the SDK surface itself: selector Sels (client.LogQueue, mikyu.TaskRef) and
+// method declarations, including interface methods.
+type surfacePositions struct {
+	sel  map[token.Pos]bool
+	decl map[token.Pos]bool
+}
+
+func collectSurfacePositions(f *ast.File) surfacePositions {
+	s := surfacePositions{sel: map[token.Pos]bool{}, decl: map[token.Pos]bool{}}
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.SelectorExpr:
+			s.sel[n.Sel.Pos()] = true
+		case *ast.FuncDecl:
+			s.decl[n.Name.Pos()] = true
+		case *ast.Field:
+			if _, ok := n.Type.(*ast.FuncType); ok {
+				for _, name := range n.Names {
+					s.decl[name.Pos()] = true
+				}
+			}
+		}
+		return true
+	})
+	return s
+}
+
+// isSurfaceWhitelisted reports whether this occurrence of a banned name is the
+// SDK surface: the root mikyu package, a selector reference, or a method name.
+func isSurfaceWhitelisted(rel string, id *ast.Ident, s surfacePositions) bool {
+	if !sdkSurfaceNames[id.Name] {
+		return false
+	}
+	if filepath.ToSlash(filepath.Dir(rel)) == "." || filepath.ToSlash(filepath.Dir(rel)) == "internal/client" {
+		return true
+	}
+	return s.sel[id.Pos()] || s.decl[id.Pos()]
 }
 
 // TestNoLegacyNames walks every non-test Go file in the module and fails on any
@@ -62,8 +113,9 @@ func TestNoLegacyNames(t *testing.T) {
 			return err
 		}
 		rel, _ := filepath.Rel(root, path)
+		surface := collectSurfacePositions(f)
 		ast.Inspect(f, func(n ast.Node) bool {
-			if ident, ok := n.(*ast.Ident); ok && isBanned(ident.Name) {
+			if ident, ok := n.(*ast.Ident); ok && isBanned(ident.Name) && !isSurfaceWhitelisted(rel, ident, surface) {
 				pos := fset.Position(ident.Pos())
 				hits = append(hits, rel+":"+strconv.Itoa(pos.Line)+":"+ident.Name)
 			}

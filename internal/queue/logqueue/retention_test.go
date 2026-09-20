@@ -15,10 +15,10 @@ func TestLogQueue_TruncateFloor_ConsumerGroups(t *testing.T) {
 	require.NoError(t, err)
 	defer mgr.Close()
 
-	storage, err := mgr.CreateQueue("retention-group-test")
+	storage, err := mgr.Create("retention-group-test")
 	require.NoError(t, err)
 
-	lq := logqueue.NewLogQueue("retention-group-test", storage)
+	lq := logqueue.New("retention-group-test", storage)
 	ctx := t.Context()
 
 	// Produce 20 messages to cross segment boundaries
@@ -60,10 +60,10 @@ func TestLogQueue_TruncateExecution(t *testing.T) {
 	require.NoError(t, err)
 	defer mgr.Close()
 
-	storage, err := mgr.CreateQueue("truncate-exec-test")
+	storage, err := mgr.Create("truncate-exec-test")
 	require.NoError(t, err)
 
-	lq := logqueue.NewLogQueue("truncate-exec-test", storage)
+	lq := logqueue.New("truncate-exec-test", storage)
 	ctx := t.Context()
 
 	for range 20 {

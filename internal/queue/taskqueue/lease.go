@@ -7,7 +7,7 @@ import (
 
 // resolveLeaseLocked resolves ref to the current in-flight lease; a Task ref
 // is additionally matched on offset, attempts, and delivery ID (strict).
-func (q *TaskQueue) resolveLeaseLocked(ref TaskRef) (*taskState, error) {
+func (q *queue) resolveLeaseLocked(ref Ref) (*taskState, error) {
 	if ref == nil {
 		return nil, ErrInvalidTask
 	}
@@ -32,7 +32,7 @@ func (q *TaskQueue) resolveLeaseLocked(ref TaskRef) (*taskState, error) {
 	return state, nil
 }
 
-func (q *TaskQueue) broadcastLocked() {
+func (q *queue) broadcastLocked() {
 	old := q.notify
 	q.notify = make(chan struct{})
 	close(old)

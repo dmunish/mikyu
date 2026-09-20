@@ -9,8 +9,8 @@ import (
 	"github.com/dmunish/mikyu/internal/metrics"
 )
 
-// TaskQueue implements at-least-once task processing over engine.Storage.
-type TaskQueue struct {
+// Queue implements at-least-once task processing over engine.Storage.
+type queue struct {
 	name    string
 	storage engine.Storage
 
@@ -34,6 +34,13 @@ type TaskQueue struct {
 	defaultVisibility  time.Duration
 	defaultMaxAttempts uint32
 
+	// Bounds: 0 means unlimited.
+	maxInFlight uint32
+	maxDLQ      uint32
+
+	// archiveLog creates or returns the archive log queue for source.
+	archiveLog ArchiveLogFor
+
 	m *taskMetrics
 }
 
@@ -41,12 +48,25 @@ type TaskQueue struct {
 type Defaults struct {
 	Visibility  time.Duration
 	MaxAttempts uint32
+	MaxInFlight uint32
+	MaxDLQ      uint32
 }
 
-var _ ClientTaskQueue = (*TaskQueue)(nil)
+// ArchiveAppender is the minimal interface for writing archive envelopes.
+type ArchiveAppender interface {
+	Append(ctx context.Context, payload []byte) (uint64, error)
+}
 
-// NewTaskQueue opens a task driver over existing engine storage with optional metrics scope.
-func NewTaskQueue(name string, storage engine.Storage, defaults Defaults, scopes ...*metrics.Scope) (*TaskQueue, error) {
+// ArchiveLogFor creates or returns the archive log queue for a source queue.
+type ArchiveLogFor func(ctx context.Context, source string) (ArchiveAppender, error)
+
+var _ Queue = (*queue)(nil)
+
+// Name returns the queue's name.
+func (q *queue) Name() string { return q.name }
+
+// New opens a task driver over existing engine storage with optional metrics scope.
+func New(name string, storage engine.Storage, defaults Defaults, archiveLog ArchiveLogFor, scopes ...*metrics.Scope) (Queue, error) {
 	if storage == nil {
 		return nil, engine.ErrQueueNotFound
 	}
@@ -62,7 +82,7 @@ func NewTaskQueue(name string, storage engine.Storage, defaults Defaults, scopes
 	if maxAttempts == 0 {
 		maxAttempts = defaultMaxAttempts
 	}
-	q := &TaskQueue{
+	q := &queue{
 		name:               name,
 		storage:            storage,
 		active:             make(map[string]*taskState),
@@ -72,7 +92,12 @@ func NewTaskQueue(name string, storage engine.Storage, defaults Defaults, scopes
 		stopCh:             make(chan struct{}),
 		defaultVisibility:  visibility,
 		defaultMaxAttempts: maxAttempts,
+		maxInFlight:        defaults.MaxInFlight,
+		maxDLQ:             defaults.MaxDLQ,
 		m:                  newTaskMetrics(scope),
+	}
+	if archiveLog != nil {
+		q.archiveLog = archiveLog
 	}
 	schedInit(q.schedule)
 	q.mu.Lock()
@@ -91,10 +116,8 @@ func NewTaskQueue(name string, storage engine.Storage, defaults Defaults, scopes
 	return q, nil
 }
 
-func (q *TaskQueue) Name() string { return q.name }
-
-// SetDefaults changes the fallback visibility and attempts for future enqueues.
-func (q *TaskQueue) SetDefaults(d Defaults) {
+// SetDefaults changes the fallback visibility, attempts, and bounds for future enqueues.
+func (q *queue) SetDefaults(d Defaults) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if d.Visibility > 0 {
@@ -103,9 +126,11 @@ func (q *TaskQueue) SetDefaults(d Defaults) {
 	if d.MaxAttempts > 0 {
 		q.defaultMaxAttempts = d.MaxAttempts
 	}
+	q.maxInFlight = d.MaxInFlight
+	q.maxDLQ = d.MaxDLQ
 }
 
-func (q *TaskQueue) Close() error {
+func (q *queue) Close() error {
 	q.mu.Lock()
 	if q.closed {
 		q.mu.Unlock()
@@ -131,7 +156,7 @@ func (q *TaskQueue) Close() error {
 	return err
 }
 
-func (q *TaskQueue) checkpointLoop() {
+func (q *queue) checkpointLoop() {
 	defer q.wg.Done()
 	t := time.NewTicker(defaultCheckpointInterval)
 	defer t.Stop()

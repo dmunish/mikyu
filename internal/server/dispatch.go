@@ -13,16 +13,16 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byt
 	defer func() { s.recordOp(op, start) }()
 
 	switch op {
-	case protocol.OpCreateQueue:
-		respOp, respBody = s.handleCreateQueue(ctx, body)
-	case protocol.OpDeleteQueue:
-		respOp, respBody = s.handleDeleteQueue(body)
-	case protocol.OpListQueues:
-		respOp, respBody = s.handleListQueues()
-	case protocol.OpUpdateQueue:
-		respOp, respBody = s.handleUpdateQueue(ctx, body)
-	case protocol.OpDescribeQueue:
-		respOp, respBody = s.handleDescribeQueue(ctx, body)
+	case protocol.OpCreate:
+		respOp, respBody = s.handleCreate(ctx, body)
+	case protocol.OpDelete:
+		respOp, respBody = s.handleDelete(body)
+	case protocol.OpList:
+		respOp, respBody = s.handleList(ctx)
+	case protocol.OpUpdate:
+		respOp, respBody = s.handleUpdate(ctx, body)
+	case protocol.OpDescribe:
+		respOp, respBody = s.handleDescribe(ctx, body)
 	case protocol.OpTruncate:
 		respOp, respBody = s.handleTruncate(ctx, body)
 	case protocol.OpMetrics:
@@ -40,6 +40,8 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byt
 		respOp, respBody = s.handleReadBatch(ctx, body)
 	case protocol.OpLastOffset:
 		respOp, respBody = s.handleLastOffset(ctx, body)
+	case protocol.OpMinOffset:
+		respOp, respBody = s.handleMinOffset(ctx, body)
 	case protocol.OpCommit:
 		respOp, respBody = s.handleCommit(ctx, body)
 	case protocol.OpCommitted:
@@ -61,6 +63,8 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byt
 		respOp, respBody = s.handleDeadLetters(ctx, body)
 	case protocol.OpDeadLetterAck:
 		respOp, respBody = s.handleDeadLetterAck(ctx, body)
+	case protocol.OpArchive:
+		respOp, respBody = s.handleArchive(ctx, body)
 
 	case protocol.OpShutdown:
 		return protocol.OpShutdown, nil, true

@@ -218,6 +218,11 @@ func WithFsync(enabled bool) QueueOption {
 	return func(s *spec.Spec) { s.Engine.Fsync = new(enabled) }
 }
 
+// WithCompaction enables roll-time compaction of superseded keyed records (create-only, log queues only).
+func WithCompaction(enabled bool) QueueOption {
+	return func(s *spec.Spec) { s.Engine.Compaction = new(enabled) }
+}
+
 // WithRetentionAge deletes records older than d, capped by consumer lag.
 func WithRetentionAge(d time.Duration) QueueOption {
 	return func(s *spec.Spec) { s.Retention.Age = new(spec.Duration(d)) }
@@ -236,6 +241,16 @@ func WithDefaultVisibility(d time.Duration) QueueOption {
 // WithDefaultMaxAttempts sets the queue's fallback retry budget.
 func WithDefaultMaxAttempts(n uint32) QueueOption {
 	return func(s *spec.Spec) { s.Task.DefaultMaxAttempts = new(n) }
+}
+
+// WithMaxInFlight caps the number of tasks that can be in flight at once.
+func WithMaxInFlight(n uint32) QueueOption {
+	return func(s *spec.Spec) { s.Task.MaxInFlight = new(n) }
+}
+
+// WithMaxDLQ caps the durable dead-letter queue; overflow drops the oldest entry.
+func WithMaxDLQ(n uint32) QueueOption {
+	return func(s *spec.Spec) { s.Task.MaxDLQ = new(n) }
 }
 
 // applyQueueOptions folds options into a sparse spec.

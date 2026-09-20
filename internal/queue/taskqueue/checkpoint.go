@@ -5,14 +5,13 @@ import (
 	"cmp"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"maps"
 	"slices"
 	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
 )
-
-var taskRecordMagic = [8]byte{'M', 'I', 'K', 'Y', 'U', 'T', 'Q', 1}
 
 const (
 	recordTask                 byte  = 1
@@ -21,10 +20,10 @@ const (
 	recordCPCommit             byte  = 4
 	recordDLQ                  byte  = 5
 	recordDLQAck               byte  = 6
-	checkpointVersion                = 2
+	checkpointVersion                = 3
 	maxCheckpointChunks              = 1 << 20
 	maxCheckpointBytes               = 512 << 20
-	checkpointChunkHeaderBytes int64 = 8 + 1 + 4 + 4
+	checkpointChunkHeaderBytes int64 = 1 + 4 + 4
 )
 
 type checkpointCommit struct {
@@ -33,41 +32,50 @@ type checkpointCommit struct {
 	coveredThrough uint64
 }
 
-func encodeTaskRecord(id string, maxAttempts uint32, visibilityTimeout time.Duration, scheduledAt time.Time, payload []byte) []byte {
+func encodeTaskRecord(id string, maxAttempts uint32, visibilityTimeout time.Duration, scheduledAt time.Time, payload []byte, key []byte, stalled uint32) []byte {
 	var b bytes.Buffer
 	writeHeader(&b, recordTask)
 	writeString(&b, id)
 	writeU32(&b, maxAttempts)
 	writeI64(&b, int64(visibilityTimeout))
 	writeTime(&b, scheduledAt)
+	writeU32(&b, uint32(len(key)))
+	b.Write(key)
+	writeU32(&b, stalled)
 	writeU32(&b, uint32(len(payload)))
 	_, _ = b.Write(payload)
 	return b.Bytes()
 }
 
-func decodeTaskRecord(payload []byte) (id string, maxAttempts uint32, visibilityTimeout time.Duration, scheduledAt time.Time, taskPayload []byte, err error) {
+func decodeTaskRecord(payload []byte) (id string, maxAttempts uint32, visibilityTimeout time.Duration, scheduledAt time.Time, key []byte, stalled uint32, taskPayload []byte, err error) {
 	r, err := newRecordReader(payload, recordTask)
 	if err != nil {
-		return "", 0, 0, time.Time{}, nil, err
+		return "", 0, 0, time.Time{}, nil, 0, nil, err
 	}
 	if id, err = r.readString(); err != nil || id == "" {
-		return "", 0, 0, time.Time{}, nil, ErrInvalidTask
+		return "", 0, 0, time.Time{}, nil, 0, nil, ErrInvalidTask
 	}
 	if maxAttempts, err = r.readU32(); err != nil || maxAttempts == 0 {
-		return "", 0, 0, time.Time{}, nil, ErrInvalidTask
+		return "", 0, 0, time.Time{}, nil, 0, nil, ErrInvalidTask
 	}
 	var timeout int64
 	if timeout, err = r.readI64(); err != nil || timeout <= 0 {
-		return "", 0, 0, time.Time{}, nil, ErrInvalidTask
+		return "", 0, 0, time.Time{}, nil, 0, nil, ErrInvalidTask
 	}
 	visibilityTimeout = time.Duration(timeout)
 	if scheduledAt, err = r.readTime(); err != nil {
-		return "", 0, 0, time.Time{}, nil, ErrInvalidTask
+		return "", 0, 0, time.Time{}, nil, 0, nil, ErrInvalidTask
+	}
+	if key, err = r.readBytes(); err != nil {
+		return "", 0, 0, time.Time{}, nil, 0, nil, ErrInvalidTask
+	}
+	if stalled, err = r.readU32(); err != nil {
+		return "", 0, 0, time.Time{}, nil, 0, nil, ErrInvalidTask
 	}
 	if taskPayload, err = r.readBytes(); err != nil || !r.empty() {
-		return "", 0, 0, time.Time{}, nil, ErrInvalidTask
+		return "", 0, 0, time.Time{}, nil, 0, nil, ErrInvalidTask
 	}
-	return id, maxAttempts, visibilityTimeout, scheduledAt, taskPayload, nil
+	return id, maxAttempts, visibilityTimeout, scheduledAt, key, stalled, taskPayload, nil
 }
 
 func encodeDeadLetterRecord(task Task) []byte {
@@ -78,6 +86,9 @@ func encodeDeadLetterRecord(task Task) []byte {
 	writeU32(&b, task.Attempts)
 	writeU32(&b, task.MaxAttempts)
 	writeTime(&b, task.ScheduledAt)
+	writeU32(&b, uint32(len(task.Key)))
+	b.Write(task.Key)
+	writeU32(&b, task.Stalled)
 	writeU32(&b, uint32(len(task.Payload)))
 	b.Write(task.Payload)
 	return b.Bytes()
@@ -108,11 +119,19 @@ func decodeDeadLetterRecord(payload []byte) (Task, error) {
 	if err != nil || scheduledAt.IsZero() {
 		return Task{}, ErrCheckpointCorrupt
 	}
+	key, err := r.readBytes()
+	if err != nil {
+		return Task{}, ErrCheckpointCorrupt
+	}
+	stalled, err := r.readU32()
+	if err != nil {
+		return Task{}, ErrCheckpointCorrupt
+	}
 	payload, err = r.readBytes()
 	if err != nil || !r.empty() {
 		return Task{}, ErrCheckpointCorrupt
 	}
-	return Task{ID: id, Payload: payload, Attempts: attempts, MaxAttempts: maxAttempts, ScheduledAt: scheduledAt, Offset: off}, nil
+	return Task{ID: id, Payload: payload, Attempts: attempts, MaxAttempts: maxAttempts, ScheduledAt: scheduledAt, Offset: off, Key: key, Stalled: stalled}, nil
 }
 
 func encodeDeadLetterAck(task Task) []byte {
@@ -144,16 +163,15 @@ func decodeDeadLetterAck(payload []byte) (string, uint64, uint32, error) {
 	return id, off, attempts, nil
 }
 
-func isTaskRecord(payload []byte) bool {
-	return len(payload) >= len(taskRecordMagic)+1 && bytes.Equal(payload[:len(taskRecordMagic)], taskRecordMagic[:])
-}
+// recordKind returns the 1-byte kind tag of a task record, or 0 when the
+// payload is empty. Task records are only ever read from task/ directories.
 func recordKind(payload []byte) byte {
-	if !isTaskRecord(payload) {
+	if len(payload) == 0 {
 		return 0
 	}
-	return payload[len(taskRecordMagic)]
+	return payload[0]
 }
-func writeHeader(b *bytes.Buffer, kind byte) { b.Write(taskRecordMagic[:]); b.WriteByte(kind) }
+func writeHeader(b *bytes.Buffer, kind byte) { b.WriteByte(kind) }
 
 func encodeCheckpointStart(coveredThrough uint64) []byte {
 	var b bytes.Buffer
@@ -265,6 +283,9 @@ func encodeSnapshot(states []*taskState, dlq map[string]Task) []byte {
 		}
 		writeU32(&b, uint32(len(state.task.Payload)))
 		b.Write(state.task.Payload)
+		writeU32(&b, uint32(len(state.task.Key)))
+		b.Write(state.task.Key)
+		writeU32(&b, state.task.Stalled)
 	}
 	writeU32(&b, uint32(len(dead)))
 	for _, task := range dead {
@@ -273,6 +294,9 @@ func encodeSnapshot(states []*taskState, dlq map[string]Task) []byte {
 		writeU32(&b, task.Attempts)
 		writeU32(&b, task.MaxAttempts)
 		writeTime(&b, task.ScheduledAt)
+		writeU32(&b, uint32(len(task.Key)))
+		b.Write(task.Key)
+		writeU32(&b, task.Stalled)
 		writeU32(&b, uint32(len(task.Payload)))
 		b.Write(task.Payload)
 	}
@@ -328,11 +352,19 @@ func decodeSnapshot(data []byte) ([]taskState, map[string]Task, error) {
 		if err != nil {
 			return nil, nil, ErrCheckpointCorrupt
 		}
-		flag, err := r.readByte()
+				flag, err := r.readByte()
 		if err != nil || (flag != 0 && flag != 1) {
 			return nil, nil, ErrCheckpointCorrupt
 		}
 		payload, err := r.readBytes()
+		if err != nil {
+			return nil, nil, ErrCheckpointCorrupt
+		}
+		key, err := r.readBytes()
+		if err != nil {
+			return nil, nil, ErrCheckpointCorrupt
+		}
+		stalled, err := r.readU32()
 		if err != nil {
 			return nil, nil, ErrCheckpointCorrupt
 		}
@@ -342,7 +374,7 @@ func decodeSnapshot(data []byte) ([]taskState, map[string]Task, error) {
 		if (flag == 1 && deliveryID == "") || (flag == 0 && deliveryID != "") {
 			return nil, nil, ErrCheckpointCorrupt
 		}
-		states = append(states, taskState{task: Task{ID: id, Payload: payload, Attempts: attempts, MaxAttempts: maxAttempts, Visibility: visibility, ScheduledAt: scheduled, DeliveryID: deliveryID, Offset: offset}, nextAt: nextAt, visibilityTimeout: time.Duration(visibilityTimeout), inFlight: flag == 1})
+		states = append(states, taskState{task: Task{ID: id, Payload: payload, Attempts: attempts, MaxAttempts: maxAttempts, Visibility: visibility, ScheduledAt: scheduled, DeliveryID: deliveryID, Offset: offset, Key: key, Stalled: stalled}, nextAt: nextAt, visibilityTimeout: time.Duration(visibilityTimeout), inFlight: flag == 1})
 	}
 
 	dlqCount, err := r.readU32()
@@ -377,11 +409,19 @@ func decodeSnapshot(data []byte) ([]taskState, map[string]Task, error) {
 		if err != nil || scheduled.IsZero() {
 			return nil, nil, ErrCheckpointCorrupt
 		}
+		key, err := r.readBytes()
+		if err != nil {
+			return nil, nil, ErrCheckpointCorrupt
+		}
+		stalled, err := r.readU32()
+		if err != nil {
+			return nil, nil, ErrCheckpointCorrupt
+		}
 		payload, err := r.readBytes()
 		if err != nil {
 			return nil, nil, ErrCheckpointCorrupt
 		}
-		dlq[id] = Task{ID: id, Payload: payload, Attempts: attempts, MaxAttempts: maxAttempts, ScheduledAt: scheduled, Offset: offset}
+		dlq[id] = Task{ID: id, Payload: payload, Attempts: attempts, MaxAttempts: maxAttempts, ScheduledAt: scheduled, Offset: offset, Key: key, Stalled: stalled}
 	}
 	if !r.empty() {
 		return nil, nil, ErrCheckpointCorrupt
@@ -389,13 +429,10 @@ func decodeSnapshot(data []byte) ([]taskState, map[string]Task, error) {
 	return states, dlq, nil
 }
 
-func (q *TaskQueue) checkpointLocked(ctx context.Context) error {
+func (q *queue) checkpointLocked(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// The physical queue can be shared with the log driver. Refresh first so
-	// foreign records appended since the last task operation are included in
-	// the checkpoint's covered range without being interpreted as tasks.
 	if err := q.refreshLocked(ctx); err != nil {
 		return err
 	}
@@ -413,7 +450,7 @@ func (q *TaskQueue) checkpointLocked(ctx context.Context) error {
 	}
 	storagePayloadLimit := q.storage.MaxAppendPayloadBytes()
 	if storagePayloadLimit <= checkpointChunkHeaderBytes {
-		return engine.ErrRecordTooLarge
+		return fmt.Errorf("%w: checkpoint chunk header exceeds storage payload limit", engine.ErrRecordTooLarge)
 	}
 
 	maxChunkBytes := min(storagePayloadLimit-checkpointChunkHeaderBytes, int64(checkpointChunkBytes))
@@ -452,7 +489,7 @@ func (q *TaskQueue) checkpointLocked(ctx context.Context) error {
 	return nil
 }
 
-func (q *TaskQueue) loadCheckpointLocked(ctx context.Context) (bool, error) {
+func (q *queue) loadCheckpointLocked(ctx context.Context) (bool, error) {
 	last, min := q.storage.LastOffset(), q.storage.MinOffset()
 	if last <= min {
 		return false, nil
@@ -536,7 +573,7 @@ func (q *TaskQueue) loadCheckpointLocked(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-func (q *TaskQueue) refreshLocked(ctx context.Context) error {
+func (q *queue) refreshLocked(ctx context.Context) error {
 	last := q.storage.LastOffset()
 	for q.scanNext < last {
 		if err := ctx.Err(); err != nil {
@@ -548,7 +585,7 @@ func (q *TaskQueue) refreshLocked(ctx context.Context) error {
 		}
 		switch recordKind(msg.Payload) {
 		case recordTask:
-			id, maxAttempts, visibilityTimeout, scheduledAt, payload, err := decodeTaskRecord(msg.Payload)
+			id, maxAttempts, visibilityTimeout, scheduledAt, key, stalled, payload, err := decodeTaskRecord(msg.Payload)
 			if err != nil {
 				return err
 			}
@@ -558,7 +595,7 @@ func (q *TaskQueue) refreshLocked(ctx context.Context) error {
 			if _, exists := q.dlq[id]; exists {
 				return ErrInvalidTask
 			}
-			state := &taskState{task: Task{ID: id, Payload: bytes.Clone(payload), MaxAttempts: maxAttempts, ScheduledAt: scheduledAt, Offset: msg.Offset}, nextAt: scheduledAt, visibilityTimeout: visibilityTimeout}
+			state := &taskState{task: Task{ID: id, Payload: bytes.Clone(payload), MaxAttempts: maxAttempts, ScheduledAt: scheduledAt, Offset: msg.Offset, Key: key, Stalled: stalled}, nextAt: scheduledAt, visibilityTimeout: visibilityTimeout}
 			q.active[id] = state
 			q.pushScheduleLocked(state)
 		case recordDLQ:
@@ -578,10 +615,10 @@ func (q *TaskQueue) refreshLocked(ctx context.Context) error {
 			}
 		case recordCPStart, recordCPChunk, recordCPCommit:
 		default:
-			// This storage queue may also be used by the log driver.
-			// Unknown record types are owned by another driver and are
-			// intentionally ignored here; the retention coordinator keeps
-			// the drivers' truncation floors independent.
+			// A task queue's records carry a 1-byte kind tag. Anything else
+			// means the directory is not a task queue: report the corrupt
+			// record naming the queue rather than reinterpreting it.
+			return fmt.Errorf("%w: %q holds a non-task record at offset %d", engine.ErrCorruptRecord, q.name, msg.Offset)
 		}
 		q.scanNext++
 	}
@@ -612,10 +649,10 @@ func writeTime(b *bytes.Buffer, t time.Time) {
 type recordReader struct{ r *reader }
 
 func newRecordReader(data []byte, expected byte) (*recordReader, error) {
-	if len(data) < len(taskRecordMagic)+1 || !bytes.Equal(data[:len(taskRecordMagic)], taskRecordMagic[:]) || data[len(taskRecordMagic)] != expected {
+	if len(data) < 1 || data[0] != expected {
 		return nil, ErrCheckpointCorrupt
 	}
-	return &recordReader{newReader(data[len(taskRecordMagic)+1:])}, nil
+	return &recordReader{newReader(data[1:])}, nil
 }
 func (r *recordReader) readByte() (byte, error)      { return r.r.readByte() }
 func (r *recordReader) readU32() (uint32, error)     { return r.r.readU32() }

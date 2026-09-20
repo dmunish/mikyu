@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/queue/logqueue"
 	"github.com/dmunish/mikyu/internal/transport/protocol"
 )
 
@@ -13,11 +14,12 @@ func (s *Server) handleAppend(ctx context.Context, body []byte) (byte, []byte) {
 	r := protocol.NewReader(body)
 	name, _ := r.ReadBytes()
 	payload, _ := r.ReadBytes()
+	group, _ := r.ReadBytes()
 	q, err := s.getOrCreateLogQueue(string(name))
 	if err != nil {
 		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
-	off, err := q.Append(ctx, payload)
+	off, err := q.Append(ctx, payload, logqueue.WithKey(group))
 	if err != nil {
 		return taskErr(err)
 	}
@@ -33,6 +35,7 @@ func (s *Server) handleAppendBatch(ctx context.Context, body []byte) (byte, []by
 	if err != nil || count > 65536 {
 		return opErr(protocol.ErrCodeUnknown, "invalid batch count")
 	}
+	group, _ := r.ReadBytes()
 	payloads := make([][]byte, count)
 	for i := range count {
 		payloads[i], _ = r.ReadBytes()
@@ -41,7 +44,7 @@ func (s *Server) handleAppendBatch(ctx context.Context, body []byte) (byte, []by
 	if err != nil {
 		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
 	}
-	offs, err := q.AppendBatch(ctx, payloads)
+	offs, err := q.AppendBatch(ctx, payloads, logqueue.WithKey(group))
 	if err != nil {
 		return taskErr(err)
 	}
@@ -71,18 +74,24 @@ func (s *Server) handleFetch(ctx context.Context, body []byte) (byte, []byte) {
 	if err != nil {
 		return logReadErr(err)
 	}
-	recs := make([]protocol.LogRecord, len(msgs))
+	recs := make([]protocol.Record, len(msgs))
 	for i, msg := range msgs {
-		recs[i] = protocol.LogRecord{
-			Offset:    msg.Offset,
-			ID:        msg.ID,
-			Timestamp: msg.Timestamp,
-			Payload:   msg.Payload,
-		}
+		recs[i] = toWireRecord(msg)
 	}
 	var buf protocol.Buffer
-	protocol.WriteLogRecordList(&buf, recs)
+	protocol.WriteRecordList(&buf, recs)
 	return protocol.OpFetch, buf.Bytes()
+}
+
+// toWireRecord converts an engine record to its wire form.
+func toWireRecord(msg engine.Record) protocol.Record {
+	return protocol.Record{
+		Offset:    msg.Offset,
+		ID:        msg.ID,
+		Timestamp: msg.Timestamp,
+		Group:     msg.Group,
+		Payload:   msg.Payload,
+	}
 }
 
 func (s *Server) handleRead(ctx context.Context, body []byte) (byte, []byte) {
@@ -98,10 +107,7 @@ func (s *Server) handleRead(ctx context.Context, body []byte) (byte, []byte) {
 		return logReadErr(err)
 	}
 	buf := protocol.Buffer{}
-	buf.WriteU64(msg.Offset)
-	buf.WriteBytes([]byte(msg.ID))
-	buf.WriteU64(uint64(msg.Timestamp.UnixNano()))
-	buf.WriteBytes(msg.Payload)
+	protocol.WriteRecord(&buf, toWireRecord(msg))
 	return protocol.OpRead, buf.Bytes()
 }
 
@@ -121,14 +127,12 @@ func (s *Server) handleReadBatch(ctx context.Context, body []byte) (byte, []byte
 	if err != nil {
 		return logReadErr(err)
 	}
-	buf := protocol.Buffer{}
-	buf.WriteU32(uint32(len(msgs)))
-	for _, msg := range msgs {
-		buf.WriteU64(msg.Offset)
-		buf.WriteBytes([]byte(msg.ID))
-		buf.WriteU64(uint64(msg.Timestamp.UnixNano()))
-		buf.WriteBytes(msg.Payload)
+	recs := make([]protocol.Record, len(msgs))
+	for i, msg := range msgs {
+		recs[i] = toWireRecord(msg)
 	}
+	buf := protocol.Buffer{}
+	protocol.WriteRecordList(&buf, recs)
 	return protocol.OpReadBatch, buf.Bytes()
 }
 

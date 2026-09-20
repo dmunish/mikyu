@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -91,14 +92,33 @@ func ResolvePayload(input string) ([]byte, error) {
 	return []byte(input), nil
 }
 
-// List returns the names of all active queues.
-func List(ctx context.Context, client mikyu.Client) ([]string, error) {
+// List returns every queue's name and kind.
+func List(ctx context.Context, client mikyu.Client) ([]mikyu.QueueInfo, error) {
 	return client.ListQueues(ctx)
 }
 
-// Create initializes a new queue from a sparse set of options.
-func Create(ctx context.Context, client mikyu.Client, name string, opts ...mikyu.QueueOption) error {
-	return client.CreateQueue(ctx, name, opts...)
+// KindFromName parses a queue kind from "log" or "task".
+func KindFromName(name string) (mikyu.QueueKind, error) {
+	switch name {
+	case "log":
+		return mikyu.QueueKindLog, nil
+	case "task":
+		return mikyu.QueueKindTask, nil
+	default:
+		return 0, fmt.Errorf("unknown queue kind %q", name)
+	}
+}
+
+// Create declares a queue of the given kind from a sparse set of options.
+func Create(ctx context.Context, client mikyu.Client, kind mikyu.QueueKind, name string, opts ...mikyu.QueueOption) error {
+	switch kind {
+	case mikyu.QueueKindTask:
+		_, err := client.CreateTaskQueue(ctx, name, opts...)
+		return err
+	default:
+		_, err := client.CreateLogQueue(ctx, name, opts...)
+		return err
+	}
 }
 
 // Update applies a sparse patch of mutable fields to a queue.
@@ -141,7 +161,7 @@ func Delete(ctx context.Context, client mikyu.Client, name string, confirmFn fun
 }
 
 // Append sends payload input to the queue and returns the appended message offset and payload size in bytes.
-func Append(ctx context.Context, client mikyu.Client, name string, input string) (offset uint64, payloadLen int, err error) {
+func Append(ctx context.Context, client mikyu.Client, name string, input string, key []byte) (offset uint64, payloadLen int, err error) {
 	payload, err := ResolvePayload(input)
 	if err != nil {
 		return 0, 0, err
@@ -150,7 +170,11 @@ func Append(ctx context.Context, client mikyu.Client, name string, input string)
 	if err != nil {
 		return 0, 0, err
 	}
-	off, err := q.Append(ctx, payload)
+	var opts []mikyu.AppendOption
+	if len(key) > 0 {
+		opts = append(opts, mikyu.WithRecordKey(key))
+	}
+	off, err := q.Append(ctx, payload, opts...)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -158,16 +182,16 @@ func Append(ctx context.Context, client mikyu.Client, name string, input string)
 }
 
 // Read retrieves the message at a specific logical offset.
-func Read(ctx context.Context, client mikyu.Client, name string, offset uint64) (mikyu.Message, error) {
+func Read(ctx context.Context, client mikyu.Client, name string, offset uint64) (mikyu.Record, error) {
 	q, err := client.LogQueue(name)
 	if err != nil {
-		return mikyu.Message{}, err
+		return mikyu.Record{}, err
 	}
 	return q.Read(ctx, offset)
 }
 
 // Tail streams records continuously starting from startOffset and calls onMessage for each message.
-func Tail(ctx context.Context, client mikyu.Client, name string, startOffset uint64, onMessage func(msg mikyu.Message) error) error {
+func Tail(ctx context.Context, client mikyu.Client, name string, startOffset uint64, onMessage func(msg mikyu.Record) error) error {
 	q, err := client.LogQueue(name)
 	if err != nil {
 		return err

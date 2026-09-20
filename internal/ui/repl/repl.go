@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -29,6 +28,7 @@ type replSession struct {
 	scanner *bufio.Scanner
 
 	activeQueue   string
+	activeKind    mikyu.QueueKind
 	lastTaskQueue string
 	lastTaskID    string
 	done          bool
@@ -59,6 +59,7 @@ var replHandlers = map[string]func(*replSession, []string){
 	"extend":  (*replSession).handleExtend,
 	"dlq":     (*replSession).handleDLQ,
 	"dlq-ack": (*replSession).handleDLQAck,
+	"archive": (*replSession).handleArchive,
 }
 
 // RunREPL starts the interactive REPL: embedded with --dir, remote otherwise.
@@ -163,6 +164,7 @@ func (s *replSession) handleUse(args []string) {
 
 	if name == "-" || name == "none" {
 		s.activeQueue = ""
+		s.activeKind = 0
 		fmt.Println(infoStyle.Render("Cleared active queue."))
 		return
 	}
@@ -173,13 +175,38 @@ func (s *replSession) handleUse(args []string) {
 		return
 	}
 
-	if !slices.Contains(queues, name) {
+	found := false
+	for _, q := range queues {
+		if q.Name == name {
+			found = true
+			s.activeKind = q.Kind
+			break
+		}
+	}
+	if !found {
 		fmt.Println(errStyle.Render(fmt.Sprintf("Queue %q not found.", name)))
 		return
 	}
 
 	s.activeQueue = name
-	fmt.Println(successStyle.Render(fmt.Sprintf("● Active queue set to %q.", name)))
+	fmt.Println(successStyle.Render(fmt.Sprintf("● Active queue set to %q (%s).", name, s.activeKind)))
+}
+
+// kindOf reports the kind of name, using the kind inferred by the last 'use'.
+func (s *replSession) kindOf(name string) (mikyu.QueueKind, error) {
+	if name == s.activeQueue && s.activeKind != 0 {
+		return s.activeKind, nil
+	}
+	queues, err := command.List(s.ctx, s.client)
+	if err != nil {
+		return 0, err
+	}
+	for _, q := range queues {
+		if q.Name == name {
+			return q.Kind, nil
+		}
+	}
+	return 0, fmt.Errorf("queue %q not found", name)
 }
 
 func (s *replSession) handleList(args []string) {
@@ -195,23 +222,35 @@ func (s *replSession) handleList(args []string) {
 	fmt.Println(infoStyle.Render("Queues:"))
 	bullet := infoStyle.Render("●")
 	for _, q := range queues {
-		fmt.Printf("  %s %s\n", bullet, queueNameStyle.Render(q))
+		fmt.Printf("  %s %s (%s)\n", bullet, queueNameStyle.Render(q.Name), q.Kind)
 	}
 }
 
 func (s *replSession) handleCreate(args []string) {
 	var patch spec.Spec
-	rest, err := command.ParseAnywhere(command.QueueFlagSet("create", &patch), args)
+	var typeName string
+	fs := command.QueueFlagSet("create", &patch)
+	fs.StringVar(&typeName, "type", "", "queue kind: log or task (required)")
+	rest, err := command.ParseAnywhere(fs, args)
+	if err != nil {
+		s.usage("create --type log|task [flags] <queue_name> (" + err.Error() + ")")
+		return
+	}
+	if len(rest) < 1 {
+		s.usage("create --type log|task [flags] <queue_name>")
+		return
+	}
+	if typeName == "" {
+		s.usage("create --type log|task [flags] <queue_name>")
+		return
+	}
+	name := rest[0]
+	kind, err := command.KindFromName(typeName)
 	if err != nil {
 		s.usage("create [flags] <queue_name> (" + err.Error() + ")")
 		return
 	}
-	if len(rest) < 1 {
-		s.usage("create [flags] <queue_name>")
-		return
-	}
-	name := rest[0]
-	if err := command.Create(s.ctx, s.client, name, command.SpecOption(patch)); err != nil {
+	if err := command.Create(s.ctx, s.client, kind, name, command.SpecOption(patch)); err != nil {
 		s.fail(err)
 		return
 	}
@@ -317,7 +356,7 @@ func (s *replSession) handleAppend(args []string) {
 		return
 	}
 	name, input := args[0], args[1]
-	off, payloadLen, err := command.Append(s.ctx, s.client, name, input)
+	off, payloadLen, err := command.Append(s.ctx, s.client, name, input, nil)
 	if err != nil {
 		s.fail(err)
 		return
@@ -350,6 +389,10 @@ func (s *replSession) handleTail(args []string) {
 		return
 	}
 	name := args[0]
+	if kind, err := s.kindOf(name); err == nil && kind != mikyu.QueueKindLog {
+		fmt.Println(errStyle.Render(fmt.Sprintf("tail requires a log queue; %q is a %s queue.", name, kind)))
+		return
+	}
 	var startOffset uint64 = 0
 	if len(args) >= 2 {
 		startOffset, _ = strconv.ParseUint(args[1], 10, 64)
@@ -361,7 +404,7 @@ func (s *replSession) handleTail(args []string) {
 	statusText := dimStyle.Render(fmt.Sprintf("Tailing %q from offset %d (Press Ctrl+C to stop stream)...", name, startOffset))
 	fmt.Print(statusText)
 
-	err := command.Tail(sigCtx, s.client, name, startOffset, func(msg mikyu.Message) error {
+	err := command.Tail(sigCtx, s.client, name, startOffset, func(msg mikyu.Record) error {
 		fmt.Print("\r\x1b[2K")
 		fmt.Println(formatRecord(msg))
 		fmt.Print(statusText)
@@ -534,7 +577,7 @@ func (s *replSession) handleShutdown(args []string) {
 	s.done = true
 }
 
-func formatRecord(msg mikyu.Message) string {
+func formatRecord(msg mikyu.Record) string {
 	offsetStr := recordOffsetStyle.Render(fmt.Sprintf("[%d]", msg.Offset))
 	divider := recordDividerStyle.Render("|")
 

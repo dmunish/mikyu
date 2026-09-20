@@ -1,10 +1,14 @@
 package repl
 
 import (
+	"bytes"
+	"os"
 	"testing"
 
+	"github.com/dmunish/mikyu"
 	"github.com/dmunish/mikyu/internal/ui/command"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseREPLArgs(t *testing.T) {
@@ -51,4 +55,51 @@ func TestREPLMetricsVerb(t *testing.T) {
 func TestREPLNoInfoVerb(t *testing.T) {
 	_, ok := replHandlers["info"]
 	assert.False(t, ok, "info must not be dispatchable in REPL")
+}
+
+func captureStdout(fn func()) string {
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		return ""
+	}
+	os.Stdout = w
+	fn()
+	w.Close()
+	os.Stdout = old
+	var out bytes.Buffer
+	_, _ = out.ReadFrom(r)
+	r.Close()
+	return out.String()
+}
+
+func TestREPLKindInference(t *testing.T) {
+	client, err := mikyu.Open(t.TempDir())
+	require.NoError(t, err)
+	defer client.Close()
+	ctx := t.Context()
+	_, err = client.CreateLogQueue(ctx, "events")
+	require.NoError(t, err)
+	_, err = client.CreateTaskQueue(ctx, "jobs")
+	require.NoError(t, err)
+
+	sess := &replSession{client: client, ctx: ctx}
+
+	useLog := captureStdout(func() { sess.handleUse([]string{"events"}) })
+	assert.Contains(t, useLog, "Active queue set to")
+
+	useTask := captureStdout(func() { sess.handleUse([]string{"jobs"}) })
+	assert.Contains(t, useTask, "Active queue set to")
+
+	appendLog := captureStdout(func() { sess.handleUse([]string{"events"}); sess.handleAppend([]string{"events", "hello"}) })
+	assert.Contains(t, appendLog, "Appended")
+
+	dequeueTask := captureStdout(func() { sess.handleUse([]string{"jobs"}); sess.handleDequeue([]string{"--timeout", "0"}) })
+	assert.Contains(t, dequeueTask, "No task available.")
+
+	dequeueLog := captureStdout(func() { sess.handleUse([]string{"events"}); sess.handleDequeue([]string{"--timeout", "0"}) })
+	assert.Contains(t, dequeueLog, "dequeue requires a task queue")
+
+	tailTask := captureStdout(func() { sess.handleUse([]string{"jobs"}); sess.handleTail([]string{"jobs"}) })
+	assert.Contains(t, tailTask, "tail requires a log queue")
 }

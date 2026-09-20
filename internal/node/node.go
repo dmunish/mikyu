@@ -4,12 +4,14 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/manager"
 	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
 	"github.com/dmunish/mikyu/internal/queue/retention"
@@ -19,12 +21,16 @@ import (
 
 var errNodeClosed = errors.New("node is closed")
 
-// Node is the shared local-node core: one data directory, its queue registry, cached drivers, and retention lifecycle.
+// Shutdown contract: closeInternal stops new operations, wakes every parked
+// waiter with ErrQueueClosed, drains each task checkpoint, closes every queue
+// (final WAL sync and active-segment truncate), and releases the directory lock.
+
+// Node is the shared local-node core: one data directory, its kind-partitioned queues, cached drivers, and retention lifecycle.
 type Node struct {
-	mgr        *engine.Manager
+	mgr        *manager.Manager
 	retention  *retention.Coordinator
-	logQueues  map[string]*logqueue.LogQueue
-	taskQueues map[string]*taskqueue.TaskQueue
+	logQueues  map[string]logqueue.Log
+	taskQueues map[string]taskqueue.Queue
 	mu         sync.RWMutex
 
 	retentionCtx    context.Context
@@ -41,8 +47,9 @@ type Node struct {
 	metrics  *metrics.Collector
 }
 
-// openNode acquires the directory lock, loads the registry, and starts the
-// retention reconciler. Callers outside this package must go through Acquire.
+// openNode acquires the directory lock, reconciles the registry against the
+// filesystem, and starts the retention reconciler. Callers outside this
+// package must go through Acquire.
 func openNode(dir string, defaults spec.Spec, mc MetricsConfig) (*Node, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -56,30 +63,40 @@ func openNode(dir string, defaults spec.Spec, mc MetricsConfig) (*Node, error) {
 		_ = lock.release()
 		return nil, err
 	}
-	if err := reconcileRegistry(dir, reg); err != nil {
-		_ = lock.release()
-		return nil, err
-	}
 
 	builtin := spec.Builtin()
-	perQueue := make(map[string]engine.Config, len(reg.Queues))
-	for name, s := range reg.Queues {
-		perQueue[name] = toEngineConfig(s.Effective(defaults, builtin))
+	perQueue := make(map[manager.Key]engine.Config, len(reg.Queues))
+	for _, entry := range reg.Queues {
+		perQueue[manager.Key{Name: entry.Name, Kind: entry.Kind}] = toEngineConfig(entry.Spec.Effective(defaults, builtin))
 	}
 	defaultEngineCfg := toEngineConfig(defaults.Merge(builtin))
 
 	mreg := newRegistry(mc)
-	mgr, err := engine.OpenManager(dir, defaultEngineCfg, perQueue, mreg)
+	mgr, err := manager.Open(dir, defaultEngineCfg, perQueue, mreg)
 	if err != nil {
 		_ = lock.release()
 		return nil, err
 	}
+	infos, err := mgr.List(context.Background())
+	if err != nil {
+		_ = mgr.Close()
+		_ = lock.release()
+		return nil, err
+	}
+	if reconcileRegistry(reg, infos) {
+		if err := saveRegistry(dir, reg); err != nil {
+			_ = mgr.Close()
+			_ = lock.release()
+			return nil, err
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	n := &Node{
 		mgr:             mgr,
 		retention:       retention.NewCoordinator(0),
-		logQueues:       make(map[string]*logqueue.LogQueue),
-		taskQueues:      make(map[string]*taskqueue.TaskQueue),
+		logQueues:       make(map[string]logqueue.Log),
+		taskQueues:      make(map[string]taskqueue.Queue),
 		retentionCtx:    ctx,
 		retentionCancel: cancel,
 		dir:             dir,
@@ -114,11 +131,12 @@ func (n *Node) closeInternal() error {
 	n.mu.Lock()
 	var firstErr error
 	for name, tq := range n.taskQueues {
-		if err := tq.Close(); err != nil && firstErr == nil {
+		if err := taskqueue.Close(tq); err != nil && firstErr == nil {
 			firstErr = err
 		}
 		delete(n.taskQueues, name)
 	}
+	clear(n.logQueues)
 	n.mu.Unlock()
 
 	if err := n.mgr.Close(); err != nil && firstErr == nil {
@@ -130,48 +148,114 @@ func (n *Node) closeInternal() error {
 	return firstErr
 }
 
-// Manager returns the underlying engine manager.
-func (n *Node) Manager() *engine.Manager { return n.mgr }
+// Manager returns the underlying manager.
+func (n *Node) Manager() *manager.Manager { return n.mgr }
 
-// CreateQueue validates spec, opens the engine queue, and persists the spec to the registry.
-func (n *Node) CreateQueue(ctx context.Context, name string, s spec.Spec) error {
+// createQueue validates a spec, opens the queue under its kind root, and persists the spec.
+func (n *Node) createQueue(ctx context.Context, name string, kind manager.Kind, s spec.Spec) (engine.Storage, spec.Spec, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, spec.Spec{}, err
 	}
 	if err := spec.ValidateCreate(s); err != nil {
-		return err
+		return nil, spec.Spec{}, err
 	}
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.closed {
-		return errNodeClosed
+		return nil, spec.Spec{}, errNodeClosed
 	}
-	if _, ok := n.registry.Queues[name]; ok {
-		return engine.ErrQueueExists
+	key := registryKey(kind, name)
+	if _, ok := n.registry.Queues[key]; ok {
+		return nil, spec.Spec{}, engine.ErrQueueExists
 	}
 
 	eff := s.Effective(n.defaults, spec.Builtin())
 	if err := spec.ValidateCreate(eff); err != nil {
-		return err
+		return nil, spec.Spec{}, err
 	}
-	storage, err := n.mgr.CreateQueue(name, toEngineConfig(eff))
+	if kind == manager.KindTask && eff.Engine.Compaction != nil && *eff.Engine.Compaction {
+		return nil, spec.Spec{}, fmt.Errorf("%w: compaction is a log-queue setting", spec.ErrInvalidConfig)
+	}
+	storage, err := n.mgr.Create(ctx, name, kind, toEngineConfig(eff))
 	if err != nil {
-		return err
+		return nil, spec.Spec{}, err
 	}
 
-	n.registry.Queues[name] = s
+	n.registry.Queues[key] = QueueEntry{Name: name, Kind: kind, Spec: s}
 	if err := saveRegistry(n.dir, n.registry); err != nil {
-		delete(n.registry.Queues, name)
-		_ = n.mgr.DeleteQueue(name)
-		return err
+		delete(n.registry.Queues, key)
+		_ = n.mgr.Delete(ctx, name)
+		return nil, spec.Spec{}, err
 	}
+	return storage, eff, nil
+}
 
-	lq := logqueue.NewLogQueue(name, storage)
+// CreateLogQueue creates a log queue and returns its handle.
+func (n *Node) CreateLogQueue(ctx context.Context, name string, s spec.Spec) (logqueue.Log, error) {
+	storage, eff, err := n.createQueue(ctx, name, manager.KindLog, s)
+	if err != nil {
+		return nil, err
+	}
+	lq := logqueue.New(name, storage)
+	n.mu.Lock()
 	n.logQueues[name] = lq
-	n.retention.RegisterDriver(name, storage, lq)
+	n.mu.Unlock()
+	n.retention.RegisterTarget(&retention.Target{Name: name, Storage: storage, Driver: lq})
 	n.retention.SetPolicy(name, policyFor(eff))
-	return nil
+	return lq, nil
+}
+
+// CreateTaskQueue creates a task queue and returns its handle.
+func (n *Node) CreateTaskQueue(ctx context.Context, name string, s spec.Spec) (taskqueue.Queue, error) {
+	storage, eff, err := n.createQueue(ctx, name, manager.KindTask, s)
+	if err != nil {
+		return nil, err
+	}
+	tq, err := taskqueue.New(name, storage, taskDefaultsFor(eff), n.archiveLogFor(), n.metrics.Registry().Scope(name))
+	if err != nil {
+		return nil, err
+	}
+	n.mu.Lock()
+	n.taskQueues[name] = tq
+	n.mu.Unlock()
+	n.retention.RegisterTarget(&retention.Target{Name: name, Storage: storage, Driver: tq})
+	return tq, nil
+}
+
+// archiveAppender adapts a log queue to the task driver's archive writer.
+type archiveAppender struct {
+	l logqueue.Log
+}
+
+func (a archiveAppender) Append(ctx context.Context, payload []byte) (uint64, error) {
+	return a.l.Append(ctx, payload)
+}
+
+// archiveLogFor returns a factory that lazily creates or returns the archive log queue for a source queue name.
+func (n *Node) archiveLogFor() taskqueue.ArchiveLogFor {
+	return func(ctx context.Context, source string) (taskqueue.ArchiveAppender, error) {
+		name := source + taskqueue.ArchivePrefix
+		_, kind, err := n.mgr.Get(name)
+		switch {
+		case err == nil && kind == manager.KindLog:
+			lq, err := n.LogQueue(name)
+			if err != nil {
+				return nil, err
+			}
+			return archiveAppender{lq}, nil
+		case err == nil && kind != manager.KindLog:
+			return nil, fmt.Errorf("%w: %q exists as a %s queue", ErrWrongKind, name, kind)
+		case errors.Is(err, engine.ErrQueueNotFound):
+			lq, err := n.CreateLogQueue(ctx, name, spec.Spec{})
+			if err != nil {
+				return nil, err
+			}
+			return archiveAppender{lq}, nil
+		default:
+			return nil, err
+		}
+	}
 }
 
 // UpdateQueue merges patch into the queue's stored spec, persists the result, and applies the mutable fields to the live engine queue.
@@ -189,14 +273,12 @@ func (n *Node) UpdateQueue(ctx context.Context, name string, patch spec.Spec) er
 		return errNodeClosed
 	}
 
-	current, ok := n.registry.Queues[name]
-	if !ok {
-		if _, err := n.mgr.GetQueue(name); err != nil {
-			return engine.ErrQueueNotFound
-		}
-		// Orphan directory: adopt it, then update.
-		current = spec.Spec{}
+	_, kind, err := n.mgr.Get(name)
+	if err != nil {
+		return engine.ErrQueueNotFound
 	}
+	key := registryKey(kind, name)
+	current := n.registry.Queues[key].Spec
 	// The patch is the more specific layer: it overrides the stored spec and
 	// the stored spec fills whatever the patch leaves unset.
 	merged := patch.Merge(current)
@@ -204,33 +286,32 @@ func (n *Node) UpdateQueue(ctx context.Context, name string, patch spec.Spec) er
 	if err := spec.ValidateCreate(eff); err != nil {
 		return err
 	}
-	n.registry.Queues[name] = merged
+	n.registry.Queues[key] = QueueEntry{Name: name, Kind: kind, Spec: merged}
 	if err := saveRegistry(n.dir, n.registry); err != nil {
-		n.registry.Queues[name] = current
+		n.registry.Queues[key] = QueueEntry{Name: name, Kind: kind, Spec: current}
 		return err
 	}
 
-	storage, err := n.mgr.GetQueue(name)
+	storage, err := n.mgr.GetOf(name, kind)
 	if err != nil {
 		return err
 	}
-	eff = merged.Effective(n.defaults, spec.Builtin())
 	if ac, ok := storage.(interface{ ApplyConfig(engine.Config) }); ok {
 		ac.ApplyConfig(toEngineConfig(eff))
 	}
 
-	// Keep the cached driver and the retention target in sync. This also
-	// adopts orphan queues whose directories UpdateQueue found on disk.
-	lq := n.logQueues[name]
-	if lq == nil {
-		lq = logqueue.NewLogQueue(name, storage)
-		n.logQueues[name] = lq
-	}
-	n.retention.RegisterDriver(name, storage, lq)
-
-	// Live task-queue defaults: a cached handle observes the new spec.
-	if tq, ok := n.taskQueues[name]; ok {
-		tq.SetDefaults(taskDefaultsFor(eff))
+	switch kind {
+	case manager.KindLog:
+		lq := n.logQueues[name]
+		if lq == nil {
+			lq = logqueue.New(name, storage)
+			n.logQueues[name] = lq
+		}
+		n.retention.RegisterTarget(&retention.Target{Name: name, Storage: storage, Driver: lq})
+	case manager.KindTask:
+		if tq, ok := n.taskQueues[name]; ok {
+			tq.SetDefaults(taskDefaultsFor(eff))
+		}
 	}
 
 	if n.retention.SetPolicy(name, policyFor(eff)) {
@@ -247,14 +328,16 @@ func (n *Node) UpdateQueue(ctx context.Context, name string, patch spec.Spec) er
 	return nil
 }
 
-// QueueDescription is the full truth about one queue: its stored spec, its effective spec (stored over defaults over built-in), and the session defaults it inherits from, which are ambient to the node that opened the directory and never stored with the queue; to make a queue's behavior portable across hosts, set the field on the queue itself.
+// QueueDescription is the full truth about one queue: its kind, stored spec, effective spec, and the session defaults it inherits.
 type QueueDescription struct {
-	Spec      spec.Spec `json:"spec"`
-	Effective spec.Spec `json:"effective"`
-	Defaults  spec.Spec `json:"defaults"`
+	Name      string       `json:"name"`
+	Kind      manager.Kind `json:"kind"`
+	Spec      spec.Spec    `json:"spec"`
+	Effective spec.Spec    `json:"effective"`
+	Defaults  spec.Spec    `json:"defaults"`
 }
 
-// DescribeQueue returns the stored spec, the effective spec, and the session defaults for one queue.
+// DescribeQueue returns the kind, stored spec, effective spec, and session defaults for one queue.
 func (n *Node) DescribeQueue(ctx context.Context, name string) (QueueDescription, error) {
 	if err := ctx.Err(); err != nil {
 		return QueueDescription{}, err
@@ -264,20 +347,23 @@ func (n *Node) DescribeQueue(ctx context.Context, name string) (QueueDescription
 	if n.closed {
 		return QueueDescription{}, errNodeClosed
 	}
-	if _, err := n.mgr.GetQueue(name); err != nil {
+	_, kind, err := n.mgr.Get(name)
+	if err != nil {
 		return QueueDescription{}, err
 	}
 	builtin := spec.Builtin()
-	stored := n.registry.Queues[name]
+	stored := n.registry.Queues[registryKey(kind, name)].Spec
 	return QueueDescription{
+		Name:      name,
+		Kind:      kind,
 		Spec:      stored,
 		Effective: stored.Effective(n.defaults, builtin),
 		Defaults:  n.defaults,
 	}, nil
 }
 
-// LogQueue returns the cached log-queue driver for name, materializing it on first use and registering its retention driver.
-func (n *Node) LogQueue(name string) (*logqueue.LogQueue, error) {
+// LogQueue returns the cached log-queue driver for name, or ErrWrongKind when the directory is a task queue.
+func (n *Node) LogQueue(name string) (logqueue.Log, error) {
 	n.mu.RLock()
 	if lq, ok := n.logQueues[name]; ok {
 		n.mu.RUnlock()
@@ -287,40 +373,52 @@ func (n *Node) LogQueue(name string) (*logqueue.LogQueue, error) {
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if n.closed {
+		return nil, engine.ErrQueueClosed
+	}
 	if lq, ok := n.logQueues[name]; ok {
 		return lq, nil
 	}
-	storage, err := n.mgr.GetQueue(name)
+	storage, kind, err := n.mgr.Get(name)
 	if err != nil {
 		return nil, err
 	}
-	lq := logqueue.NewLogQueue(name, storage)
+	if kind != manager.KindLog {
+		return nil, fmt.Errorf("%w: %q is a %s queue; a log queue is required", ErrWrongKind, name, kind)
+	}
+	lq := logqueue.New(name, storage)
 	n.logQueues[name] = lq
-	n.retention.RegisterDriver(name, storage, lq)
+	n.retention.RegisterTarget(&retention.Target{Name: name, Storage: storage, Driver: lq})
 	return lq, nil
 }
 
-// TaskQueue returns the cached task-queue driver for name, materializing it on first use (recovering any durable task state) and registering its retention driver.
-func (n *Node) TaskQueue(name string) (*taskqueue.TaskQueue, error) {
+// TaskQueue returns the cached task-queue driver for name, or ErrWrongKind when the directory is a log queue.
+func (n *Node) TaskQueue(name string) (taskqueue.Queue, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if n.closed {
+		return nil, engine.ErrQueueClosed
+	}
 	if tq, ok := n.taskQueues[name]; ok {
 		return tq, nil
 	}
-	storage, err := n.mgr.GetQueue(name)
+	storage, kind, err := n.mgr.Get(name)
 	if err != nil {
 		return nil, err
 	}
-	var d taskqueue.Defaults
-	if stored, known := n.registry.Queues[name]; known {
-		d = taskDefaultsFor(stored.Effective(n.defaults, spec.Builtin()))
+	if kind != manager.KindTask {
+		return nil, fmt.Errorf("%w: %q is a %s queue; a task queue is required", ErrWrongKind, name, kind)
 	}
-	tq, err := taskqueue.NewTaskQueue(name, storage, d, n.metrics.Registry().Scope(name))
+	var d taskqueue.Defaults
+	if entry, ok := n.registry.Queues[registryKey(manager.KindTask, name)]; ok {
+		d = taskDefaultsFor(entry.Spec.Effective(n.defaults, spec.Builtin()))
+	}
+	tq, err := taskqueue.New(name, storage, d, n.archiveLogFor(), n.metrics.Registry().Scope(name))
 	if err != nil {
 		return nil, err
 	}
 	n.taskQueues[name] = tq
-	n.retention.RegisterDriver(name, storage, tq)
+	n.retention.RegisterTarget(&retention.Target{Name: name, Storage: storage, Driver: tq})
 	return tq, nil
 }
 
@@ -329,26 +427,32 @@ func (n *Node) DeleteQueue(ctx context.Context, name string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	_, kind, err := n.mgr.Get(name)
+	if err != nil {
+		return err
+	}
 	n.mu.Lock()
-	if tq, ok := n.taskQueues[name]; ok {
-		_ = tq.Close()
-		delete(n.taskQueues, name)
+	if kind == manager.KindTask {
+		if tq, ok := n.taskQueues[name]; ok {
+			_ = taskqueue.Close(tq)
+			delete(n.taskQueues, name)
+		}
 	}
 	delete(n.logQueues, name)
 	n.mu.Unlock()
 	n.retention.UnregisterTarget(name)
 
-	if err := n.mgr.DeleteQueue(name); err != nil {
+	if err := n.mgr.Delete(ctx, name); err != nil {
 		return err
 	}
 	n.mu.Lock()
-	delete(n.registry.Queues, name)
-	err := saveRegistry(n.dir, n.registry)
+	delete(n.registry.Queues, registryKey(kind, name))
+	err = saveRegistry(n.dir, n.registry)
 	n.mu.Unlock()
 	return err
 }
 
-// Truncate truncates the queue's log segments before minOffset, limited by the retention floor that all registered drivers agree is safe.
+// Truncate truncates the log queue's segments before minOffset, limited by the retention floor its single driver allows.
 func (n *Node) Truncate(ctx context.Context, name string, minOffset uint64) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -356,18 +460,15 @@ func (n *Node) Truncate(ctx context.Context, name string, minOffset uint64) (int
 	if _, err := n.LogQueue(name); err != nil {
 		return 0, err
 	}
-	if _, err := n.TaskQueue(name); err != nil {
-		return 0, err
-	}
-	return n.retention.ReconcileQueueAt(ctx, name, minOffset)
+	return n.retention.ReconcileAt(ctx, name, minOffset)
 }
 
-// ListQueues returns the names of all queues in the node's data directory.
-func (n *Node) ListQueues(ctx context.Context) ([]string, error) {
+// ListQueues returns every queue's name and kind, sorted by name and then kind.
+func (n *Node) ListQueues(ctx context.Context) ([]QueueInfo, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return n.mgr.ListQueues(), nil
+	return n.mgr.List(ctx)
 }
 
 // taskDefaultsFor converts an effective spec's task block into driver defaults.
@@ -378,6 +479,12 @@ func taskDefaultsFor(s spec.Spec) taskqueue.Defaults {
 	}
 	if s.Task.DefaultMaxAttempts != nil {
 		d.MaxAttempts = *s.Task.DefaultMaxAttempts
+	}
+	if s.Task.MaxInFlight != nil {
+		d.MaxInFlight = *s.Task.MaxInFlight
+	}
+	if s.Task.MaxDLQ != nil {
+		d.MaxDLQ = *s.Task.MaxDLQ
 	}
 	return d
 }
@@ -421,6 +528,9 @@ func toEngineConfig(s spec.Spec) engine.Config {
 	}
 	if s.Engine.Fsync != nil {
 		cfg.Fsync = *s.Engine.Fsync
+	}
+	if s.Engine.Compaction != nil {
+		cfg.Compaction = *s.Engine.Compaction
 	}
 	return cfg
 }

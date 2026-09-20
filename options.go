@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/dmunish/mikyu/internal/client"
+	"github.com/dmunish/mikyu/internal/queue/logqueue"
 	"github.com/dmunish/mikyu/internal/queue/taskqueue"
 )
 
@@ -107,6 +108,10 @@ func WithEncrypted(enabled bool) QueueOption { return client.WithEncrypted(enabl
 // WithFsync selects physical-disk durability on produce (create-only).
 func WithFsync(enabled bool) QueueOption { return client.WithFsync(enabled) }
 
+// WithCompaction enables roll-time compaction of superseded keyed records
+// (create-only, log queues only).
+func WithCompaction(enabled bool) QueueOption { return client.WithCompaction(enabled) }
+
 // WithRetentionAge deletes records older than d, capped by consumer lag.
 func WithRetentionAge(d time.Duration) QueueOption { return client.WithRetentionAge(d) }
 
@@ -121,6 +126,19 @@ func WithDefaultMaxAttempts(n uint32) QueueOption { return client.WithDefaultMax
 
 // WithVisibility sets how long a dequeued task stays leased.
 func WithVisibility(d time.Duration) EnqueueOption { return taskqueue.WithVisibility(d) }
+
+// WithMaxDLQ caps the durable dead-letter queue; overflow drops the oldest entry.
+func WithMaxDLQ(n uint32) QueueOption { return client.WithMaxDLQ(n) }
+
+// WithMaxInFlight caps the number of tasks that can be in flight at once.
+func WithMaxInFlight(n uint32) QueueOption { return client.WithMaxInFlight(n) }
+
+// WithKey associates a key with the task for archival or compaction.
+func WithKey(k []byte) EnqueueOption { return taskqueue.WithKey(k) }
+
+// WithRecordKey associates a compaction key with a log record; records with the
+// same key are versions, and only the newest survives compaction.
+func WithRecordKey(k []byte) AppendOption { return logqueue.WithKey(k) }
 
 // WithMaxAttempts sets the maximum number of deliveries before dead-lettering.
 func WithMaxAttempts(n uint32) EnqueueOption { return taskqueue.WithMaxAttempts(n) }

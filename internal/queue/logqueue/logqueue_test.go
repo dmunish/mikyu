@@ -1,25 +1,54 @@
 package logqueue_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/enginetest"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+// TestShutdownWakesTail parks a Tail and asserts closing the storage yields ErrQueueClosed once and stops.
+func TestShutdownWakesTail(t *testing.T) {
+	storage := enginetest.NewMemStorage("tail-shutdown", 1<<20, 1<<20)
+	lq := logqueue.New("tail-shutdown", storage)
+
+	errCh := make(chan error, 1)
+	go func() {
+		for _, err := range lq.Tail(context.Background(), 0) {
+			if err != nil {
+				errCh <- err
+				return
+			}
+		}
+		errCh <- nil
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	storage.Close()
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, engine.ErrQueueClosed)
+	case <-time.After(2 * time.Second):
+		t.Fatal("parked Tail did not stop on storage close")
+	}
+}
+
 // newMemLogQueue builds a LogQueue over the in-memory enginetest storage so
 // tail tests can run inside a testing/synctest bubble with a virtual clock and
 // no real file I/O.
-func newMemLogQueue(t *testing.T, name string) *logqueue.LogQueue {
+func newMemLogQueue(t *testing.T, name string) logqueue.Log {
 	t.Helper()
 	storage := enginetest.NewMemStorage(name, 1<<20, 1<<20)
-	return logqueue.NewLogQueue(name, storage)
+	return logqueue.New(name, storage)
 }
 
 func TestLogQueueTailContinuous(t *testing.T) {
@@ -148,4 +177,41 @@ func TestLogQueueTailBugProof(t *testing.T) {
 			t.Fatal("Tail() died after msg-0 and failed to tail msg-1!")
 		}
 	})
+}
+
+// TestStreamSkipsCompactedOffsets: Stream yields only live records.
+func TestStreamSkipsCompactedOffsets(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := engine.OpenManager(dir, engine.Config{
+		BatchSize:       16,
+		MaxInterval:     10 * time.Millisecond,
+		SegmentSize:     256,
+		MaxMessageBytes: 1024 * 1024,
+		Fsync:           false,
+		Compaction:      true,
+	}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = mgr.Close() })
+
+	storage, err := mgr.Create("stream-skip")
+	require.NoError(t, err)
+	lq := logqueue.New("stream-skip", storage)
+	ctx := t.Context()
+
+	// 100B payloads with a 256B segment cap: one record per segment, so the
+	// three same-key versions force two rolls and two compactions.
+	key := []byte("user-42")
+	for i := range 3 {
+		_, err := lq.Append(ctx, bytes.Repeat([]byte{byte('v' + i)}, 100), logqueue.WithKey(key))
+		require.NoError(t, err)
+	}
+
+	var got []engine.Record
+	for rec, err := range lq.Stream(ctx, 0) {
+		require.NoError(t, err)
+		got = append(got, rec)
+	}
+	require.Len(t, got, 1)
+	assert.Equal(t, uint64(2), got[0].Offset)
+	assert.Equal(t, key, got[0].Group)
 }

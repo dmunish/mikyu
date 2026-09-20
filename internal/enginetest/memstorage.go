@@ -10,8 +10,8 @@ import (
 )
 
 // recordOverhead is the per-record fixed cost mirrored from the engine's
-// minimum record size (length, CRC, id, timestamp fields).
-const recordOverhead = 34
+// minimum record size (length, CRC, id, timestamp, group-length fields).
+const recordOverhead = 36
 
 // memSegment mirrors one physical log segment of engine.Queue: a contiguous
 // span of offsets capped by the queue's maxSeg, with the newest record's
@@ -29,7 +29,7 @@ type MemStorage struct {
 	name   string
 	maxMsg int64
 	maxSeg int64
-	msgs   []engine.Message
+	msgs   []engine.Record
 	groups map[string]uint64
 	minOff uint64
 	segs   []memSegment
@@ -47,8 +47,19 @@ func NewMemStorage(name string, maxMsg, maxSeg int64) *MemStorage {
 	}
 }
 
+// Close marks the storage closed and wakes any parked Fetch.
+func (m *MemStorage) Close() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return
+	}
+	m.closed = true
+	m.broadcastLocked()
+}
+
 // Fetch returns up to maxCount messages starting at offset, blocking up to maxWait.
-func (m *MemStorage) Fetch(ctx context.Context, offset uint64, maxCount int, maxWait time.Duration) ([]engine.Message, error) {
+func (m *MemStorage) Fetch(ctx context.Context, offset uint64, maxCount int, maxWait time.Duration) ([]engine.Record, error) {
 	if maxCount <= 0 {
 		return nil, nil
 	}
@@ -73,11 +84,8 @@ func (m *MemStorage) Fetch(ctx context.Context, offset uint64, maxCount int, max
 		if offset < published {
 			m.mu.Lock()
 			start := offset
-			end := start + uint64(maxCount)
-			if end > published {
-				end = published
-			}
-			msgs := append([]engine.Message(nil), m.msgs[start:end]...)
+			end := min(start+uint64(maxCount), published)
+			msgs := append([]engine.Record(nil), m.msgs[start:end]...)
 			m.mu.Unlock()
 			return msgs, nil
 		}
@@ -109,15 +117,16 @@ func (m *MemStorage) broadcastLocked() {
 	close(old)
 }
 
-func (m *MemStorage) Append(ctx context.Context, payload []byte) (uint64, error) {
-	offs, err := m.AppendBatch(ctx, [][]byte{payload})
+func (m *MemStorage) Append(ctx context.Context, payload []byte, opts ...engine.AppendOption) (uint64, error) {
+	offs, err := m.AppendBatch(ctx, [][]byte{payload}, opts...)
 	if err != nil {
 		return 0, err
 	}
 	return offs[0], nil
 }
 
-func (m *MemStorage) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error) {
+func (m *MemStorage) AppendBatch(ctx context.Context, payloads [][]byte, opts ...engine.AppendOption) ([]uint64, error) {
+	group := engine.ResolveAppendOptions(opts...)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -140,8 +149,9 @@ func (m *MemStorage) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint
 			m.segs = append(m.segs, memSegment{baseOff: uint64(len(m.msgs))})
 		}
 		off := uint64(len(m.msgs))
-		m.msgs = append(m.msgs, engine.Message{
+		m.msgs = append(m.msgs, engine.Record{
 			Offset:  off,
+			Group:   group,
 			Payload: append([]byte(nil), p...),
 		})
 		cur := &m.segs[len(m.segs)-1]
@@ -154,22 +164,22 @@ func (m *MemStorage) AppendBatch(ctx context.Context, payloads [][]byte) ([]uint
 	return out, nil
 }
 
-func (m *MemStorage) Read(ctx context.Context, off uint64) (engine.Message, error) {
+func (m *MemStorage) Read(ctx context.Context, off uint64) (engine.Record, error) {
 	if err := ctx.Err(); err != nil {
-		return engine.Message{}, err
+		return engine.Record{}, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if off < m.minOff {
-		return engine.Message{}, engine.ErrOffsetTruncated
+		return engine.Record{}, engine.ErrOffsetTruncated
 	}
 	if off >= uint64(len(m.msgs)) {
-		return engine.Message{}, engine.ErrOffsetNotFound
+		return engine.Record{}, engine.ErrOffsetNotFound
 	}
 	return m.msgs[off], nil
 }
 
-func (m *MemStorage) ReadBatch(ctx context.Context, start uint64, n int) ([]engine.Message, error) {
+func (m *MemStorage) ReadBatch(ctx context.Context, start uint64, n int) ([]engine.Record, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -182,7 +192,7 @@ func (m *MemStorage) ReadBatch(ctx context.Context, start uint64, n int) ([]engi
 		return nil, engine.ErrOffsetNotFound
 	}
 	end := min(start+uint64(n), uint64(len(m.msgs)))
-	return append([]engine.Message(nil), m.msgs[start:end]...), nil
+	return append([]engine.Record(nil), m.msgs[start:end]...), nil
 }
 
 func (m *MemStorage) LastOffset() uint64 {

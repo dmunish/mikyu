@@ -36,6 +36,7 @@ type Queue struct {
 	nextPreallocBytes int64
 	closed            bool
 	notify            chan struct{}
+	keyIndex          map[string]uint64
 	m                 *queueMetrics
 	scope             *metrics.Scope
 	mu                sync.RWMutex
@@ -87,6 +88,11 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore, scopes ..
 	}
 	if err := q.loadSegments(); err != nil {
 		return nil, err
+	}
+	if cfg.Compaction {
+		if err := q.buildKeyIndex(); err != nil {
+			return nil, err
+		}
 	}
 	return q, nil
 }
@@ -226,7 +232,9 @@ func (q *Queue) roll() error {
 		if err := q.active.logFile.Truncate(q.active.pos); err != nil {
 			return err
 		}
-		_ = q.active.logFile.Sync()
+		if err := syncData(q.active.logFile); err != nil {
+			return err
+		}
 
 		if err := q.active.enableMMap(); err != nil {
 			return err
@@ -241,6 +249,11 @@ func (q *Queue) roll() error {
 
 	q.active = seg
 	q.segments = append(q.segments, seg)
+	// Every segment before the new active is closed, including the one just
+	// sealed; drop records superseded by newer appends of the same group.
+	if err := q.compactClosedLocked(); err != nil {
+		return err
+	}
 	q.m.segmentRolls.Inc()
 	q.w = newWAL(seg.logFile, q.cfg, int64(q.nextOffset), q.scope)
 	q.w.start()

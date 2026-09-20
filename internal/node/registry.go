@@ -9,21 +9,35 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/manager"
 	"github.com/dmunish/mikyu/internal/spec"
 )
 
 const (
 	registryFileName = "queues.json"
 	registryTmpName  = "queues.json.tmp"
-	registryVersion  = 1
+	registryVersion  = 2
 )
 
 // ErrRegistryCorrupt reports a queues.json that could not be decoded.
 var ErrRegistryCorrupt = errors.New("invalid queue registry")
 
+// QueueEntry is the cached kind and sparse spec of one queue.
+type QueueEntry struct {
+	Name string       `json:"name"`
+	Kind manager.Kind `json:"kind"`
+	Spec spec.Spec    `json:"spec"`
+}
+
 type registry struct {
-	Version int                  `json:"version"`
-	Queues  map[string]spec.Spec `json:"queues"`
+	Version int                   `json:"version"`
+	Queues  map[string]QueueEntry `json:"queues"` // keyed by kind-qualified "kind/name"
+}
+
+// registryKey renders the composite identity of a queue in the registry.
+func registryKey(kind manager.Kind, name string) string {
+	return manager.Key{Name: name, Kind: kind}.Label()
 }
 
 // loadRegistry reads queues.json. A missing file yields an empty registry.
@@ -32,7 +46,7 @@ func loadRegistry(dir string) (*registry, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return &registry{Version: registryVersion, Queues: map[string]spec.Spec{}}, nil
+			return &registry{Version: registryVersion, Queues: map[string]QueueEntry{}}, nil
 		}
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
@@ -43,7 +57,7 @@ func loadRegistry(dir string) (*registry, error) {
 		return nil, fmt.Errorf("%w: %s: %v", ErrRegistryCorrupt, path, err)
 	}
 	if r.Queues == nil {
-		r.Queues = map[string]spec.Spec{}
+		r.Queues = map[string]QueueEntry{}
 	}
 	if r.Version == 0 {
 		r.Version = registryVersion
@@ -57,59 +71,74 @@ func saveRegistry(dir string, r *registry) error {
 		r.Version = registryVersion
 	}
 	if r.Queues == nil {
-		r.Queues = map[string]spec.Spec{}
+		r.Queues = map[string]QueueEntry{}
 	}
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(dir, registryTmpName)
-	final := filepath.Join(dir, registryFileName)
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+
+	f, err := root.OpenFile(registryTmpName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
-		_ = os.Remove(tmp)
+		_ = root.Remove(registryTmpName)
 		return err
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		_ = os.Remove(tmp)
+		_ = root.Remove(registryTmpName)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
+		_ = root.Remove(registryTmpName)
 		return err
 	}
-	return os.Rename(tmp, final)
+	if err := root.Rename(registryTmpName, registryFileName); err != nil {
+		return err
+	}
+	return engine.SyncDir(root)
 }
 
-// reconcileRegistry purges entries whose directories are missing; existing
-// directories without an entry are adopted as orphan queues on session
-// defaults.
-func reconcileRegistry(dir string, reg *registry) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return err
+// reconcileRegistry corrects the cache to the filesystem: entries whose
+// directories are missing are purged, orphan directories are adopted with the
+// kind their path declares, and a cached kind that disagrees with the path is
+// rewritten to the path. It reports whether the registry changed.
+func reconcileRegistry(reg *registry, infos []manager.QueueInfo) bool {
+	onDisk := make(map[string]manager.QueueInfo, len(infos))
+	for _, info := range infos {
+		onDisk[registryKey(info.Kind, info.Name)] = info
 	}
-	existing := make(map[string]bool)
-	for _, e := range entries {
-		if e.IsDir() {
-			existing[e.Name()] = true
+	changed := false
+	for key, entry := range reg.Queues {
+		if _, ok := onDisk[key]; !ok {
+			delete(reg.Queues, key)
+			changed = true
+			slog.Warn("queue registry entry purged; directory missing", "queue", entry.Name, "kind", entry.Kind.String())
 		}
 	}
-	purged := false
-	for name := range reg.Queues {
-		if !existing[name] {
-			delete(reg.Queues, name)
-			purged = true
-			slog.Warn("queue registry entry purged; directory missing", "queue", name)
+	for key, info := range onDisk {
+		entry, ok := reg.Queues[key]
+		if !ok {
+			reg.Queues[key] = QueueEntry{Name: info.Name, Kind: info.Kind}
+			changed = true
+			slog.Warn("orphan queue adopted", "queue", info.Name, "kind", info.Kind.String())
+			continue
+		}
+		if entry.Kind != info.Kind || entry.Name != info.Name {
+			entry.Kind = info.Kind
+			entry.Name = info.Name
+			reg.Queues[key] = entry
+			changed = true
+			slog.Warn("queue registry corrected to path", "queue", info.Name, "kind", info.Kind.String())
 		}
 	}
-	if !purged {
-		return nil
-	}
-	return saveRegistry(dir, reg)
+	return changed
 }

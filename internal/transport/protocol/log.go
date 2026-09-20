@@ -2,58 +2,65 @@ package protocol
 
 import "time"
 
-// LogRecord is the wire form of one log message.
-type LogRecord struct {
+// Record is the wire form of one log message.
+type Record struct {
 	Offset    uint64
 	ID        string
 	Timestamp time.Time
+	Group     []byte
 	Payload   []byte
 }
 
-// WriteLogRecord appends offset, ID, timestamp, and payload.
-func WriteLogRecord(b *Buffer, rec LogRecord) {
+// WriteRecord appends offset, ID, timestamp, group, and payload.
+func WriteRecord(b *Buffer, rec Record) {
 	b.WriteU64(rec.Offset)
 	b.WriteBytes([]byte(rec.ID))
 	b.WriteU64(uint64(rec.Timestamp.UnixNano()))
+	b.WriteBytes(rec.Group)
 	b.WriteBytes(rec.Payload)
 }
 
-// ReadLogRecord parses one log record.
-func ReadLogRecord(r *Reader) (LogRecord, error) {
+// ReadRecord parses one log record.
+func ReadRecord(r *Reader) (Record, error) {
 	off, err := r.ReadU64()
 	if err != nil {
-		return LogRecord{}, err
+		return Record{}, err
 	}
 	id, err := r.ReadBytes()
 	if err != nil {
-		return LogRecord{}, err
+		return Record{}, err
 	}
 	ts, err := r.ReadU64()
 	if err != nil {
-		return LogRecord{}, err
+		return Record{}, err
+	}
+	group, err := r.ReadBytes()
+	if err != nil {
+		return Record{}, err
 	}
 	payload, err := r.ReadBytes()
 	if err != nil {
-		return LogRecord{}, err
+		return Record{}, err
 	}
-	return LogRecord{
+	return Record{
 		Offset:    off,
 		ID:        string(id),
 		Timestamp: time.Unix(0, int64(ts)),
+		Group:     group,
 		Payload:   payload,
 	}, nil
 }
 
-// WriteLogRecordList writes a length-prefixed sequence of records.
-func WriteLogRecordList(b *Buffer, recs []LogRecord) {
+// WriteRecordList writes a length-prefixed sequence of records.
+func WriteRecordList(b *Buffer, recs []Record) {
 	b.WriteU32(uint32(len(recs)))
 	for _, rec := range recs {
-		WriteLogRecord(b, rec)
+		WriteRecord(b, rec)
 	}
 }
 
-// ReadLogRecordList parses a record sequence.
-func ReadLogRecordList(r *Reader) ([]LogRecord, error) {
+// ReadRecordList parses a record sequence.
+func ReadRecordList(r *Reader) ([]Record, error) {
 	n, err := r.ReadU32()
 	if err != nil {
 		return nil, err
@@ -61,9 +68,9 @@ func ReadLogRecordList(r *Reader) ([]LogRecord, error) {
 	if n > 65536 {
 		return nil, ErrTruncatedBody
 	}
-	recs := make([]LogRecord, 0, n)
+	recs := make([]Record, 0, n)
 	for range n {
-		rec, err := ReadLogRecord(r)
+		rec, err := ReadRecord(r)
 		if err != nil {
 			return nil, err
 		}

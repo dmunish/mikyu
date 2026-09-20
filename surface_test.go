@@ -176,16 +176,19 @@ func TestParityEndToEnd(t *testing.T) {
 			name := func(surface string) string { return surface + "-" + p.Key }
 			opt := mikyu.QueueOption(func(s *mikyu.Spec) { *s = specWith(t, p) })
 
-			require.NoError(t, emb.CreateQueue(ctx, name("emb"), opt))
-			require.NoError(t, rem.CreateQueue(ctx, name("rem"), opt))
-			require.NoError(t, rem.CreateQueue(ctx, name("yml")))
+			_, err = emb.CreateLogQueue(ctx, name("emb"), opt)
+			require.NoError(t, err)
+			_, err = rem.CreateLogQueue(ctx, name("rem"), opt)
+			require.NoError(t, err)
+			_, err = rem.CreateLogQueue(ctx, name("yml"))
+			require.NoError(t, err)
 
 			// Bool flags take their value with =, as the flag package requires.
 			flagArgs := []string{"--" + p.FlagName, sampleText(p)}
 			if p.Kind == spec.KindBool {
 				flagArgs = []string{"--" + p.FlagName + "=" + sampleText(p)}
 			}
-			cliRun.run(t, append([]string{"--dir", cliDir, "create", name("cli")}, flagArgs...)...)
+			cliRun.run(t, append([]string{"--dir", cliDir, "create", "--type", "log", name("cli")}, flagArgs...)...)
 
 			embDesc, err := emb.DescribeQueue(ctx, name("emb"))
 			require.NoError(t, err)
@@ -273,7 +276,7 @@ func TestNamingLaw(t *testing.T) {
 
 	// The option constructors are exactly the table's option names, plus the
 	// one composition helper that carries a whole session spec.
-	compositionHelpers := map[string]bool{"WithSessionSpec": true, "WithAutoStart": true}
+	compositionHelpers := map[string]bool{"WithSessionSpec": true, "WithAutoStart": true, "WithKey": true, "WithRecordKey": true}
 	have := map[string]bool{}
 	for _, name := range exportedFuncs(t, ".") {
 		if strings.HasPrefix(name, "With") {
@@ -394,8 +397,13 @@ func TestSentinelUniqueness(t *testing.T) {
 		"ErrCheckpointCorrupt":       mikyu.ErrCheckpointCorrupt,
 		"ErrDeadLetterNotFound":      mikyu.ErrDeadLetterNotFound,
 		"ErrDeadLetterStale":         mikyu.ErrDeadLetterStale,
+		"ErrArchiveFailed":            mikyu.ErrArchiveFailed,
 		"ErrNoData":                  mikyu.ErrNoData,
 		"ErrRecordTooLarge":          mikyu.ErrRecordTooLarge,
+		"ErrRecordCompacted":         mikyu.ErrRecordCompacted,
+		"ErrDiskFull":                mikyu.ErrDiskFull,
+		"ErrWrongKind":               mikyu.ErrWrongKind,
+		"ErrQueueFull":               mikyu.ErrQueueFull,
 		"ErrProtocol":                mikyu.ErrProtocol,
 		"ErrModeMismatch":            mikyu.ErrModeMismatch,
 		"ErrTooManyConnections":      mikyu.ErrTooManyConnections,

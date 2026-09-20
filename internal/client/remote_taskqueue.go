@@ -13,13 +13,15 @@ import (
 func toWireTask(t taskqueue.Task) protocol.Task {
 	return protocol.Task{
 		ID:          t.ID,
-		Payload:     t.Payload, // zero-copy: payload is not mutated after encode
+		Payload:     t.Payload,
 		Attempts:    t.Attempts,
 		MaxAttempts: t.MaxAttempts,
 		Visibility:  t.Visibility,
 		ScheduledAt: t.ScheduledAt,
 		DeliveryID:  t.DeliveryID,
 		Offset:      t.Offset,
+		Key:         t.Key,
+		Stalled:     t.Stalled,
 	}
 }
 
@@ -28,18 +30,29 @@ func fromWireTask(t protocol.Task) taskqueue.Task {
 	return taskqueue.NewTaskFromWire(
 		t.ID, t.Payload, t.Attempts, t.MaxAttempts,
 		t.Visibility, t.ScheduledAt, t.DeliveryID, t.Offset,
+		t.Key, t.Stalled,
 	)
 }
 
 // toWireRef converts a driver TaskRef to the wire type EncodeTaskRef accepts.
-func toWireRef(ref taskqueue.TaskRef) any {
+func toWireRef(ref taskqueue.Ref) any {
 	if t, ok := ref.(taskqueue.Task); ok {
 		return toWireTask(t)
 	}
-	if id, ok := ref.(taskqueue.TaskID); ok {
+	if id, ok := ref.(taskqueue.ID); ok {
 		return string(id)
 	}
 	return ""
+}
+
+func (q *remoteTaskQueue) Close() error {
+	return nil
+}
+
+func (q *remoteTaskQueue) SetDefaults(d taskqueue.Defaults) {}
+
+func (q *remoteTaskQueue) TruncateFloor(ctx context.Context) (uint64, bool, error) {
+	return 0, false, nil
 }
 
 func (c *remoteClient) TaskQueue(name string) (TaskQueue, error) {
@@ -49,6 +62,10 @@ func (c *remoteClient) TaskQueue(name string) (TaskQueue, error) {
 type remoteTaskQueue struct {
 	client *remoteClient
 	name   string
+}
+
+func (q *remoteTaskQueue) TryDequeue(ctx context.Context) (taskqueue.Task, error) {
+	return q.Dequeue(ctx)
 }
 
 func (q *remoteTaskQueue) Name() string { return q.name }
@@ -129,7 +146,7 @@ func (q *remoteTaskQueue) Dequeue(ctx context.Context) (taskqueue.Task, error) {
 }
 
 // Ack a task; a bare TaskID skips the server's strict lease check.
-func (q *remoteTaskQueue) Ack(ctx context.Context, ref taskqueue.TaskRef) error {
+func (q *remoteTaskQueue) Ack(ctx context.Context, ref taskqueue.Ref) error {
 	var b protocol.Buffer
 	b.WriteBytes([]byte(q.name))
 	protocol.EncodeTaskRef(&b, toWireRef(ref))
@@ -138,7 +155,7 @@ func (q *remoteTaskQueue) Ack(ctx context.Context, ref taskqueue.TaskRef) error 
 }
 
 // Nack a task; with no options the server computes exponential backoff from the task's attempt count.
-func (q *remoteTaskQueue) Nack(ctx context.Context, ref taskqueue.TaskRef, opts ...taskqueue.NackOption) error {
+func (q *remoteTaskQueue) Nack(ctx context.Context, ref taskqueue.Ref, opts ...taskqueue.NackOption) error {
 	var b protocol.Buffer
 	b.WriteBytes([]byte(q.name))
 	protocol.EncodeTaskRef(&b, toWireRef(ref))
@@ -157,7 +174,7 @@ func (q *remoteTaskQueue) Nack(ctx context.Context, ref taskqueue.TaskRef, opts 
 }
 
 // Extend the current delivery lease.
-func (q *remoteTaskQueue) Extend(ctx context.Context, ref taskqueue.TaskRef, timeout time.Duration) error {
+func (q *remoteTaskQueue) Extend(ctx context.Context, ref taskqueue.Ref, timeout time.Duration) error {
 	if timeout <= 0 {
 		return taskqueue.ErrInvalidTask
 	}
@@ -190,10 +207,19 @@ func (q *remoteTaskQueue) DeadLetters(ctx context.Context) ([]taskqueue.Task, er
 }
 
 // AckDeadLetter permanently removes a dead-lettered task.
-func (q *remoteTaskQueue) AckDeadLetter(ctx context.Context, ref taskqueue.TaskRef) error {
+func (q *remoteTaskQueue) AckDeadLetter(ctx context.Context, ref taskqueue.Ref) error {
 	var b protocol.Buffer
 	b.WriteBytes([]byte(q.name))
 	protocol.EncodeTaskRef(&b, toWireRef(ref))
 	_, err := q.client.exchange(ctx, protocol.OpDeadLetterAck, b.Bytes())
+	return err
+}
+
+// Archive moves an in-flight or DLQ task to the archive log.
+func (q *remoteTaskQueue) Archive(ctx context.Context, ref taskqueue.Ref) error {
+	var b protocol.Buffer
+	b.WriteBytes([]byte(q.name))
+	protocol.EncodeTaskRef(&b, toWireRef(ref))
+	_, err := q.client.exchange(ctx, protocol.OpArchive, b.Bytes())
 	return err
 }

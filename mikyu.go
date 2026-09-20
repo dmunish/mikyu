@@ -40,35 +40,41 @@ import (
 type Client interface {
 	io.Closer
 
-	// CreateQueue creates a queue from the options given; unset fields inherit
-	// the session defaults and then the built-ins.
-	CreateQueue(ctx context.Context, name string, opts ...QueueOption) error
+	// CreateLogQueue declares a log queue and returns a usable handle. Unset
+	// fields inherit the session defaults and then the built-ins.
+	CreateLogQueue(ctx context.Context, name string, opts ...QueueOption) (LogQueue, error)
+
+	// CreateTaskQueue declares a task queue and returns a usable handle. Unset
+	// fields inherit the session defaults and then the built-ins.
+	CreateTaskQueue(ctx context.Context, name string, opts ...QueueOption) (TaskQueue, error)
+
+	// LogQueue returns a handle to an existing log queue, ErrWrongKind when the
+	// name belongs to a task queue, or ErrQueueNotFound.
+	LogQueue(name string) (LogQueue, error)
+
+	// TaskQueue returns a handle to an existing task queue, ErrWrongKind when
+	// the name belongs to a log queue, or ErrQueueNotFound.
+	TaskQueue(name string) (TaskQueue, error)
 
 	// UpdateQueue merges a sparse patch into the queue's stored spec and applies
 	// the mutable fields to the live queue. Create-only fields are rejected.
 	UpdateQueue(ctx context.Context, name string, opts ...QueueOption) error
 
-	// DescribeQueue returns the stored spec, effective spec, and session
+	// DescribeQueue returns the kind, stored spec, effective spec, and session
 	// defaults for one queue.
 	DescribeQueue(ctx context.Context, name string) (QueueDescription, error)
 
 	// DeleteQueue removes a queue and its on-disk data.
 	DeleteQueue(ctx context.Context, name string) error
 
-	// ListQueues returns the names of all queues in the node's data directory.
-	ListQueues(ctx context.Context) ([]string, error)
+	// ListQueues returns every queue's name and kind in the data directory.
+	ListQueues(ctx context.Context) ([]QueueInfo, error)
 
 	// Truncate drops log segments before minOffset and reports the bytes freed.
 	Truncate(ctx context.Context, name string, minOffset uint64) (int64, error)
 
 	// Metrics returns the node's live telemetry snapshot.
 	Metrics(ctx context.Context) (Metrics, error)
-
-	// LogQueue returns a handle for append, read, stream, tail, and groups.
-	LogQueue(name string) (LogQueue, error)
-
-	// TaskQueue returns a handle for at-least-once task processing.
-	TaskQueue(name string) (TaskQueue, error)
 
 	// Schema returns the parameter table the server accepts. Embedded clients
 	// return spec.Table directly; remote clients fetch it over OpSchema.
@@ -97,6 +103,9 @@ func Dial(target string, opts ...ClientOption) (Client, error) {
 // from the next layer down: call over spec over session over built-in.
 type Spec = spec.Spec
 
+// SpecVersion is the spec schema number this build speaks over the wire.
+const SpecVersion = spec.CurrentSpecVersion
+
 // EngineSpec covers the log-segment writer parameters of a Spec.
 type EngineSpec = spec.EngineSpec
 
@@ -109,11 +118,14 @@ type TaskSpec = spec.TaskSpec
 // Duration is a time span that serializes as a Go duration string such as "10ms".
 type Duration = spec.Duration
 
-// Message is one record read from a log queue.
-type Message = engine.Message
+// Record is one record read from a log queue.
+type Record = engine.Record
 
 // LogQueue provides log-oriented operations (append, streaming, tailing, groups).
-type LogQueue = logqueue.ClientLogQueue
+type LogQueue = logqueue.Log
+
+// AppendOption configures a record being appended to a log queue.
+type AppendOption = logqueue.AppendOption
 
 // Group tracks consumer offsets for a log queue.
 type Group = logqueue.Group
@@ -128,14 +140,27 @@ type Task = taskqueue.Task
 
 // TaskRef identifies a task for Ack, Nack, Extend, and AckDeadLetter. Pass a
 // Task for the strict stale-lease check; pass a TaskID to skip that check.
-type TaskRef = taskqueue.TaskRef
+type TaskRef = taskqueue.Ref
 
 // TaskID is a bare task identifier.
-type TaskID = taskqueue.TaskID
+type TaskID = taskqueue.ID
 
-// QueueDescription is the full truth about one queue: its stored spec, its
+// QueueDescription is the full truth about one queue: its kind, stored spec, its
 // effective spec, and the session defaults it inherits from.
 type QueueDescription = client.QueueDescription
+
+// QueueInfo is a queue's name and kind.
+type QueueInfo = node.QueueInfo
+
+// QueueKind identifies a queue's structural type: log or task.
+type QueueKind = node.Kind
+
+const (
+	// QueueKindLog marks log queues under log/.
+	QueueKindLog = node.KindLog
+	// QueueKindTask marks task queues under task/.
+	QueueKindTask = node.KindTask
+)
 
 // Metrics is the node's live telemetry snapshot: runtime and process gauges,
 // per-queue instruments, and totals.
@@ -173,6 +198,12 @@ var (
 	ErrQueueClosed = engine.ErrQueueClosed
 	// ErrCorruptRecord reports an unreadable record on disk.
 	ErrCorruptRecord = engine.ErrCorruptRecord
+	// ErrRecordCompacted reports a read of a record compaction removed.
+	ErrRecordCompacted = engine.ErrRecordCompacted
+	// ErrDiskFull reports a write that could not be persisted.
+	ErrDiskFull = engine.ErrDiskFull
+	// ErrWrongKind reports a queue addressed through the wrong driver.
+	ErrWrongKind = node.ErrWrongKind
 
 	// ErrNoData reports that a fetch or read found no available records.
 	ErrNoData = engine.ErrNoData
@@ -197,6 +228,8 @@ var (
 	ErrTaskStale = taskqueue.ErrTaskStale
 	// ErrTaskClosed reports an operation on a closed task queue.
 	ErrTaskClosed = taskqueue.ErrTaskClosed
+	// ErrQueueFull reports an enqueue refused by a queue's in-flight bound.
+	ErrQueueFull = taskqueue.ErrQueueFull
 	// ErrInvalidTask reports an invalid task record or argument.
 	ErrInvalidTask = taskqueue.ErrInvalidTask
 	// ErrCheckpointCorrupt reports an unreadable task checkpoint.
@@ -205,6 +238,8 @@ var (
 	ErrDeadLetterNotFound = taskqueue.ErrDeadLetterNotFound
 	// ErrDeadLetterStale reports a dead-letter ack whose task changed.
 	ErrDeadLetterStale = taskqueue.ErrDeadLetterStale
+	// ErrArchiveFailed reports a failure archiving a task.
+	ErrArchiveFailed = taskqueue.ErrArchiveFailed
 )
 
-type _ = iter.Seq2[Message, error]
+type _ = iter.Seq2[Record, error]

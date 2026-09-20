@@ -19,6 +19,8 @@ type taskMetrics struct {
 	nacks       *metrics.Counter
 	extends     *metrics.Counter
 	dlqAcks     *metrics.Counter
+	dlqOverflow *metrics.Counter
+	taskStalls  *metrics.Counter
 	enqueueDur  *metrics.Histogram
 	dequeueWait *metrics.Histogram
 }
@@ -31,23 +33,30 @@ func newTaskMetrics(scope *metrics.Scope) *taskMetrics {
 		nacks:       scope.Counter("nacks"),
 		extends:     scope.Counter("extends"),
 		dlqAcks:     scope.Counter("dlq_acks"),
+		dlqOverflow: scope.Counter("dlq_overflow"),
+		taskStalls:  scope.Counter("task_stalls"),
 		enqueueDur:  scope.Histogram("enqueue_duration", taskDurationBounds),
 		dequeueWait: scope.Histogram("dequeue_wait", taskDurationBounds),
 	}
 }
 
 // recordEnqueue updates the enqueue counters and latency histogram.
-func (q *TaskQueue) recordEnqueue(start time.Time) {
+func (q *queue) recordEnqueue(start time.Time) {
 	q.m.enqueues.Inc()
 	q.m.enqueueDur.Observe(time.Since(start).Seconds())
 }
 
 // recordDequeue updates the dequeue counter and the wait before delivery.
-func (q *TaskQueue) recordDequeue(due time.Time) {
+func (q *queue) recordDequeue(due time.Time) {
 	q.m.dequeues.Inc()
 	wait := time.Since(due).Seconds()
 	if wait < 0 {
 		wait = 0
 	}
 	q.m.dequeueWait.Observe(wait)
+}
+
+// recordStall counts a lease reclaimed after its visibility expired.
+func (q *queue) recordStall() {
+	q.m.taskStalls.Inc()
 }

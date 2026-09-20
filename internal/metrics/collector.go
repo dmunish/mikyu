@@ -3,6 +3,7 @@ package metrics
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -214,13 +215,13 @@ func (c *Collector) mergeScopes(snap *Snapshot) {
 		counters, gauges, histograms := scope.read()
 		pos, ok := index[scope.Name()]
 		if !ok {
-			snap.Queues = append(snap.Queues, QueueView{Name: scope.Name(), Kind: "shared"})
+			snap.Queues = append(snap.Queues, QueueView{Name: scope.Name(), Kind: "internal"})
 			pos = len(snap.Queues) - 1
 			index[scope.Name()] = pos
 		}
 		qv := &snap.Queues[pos]
 		if qv.Kind == "" {
-			qv.Kind = "shared"
+			qv.Kind = "internal"
 		}
 		// Sources and scopes both contribute instruments to the same queue view,
 		// so merge rather than replace: a source's gauges must survive.
@@ -239,9 +240,7 @@ func mergeInt64(dst *map[string]int64, src map[string]int64) {
 	if *dst == nil {
 		*dst = make(map[string]int64, len(src))
 	}
-	for k, v := range src {
-		(*dst)[k] = v
-	}
+	maps.Copy((*dst), src)
 }
 
 func mergeHistograms(dst *map[string]HistogramSnapshot, src map[string]HistogramSnapshot) {
@@ -251,9 +250,7 @@ func mergeHistograms(dst *map[string]HistogramSnapshot, src map[string]Histogram
 	if *dst == nil {
 		*dst = make(map[string]HistogramSnapshot, len(src))
 	}
-	for k, v := range src {
-		(*dst)[k] = v
-	}
+	maps.Copy((*dst), src)
 }
 
 func computeRates(prev *Snapshot, next *Snapshot) {

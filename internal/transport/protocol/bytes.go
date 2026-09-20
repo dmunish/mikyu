@@ -15,6 +15,15 @@ type Reader struct {
 
 func NewReader(b []byte) *Reader { return &Reader{b: b} }
 
+func (r *Reader) ReadU8() (byte, error) {
+	if r.i+1 > len(r.b) {
+		return 0, ErrTruncatedBody
+	}
+	v := r.b[r.i]
+	r.i++
+	return v, nil
+}
+
 func (r *Reader) ReadU16() (uint16, error) {
 	if r.i+2 > len(r.b) {
 		return 0, ErrTruncatedBody
@@ -57,6 +66,8 @@ func (r *Reader) ReadBytes() ([]byte, error) {
 
 // Buffer provides zero-allocation builder helpers for constructing protocol payload bytes.
 type Buffer struct{ b []byte }
+
+func (buf *Buffer) WriteU8(v byte) { buf.b = append(buf.b, v) }
 
 func (buf *Buffer) WriteU16(v uint16) {
 	var tmp [2]byte

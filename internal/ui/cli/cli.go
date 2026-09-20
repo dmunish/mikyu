@@ -60,6 +60,7 @@ var handlers = map[string]func(*invocation, []string) error{
 	"extend":   (*invocation).handleExtend,
 	"dlq":      (*invocation).handleDLQ,
 	"dlq-ack":  (*invocation).handleDLQAck,
+	"archive":  (*invocation).handleArchive,
 	"metrics":  (*invocation).handleMetrics,
 	"shutdown": (*invocation).handleShutdown,
 	"login":    (*invocation).handleLogin,
@@ -215,24 +216,34 @@ func (in *invocation) handleList(args []string) error {
 		return err
 	}
 	for _, q := range queues {
-		fmt.Fprintln(in.app.Stdout, q)
+		fmt.Fprintf(in.app.Stdout, "%s\t%s\n", q.Name, q.Kind)
 	}
 	return nil
 }
 
 func (in *invocation) handleCreate(args []string) error {
 	var patch spec.Spec
-	rest, err := command.ParseAnywhere(command.QueueFlagSet("create", &patch), args)
+	var typeName string
+	fs := command.QueueFlagSet("create", &patch)
+	fs.StringVar(&typeName, "type", "", "queue kind: log or task (required)")
+	rest, err := command.ParseAnywhere(fs, args)
 	if err != nil {
 		return in.app.usage("create: %v", err)
 	}
 	if len(rest) != 1 {
-		return in.app.usage("usage: mikyu create [flags] <queue>")
+		return in.app.usage("usage: mikyu create --type log|task [flags] <queue>")
 	}
-	if err := command.Create(in.ctx, in.client, rest[0], command.SpecOption(patch)); err != nil {
+	if typeName == "" {
+		return in.app.usage("create: --type log|task is required")
+	}
+	kind, err := command.KindFromName(typeName)
+	if err != nil {
+		return in.app.usage("create: %v", err)
+	}
+	if err := command.Create(in.ctx, in.client, kind, rest[0], command.SpecOption(patch)); err != nil {
 		return err
 	}
-	fmt.Fprintf(in.app.Stdout, "created queue %q\n", rest[0])
+	fmt.Fprintf(in.app.Stdout, "created queue %q (%s)\n", rest[0], kind)
 	return nil
 }
 
@@ -306,7 +317,12 @@ func (in *invocation) handleDescribe(args []string) error {
 	stored, _ := json.Marshal(d.Spec)
 	effective, _ := json.Marshal(d.Effective)
 	defaults, _ := json.Marshal(d.Defaults)
-	fmt.Fprintf(in.app.Stdout, "queue:     %s\n", rest[0])
+	compaction := "off"
+	if d.Effective.Engine.Compaction != nil && *d.Effective.Engine.Compaction {
+		compaction = "on"
+	}
+	fmt.Fprintf(in.app.Stdout, "queue:     %s (%s)\n", rest[0], d.Kind)
+	fmt.Fprintf(in.app.Stdout, "compaction: %s\n", compaction)
 	fmt.Fprintf(in.app.Stdout, "stored:    %s\n", stored)
 	fmt.Fprintf(in.app.Stdout, "effective: %s\n", effective)
 	fmt.Fprintf(in.app.Stdout, "defaults:  %s\n", defaults)
@@ -341,10 +357,18 @@ func (in *invocation) handleDelete(args []string) error {
 }
 
 func (in *invocation) handleAppend(args []string) error {
-	if len(args) != 2 {
-		return in.app.usage("usage: mikyu append <queue> <payload|@file|->")
+	var key string
+	fs := newFlagSet("append")
+	fs.StringVar(&key, "key", "", "the subject key this record belongs to")
+
+	rest, err := command.ParseAnywhere(fs, args)
+	if err != nil {
+		return in.app.usage("append: %v", err)
 	}
-	offset, _, err := command.Append(in.ctx, in.client, args[0], args[1])
+	if len(rest) != 2 {
+		return in.app.usage("usage: mikyu append [--key <key>] <queue> <payload|@file|->")
+	}
+	offset, _, err := command.Append(in.ctx, in.client, rest[0], rest[1], []byte(key))
 	if err != nil {
 		return err
 	}
@@ -382,7 +406,7 @@ func (in *invocation) handleTail(args []string) error {
 		}
 	}
 
-	err := command.Tail(in.ctx, in.client, args[0], start, func(msg mikyu.Message) error {
+	err := command.Tail(in.ctx, in.client, args[0], start, func(msg mikyu.Record) error {
 		prefix := fmt.Sprintf("offset=%d id=%s ts=%s payload=", msg.Offset, msg.ID, msg.Timestamp.Format(time.RFC3339Nano))
 		termWidth := command.GetTerminalWidth()
 		avail := -1
@@ -492,8 +516,15 @@ func (in *invocation) renderMetrics(snap mikyu.Metrics, queueFilter string, asJS
 			continue
 		}
 		g := qv.Gauges
-		fmt.Fprintf(in.app.Stdout, "queue %s: messages=%d, segments=%d, size=%d, last_offset=%d, min_offset=%d\n",
-			qv.Name, g["messages"], g["segments"], g["size_bytes"], g["last_offset"], g["min_offset"])
+		extra := ""
+		if v := qv.Counters["task_stalls"]; v > 0 {
+			extra += fmt.Sprintf(", task_stalls=%d", v)
+		}
+		if v := qv.Counters["dlq_overflow"]; v > 0 {
+			extra += fmt.Sprintf(", dlq_overflow=%d", v)
+		}
+		fmt.Fprintf(in.app.Stdout, "queue %s: messages=%d, segments=%d, size=%d, last_offset=%d, min_offset=%d%s\n",
+			qv.Name, g["messages"], g["segments"], g["size_bytes"], g["last_offset"], g["min_offset"], extra)
 	}
 	return nil
 }

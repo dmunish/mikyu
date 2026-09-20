@@ -6,7 +6,7 @@ import (
 )
 
 // TryDequeue performs one non-blocking scheduling pass.
-func (q *TaskQueue) TryDequeue(ctx context.Context) (Task, error) {
+func (q *queue) TryDequeue(ctx context.Context) (Task, error) {
 	if err := ctx.Err(); err != nil {
 		return Task{}, err
 	}
@@ -26,7 +26,7 @@ func (q *TaskQueue) TryDequeue(ctx context.Context) (Task, error) {
 	return Task{}, ErrTaskNotAvailable
 }
 
-func (q *TaskQueue) Dequeue(ctx context.Context) (Task, error) {
+func (q *queue) Dequeue(ctx context.Context) (Task, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return Task{}, err
@@ -77,7 +77,7 @@ func (q *TaskQueue) Dequeue(ctx context.Context) (Task, error) {
 	}
 }
 
-func (q *TaskQueue) takeDueLocked(ctx context.Context, now time.Time) (*taskState, time.Time, bool, error) {
+func (q *queue) takeDueLocked(ctx context.Context, now time.Time) (*taskState, time.Time, bool, error) {
 	for len(q.schedule) > 0 {
 		item := q.schedule[0]
 		state, ok := q.active[item.id]
@@ -108,7 +108,11 @@ func (q *TaskQueue) takeDueLocked(ctx context.Context, now time.Time) (*taskStat
 			q.pruneScheduleLocked()
 			continue
 		}
-		deliveryID := newTaskID()
+		if state.inFlight {
+			state.task.Stalled++
+			q.recordStall()
+		}
+		deliveryID := newID()
 		state.inFlight = true
 		state.task.Attempts++
 		state.task.DeliveryID = deliveryID
@@ -117,6 +121,7 @@ func (q *TaskQueue) takeDueLocked(ctx context.Context, now time.Time) (*taskStat
 		q.pushScheduleLocked(state)
 		q.dirty++
 		q.broadcastLocked()
+		q.pruneScheduleLocked()
 		q.recordDequeue(due)
 		return state, time.Time{}, true, nil
 	}

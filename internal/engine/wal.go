@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"os"
 	"sync"
 	"time"
@@ -8,7 +9,8 @@ import (
 	"github.com/dmunish/mikyu/internal/metrics"
 )
 
-const asyncChanBufferCap = 65536
+// writerHook, when non-nil, runs before every WAL file write so tests can assert the single-writer invariant.
+var writerHook func()
 
 type pendingEntry struct {
 	pos int64
@@ -25,6 +27,12 @@ type asyncEntry struct {
 
 // wal manages write-ahead logging using adaptive dual-threshold flusher batching
 // with micro-linger group commits to minimize fsync overhead.
+//
+// Single writer: exactly one goroutine (the syncLoop) writes bytes to the WAL
+// segment file. Producers only stage records via push/pushBatch (sync path) or
+// pushAsync (async path); flush and drainAndFlushAsync are the sole callers of
+// writeAt. Async backpressure is bounded: asyncChan holds BatchSize entries,
+// a full channel blocks the producer, and a canceled context yields ctx.Err().
 type wal struct {
 	cfg  Config
 	file *os.File
@@ -50,17 +58,18 @@ type wal struct {
 }
 
 func newWAL(f *os.File, cfg Config, startOffset int64, scopes ...*metrics.Scope) *wal {
+	cfg = cfg.withDefaults()
 	initCap := cfg.BatchSize * 1024
 	w := &wal{
 		file:          f,
-		cfg:           cfg.withDefaults(),
+		cfg:           cfg,
 		published:     startOffset,
 		pushed:        startOffset,
 		buf:           make([]byte, 0, initCap),
 		pending:       make([]pendingEntry, 0, cfg.BatchSize),
 		swapBuf:       make([]byte, 0, initCap),
 		swapPending:   make([]pendingEntry, 0, cfg.BatchSize),
-		asyncChan:     make(chan asyncEntry, asyncChanBufferCap),
+		asyncChan:     make(chan asyncEntry, cfg.BatchSize),
 		wake:          make(chan struct{}, 1),
 		configChanged: make(chan struct{}, 1),
 		shutdown:      make(chan struct{}),
@@ -166,6 +175,26 @@ func (w *wal) pushBatch(recs [][]byte, positions []int64) (seq int64, wake bool,
 	return seq, wake, nil
 }
 
+// writeAt is the only writer of the WAL segment file; flush and drainAndFlushAsync call it.
+func (w *wal) writeAt(p []byte, off int64) (int, error) {
+	if writerHook != nil {
+		writerHook()
+	}
+	return w.file.WriteAt(p, off)
+}
+
+// pushAsync stages one record on the async path, blocking while the channel is full and honoring ctx.
+func (w *wal) pushAsync(ctx context.Context, e asyncEntry) error {
+	select {
+	case w.asyncChan <- e:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-w.shutdown:
+		return ErrQueueClosed
+	}
+}
+
 func (w *wal) wait(seq int64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -225,7 +254,7 @@ func (w *wal) flush() {
 
 	start := time.Now()
 	var writeErr error
-	if _, err := w.file.WriteAt(data, entries[0].pos); err != nil {
+	if _, err := w.writeAt(data, entries[0].pos); err != nil {
 		writeErr = err
 	} else if fsync {
 		if err := syncData(w.file); err != nil {
@@ -278,7 +307,7 @@ WRITE:
 
 	start := time.Now()
 	for _, e := range entries {
-		if _, err := e.seg.logFile.WriteAt(e.rec, e.pos); err != nil {
+		if _, err := w.writeAt(e.rec, e.pos); err != nil {
 			w.setError(err)
 			return
 		}

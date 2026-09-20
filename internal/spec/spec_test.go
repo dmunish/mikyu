@@ -282,12 +282,15 @@ engine:
   segment_age: "1h"
   encrypted: false
   fsync: true
+  compaction: false
 retention:
   age: "0s"
   bytes: 0
 task:
   default_visibility: "30s"
   default_max_attempts: 5
+  max_in_flight: 100000
+  max_dlq: 100000
 `
 	s, err := DecodeSpecYAML([]byte(doc))
 	require.NoError(t, err)
@@ -395,13 +398,13 @@ func TestLayerKindAndParamNames(t *testing.T) {
 
 // The wire carries the spec schema number, not a protocol version.
 func TestCheckSpecVersion(t *testing.T) {
-	require.Equal(t, uint16(1), CurrentSpecVersion)
+	require.Equal(t, uint16(3), CurrentSpecVersion)
 	require.NoError(t, CheckSpecVersion(0))
 	require.NoError(t, CheckSpecVersion(CurrentSpecVersion))
 
 	err := CheckSpecVersion(CurrentSpecVersion + 1)
 	require.ErrorIs(t, err, ErrSpecTooNew)
-	require.Contains(t, err.Error(), "2")
+	require.Contains(t, err.Error(), "3")
 }
 
 // Equal is presence-aware: a field set to zero differs from a field left unset.

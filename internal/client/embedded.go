@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"fmt"
-	"io"
 
 	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/dmunish/mikyu/internal/node"
@@ -13,7 +12,7 @@ import (
 )
 
 // TaskQueue is the client-facing task driver interface.
-type TaskQueue = taskqueue.ClientTaskQueue
+type TaskQueue = taskqueue.Queue
 
 // embeddedClient implements the client on top of a reference-counted
 // node.Node from the process pool. It owns one reference; Close releases it.
@@ -47,9 +46,26 @@ func NewEmbedded(dir string, opts ...Option) (*embeddedClient, error) {
 	return &embeddedClient{node: n, release: release}, nil
 }
 
-// CreateQueue creates a new log queue from a sparse spec.
-func (c *embeddedClient) CreateQueue(ctx context.Context, name string, opts ...QueueOption) error {
-	return c.node.CreateQueue(ctx, name, applyQueueOptions(opts))
+// CreateLogQueue declares a log queue from a sparse spec and returns its handle.
+func (c *embeddedClient) CreateLogQueue(ctx context.Context, name string, opts ...QueueOption) (logqueue.Log, error) {
+	return c.node.CreateLogQueue(ctx, name, applyQueueOptions(opts))
+}
+
+// CreateTaskQueue declares a task queue from a sparse spec and returns its handle.
+func (c *embeddedClient) CreateTaskQueue(ctx context.Context, name string, opts ...QueueOption) (taskqueue.Queue, error) {
+	s := applyQueueOptions(opts)
+	if err := rejectCompaction(s); err != nil {
+		return nil, err
+	}
+	return c.node.CreateTaskQueue(ctx, name, s)
+}
+
+// rejectCompaction enforces at the SDK boundary that compaction is a log-queue setting.
+func rejectCompaction(s spec.Spec) error {
+	if s.Engine.Compaction != nil && *s.Engine.Compaction {
+		return fmt.Errorf("%w: compaction is a log-queue setting", spec.ErrInvalidConfig)
+	}
+	return nil
 }
 
 // UpdateQueue merges a sparse patch into the queue's stored spec and applies the mutable fields to the live queue.
@@ -81,8 +97,8 @@ func (c *embeddedClient) Schema(ctx context.Context) ([]spec.Param, error) {
 	return out, nil
 }
 
-// ListQueues returns all queue names.
-func (c *embeddedClient) ListQueues(ctx context.Context) ([]string, error) {
+// ListQueues returns every queue's name and kind.
+func (c *embeddedClient) ListQueues(ctx context.Context) ([]QueueInfo, error) {
 	return c.node.ListQueues(ctx)
 }
 
@@ -104,16 +120,4 @@ func (c *embeddedClient) Close() error {
 	return c.release()
 }
 
-var _ interface {
-	io.Closer
-	CreateQueue(context.Context, string, ...QueueOption) error
-	UpdateQueue(context.Context, string, ...QueueOption) error
-	DescribeQueue(context.Context, string) (QueueDescription, error)
-	LogQueue(string) (logqueue.ClientLogQueue, error)
-	TaskQueue(string) (TaskQueue, error)
-	ListQueues(context.Context) ([]string, error)
-	DeleteQueue(context.Context, string) error
-	Truncate(context.Context, string, uint64) (int64, error)
-	Metrics(context.Context) (metrics.Snapshot, error)
-	Schema(context.Context) ([]spec.Param, error)
-} = (*embeddedClient)(nil)
+var _ Client = (*embeddedClient)(nil)

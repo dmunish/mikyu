@@ -3,7 +3,7 @@ package taskqueue
 import "context"
 
 // Ack removes a task after successful processing.
-func (q *TaskQueue) Ack(ctx context.Context, ref TaskRef) error {
+func (q *queue) Ack(ctx context.Context, ref Ref) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}

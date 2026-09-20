@@ -7,7 +7,7 @@ import (
 )
 
 // DeadLetters returns a stable snapshot of this queue's durable dead-letter queue.
-func (q *TaskQueue) DeadLetters(ctx context.Context) ([]Task, error) {
+func (q *queue) DeadLetters(ctx context.Context) ([]Task, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -30,7 +30,7 @@ func (q *TaskQueue) DeadLetters(ctx context.Context) ([]Task, error) {
 }
 
 // AckDeadLetter permanently removes a dead-lettered task after inspection.
-func (q *TaskQueue) AckDeadLetter(ctx context.Context, ref TaskRef) error {
+func (q *queue) AckDeadLetter(ctx context.Context, ref Ref) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}

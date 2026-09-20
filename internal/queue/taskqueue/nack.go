@@ -6,7 +6,7 @@ import (
 )
 
 // Nack re-queues a task for redelivery, or moves it to the DLQ when its attempt budget is exhausted.
-func (q *TaskQueue) Nack(ctx context.Context, ref TaskRef, opts ...NackOption) error {
+func (q *queue) Nack(ctx context.Context, ref Ref, opts ...NackOption) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -24,6 +24,22 @@ func (q *TaskQueue) Nack(ctx context.Context, ref TaskRef, opts ...NackOption) e
 	}
 	delay := ResolveNackOptions(state.task, opts...)
 	if state.task.Attempts >= state.task.MaxAttempts {
+		if q.maxDLQ > 0 && uint32(len(q.dlq)) >= q.maxDLQ {
+			// Drop the oldest DLQ entry by offset.
+			var oldestID string
+			var oldestOff uint64 = ^uint64(0)
+			for id, t := range q.dlq {
+				if t.Offset < oldestOff {
+					oldestOff = t.Offset
+					oldestID = id
+				}
+			}
+			if oldestID != "" {
+				delete(q.dlq, oldestID)
+				delete(q.dlqUncheckpointed, oldestID)
+				q.m.dlqOverflow.Inc()
+			}
+		}
 		if _, err := q.storage.Append(ctx, encodeDeadLetterRecord(state.task)); err != nil {
 			return err
 		}

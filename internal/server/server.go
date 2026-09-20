@@ -17,6 +17,12 @@ import (
 	"github.com/dmunish/mikyu/internal/transport/protocol"
 )
 
+// Shutdown contract: Stop stops accepting and drains in-flight handlers, then
+// the node is released. Parked waiters wake deterministically: an in-flight
+// WAL.push completes or fails with ErrQueueClosed, a parked Fetch or Dequeue
+// wakes with ErrQueueClosed, and a parked Tail or Stream yields ErrQueueClosed
+// once and stops.
+
 // Server accepts client connections and dispatches wire protocol frames to a local node.Node.
 type Server struct {
 	node      *node.Node
@@ -76,12 +82,12 @@ func WithMaxConns(n int) ServerOption {
 
 // getOrCreateLogQueue returns the stable server-side handle for name. The
 // cache and retention registration live in the node.
-func (s *Server) getOrCreateLogQueue(name string) (*logqueue.LogQueue, error) {
+func (s *Server) getOrCreateLogQueue(name string) (logqueue.Log, error) {
 	return s.node.LogQueue(name)
 }
 
 // getOrCreateTaskQueue returns the stable server-side task handle for name.
-func (s *Server) getOrCreateTaskQueue(name string) (*taskqueue.TaskQueue, error) {
+func (s *Server) getOrCreateTaskQueue(name string) (taskqueue.Queue, error) {
 	return s.node.TaskQueue(name)
 }
 
@@ -243,9 +249,7 @@ func (s *Server) serveConn(conn net.Conn) {
 	reqCh := make(chan request) // unbuffered: one frame of lookahead, natural backpressure
 
 	var readerWG sync.WaitGroup
-	readerWG.Add(1)
-	go func() {
-		defer readerWG.Done()
+	readerWG.Go(func() {
 		defer close(reqCh)
 		defer cancel() // a dead reader must wake a handler parked on a long-poll
 		select {
@@ -266,7 +270,7 @@ func (s *Server) serveConn(conn net.Conn) {
 				return
 			}
 		}
-	}()
+	})
 
 	for req := range reqCh {
 		respOp, respBody, shouldShutdown := s.dispatch(ctx, req.op, req.body)

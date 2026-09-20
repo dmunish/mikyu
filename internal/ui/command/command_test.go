@@ -58,16 +58,18 @@ func TestCommandLifecycle(t *testing.T) {
 	ctx := t.Context()
 
 	// 1. Create Queue
-	err = command.Create(ctx, client, "events")
+	err = command.Create(ctx, client, mikyu.QueueKindLog, "events")
 	require.NoError(t, err)
 
 	// 2. List Queues
 	queues, err := command.List(ctx, client)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"events"}, queues)
+	require.Len(t, queues, 1)
+	assert.Equal(t, "events", queues[0].Name)
+	assert.Equal(t, mikyu.QueueKindLog, queues[0].Kind)
 
 	// 3. Produce
-	off, size, err := command.Append(ctx, client, "events", "msg1")
+	off, size, err := command.Append(ctx, client, "events", "msg1", nil)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(0), off)
 	assert.Equal(t, 4, size)
@@ -81,7 +83,7 @@ func TestCommandLifecycle(t *testing.T) {
 	tailCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
 	var received []string
-	_ = command.Tail(tailCtx, client, "events", 0, func(m mikyu.Message) error {
+	_ = command.Tail(tailCtx, client, "events", 0, func(m mikyu.Record) error {
 		received = append(received, string(m.Payload))
 		return nil
 	})

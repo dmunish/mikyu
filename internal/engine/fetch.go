@@ -6,7 +6,7 @@ import (
 )
 
 // Fetch returns up to maxCount messages starting at offset, blocking up to maxWait.
-func (q *Queue) Fetch(ctx context.Context, offset uint64, maxCount int, maxWait time.Duration) ([]Message, error) {
+func (q *Queue) Fetch(ctx context.Context, offset uint64, maxCount int, maxWait time.Duration) ([]Record, error) {
 	if maxCount <= 0 {
 		return nil, nil
 	}
@@ -29,7 +29,19 @@ func (q *Queue) Fetch(ctx context.Context, offset uint64, maxCount int, maxWait 
 			return nil, ErrOffsetTruncated
 		}
 		if offset < published {
-			return q.ReadBatch(ctx, offset, maxCount)
+			msgs, err := q.ReadBatch(ctx, offset, maxCount)
+			if err != nil {
+				return nil, err
+			}
+			if len(msgs) > 0 {
+				return msgs, nil
+			}
+			// The window held only compacted records; advance past it so callers see the next live record.
+			if offset+uint64(maxCount) >= published {
+				return nil, ErrNoData
+			}
+			offset += uint64(maxCount)
+			continue
 		}
 		if maxWait <= 0 {
 			return nil, ErrNoData

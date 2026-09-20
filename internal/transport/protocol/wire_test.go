@@ -23,11 +23,11 @@ func sampleTask() Task {
 }
 
 var opNames = map[byte]string{
-	OpCreateQueue: "create_queue", OpDeleteQueue: "delete_queue", OpListQueues: "list_queues",
-	OpUpdateQueue: "update_queue", OpDescribeQueue: "describe_queue", OpTruncate: "truncate", OpMetrics: "metrics",
+	OpCreate: "create", OpDelete: "delete", OpList: "list",
+	OpUpdate: "update", OpDescribe: "describe", OpTruncate: "truncate", OpMetrics: "metrics",
 	OpAppend: "append", OpAppendBatch: "append_batch", OpRead: "read", OpReadBatch: "read_batch",
-	OpLastOffset: "last_offset", OpCommit: "commit", OpCommitted: "committed", OpFetch: "fetch",
-	OpEnqueue: "enqueue", OpDequeue: "dequeue", OpAck: "ack", OpNack: "nack", OpExtend: "extend",
+	OpLastOffset: "last_offset", OpMinOffset: "min_offset", OpCommit: "commit", OpCommitted: "committed", OpFetch: "fetch",
+	OpEnqueue: "enqueue", OpDequeue: "dequeue", OpAck: "ack", OpNack: "nack", OpExtend: "extend", OpArchive: "archive",
 	OpDeadLetters: "dead_letters", OpDeadLetterAck: "dead_letter_ack",
 }
 
@@ -39,18 +39,19 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 	payloads := func(op byte) []byte {
 		var b Buffer
 		switch op {
-		case OpCreateQueue:
+		case OpCreate:
+			b.WriteU8(1) // kind: log
 			b.WriteBytes([]byte("payments"))
-			b.WriteU16(1)
+			b.WriteU16(3)
 			b.WriteBytes([]byte(`{"engine":{"fsync":true}}`))
-		case OpDeleteQueue:
+		case OpDelete:
 			b.WriteBytes([]byte("payments"))
-		case OpListQueues:
-		case OpUpdateQueue:
+		case OpList:
+		case OpUpdate:
 			b.WriteBytes([]byte("payments"))
-			b.WriteU16(1)
+			b.WriteU16(3)
 			b.WriteBytes([]byte(`{"engine":{"batch_size":64}}`))
-		case OpDescribeQueue:
+		case OpDescribe:
 			b.WriteBytes([]byte("payments"))
 		case OpTruncate:
 			b.WriteBytes([]byte("payments"))
@@ -59,9 +60,11 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 		case OpAppend:
 			b.WriteBytes([]byte("events"))
 			b.WriteBytes([]byte("hello"))
+			b.WriteBytes([]byte("user-42"))
 		case OpAppendBatch:
 			b.WriteBytes([]byte("events"))
 			b.WriteU32(2)
+			b.WriteBytes([]byte("user-42"))
 			b.WriteBytes([]byte("one"))
 			b.WriteBytes([]byte("two"))
 		case OpRead:
@@ -71,7 +74,7 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 			b.WriteBytes([]byte("events"))
 			b.WriteU64(3)
 			b.WriteU32(10)
-		case OpLastOffset:
+		case OpLastOffset, OpMinOffset:
 			b.WriteBytes([]byte("events"))
 		case OpCommit:
 			b.WriteBytes([]byte("events"))
@@ -89,6 +92,9 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 		case OpDequeue:
 			EncodeTaskDequeue(&b, "tasks", 250*time.Millisecond)
 		case OpAck, OpDeadLetterAck:
+			b.WriteBytes([]byte("tasks"))
+			EncodeTaskRef(&b, sampleTask())
+		case OpArchive:
 			b.WriteBytes([]byte("tasks"))
 			EncodeTaskRef(&b, sampleTask())
 		case OpNack:
@@ -114,36 +120,46 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 	}
 
 	ops := []byte{
-		OpCreateQueue, OpDeleteQueue, OpListQueues, OpUpdateQueue, OpDescribeQueue, OpTruncate, OpMetrics,
-		OpAppend, OpAppendBatch, OpRead, OpReadBatch, OpLastOffset, OpCommit, OpCommitted, OpFetch,
-		OpEnqueue, OpDequeue, OpAck, OpNack, OpExtend, OpDeadLetters, OpDeadLetterAck,
+		OpCreate, OpDelete, OpList, OpUpdate, OpDescribe, OpTruncate, OpMetrics,
+		OpAppend, OpAppendBatch, OpRead, OpReadBatch, OpLastOffset, OpMinOffset, OpCommit, OpCommitted, OpFetch,
+		OpEnqueue, OpDequeue, OpAck, OpNack, OpExtend, OpArchive, OpDeadLetters, OpDeadLetterAck,
 	}
 	for _, op := range ops {
 		t.Run(opNames[op], func(t *testing.T) {
 			r := NewReader(payloads(op))
 
 			switch op {
-			case OpCreateQueue, OpUpdateQueue:
-				want := `{"engine":{"fsync":true}}`
-				if op == OpUpdateQueue {
-					want = `{"engine":{"batch_size":64}}`
-				}
+			case OpCreate:
+				kind, err := r.ReadU8()
+				require.NoError(t, err)
+				assert.Equal(t, byte(1), kind)
 				name, err := r.ReadBytes()
 				require.NoError(t, err)
 				assert.Equal(t, "payments", string(name))
 				version, err := r.ReadU16()
 				require.NoError(t, err)
-				assert.Equal(t, uint16(1), version)
+				assert.Equal(t, uint16(3), version)
 				data, err := r.ReadBytes()
 				require.NoError(t, err)
-				assert.JSONEq(t, want, string(data))
-			case OpDeleteQueue, OpDescribeQueue, OpLastOffset, OpDeadLetters:
+				assert.JSONEq(t, `{"engine":{"fsync":true}}`, string(data))
+			case OpUpdate:
+				name, err := r.ReadBytes()
+				require.NoError(t, err)
+				assert.Equal(t, "payments", string(name))
+				version, err := r.ReadU16()
+				require.NoError(t, err)
+				assert.Equal(t, uint16(3), version)
+				data, err := r.ReadBytes()
+				require.NoError(t, err)
+				assert.JSONEq(t, `{"engine":{"batch_size":64}}`, string(data))
+			case OpDelete, OpDescribe, OpLastOffset, OpMinOffset, OpDeadLetters:
 				name, err := r.ReadBytes()
 				require.NoError(t, err)
 				assert.NotEmpty(t, name)
 			case OpAppend:
 				assert.Equal(t, "events", string(mustReadBytes(t, r)))
 				assert.Equal(t, "hello", string(mustReadBytes(t, r)))
+				assert.Equal(t, "user-42", string(mustReadBytes(t, r)))
 			case OpTruncate:
 				assert.NotEmpty(t, mustReadBytes(t, r))
 				off, err := r.ReadU64()
@@ -180,7 +196,7 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, "tasks", queue)
 				assert.Equal(t, 250*time.Millisecond, timeout)
-			case OpAck, OpDeadLetterAck, OpNack, OpExtend:
+			case OpAck, OpDeadLetterAck, OpArchive, OpNack, OpExtend:
 				assert.NotEmpty(t, mustReadBytes(t, r))
 				id, task, mode, err := DecodeTaskRef(r)
 				require.NoError(t, err)
@@ -220,6 +236,7 @@ func TestFrameRoundTripAllOps(t *testing.T) {
 				n, err := r.ReadU32()
 				require.NoError(t, err)
 				assert.Equal(t, uint32(2), n)
+				assert.Equal(t, "user-42", string(mustReadBytes(t, r)))
 				for range n {
 					assert.NotEmpty(t, mustReadBytes(t, r))
 				}
@@ -268,4 +285,21 @@ func mustReadBytes(t *testing.T, r *Reader) []byte {
 	b, err := r.ReadBytes()
 	require.NoError(t, err)
 	return b
+}
+
+func TestRecordRoundTripCarriesGroup(t *testing.T) {
+	rec := Record{Offset: 7, ID: "id-1", Timestamp: time.Unix(0, 123), Group: []byte("user-42"), Payload: []byte("hello")}
+	var b Buffer
+	WriteRecord(&b, rec)
+	got, err := ReadRecord(NewReader(b.Bytes()))
+	require.NoError(t, err)
+	assert.Equal(t, rec, got)
+
+	var bl Buffer
+	WriteRecordList(&bl, []Record{rec, {Offset: 8, Payload: []byte("no-group")}})
+	list, err := ReadRecordList(NewReader(bl.Bytes()))
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	assert.Equal(t, rec, list[0])
+	assert.Empty(t, list[1].Group)
 }

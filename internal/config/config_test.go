@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/manager"
 	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,8 +34,10 @@ defaults:
     age: "72h"
 queues:
   payments:
-    engine:
-      fsync: false
+    kind: log
+    spec:
+      engine:
+        fsync: false
 `), 0o644))
 
 	cfg, path, err := Load(cfgPath)
@@ -50,10 +53,11 @@ queues:
 
 	payments, ok := cfg.Queues["payments"]
 	require.True(t, ok)
-	require.NotNil(t, payments.Engine.Fsync)
-	assert.False(t, *payments.Engine.Fsync)
+	assert.Equal(t, manager.KindLog, payments.Kind)
+	require.NotNil(t, payments.Spec.Engine.Fsync)
+	assert.False(t, *payments.Spec.Engine.Fsync)
 	// The queue entry is sparse: unset fields inherit the session layer.
-	assert.Nil(t, payments.Engine.BatchSize)
+	assert.Nil(t, payments.Spec.Engine.BatchSize)
 }
 
 func TestLoadAutoBootstrapWhenMissing(t *testing.T) {

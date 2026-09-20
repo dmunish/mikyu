@@ -70,6 +70,7 @@ func (s *OffsetStore) recover() error {
 	}
 }
 
+// compactLocked atomically rewrites the offset file via a temp file and rename; it runs under s.mu and is the only whole-file writer.
 func (s *OffsetStore) compactLocked() error {
 	f, err := s.root.OpenFile(managerOffsetTmpName, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -81,11 +82,20 @@ func (s *OffsetStore) compactLocked() error {
 		keyBytes := []byte(key)
 		var hdr [2]byte
 		binary.BigEndian.PutUint16(hdr[:], uint16(len(keyBytes)))
-		_, _ = w.Write(hdr[:])
-		_, _ = w.Write(keyBytes)
+		if _, err := w.Write(hdr[:]); err != nil {
+			_ = f.Close()
+			return err
+		}
+		if _, err := w.Write(keyBytes); err != nil {
+			_ = f.Close()
+			return err
+		}
 		var offBuf [8]byte
 		binary.BigEndian.PutUint64(offBuf[:], off)
-		_, _ = w.Write(offBuf[:])
+		if _, err := w.Write(offBuf[:]); err != nil {
+			_ = f.Close()
+			return err
+		}
 	}
 
 	if err := w.Flush(); err != nil {
@@ -96,11 +106,18 @@ func (s *OffsetStore) compactLocked() error {
 		_ = f.Close()
 		return err
 	}
-	_ = f.Close()
-	_ = s.file.Close()
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := s.file.Close(); err != nil {
+		return err
+	}
 
 	// A rename through the root replaces the existing target file.
 	if err := s.root.Rename(managerOffsetTmpName, managerOffsetFileName); err != nil {
+		return err
+	}
+	if err := syncDir(s.root); err != nil {
 		return err
 	}
 
@@ -163,9 +180,13 @@ func (s *OffsetStore) Close() error {
 	var err error
 	if s.file != nil {
 		if s.w != nil {
-			_ = s.w.Flush()
+			if ferr := s.w.Flush(); ferr != nil {
+				err = ferr
+			}
 		}
-		err = s.file.Close()
+		if cerr := s.file.Close(); err == nil {
+			err = cerr
+		}
 		s.file = nil
 		s.w = nil
 	}

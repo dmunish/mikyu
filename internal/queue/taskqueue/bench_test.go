@@ -41,20 +41,21 @@ func BenchmarkTaskQueueDequeueAck(b *testing.B) {
 	}
 }
 
-func newBenchTaskQueue(b *testing.B) (*TaskQueue, *engine.Manager, engine.Storage) {
+func newBenchTaskQueue(b *testing.B) (*queue, *engine.Manager, engine.Storage) {
 	b.Helper()
 	dir := b.TempDir()
 	mgr, err := engine.OpenManager(dir, engine.Config{BatchSize: 32, MaxInterval: time.Millisecond, SegmentSize: 64 * 1024, MaxMessageBytes: 1 << 20}, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
-	storage, err := mgr.CreateQueue("tasks")
+	storage, err := mgr.Create("tasks")
 	if err != nil {
 		b.Fatal(err)
 	}
-	q, err := NewTaskQueue("tasks", storage, Defaults{})
+	queueIface, err := New("tasks", storage, Defaults{})
 	if err != nil {
 		b.Fatal(err)
 	}
+	q := queueIface.(*queue)
 	return q, mgr, storage
 }

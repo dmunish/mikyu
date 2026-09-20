@@ -7,7 +7,7 @@ import (
 )
 
 // LogQueue returns a cached handle to an existing log queue.
-func (c *embeddedClient) LogQueue(name string) (logqueue.ClientLogQueue, error) {
+func (c *embeddedClient) LogQueue(name string) (logqueue.Log, error) {
 	lq, err := c.node.LogQueue(name)
 	if err != nil {
 		return nil, err

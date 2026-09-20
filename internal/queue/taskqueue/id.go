@@ -5,9 +5,9 @@ import (
 	"encoding/hex"
 )
 
-// newTaskID returns a random 32-character hex identifier.
+// newID returns a random 32-character hex identifier.
 // crypto/rand.Read never fails on Go 1.24+, so no error is returned.
-func newTaskID() string {
+func newID() string {
 	var b [16]byte
 	rand.Read(b[:])
 	return hex.EncodeToString(b[:])

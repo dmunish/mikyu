@@ -6,7 +6,7 @@ import (
 )
 
 // Extend renews the current delivery lease without incrementing Attempts.
-func (q *TaskQueue) Extend(ctx context.Context, ref TaskRef, timeout time.Duration) error {
+func (q *queue) Extend(ctx context.Context, ref Ref, timeout time.Duration) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}

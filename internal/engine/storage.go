@@ -10,15 +10,15 @@ type Storage interface {
 	// Name returns the queue name.
 	Name() string
 	// Append stores a single payload and returns its offset.
-	Append(ctx context.Context, payload []byte) (uint64, error)
+	Append(ctx context.Context, payload []byte, opts ...AppendOption) (uint64, error)
 	// AppendBatch stores multiple payloads and returns their offsets.
-	AppendBatch(ctx context.Context, payloads [][]byte) ([]uint64, error)
+	AppendBatch(ctx context.Context, payloads [][]byte, opts ...AppendOption) ([]uint64, error)
 	// Read retrieves a single message by offset .
-	Read(ctx context.Context, offset uint64) (Message, error)
+	Read(ctx context.Context, offset uint64) (Record, error)
 	// ReadBatch retrieves a batch of messages starting at offset.
-	ReadBatch(ctx context.Context, start uint64, n int) ([]Message, error)
+	ReadBatch(ctx context.Context, start uint64, n int) ([]Record, error)
 	// Fetch returns up to maxCount messages starting at offset, blocking up to maxWait for new data.
-	Fetch(ctx context.Context, offset uint64, maxCount int, maxWait time.Duration) ([]Message, error)
+	Fetch(ctx context.Context, offset uint64, maxCount int, maxWait time.Duration) ([]Record, error)
 	// LastOffset returns the offset of the last written message.
 	LastOffset() uint64
 	// CommitOffset persists the consumer group offset.

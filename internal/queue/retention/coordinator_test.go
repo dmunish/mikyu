@@ -28,7 +28,7 @@ func TestCoordinatorDriverFloorsCapRequests(t *testing.T) {
 	mgr, err := engine.OpenManager(dir, engine.Config{SegmentSize: 128}, nil)
 	require.NoError(t, err)
 	defer mgr.Close()
-	storage, err := mgr.CreateQueue("coordinated")
+	storage, err := mgr.Create("coordinated")
 	require.NoError(t, err)
 	ctx := t.Context()
 	for range 16 {
@@ -37,29 +37,26 @@ func TestCoordinatorDriverFloorsCapRequests(t *testing.T) {
 	}
 
 	c := NewCoordinator(0)
-	a := floorDriver{floor: 8, constrained: true}
-	b := floorDriver{floor: 4, constrained: true}
-	c.RegisterDriver("coordinated", storage, a)
-	c.RegisterDriver("coordinated", storage, b)
+	c.RegisterTarget(&Target{Name: "coordinated", Storage: storage, Driver: floorDriver{floor: 4, constrained: true}})
 
 	// Requesting beyond the safe floor must be clamped to 4.
-	_, err = c.ReconcileQueueAt(ctx, "coordinated", 100)
+	_, err = c.ReconcileAt(ctx, "coordinated", 100)
 	require.NoError(t, err)
 	// Truncation happens at segment boundaries, so MinOffset will be <= 4 and > 0.
 	require.LessOrEqual(t, storage.MinOffset(), uint64(4))
 	require.Greater(t, storage.MinOffset(), uint64(0))
 
-	// Unregistering the blocking driver permits the next safe floor to advance.
-	c.UnregisterDriver("coordinated", b)
-	_, err = c.ReconcileQueueAt(ctx, "coordinated", 100)
+	// A looser driver permits the safe floor to advance.
+	c.RegisterTarget(&Target{Name: "coordinated", Storage: storage, Driver: floorDriver{floor: 8, constrained: true}})
+	_, err = c.ReconcileAt(ctx, "coordinated", 100)
 	require.NoError(t, err)
 	// Safe floor is now 8. MinOffset will advance further.
 	require.LessOrEqual(t, storage.MinOffset(), uint64(8))
 	require.Greater(t, storage.MinOffset(), uint64(3))
 
-	// With no constrained driver and no policy, nothing is deleted: driver
-	// floors cap deletability, they never mandate it.
-	c.UnregisterDriver("coordinated", a)
+	// With no driver and no policy, nothing is deleted: driver floors cap
+	// deletability, they never mandate it.
+	c.RegisterTarget(&Target{Name: "coordinated", Storage: storage})
 	before := storage.MinOffset()
 	_, err = c.ReconcileQueue(ctx, "coordinated")
 	require.NoError(t, err)
@@ -96,7 +93,7 @@ func TestRetentionCappedByLaggingGroup(t *testing.T) {
 
 		c := NewCoordinator(0)
 		// A consumer group that has only consumed through offset 2.
-		c.RegisterDriver("lagging", storage, floorDriver{floor: 3, constrained: true})
+		c.RegisterTarget(&Target{Name: "lagging", Storage: storage, Driver: floorDriver{floor: 3, constrained: true}})
 
 		// Age past the policy so it would drop everything...
 		synctest.Sleep(2 * time.Hour)
@@ -117,9 +114,9 @@ func TestRetentionCappedByLaggingGroup(t *testing.T) {
 func TestOffsetTruncatedAfterPolicyTruncation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := t.Context()
-		// 128B cap with 41B records: 3 per segment, so 6 records span one
+		// 130B cap with 43B records: 3 per segment, so 6 records span one
 		// closed segment [0,3) and an active one [3,6).
-		storage := enginetest.NewMemStorage("truncated", 1<<20, 128)
+		storage := enginetest.NewMemStorage("truncated", 1<<20, 130)
 		for range 6 {
 			_, err := storage.Append(ctx, []byte("payload"))
 			require.NoError(t, err)
@@ -127,7 +124,7 @@ func TestOffsetTruncatedAfterPolicyTruncation(t *testing.T) {
 		require.Equal(t, 2, len(storage.Segments()))
 		c := NewCoordinator(0)
 		// No drivers on this queue: the policy floor applies uncapped.
-		c.RegisterTarget(&QueueTarget{Name: "truncated", Storage: storage})
+		c.RegisterTarget(&Target{Name: "truncated", Storage: storage})
 		synctest.Sleep(2 * time.Hour)
 		c.SetPolicy("truncated", Policy{Age: time.Hour})
 

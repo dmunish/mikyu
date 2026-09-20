@@ -19,7 +19,7 @@ func TestTaskCommandLifecycle(t *testing.T) {
 
 	ctx := t.Context()
 
-	require.NoError(t, command.Create(ctx, client, "tasks"))
+	require.NoError(t, command.Create(ctx, client, mikyu.QueueKindTask, "tasks"))
 
 	task, n, err := command.Enqueue(ctx, client, "tasks", "hello task", command.EnqueueOptions{})
 	require.NoError(t, err)

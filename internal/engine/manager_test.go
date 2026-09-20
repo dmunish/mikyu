@@ -16,23 +16,23 @@ func TestManagerCreateGetDelete(t *testing.T) {
 	require.NoError(t, err)
 	defer mgr.Close()
 
-	q, err := mgr.CreateQueue("orders")
+	q, err := mgr.Create("orders")
 	require.NoError(t, err)
 	assert.NotNil(t, q)
 
-	_, err = mgr.CreateQueue("orders")
+	_, err = mgr.Create("orders")
 	assert.Error(t, err)
 
-	q2, err := mgr.GetQueue("orders")
+	q2, err := mgr.Get("orders")
 	require.NoError(t, err)
 	assert.Equal(t, "orders", q2.Name())
 
-	queues := mgr.ListQueues()
+	queues := mgr.List()
 	assert.Equal(t, []string{"orders"}, queues)
 
-	err = mgr.DeleteQueue("orders")
+	err = mgr.Delete("orders")
 	require.NoError(t, err)
-	_, err = mgr.GetQueue("orders")
+	_, err = mgr.Get("orders")
 	assert.Error(t, err)
 }
 
@@ -42,12 +42,12 @@ func TestManagerRejectsEscape(t *testing.T) {
 	require.NoError(t, err)
 	defer mgr.Close()
 
-	_, err = mgr.CreateQueue("../escape", Config{})
+	_, err = mgr.Create("../escape", Config{})
 	require.Error(t, err)
 
 	// A queue can only be deleted when it exists, so escaping removal names
 	// are rejected as not-found before ever reaching the filesystem.
-	require.Error(t, mgr.DeleteQueue("../../outside"))
+	require.Error(t, mgr.Delete("../../outside"))
 }
 
 func TestManagerCollectsQueues(t *testing.T) {
@@ -55,8 +55,8 @@ func TestManagerCollectsQueues(t *testing.T) {
 	mgr, _ := OpenManager(dir, Config{}, nil)
 	defer mgr.Close()
 
-	_, _ = mgr.CreateQueue("q1")
-	_, _ = mgr.CreateQueue("q2")
+	_, _ = mgr.Create("q1")
+	_, _ = mgr.Create("q2")
 	var snap metrics.Snapshot
 	mgr.Collect(t.Context(), &snap)
 	require.Len(t, snap.Queues, 2)
@@ -67,20 +67,20 @@ func TestManagerCollectsQueues(t *testing.T) {
 func TestManagerRestoresQueuesOnOpen(t *testing.T) {
 	dir := t.TempDir()
 	mgr, _ := OpenManager(dir, Config{}, nil)
-	_, _ = mgr.CreateQueue("existing")
+	_, _ = mgr.Create("existing")
 	_ = mgr.Close()
 
 	mgr2, err := OpenManager(dir, Config{}, nil)
 	require.NoError(t, err)
 	defer mgr2.Close()
-	_, err = mgr2.GetQueue("existing")
+	_, err = mgr2.Get("existing")
 	require.NoError(t, err)
 }
 
 func TestManagerCloseCleansUp(t *testing.T) {
 	dir := t.TempDir()
 	mgr, _ := OpenManager(dir, Config{}, nil)
-	_, _ = mgr.CreateQueue("q")
+	_, _ = mgr.Create("q")
 	err := mgr.Close()
 	assert.NoError(t, err)
 }
@@ -91,7 +91,7 @@ func TestManagerCollectConcurrent(t *testing.T) {
 	require.NoError(t, err)
 	defer mgr.Close()
 
-	q, err := mgr.CreateQueue("concurrent-stats")
+	q, err := mgr.Create("concurrent-stats")
 	require.NoError(t, err)
 
 	ctx := t.Context()

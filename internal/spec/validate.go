@@ -86,6 +86,12 @@ func validate(s Spec) error {
 	if err := positive("default_max_attempts", t.DefaultMaxAttempts); err != nil {
 		return err
 	}
+	if err := positive("max_in_flight", t.MaxInFlight); err != nil {
+		return err
+	}
+	if err := positive("max_dlq", t.MaxDLQ); err != nil {
+		return err
+	}
 	return validatePairs(s)
 }
 

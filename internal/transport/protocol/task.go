@@ -19,6 +19,8 @@ type Task struct {
 	ScheduledAt time.Time
 	DeliveryID  string
 	Offset      uint64
+	Key         []byte
+	Stalled     uint32
 }
 
 // EncodeTask serializes a task for the task driver wire protocol.
@@ -31,6 +33,8 @@ func EncodeTask(b *Buffer, t Task) {
 	b.WriteU64(encodeTime(t.ScheduledAt))
 	b.WriteBytes([]byte(t.DeliveryID))
 	b.WriteU64(t.Offset)
+	b.WriteBytes(t.Key)
+	b.WriteU32(t.Stalled)
 }
 
 // DecodeTask parses a task from a task-driver wire payload.
@@ -74,6 +78,14 @@ func DecodeTask(r *Reader) (Task, error) {
 	if err != nil {
 		return Task{}, invalid(err)
 	}
+	key, err := r.ReadBytes()
+	if err != nil {
+		return Task{}, invalid(err)
+	}
+	stalled, err := r.ReadU32()
+	if err != nil {
+		return Task{}, invalid(err)
+	}
 	if len(id) == 0 || maxAttempts == 0 || attempts > maxAttempts {
 		return Task{}, ErrInvalidTask
 	}
@@ -89,6 +101,8 @@ func DecodeTask(r *Reader) (Task, error) {
 		ScheduledAt: decodeTime(scheduled),
 		DeliveryID:  string(deliveryID),
 		Offset:      offset,
+		Key:         nilIfEmpty(key),
+		Stalled:     stalled,
 	}, nil
 }
 
@@ -104,6 +118,13 @@ func decodeTime(v uint64) time.Time {
 		return time.Time{}
 	}
 	return time.Unix(0, int64(v))
+}
+
+func nilIfEmpty(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
 }
 
 // EncodeTaskList writes a length-prefixed task sequence.

@@ -19,11 +19,11 @@ var opDurationBounds = []float64{
 // opLabels maps opcodes to the series suffix used in Prometheus output. The
 // metrics model has no labels, so each op gets its own counter and histogram.
 var opLabels = map[byte]string{
-	protocol.OpCreateQueue:   "create_queue",
-	protocol.OpDeleteQueue:   "delete_queue",
-	protocol.OpListQueues:    "list_queues",
-	protocol.OpUpdateQueue:   "update_queue",
-	protocol.OpDescribeQueue: "describe_queue",
+	protocol.OpCreate:        "create_queue",
+	protocol.OpDelete:        "delete_queue",
+	protocol.OpList:          "list_queues",
+	protocol.OpUpdate:        "update_queue",
+	protocol.OpDescribe:      "describe_queue",
 	protocol.OpTruncate:      "truncate",
 	protocol.OpMetrics:       "metrics",
 	protocol.OpAppend:        "append",
@@ -31,6 +31,7 @@ var opLabels = map[byte]string{
 	protocol.OpRead:          "read",
 	protocol.OpReadBatch:     "read_batch",
 	protocol.OpLastOffset:    "last_offset",
+	protocol.OpMinOffset:     "min_offset",
 	protocol.OpCommit:        "commit",
 	protocol.OpCommitted:     "committed",
 	protocol.OpFetch:         "fetch",
