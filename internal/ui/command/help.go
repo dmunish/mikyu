@@ -37,33 +37,48 @@ func WriteIndex(w io.Writer, opts RenderOptions) error {
 		}
 
 		nameWidth := 0
+		argWidth := 0
 		for _, v := range verbs {
 			line := v.Name
 			if v.Args != "" {
 				line += " " + v.Args
 			}
-			if len(line) > nameWidth {
-				nameWidth = len(line)
+			if len(v.Name) > nameWidth {
+				nameWidth = len(v.Name)
+			}
+			if v.Args != "" && len(v.Args) > argWidth {
+				argWidth = len(v.Args)
 			}
 		}
 		nameWidth += 2
+		argWidth += 2
+		if nameWidth < 10 {
+			nameWidth = 10
+		}
+		if argWidth < 12 {
+			argWidth = 12
+		}
 
 		for _, v := range verbs {
-			visible := v.Name
-			if v.Args != "" {
-				visible += " " + v.Args
+			visibleName := v.Name
+			visibleArgs := v.Args
+			namePad := nameWidth - len(visibleName)
+			if namePad < 1 {
+				namePad = 1
+			}
+			argPad := argWidth - len(visibleArgs)
+			if argPad < 1 {
+				argPad = 1
 			}
 			var b strings.Builder
 			b.WriteString(s.name.Render(v.Name))
+			b.WriteString(strings.Repeat(" ", namePad))
 			if v.Args != "" {
-				b.WriteString(" ")
 				b.WriteString(formatArgsStyled(v.Args, s))
+				b.WriteString(strings.Repeat(" ", argPad))
+			} else {
+				b.WriteString(strings.Repeat(" ", argWidth))
 			}
-			pad := nameWidth - len(visible)
-			if pad < 1 {
-				pad = 1
-			}
-			b.WriteString(strings.Repeat(" ", pad))
 			b.WriteString(s.summary.Render(v.Summary))
 			if _, err := fmt.Fprintf(w, "    %s\n", b.String()); err != nil {
 				return err
@@ -95,7 +110,7 @@ func WriteVerb(w io.Writer, v Verb, opts RenderOptions) error {
 	if _, err := fmt.Fprintln(w); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "  %s\n\n", s.name.Render(header)); err != nil {
+	if _, err := fmt.Fprintf(w, "  %s %s\n\n", s.header.Render("●"), s.name.Render(header)); err != nil {
 		return err
 	}
 

@@ -25,19 +25,19 @@ var LogoGradient = []color.Color{
 // helpStyles bundles every style a help page uses. A zero value is the
 // no-color form: every field is a no-op lipgloss.Style.
 type helpStyles struct {
-	header    lipgloss.Style
-	name      lipgloss.Style
-	arg       lipgloss.Style
-	reqArg    lipgloss.Style
-	summary   lipgloss.Style
-	section   lipgloss.Style
-	flagName  lipgloss.Style
-	flagDoc   lipgloss.Style
-	flagDef   lipgloss.Style
-	dim       lipgloss.Style
-	usage     lipgloss.Style
-	example   lipgloss.Style
-	exampleC  lipgloss.Style
+	header   lipgloss.Style
+	name     lipgloss.Style
+	arg      lipgloss.Style
+	reqArg   lipgloss.Style
+	summary  lipgloss.Style
+	section  lipgloss.Style
+	flagName lipgloss.Style
+	flagDoc  lipgloss.Style
+	flagDef  lipgloss.Style
+	dim      lipgloss.Style
+	usage    lipgloss.Style
+	example  lipgloss.Style
+	exampleC lipgloss.Style
 }
 
 // newHelpStyles returns a helpStyles configured for color or plain output.
