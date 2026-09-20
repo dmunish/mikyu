@@ -13,6 +13,7 @@ type EnqueueOptions struct {
 	Visibility  time.Duration
 	MaxAttempts uint32
 	ScheduledAt time.Time
+	Key         []byte
 }
 
 func Enqueue(ctx context.Context, client mikyu.Client, queue string, input string, opts EnqueueOptions) (mikyu.Task, int, error) {
@@ -38,6 +39,10 @@ func Enqueue(ctx context.Context, client mikyu.Client, queue string, input strin
 
 	if !opts.ScheduledAt.IsZero() {
 		taskOpts = append(taskOpts, mikyu.WithScheduledAt(opts.ScheduledAt))
+	}
+
+	if len(opts.Key) > 0 {
+		taskOpts = append(taskOpts, mikyu.WithKey(opts.Key))
 	}
 
 	task, err := tq.Enqueue(ctx, payload, taskOpts...)

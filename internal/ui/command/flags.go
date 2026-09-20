@@ -283,6 +283,11 @@ func queueFlagSet(name string, s *spec.Spec, params []spec.Param) *flag.FlagSet 
 func EnqueueFlagSet(name string, o *EnqueueOptions) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	fs.Var(&valueFunc{
+		kind: spec.KindString,
+		str:  func() string { return string(o.Key) },
+		set:  func(v spec.Value) { o.Key = []byte(v.Text()) },
+	}, "key", "the subject key this task record belongs to")
 	for _, p := range spec.Params(spec.LayerCall) {
 		switch p.Key {
 		case "visibility":

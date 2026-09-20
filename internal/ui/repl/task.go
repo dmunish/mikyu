@@ -89,6 +89,11 @@ func (s *replSession) handleDequeue(args []string) {
 		return
 	}
 
+	if kind, err := s.kindOf(queue); err == nil && kind != mikyu.QueueKindTask {
+		fmt.Println(errStyle.Render(fmt.Sprintf("dequeue requires a task queue; %q is a %s queue.", queue, kind)))
+		return
+	}
+
 	task, err := command.Dequeue(s.ctx, s.client, queue, timeout)
 	if err != nil {
 		if errors.Is(err, mikyu.ErrTaskNotAvailable) {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/manager"
 	"github.com/dmunish/mikyu/internal/node"
 	"github.com/dmunish/mikyu/internal/server"
 	"github.com/dmunish/mikyu/internal/spec"
@@ -92,8 +93,11 @@ func TestEmbeddedMetricsMatchesRemote(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = emb.Close() })
 	mustCreateLog(t, emb, "q")
+	mustCreateTask(t, emb, "tq")
 	embLq, err := emb.LogQueue("q")
 	require.NoError(t, err)
+	_, wrongKindErr := emb.LogQueue("tq")
+	require.ErrorIs(t, wrongKindErr, manager.ErrWrongKind, "embedded LogQueue on a task queue returns ErrWrongKind")
 	_, err = embLq.Append(ctx, []byte("a"))
 	require.NoError(t, err)
 	embSnap, err := emb.Metrics(ctx)
@@ -101,6 +105,7 @@ func TestEmbeddedMetricsMatchesRemote(t *testing.T) {
 
 	rem := newLoopbackServer(t)
 	mustCreateLog(t, rem, "q")
+	mustCreateTask(t, rem, "tq")
 	remLq, err := rem.LogQueue("q")
 	require.NoError(t, err)
 	_, err = remLq.Append(ctx, []byte("a"))
@@ -115,6 +120,13 @@ func TestEmbeddedMetricsMatchesRemote(t *testing.T) {
 	require.True(t, embOK)
 	require.True(t, remOK)
 	assert.Equal(t, jsonKeys(t, embQ), jsonKeys(t, remQ), "queue view shape differs")
+
+	tqEmb, ok := embSnap.Queue("tq")
+	require.True(t, ok, "metrics must include task queue tq")
+	assert.Equal(t, "task", tqEmb.Kind, "embedded metrics kind for task")
+	tqRem, ok := remSnap.Queue("tq")
+	require.True(t, ok, "remote metrics must include task queue tq")
+	assert.Equal(t, "task", tqRem.Kind, "remote metrics kind for task")
 }
 
 // TestRemoteMinOffsetUsesMetrics: MinOffset reads the snapshot's min_offset

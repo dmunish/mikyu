@@ -188,7 +188,7 @@ func TestParityEndToEnd(t *testing.T) {
 			if p.Kind == spec.KindBool {
 				flagArgs = []string{"--" + p.FlagName + "=" + sampleText(p)}
 			}
-			cliRun.run(t, append([]string{"--dir", cliDir, "create", name("cli")}, flagArgs...)...)
+			cliRun.run(t, append([]string{"--dir", cliDir, "create", "--type", "log", name("cli")}, flagArgs...)...)
 
 			embDesc, err := emb.DescribeQueue(ctx, name("emb"))
 			require.NoError(t, err)

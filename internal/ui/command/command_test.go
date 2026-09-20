@@ -69,7 +69,7 @@ func TestCommandLifecycle(t *testing.T) {
 	assert.Equal(t, mikyu.QueueKindLog, queues[0].Kind)
 
 	// 3. Produce
-	off, size, err := command.Append(ctx, client, "events", "msg1")
+	off, size, err := command.Append(ctx, client, "events", "msg1", nil)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(0), off)
 	assert.Equal(t, 4, size)

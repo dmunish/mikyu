@@ -20,6 +20,7 @@ type taskMetrics struct {
 	extends     *metrics.Counter
 	dlqAcks     *metrics.Counter
 	dlqOverflow *metrics.Counter
+	taskStalls  *metrics.Counter
 	enqueueDur  *metrics.Histogram
 	dequeueWait *metrics.Histogram
 }
@@ -33,6 +34,7 @@ func newTaskMetrics(scope *metrics.Scope) *taskMetrics {
 		extends:     scope.Counter("extends"),
 		dlqAcks:     scope.Counter("dlq_acks"),
 		dlqOverflow: scope.Counter("dlq_overflow"),
+		taskStalls:  scope.Counter("task_stalls"),
 		enqueueDur:  scope.Histogram("enqueue_duration", taskDurationBounds),
 		dequeueWait: scope.Histogram("dequeue_wait", taskDurationBounds),
 	}
@@ -52,4 +54,9 @@ func (q *queue) recordDequeue(due time.Time) {
 		wait = 0
 	}
 	q.m.dequeueWait.Observe(wait)
+}
+
+// recordStall counts a lease reclaimed after its visibility expired.
+func (q *queue) recordStall() {
+	q.m.taskStalls.Inc()
 }

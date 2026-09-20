@@ -28,6 +28,7 @@ type replSession struct {
 	scanner *bufio.Scanner
 
 	activeQueue   string
+	activeKind    mikyu.QueueKind
 	lastTaskQueue string
 	lastTaskID    string
 	done          bool
@@ -163,6 +164,7 @@ func (s *replSession) handleUse(args []string) {
 
 	if name == "-" || name == "none" {
 		s.activeQueue = ""
+		s.activeKind = 0
 		fmt.Println(infoStyle.Render("Cleared active queue."))
 		return
 	}
@@ -177,6 +179,7 @@ func (s *replSession) handleUse(args []string) {
 	for _, q := range queues {
 		if q.Name == name {
 			found = true
+			s.activeKind = q.Kind
 			break
 		}
 	}
@@ -186,7 +189,24 @@ func (s *replSession) handleUse(args []string) {
 	}
 
 	s.activeQueue = name
-	fmt.Println(successStyle.Render(fmt.Sprintf("● Active queue set to %q.", name)))
+	fmt.Println(successStyle.Render(fmt.Sprintf("● Active queue set to %q (%s).", name, s.activeKind)))
+}
+
+// kindOf reports the kind of name, using the kind inferred by the last 'use'.
+func (s *replSession) kindOf(name string) (mikyu.QueueKind, error) {
+	if name == s.activeQueue && s.activeKind != 0 {
+		return s.activeKind, nil
+	}
+	queues, err := command.List(s.ctx, s.client)
+	if err != nil {
+		return 0, err
+	}
+	for _, q := range queues {
+		if q.Name == name {
+			return q.Kind, nil
+		}
+	}
+	return 0, fmt.Errorf("queue %q not found", name)
 }
 
 func (s *replSession) handleList(args []string) {
@@ -210,14 +230,18 @@ func (s *replSession) handleCreate(args []string) {
 	var patch spec.Spec
 	var typeName string
 	fs := command.QueueFlagSet("create", &patch)
-	fs.StringVar(&typeName, "type", "log", "queue kind: log or task")
+	fs.StringVar(&typeName, "type", "", "queue kind: log or task (required)")
 	rest, err := command.ParseAnywhere(fs, args)
 	if err != nil {
-		s.usage("create [flags] <queue_name> (" + err.Error() + ")")
+		s.usage("create --type log|task [flags] <queue_name> (" + err.Error() + ")")
 		return
 	}
 	if len(rest) < 1 {
-		s.usage("create [flags] <queue_name>")
+		s.usage("create --type log|task [flags] <queue_name>")
+		return
+	}
+	if typeName == "" {
+		s.usage("create --type log|task [flags] <queue_name>")
 		return
 	}
 	name := rest[0]
@@ -332,7 +356,7 @@ func (s *replSession) handleAppend(args []string) {
 		return
 	}
 	name, input := args[0], args[1]
-	off, payloadLen, err := command.Append(s.ctx, s.client, name, input)
+	off, payloadLen, err := command.Append(s.ctx, s.client, name, input, nil)
 	if err != nil {
 		s.fail(err)
 		return
@@ -365,6 +389,10 @@ func (s *replSession) handleTail(args []string) {
 		return
 	}
 	name := args[0]
+	if kind, err := s.kindOf(name); err == nil && kind != mikyu.QueueKindLog {
+		fmt.Println(errStyle.Render(fmt.Sprintf("tail requires a log queue; %q is a %s queue.", name, kind)))
+		return
+	}
 	var startOffset uint64 = 0
 	if len(args) >= 2 {
 		startOffset, _ = strconv.ParseUint(args[1], 10, 64)

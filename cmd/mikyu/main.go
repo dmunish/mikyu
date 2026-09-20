@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/dmunish/mikyu"
 	"github.com/dmunish/mikyu/internal/daemon"
 	"github.com/dmunish/mikyu/internal/ui/cli"
 	"github.com/dmunish/mikyu/internal/ui/repl"
@@ -41,6 +42,9 @@ func run(args []string) error {
 	}
 
 	switch args[0] {
+	case "version", "--version":
+		fmt.Printf("mikyu (spec version %d)\n", mikyu.SpecVersion)
+		return nil
 	case "daemon", "server":
 		return daemon.Run(args[1:])
 	case "shell", "repl":

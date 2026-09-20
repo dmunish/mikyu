@@ -161,7 +161,7 @@ func Delete(ctx context.Context, client mikyu.Client, name string, confirmFn fun
 }
 
 // Append sends payload input to the queue and returns the appended message offset and payload size in bytes.
-func Append(ctx context.Context, client mikyu.Client, name string, input string) (offset uint64, payloadLen int, err error) {
+func Append(ctx context.Context, client mikyu.Client, name string, input string, key []byte) (offset uint64, payloadLen int, err error) {
 	payload, err := ResolvePayload(input)
 	if err != nil {
 		return 0, 0, err
@@ -170,7 +170,11 @@ func Append(ctx context.Context, client mikyu.Client, name string, input string)
 	if err != nil {
 		return 0, 0, err
 	}
-	off, err := q.Append(ctx, payload)
+	var opts []mikyu.AppendOption
+	if len(key) > 0 {
+		opts = append(opts, mikyu.WithRecordKey(key))
+	}
+	off, err := q.Append(ctx, payload, opts...)
 	if err != nil {
 		return 0, 0, err
 	}

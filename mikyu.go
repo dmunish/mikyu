@@ -103,6 +103,9 @@ func Dial(target string, opts ...ClientOption) (Client, error) {
 // from the next layer down: call over spec over session over built-in.
 type Spec = spec.Spec
 
+// SpecVersion is the spec schema number this build speaks over the wire.
+const SpecVersion = spec.CurrentSpecVersion
+
 // EngineSpec covers the log-segment writer parameters of a Spec.
 type EngineSpec = spec.EngineSpec
 

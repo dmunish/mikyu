@@ -110,6 +110,7 @@ func (q *queue) takeDueLocked(ctx context.Context, now time.Time) (*taskState, t
 		}
 		if state.inFlight {
 			state.task.Stalled++
+			q.recordStall()
 		}
 		deliveryID := newID()
 		state.inFlight = true

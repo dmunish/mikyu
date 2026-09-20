@@ -89,7 +89,7 @@ func flagArgs(p spec.Param) []string {
 func TestCLIAppendRoundTrip(t *testing.T) {
 	app := newTestApp(t)
 
-	assert.Contains(t, app.run(t, "create", "q"), "created queue")
+	assert.Contains(t, app.run(t, "create", "--type", "log", "q"), "created queue")
 	assert.Contains(t, app.run(t, "append", "q", "hello"), "appended at offset 0")
 	assert.Contains(t, app.run(t, "read", "q", "0"), "payload=hello")
 }
@@ -97,7 +97,7 @@ func TestCLIAppendRoundTrip(t *testing.T) {
 func TestCLICreateWithAllParams(t *testing.T) {
 	app := newTestApp(t)
 
-	args := []string{"create", "q"}
+	args := []string{"create", "--type", "log", "q"}
 	for _, p := range spec.Params(spec.LayerSpec) {
 		args = append(args, flagArgs(p)...)
 	}
@@ -118,7 +118,7 @@ func TestCLICreateWithAllParams(t *testing.T) {
 func TestCLIDescribeJSONMatchesSDK(t *testing.T) {
 	app := newTestApp(t)
 
-	app.run(t, "create", "q", "--segment-size", "128", "--max-message-bytes", "128")
+	app.run(t, "create", "--type", "log", "q", "--segment-size", "128", "--max-message-bytes", "128")
 
 	var fromCLI mikyu.QueueDescription
 	require.NoError(t, json.Unmarshal([]byte(app.run(t, "describe", "q", "--json")), &fromCLI))
@@ -178,7 +178,7 @@ func TestCLIUpdateImmutable(t *testing.T) {
 
 func TestCLIRetentionShrinkPrompts(t *testing.T) {
 	app := newTestApp(t)
-	app.run(t, "create", "q", "--retention-age", "24h")
+	app.run(t, "create", "--type", "log", "q", "--retention-age", "24h")
 
 	// Declining the prompt leaves the bound alone.
 	app.Confirm = func(string) (bool, error) { return false, nil }
@@ -306,7 +306,7 @@ func TestCLIGlobalFlags(t *testing.T) {
 	app := newTestApp(t)
 
 	// --data-dir is the canonical spelling of data_dir; --dir is its alias.
-	out, err := app.runRaw(t, "--data-dir", app.dir, "create", "q")
+	out, err := app.runRaw(t, "--data-dir", app.dir, "create", "--type", "log", "q")
 	require.NoError(t, err)
 	assert.Contains(t, out, "created queue")
 
@@ -364,6 +364,37 @@ func TestCLIUsageErrors(t *testing.T) {
 			assert.Contains(t, out, p.FlagName, "enqueue --help should list --%s", p.FlagName)
 		}
 	}
+}
+
+func TestCLIArchiveRoundTrip(t *testing.T) {
+	app := newTestApp(t)
+	app.run(t, "create", "--type", "task", "jobs")
+	app.run(t, "enqueue", "jobs", "archive me")
+
+	deqOut := app.run(t, "dequeue", "jobs", "--json")
+	var taskRecord command.TaskRecord
+	require.NoError(t, json.Unmarshal([]byte(deqOut), &taskRecord))
+	require.NotEmpty(t, taskRecord.ID)
+
+	archiveOut := app.run(t, "archive", taskRecord.ID, "--queue", "jobs")
+	assert.Contains(t, archiveOut, "archived task")
+
+	readArchive := app.run(t, "read", "jobs-archive", "0")
+	assert.Contains(t, readArchive, "archive me")
+}
+
+func TestCLICreateRequiresType(t *testing.T) {
+	app := newTestApp(t)
+
+	err := app.runErr(t, "create", "events")
+	require.ErrorIs(t, err, daemon.ErrUsage)
+	assert.Contains(t, app.errOut.String(), "--type")
+
+	assert.Contains(t, app.run(t, "create", "--type", "log", "events"), "created queue")
+
+	err = app.runErr(t, "create", "--type", "badkind", "other")
+	require.ErrorIs(t, err, daemon.ErrUsage)
+	assert.Contains(t, app.errOut.String(), "unknown queue kind")
 }
 
 func TestConfirmNonInteractive(t *testing.T) {
