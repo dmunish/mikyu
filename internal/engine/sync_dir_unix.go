@@ -10,5 +10,10 @@ import (
 
 // syncDirOS fsyncs a directory through its root file descriptor.
 func syncDirOS(root *os.Root) error {
-	return unix.Fsync(int(root.Fd()))
+	dir, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return unix.Fsync(int(dir.Fd()))
 }
