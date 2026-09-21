@@ -200,7 +200,7 @@ func TestKeyIndexSizeWarning(t *testing.T) {
 	q := newCompactionQueue(t, t.TempDir(), 256)
 	ctx := t.Context()
 	for i := range 3 {
-		key := []byte(fmt.Sprintf("key-%d", i))
+		key := fmt.Appendf(nil, "key-%d", i)
 		_, err := q.Append(ctx, []byte("payload"), WithGroup(key))
 		require.NoError(t, err)
 	}
