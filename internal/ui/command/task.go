@@ -9,6 +9,7 @@ import (
 	"github.com/dmunish/mikyu"
 )
 
+// EnqueueOptions carries the per-call values for enqueue.
 type EnqueueOptions struct {
 	Visibility  time.Duration
 	MaxAttempts uint32
@@ -16,31 +17,27 @@ type EnqueueOptions struct {
 	Key         []byte
 }
 
-func Enqueue(ctx context.Context, client mikyu.Client, queue string, input string, opts EnqueueOptions) (mikyu.Task, int, error) {
+// Enqueue submits one task and returns it with the payload size in bytes.
+func Enqueue(ctx context.Context, client mikyu.Client, queue, input string, opts EnqueueOptions) (mikyu.Task, int, error) {
 	payload, err := ResolvePayload(input)
 	if err != nil {
 		return mikyu.Task{}, 0, err
 	}
-
 	tq, err := client.TaskQueue(queue)
 	if err != nil {
 		return mikyu.Task{}, 0, err
 	}
 
 	var taskOpts []mikyu.EnqueueOption
-
 	if opts.Visibility > 0 {
 		taskOpts = append(taskOpts, mikyu.WithVisibility(opts.Visibility))
 	}
-
 	if opts.MaxAttempts > 0 {
 		taskOpts = append(taskOpts, mikyu.WithMaxAttempts(opts.MaxAttempts))
 	}
-
 	if !opts.ScheduledAt.IsZero() {
 		taskOpts = append(taskOpts, mikyu.WithScheduledAt(opts.ScheduledAt))
 	}
-
 	if len(opts.Key) > 0 {
 		taskOpts = append(taskOpts, mikyu.WithKey(opts.Key))
 	}
@@ -49,22 +46,19 @@ func Enqueue(ctx context.Context, client mikyu.Client, queue string, input strin
 	if err != nil {
 		return mikyu.Task{}, 0, err
 	}
-
 	return task, len(payload), nil
 }
 
+// Dequeue waits up to timeout for a due task. timeout < 0 waits
+// indefinitely; timeout == 0 makes a short non-blocking attempt.
 func Dequeue(ctx context.Context, client mikyu.Client, queue string, timeout time.Duration) (mikyu.Task, error) {
 	tq, err := client.TaskQueue(queue)
 	if err != nil {
 		return mikyu.Task{}, err
 	}
-
-	// timeout < 0 means wait indefinitely.
 	if timeout < 0 {
 		return tq.Dequeue(ctx)
 	}
-
-	// timeout == 0 means non-blocking-ish.
 	if timeout == 0 {
 		timeout = 25 * time.Millisecond
 	}
@@ -79,69 +73,70 @@ func Dequeue(ctx context.Context, client mikyu.Client, queue string, timeout tim
 		}
 		return mikyu.Task{}, err
 	}
-
 	return task, nil
 }
 
+// TaskAck acknowledges a leased task.
 func TaskAck(ctx context.Context, client mikyu.Client, queue string, ref mikyu.TaskRef) error {
 	tq, err := client.TaskQueue(queue)
 	if err != nil {
 		return err
 	}
-
 	return tq.Ack(ctx, ref)
 }
 
+// TaskNack returns a task for redelivery, with either the server-computed
+// backoff or an explicit retry delay.
 func TaskNack(ctx context.Context, client mikyu.Client, queue string, ref mikyu.TaskRef, retryAfter time.Duration, explicitRetry bool) error {
 	tq, err := client.TaskQueue(queue)
 	if err != nil {
 		return err
 	}
-
 	if explicitRetry {
 		return tq.Nack(ctx, ref, mikyu.WithRetryAfter(retryAfter))
 	}
-
 	return tq.Nack(ctx, ref)
 }
 
+// TaskExtend extends a task lease forward.
 func TaskExtend(ctx context.Context, client mikyu.Client, queue string, ref mikyu.TaskRef, timeout time.Duration) error {
 	tq, err := client.TaskQueue(queue)
 	if err != nil {
 		return err
 	}
-
 	return tq.Extend(ctx, ref, timeout)
 }
 
+// TaskDeadLetters returns a queue's dead-letter tasks.
 func TaskDeadLetters(ctx context.Context, client mikyu.Client, queue string) ([]mikyu.Task, error) {
 	tq, err := client.TaskQueue(queue)
 	if err != nil {
 		return nil, err
 	}
-
 	return tq.DeadLetters(ctx)
 }
 
+// TaskAckDeadLetter permanently removes a dead-letter task.
 func TaskAckDeadLetter(ctx context.Context, client mikyu.Client, queue string, ref mikyu.TaskRef) error {
 	tq, err := client.TaskQueue(queue)
 	if err != nil {
 		return err
 	}
-
 	return tq.AckDeadLetter(ctx, ref)
 }
 
+// TaskArchive moves a task into its queue's archive log.
 func TaskArchive(ctx context.Context, client mikyu.Client, queue string, ref mikyu.TaskRef) error {
 	tq, err := client.TaskQueue(queue)
 	if err != nil {
 		return err
 	}
-
 	return tq.Archive(ctx, ref)
 }
 
-// TaskRecord is the JSON shape a task takes on the CLI, and the shape the task verbs accept back: `dequeue --json` feeds straight into ack, nack, extend, and dlq-ack, carrying the delivery token that enables the strict check.
+// TaskRecord is the JSON shape a task takes on the CLI, and the shape the
+// task verbs accept back: `dequeue --json` feeds straight into ack, nack,
+// extend, and dlq-ack, carrying the delivery token for the strict check.
 type TaskRecord struct {
 	ID          string    `json:"id"`
 	Attempts    uint32    `json:"attempts"`
@@ -171,7 +166,8 @@ func Record(t mikyu.Task) TaskRecord {
 	}
 }
 
-// ParseTaskRef accepts a JSON task record or a bare task ID, returning the ref and the task ID for display.
+// ParseTaskRef accepts a JSON task record or a bare task ID, returning
+// the ref and the task ID for display.
 func ParseTaskRef(arg string) (mikyu.TaskRef, string) {
 	var rec TaskRecord
 	if err := json.Unmarshal([]byte(arg), &rec); err == nil && rec.ID != "" {

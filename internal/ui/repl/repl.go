@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/dmunish/mikyu"
 	"github.com/dmunish/mikyu/internal/spec"
@@ -36,9 +35,10 @@ type replSession struct {
 
 // replHandlers maps every REPL-exposed verb to its implementation.
 var replHandlers = map[string]func(*replSession, []string){
-	"help":     (*replSession).handleHelp,
-	"exit":     (*replSession).handleExit,
-	"use":      (*replSession).handleUse,
+	"help": (*replSession).handleHelp,
+	"exit": (*replSession).handleExit,
+	"use":  (*replSession).handleUse,
+
 	"list":     (*replSession).handleList,
 	"create":   (*replSession).handleCreate,
 	"update":   (*replSession).handleUpdate,
@@ -81,35 +81,31 @@ func RunREPL(target string, args []string) error {
 	defer client.Close()
 
 	fmt.Print("\x1b[2J\x1b[H")
-	PrintREPLBanner(global.Session.Target, global.Session.DataDir)
+	PrintBanner(global.Session.Target, global.Session.DataDir)
 
-	scanner := bufio.NewScanner(os.Stdin)
 	sess := &replSession{
 		client:  client,
 		target:  global.Session.Target,
 		dir:     global.Session.DataDir,
 		session: global.Session,
 		ctx:     context.Background(),
-		scanner: scanner,
+		scanner: bufio.NewScanner(os.Stdin),
 	}
 
 	for {
 		fmt.Print(sess.prompt())
-
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
+		if !sess.scanner.Scan() {
+			if err := sess.scanner.Err(); err != nil {
 				fmt.Println(errStyle.Render(fmt.Sprintf("\nInput read error: %v", err)))
 			} else {
 				fmt.Println("\nGoodbye!")
 			}
 			return nil
 		}
-
-		line := strings.TrimSpace(scanner.Text())
+		line := strings.TrimSpace(sess.scanner.Text())
 		if line == "" {
 			continue
 		}
-
 		if sess.dispatch(line) {
 			return nil
 		}
@@ -121,46 +117,32 @@ func (s *replSession) dispatch(line string) bool {
 	if len(args) == 0 {
 		return false
 	}
-	cmd := strings.ToLower(args[0])
+	name := strings.ToLower(args[0])
 
-	// <verb> help | <verb> -h | <verb> --help → detail page.
-	if len(args) == 2 && (args[1] == "help" || args[1] == "-h" || args[1] == "--help") {
-		if v, ok := command.LookupVerb(cmd); ok {
+	// Resolve aliases (quit → exit) before anything else.
+	if v, ok := command.LookupVerb(name); ok {
+		name = v.Name
+		if command.HasHelpFlag(args[1:]) {
 			_ = command.WriteVerb(os.Stdout, v, command.RenderOptions{Mode: command.ModeREPL, Color: true})
 			return false
 		}
 	}
 
-	// Resolve aliases (quit → exit).
-	if v, ok := command.LookupVerb(cmd); ok {
-		cmd = v.Name
-	}
-
-	if handler, ok := replHandlers[cmd]; ok {
+	if handler, ok := replHandlers[name]; ok {
 		handler(s, args[1:])
 		return s.done
 	}
-
-	fmt.Println(errStyle.Render(fmt.Sprintf("Unknown command %q. Type 'help' for options.", cmd)))
+	fmt.Println(errStyle.Render(fmt.Sprintf("Unknown command %q. Type 'help' for options.", name)))
 	return false
 }
 
-// handleHelp prints the index, or one verb's detail page.
-func (s *replSession) handleHelp(args []string) {
-	opts := command.RenderOptions{Mode: command.ModeREPL, Color: true}
-	if len(args) > 0 {
-		if v, ok := command.LookupVerb(args[0]); ok {
-			_ = command.WriteVerb(os.Stdout, v, opts)
-			return
-		}
-		fmt.Println(errStyle.Render(fmt.Sprintf("Unknown command %q.", args[0])))
-		return
-	}
-	_ = command.WriteIndex(os.Stdout, opts)
+// handleHelp prints the index; per-verb detail lives behind --help.
+func (s *replSession) handleHelp(_ []string) {
+	_ = command.WriteIndex(os.Stdout, command.RenderOptions{Mode: command.ModeREPL, Color: true})
 }
 
 // handleExit closes the session cleanly.
-func (s *replSession) handleExit(args []string) {
+func (s *replSession) handleExit(_ []string) {
 	fmt.Println("Goodbye!")
 	s.done = true
 }
@@ -186,7 +168,6 @@ func (s *replSession) handleUse(args []string) {
 	}
 
 	name := args[0]
-
 	if name == "-" || name == "none" {
 		s.activeQueue = ""
 		s.activeKind = 0
@@ -199,22 +180,15 @@ func (s *replSession) handleUse(args []string) {
 		s.fail(err)
 		return
 	}
-
-	found := false
 	for _, q := range queues {
 		if q.Name == name {
-			found = true
+			s.activeQueue = name
 			s.activeKind = q.Kind
-			break
+			fmt.Println(successStyle.Render(fmt.Sprintf("● Active queue set to %q (%s).", name, q.Kind)))
+			return
 		}
 	}
-	if !found {
-		fmt.Println(errStyle.Render(fmt.Sprintf("Queue %q not found.", name)))
-		return
-	}
-
-	s.activeQueue = name
-	fmt.Println(successStyle.Render(fmt.Sprintf("● Active queue set to %q (%s).", name, s.activeKind)))
+	fmt.Println(errStyle.Render(fmt.Sprintf("Queue %q not found.", name)))
 }
 
 // kindOf reports the kind of name, using the kind inferred by the last 'use'.
@@ -233,6 +207,8 @@ func (s *replSession) kindOf(name string) (mikyu.QueueKind, error) {
 	}
 	return 0, fmt.Errorf("queue %q not found", name)
 }
+
+// ---- queue verbs ----
 
 func (s *replSession) handleList(args []string) {
 	queues, err := command.List(s.ctx, s.client)
@@ -309,7 +285,6 @@ func (s *replSession) handleUpdate(args []string) {
 			}
 		}
 	}
-
 	if err := command.Update(s.ctx, s.client, name, command.SpecOption(patch)); err != nil {
 		s.fail(err)
 		return
@@ -321,7 +296,6 @@ func (s *replSession) handleDescribe(args []string) {
 	var asJSON bool
 	fs := command.NewFlagSet("describe")
 	fs.BoolVar(&asJSON, "json", false, "emit the machine-readable description")
-
 	rest, err := command.ParseAnywhere(fs, args)
 	if err != nil {
 		s.usage("describe <queue> [--json] (" + err.Error() + ")")
@@ -362,7 +336,6 @@ func (s *replSession) handleDelete(args []string) {
 		tag := warnTagStyle.Render("[IRREVERSIBLE]")
 		return confirm(fmt.Sprintf("%s Are you sure you want to delete queue %q?", tag, name)), nil
 	}
-
 	executed, err := command.Delete(s.ctx, s.client, name, confirmFn)
 	if err != nil {
 		s.fail(err)
@@ -374,6 +347,8 @@ func (s *replSession) handleDelete(args []string) {
 	}
 	fmt.Println(successStyle.Render(fmt.Sprintf("● Queue %q deleted.", name)))
 }
+
+// ---- log verbs ----
 
 func (s *replSession) handleAppend(args []string) {
 	if len(args) < 2 {
@@ -418,7 +393,7 @@ func (s *replSession) handleTail(args []string) {
 		fmt.Println(errStyle.Render(fmt.Sprintf("tail requires a log queue; %q is a %s queue.", name, kind)))
 		return
 	}
-	var startOffset uint64 = 0
+	var startOffset uint64
 	if len(args) >= 2 {
 		startOffset, _ = strconv.ParseUint(args[1], 10, 64)
 	}
@@ -435,9 +410,7 @@ func (s *replSession) handleTail(args []string) {
 		fmt.Print(statusText)
 		return nil
 	})
-
 	fmt.Print("\r\x1b[2K")
-
 	if err != nil {
 		if sigCtx.Err() != nil {
 			fmt.Println(infoStyle.Render("Stream stopped."))
@@ -453,7 +426,7 @@ func (s *replSession) handleTruncate(args []string) {
 		return
 	}
 	name := args[0]
-	var minOffset uint64 = 0
+	var minOffset uint64
 	if len(args) >= 2 {
 		var err error
 		minOffset, err = strconv.ParseUint(args[1], 10, 64)
@@ -462,19 +435,12 @@ func (s *replSession) handleTruncate(args []string) {
 			return
 		}
 	}
-
 	tag := warnTagStyle.Render("[IRREVERSIBLE]")
-	var prompt string
-
+	prompt := fmt.Sprintf("%s Truncate physical segments for queue %q?", tag, name)
 	if minOffset > 0 {
 		prompt = fmt.Sprintf("%s Truncate queue %q before offset %d?", tag, name, minOffset)
-	} else {
-		prompt = fmt.Sprintf("%s Truncate physical segments for queue %q?", tag, name)
 	}
-
-	confirmFn := func() (bool, error) {
-		return confirm(prompt), nil
-	}
+	confirmFn := func() (bool, error) { return confirm(prompt), nil }
 
 	reclaimed, executed, err := command.Truncate(s.ctx, s.client, name, minOffset, confirmFn)
 	if err != nil {
@@ -487,6 +453,8 @@ func (s *replSession) handleTruncate(args []string) {
 	}
 	fmt.Println(successStyle.Render(fmt.Sprintf("● Queue %q truncated (%d bytes reclaimed).", name, reclaimed)))
 }
+
+// ---- admin verbs ----
 
 func (s *replSession) handleMetrics(args []string) {
 	var watch bool
@@ -517,7 +485,7 @@ func (s *replSession) handleMetrics(args []string) {
 	if watch {
 		sigCtx, stopSig := signal.NotifyContext(s.ctx, os.Interrupt, syscall.SIGTERM)
 		defer stopSig()
-		ticker := time.NewTicker(1 * time.Second)
+		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -543,7 +511,6 @@ func (s *replSession) handleMetrics(args []string) {
 	render(snap)
 }
 
-// handleLogin reads a token from the REPL's own scanner and verifies it.
 func (s *replSession) handleLogin(args []string) {
 	target := s.target
 	if len(args) == 1 {
@@ -589,7 +556,6 @@ func (s *replSession) handleShutdown(args []string) {
 		}
 		return false, nil
 	}
-
 	executed, err := command.Shutdown(s.target, s.session, confirmFn)
 	if err != nil {
 		s.fail(err)
@@ -603,16 +569,15 @@ func (s *replSession) handleShutdown(args []string) {
 	s.done = true
 }
 
+// ---- input & formatting ----
+
 func formatRecord(msg mikyu.Record) string {
 	offsetStr := recordOffsetStyle.Render(fmt.Sprintf("[%d]", msg.Offset))
 	divider := recordDividerStyle.Render("|")
-
 	idLabel := recordHeaderStyle.Render("ID:")
 	idVal := recordValueStyle.Render(msg.ID)
-
 	timeLabel := recordHeaderStyle.Render("Time:")
 	timeVal := recordValueStyle.Render(msg.Timestamp.Format("15:04:05.000"))
-
 	payloadLabel := recordHeaderStyle.Render("Payload:")
 
 	prefixRaw := fmt.Sprintf("[%d] ID: %s | Time: %s | Payload: ",
@@ -657,43 +622,6 @@ func parseREPLArgs(line string) []string {
 		args = append(args, current.String())
 	}
 	return args
-}
-
-func confirm(prompt string) bool {
-	var isConfirmed bool
-	fullTitle := confirmArrow + " " + prompt
-
-	theme := huh.ThemeFunc(func(isDark bool) *huh.Styles {
-		s := huh.ThemeCharm(isDark)
-
-		s.Focused.Base = lipgloss.NewStyle().Padding(0).Margin(0)
-		s.Blurred.Base = lipgloss.NewStyle().Padding(0).Margin(0)
-
-		s.Focused.Title = lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Bold(true)
-		s.Blurred.Title = lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
-
-		s.Focused.FocusedButton = confirmFocusedButton
-		s.Focused.BlurredButton = confirmBlurredButton
-
-		return s
-	})
-
-	err := huh.NewForm(
-		huh.NewGroup(
-			huh.NewConfirm().
-				Title(fullTitle).
-				Affirmative("Yes").
-				Negative("No").
-				Value(&isConfirmed).
-				Inline(true).
-				WithButtonAlignment(lipgloss.Left),
-		).WithShowHelp(false),
-	).WithTheme(theme).Run()
-
-	if err != nil {
-		return false
-	}
-	return isConfirmed
 }
 
 // formatHelpArgs pads a styled arg string for the banner's two-column layout.

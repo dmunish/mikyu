@@ -5,7 +5,8 @@ import (
 	"testing"
 )
 
-// TestMain redirects os.UserConfigDir() into a per-process temp directory
+// TestMain redirects os.UserConfigDir into a per-process temp directory
+// so the credential store never touches the real user directory.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "mikyu-command-test-*")
 	if err != nil {

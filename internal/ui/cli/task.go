@@ -3,8 +3,6 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"time"
 
 	"charm.land/lipgloss/v2"
@@ -19,13 +17,6 @@ func shortTaskID(id string) string {
 	return id[:12]
 }
 
-// isWriterTerminal reports whether w is the process's own terminal, which is
-// what decides styled output versus machine-readable records.
-func isWriterTerminal(w io.Writer) bool {
-	f, ok := w.(*os.File)
-	return ok && isTerminal(f)
-}
-
 func renderCLITask(task mikyu.Task) string {
 	lease := "pending"
 	if !task.Visibility.IsZero() {
@@ -36,22 +27,12 @@ func renderCLITask(task mikyu.Task) string {
 			lease = fmt.Sprintf("%s remaining", d.Round(time.Second))
 		}
 	}
-
 	payload := command.FormatSingleLinePayload(task.Payload, 72)
-
 	content := fmt.Sprintf(
 		"ID:       %s\nAttempts: %d / %d\nLease:    %s\nPayload:  %s",
-		task.ID,
-		task.Attempts,
-		task.MaxAttempts,
-		lease,
-		payload,
+		task.ID, task.Attempts, task.MaxAttempts, lease, payload,
 	)
-
-	return lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		Padding(0, 1).
-		Render(content)
+	return lipgloss.NewStyle().Border(lipgloss.NormalBorder()).Padding(0, 1).Render(content)
 }
 
 // emitTask writes one task as a card on a terminal and as a JSON record
@@ -91,7 +72,6 @@ func (in *invocation) emitTasks(tasks []mikyu.Task, asJSON bool) error {
 func (in *invocation) handleEnqueue(args []string) error {
 	var opts command.EnqueueOptions
 	fs := command.EnqueueFlagSet("enqueue", &opts)
-
 	rest, err := command.ParseAnywhere(fs, args)
 	if err != nil {
 		return in.app.usage("enqueue: %v", err)
@@ -99,7 +79,6 @@ func (in *invocation) handleEnqueue(args []string) error {
 	if len(rest) != 2 {
 		return in.app.usage("usage: mikyu enqueue [flags] <queue> <payload|@file|->")
 	}
-
 	task, n, err := command.Enqueue(in.ctx, in.client, rest[0], rest[1], opts)
 	if err != nil {
 		return err
@@ -111,7 +90,7 @@ func (in *invocation) handleEnqueue(args []string) error {
 func (in *invocation) handleDequeue(args []string) error {
 	var timeout time.Duration
 	var asJSON bool
-	fs := newFlagSet("dequeue")
+	fs := command.NewFlagSet("dequeue")
 	fs.DurationVar(&timeout, "timeout", 30*time.Second, "how long to wait for a due task")
 	fs.BoolVar(&asJSON, "json", false, "emit the task record as JSON")
 
@@ -150,7 +129,6 @@ func (in *invocation) handleNack(args []string) error {
 	var retryAfter time.Duration
 	var explicit bool
 	fs := command.NackFlagSet("nack", &retryAfter, &explicit)
-
 	rest, err := command.ParseAnywhere(fs, args)
 	if err != nil {
 		return in.app.usage("nack: %v", err)
@@ -158,7 +136,6 @@ func (in *invocation) handleNack(args []string) error {
 	if len(rest) != 2 {
 		return in.app.usage("usage: mikyu nack <queue> <task|json|id> [--retry-after 5s]")
 	}
-
 	ref, id := command.ParseTaskRef(rest[1])
 	if err := command.TaskNack(in.ctx, in.client, rest[0], ref, retryAfter, explicit); err != nil {
 		return err
@@ -185,9 +162,8 @@ func (in *invocation) handleExtend(args []string) error {
 
 func (in *invocation) handleDLQ(args []string) error {
 	var asJSON bool
-	fs := newFlagSet("dlq")
+	fs := command.NewFlagSet("dlq")
 	fs.BoolVar(&asJSON, "json", false, "emit the dead-letter records as JSON")
-
 	rest, err := command.ParseAnywhere(fs, args)
 	if err != nil {
 		return in.app.usage("dlq: %v", err)
@@ -195,7 +171,6 @@ func (in *invocation) handleDLQ(args []string) error {
 	if len(rest) != 1 {
 		return in.app.usage("usage: mikyu dlq <queue> [--json]")
 	}
-
 	tasks, err := command.TaskDeadLetters(in.ctx, in.client, rest[0])
 	if err != nil {
 		return err
@@ -217,7 +192,7 @@ func (in *invocation) handleDLQAck(args []string) error {
 
 func (in *invocation) handleArchive(args []string) error {
 	var queueName string
-	fs := newFlagSet("archive")
+	fs := command.NewFlagSet("archive")
 	fs.StringVar(&queueName, "queue", "", "queue name")
 	rest, err := command.ParseAnywhere(fs, args)
 	if err != nil {

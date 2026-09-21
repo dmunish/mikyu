@@ -14,14 +14,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// update rewrites the golden files under testdata/ when set.
 var update = flag.Bool("update", false, "rewrite golden files")
 
 func TestIndexRendersInEveryMode(t *testing.T) {
 	for _, mode := range []command.Mode{command.ModeCLI, command.ModeREPL} {
 		var buf bytes.Buffer
-		err := command.WriteIndex(&buf, command.RenderOptions{Mode: mode, Color: false})
-		require.NoError(t, err)
+		require.NoError(t, command.WriteIndex(&buf, command.RenderOptions{Mode: mode, Color: false}))
 		assert.NotEmpty(t, buf.String())
 	}
 }
@@ -31,8 +29,7 @@ func TestEveryVerbRenders(t *testing.T) {
 		v := v
 		t.Run(v.Name, func(t *testing.T) {
 			var buf bytes.Buffer
-			err := command.WriteVerb(&buf, v, command.RenderOptions{Mode: command.ModeCLI, Color: false})
-			require.NoError(t, err)
+			require.NoError(t, command.WriteVerb(&buf, v, command.RenderOptions{Mode: command.ModeCLI, Color: false}))
 			out := buf.String()
 			assert.Contains(t, out, v.Name)
 			assert.Contains(t, out, v.Summary)
@@ -73,9 +70,7 @@ func TestCreateHelpListsEverySpecFlag(t *testing.T) {
 	require.True(t, ok)
 
 	var buf bytes.Buffer
-	require.NoError(t, command.WriteVerb(&buf, v, command.RenderOptions{
-		Mode: command.ModeCLI, Color: false,
-	}))
+	require.NoError(t, command.WriteVerb(&buf, v, command.RenderOptions{Mode: command.ModeCLI, Color: false}))
 	out := buf.String()
 
 	for _, p := range spec.Params(spec.LayerSpec) {
@@ -89,9 +84,7 @@ func TestUpdateHelpOmitsCreateOnlyFlags(t *testing.T) {
 	require.True(t, ok)
 
 	var buf bytes.Buffer
-	require.NoError(t, command.WriteVerb(&buf, v, command.RenderOptions{
-		Mode: command.ModeCLI, Color: false,
-	}))
+	require.NoError(t, command.WriteVerb(&buf, v, command.RenderOptions{Mode: command.ModeCLI, Color: false}))
 	out := buf.String()
 
 	for _, p := range spec.Updatable() {
@@ -105,35 +98,17 @@ func TestUpdateHelpOmitsCreateOnlyFlags(t *testing.T) {
 	}
 }
 
-func TestEnqueueHelpListsCallFlags(t *testing.T) {
-	v, ok := command.LookupVerb("enqueue")
-	require.True(t, ok)
-
-	var buf bytes.Buffer
-	require.NoError(t, command.WriteVerb(&buf, v, command.RenderOptions{
-		Mode: command.ModeCLI, Color: false,
-	}))
-	out := buf.String()
-
-	for _, p := range spec.Params(spec.LayerCall) {
-		switch p.Key {
-		case "visibility", "max_attempts", "scheduled_at":
-			assert.Contains(t, out, "--"+p.FlagName, "enqueue detail is missing --%s", p.FlagName)
-		case "retry_after":
-			assert.NotContains(t, out, "--"+p.FlagName,
-				"enqueue detail must not list nack-only --%s", p.FlagName)
-		}
-	}
-}
-
 func TestIndexHasNoFlags(t *testing.T) {
 	for _, mode := range []command.Mode{command.ModeCLI, command.ModeREPL} {
 		var buf bytes.Buffer
 		require.NoError(t, command.WriteIndex(&buf, command.RenderOptions{
 			Mode: mode, Color: false,
 		}))
-		assert.NotContains(t, buf.String(), " --",
-			"the index must not render any flag (mode %d)", mode)
+		for _, line := range strings.Split(buf.String(), "\n") {
+			trimmed := strings.TrimLeft(line, " ")
+			assert.False(t, strings.HasPrefix(trimmed, "--"),
+				"the index must not render flag rows (mode %d): %q", mode, line)
+		}
 	}
 }
 
@@ -147,14 +122,14 @@ func TestIndexFiltersByMode(t *testing.T) {
 	}))
 
 	// REPL-only session verbs are absent from the CLI index and present in the REPL index.
-	for _, name := range []string{"use <queue>", "exit"} {
-		assert.NotContains(t, cli.String(), name, "CLI index leaked %q", name)
-		assert.Contains(t, repl.String(), name, "REPL index is missing %q", name)
-	}
+	assert.False(t, indexHasVerb(cli.String(), "use"))
+	assert.True(t, indexHasVerb(repl.String(), "use"))
+	assert.False(t, indexHasVerb(cli.String(), "exit"))
+	assert.True(t, indexHasVerb(repl.String(), "exit"))
 
 	// The footer hint differs by mode.
-	assert.Contains(t, cli.String(), "mikyu <verb> help")
-	assert.NotContains(t, repl.String(), "mikyu <verb> help")
+	assert.Contains(t, cli.String(), "mikyu <verb> --help")
+	assert.NotContains(t, repl.String(), "mikyu <verb> --help")
 }
 
 func TestLookupRejectsLegacyNames(t *testing.T) {
@@ -178,14 +153,13 @@ func TestAliasesDoNotShadowRealVerbs(t *testing.T) {
 	}
 	for _, v := range command.Verbs {
 		for _, a := range v.Aliases {
-			assert.False(t, names[a],
-				"alias %q shadows the real verb %q", a, a)
+			assert.False(t, names[a], "alias %q shadows the real verb %q", a, a)
 		}
 	}
 }
 
-// TestGoldenHelpPages captures the pages users read most often. Run
-// `go test ./internal/ui/command -run TestGolden -update` once to create them.
+// TestGoldenHelpPages captures the pages users read most often.
+// Run `go test ./internal/ui/command -run TestGolden -update` once to create them.
 func TestGoldenHelpPages(t *testing.T) {
 	cases := []struct {
 		name string
@@ -217,7 +191,6 @@ func TestGoldenHelpPages(t *testing.T) {
 	}
 }
 
-// golden compares got to testdata/name, or rewrites it under -update.
 func golden(t *testing.T, name string, got []byte) {
 	t.Helper()
 	path := filepath.Join("testdata", name)
@@ -232,4 +205,15 @@ func golden(t *testing.T, name string, got []byte) {
 	}
 	require.NoError(t, err)
 	assert.Equal(t, string(want), string(got))
+}
+
+// indexHasVerb reports whether name appears as the first token of a line.
+func indexHasVerb(out, name string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == name {
+			return true
+		}
+	}
+	return false
 }

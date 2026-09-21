@@ -30,9 +30,7 @@ func (k VerbKind) String() string {
 type Mode uint8
 
 const (
-	// ModeCLI exposes the verb on the one-shot CLI.
 	ModeCLI Mode = 1 << iota
-	// ModeREPL exposes the verb in the interactive shell.
 	ModeREPL
 )
 
@@ -55,12 +53,13 @@ type FlagDoc struct {
 	Default string
 }
 
-// Example is one invocation-and-comment pair on a verb's detail page.
+// Example is one invocation shown on a verb's detail page.
 type Example struct {
 	Invocation string
 }
 
-// Verb is one row of the command registry: the single source of truth for dispatch, help, and the naming-law tests.
+// Verb is one row of the command registry: the single source of truth for
+// dispatch, help, and the naming-law tests.
 type Verb struct {
 	Name        string
 	Args        string
@@ -80,12 +79,12 @@ type Verb struct {
 var Verbs = []Verb{
 	// session
 	{
-		Name: "help", Args: "[verb]", Kind: KindSession,
+		Name: "help", Args: "", Kind: KindSession,
 		Modes: ModeCLI | ModeREPL, Intercepted: true,
-		Summary: "Show this list or one verb's detail",
-		Long: "Without an argument, prints every command grouped by kind. " +
-			"With a verb name, prints that verb's usage, examples, and flags.",
-		Usage: []string{"help [verb]"},
+		Summary: "Show the command index",
+		Long: "Prints every command grouped by kind. Run `<verb> --help` for a " +
+			"command's usage, examples, and flags.",
+		Usage: []string{"help"},
 	},
 	{
 		Name: "use", Args: "<queue>", Kind: KindSession, Modes: ModeREPL,

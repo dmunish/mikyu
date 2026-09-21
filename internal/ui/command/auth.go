@@ -74,7 +74,8 @@ func writeCredentials(path string, m map[string]string) error {
 	return os.Rename(tmp, path)
 }
 
-// LoadToken reads the stored token for the given target, or ("", false) if none.
+// LoadToken reads the stored token for the given target, or ("", false)
+// if none.
 func LoadToken(target string) (string, bool) {
 	path, err := CredentialsPath()
 	if err != nil {
@@ -102,7 +103,7 @@ func SaveToken(target, token string) error {
 	return writeCredentials(path, m)
 }
 
-// DeleteToken removes the entry for target; missing entry is a no-op.
+// DeleteToken removes the entry for target; a missing entry is a no-op.
 func DeleteToken(target string) error {
 	path, err := CredentialsPath()
 	if err != nil {
@@ -129,6 +130,7 @@ func Login(ctx context.Context, target string) error {
 }
 
 // LoginWithToken verifies an already-obtained token against target
+// before persisting it.
 func LoginWithToken(ctx context.Context, target, tok string) error {
 	tok = strings.TrimSpace(tok)
 	if tok == "" {
@@ -140,12 +142,12 @@ func LoginWithToken(ctx context.Context, target, tok string) error {
 	}
 	defer c.Close()
 	if _, err := c.ListQueues(ctx); err != nil {
-		return err // ErrUnauthorized reaches the caller; nothing is saved
+		return err
 	}
 	return SaveToken(target, tok)
 }
 
-// readTokenFrom prompts on stderr and reads one token from f
+// readTokenFrom prompts on stderr and reads one token from f.
 func readTokenFrom(f *os.File) (string, error) {
 	fmt.Fprint(os.Stderr, "Token: ")
 	if term.IsTerminal(int(f.Fd())) {

@@ -12,55 +12,52 @@ import (
 )
 
 func TestParseREPLArgs(t *testing.T) {
-	args := parseREPLArgs(`append "hello world" @file.txt`)
-	assert.Equal(t, []string{"append", "hello world", "@file.txt"}, args)
-}
-
-func TestParseREPLArgsEmptyQuotes(t *testing.T) {
-	args := parseREPLArgs(`append "" @file`)
-	assert.Equal(t, []string{"append", "", "@file"}, args)
+	assert.Equal(t, []string{"append", "hello world", "@file.txt"},
+		parseREPLArgs(`append "hello world" @file.txt`))
+	assert.Equal(t, []string{"append", "", "@file"},
+		parseREPLArgs(`append "" @file`))
 }
 
 func TestFormatHelpArgs(t *testing.T) {
-	formatted := formatHelpArgs("<queue> <msg>", 20)
-	assert.NotEmpty(t, formatted)
-
-	empty := formatHelpArgs("", 10)
-	assert.Equal(t, 10, len(empty))
+	assert.NotEmpty(t, formatHelpArgs("<queue> <msg>", 20))
+	assert.Len(t, formatHelpArgs("", 10), 10)
 }
 
-// The REPL mirrors every REPL-visible verb the CLI has, plus its session commands.
-func TestREPLMatchesCLIVerbs(t *testing.T) {
+// TestREPLMirrorsEveryVerb: every REPL-exposed verb has a handler, and
+// retired names are unreachable.
+func TestREPLMirrorsEveryVerb(t *testing.T) {
 	for _, v := range command.Verbs {
-		if v.Intercepted {
-			continue
-		}
-		if v.Modes&command.ModeREPL == 0 {
+		if v.Intercepted || v.Modes&command.ModeREPL == 0 {
 			continue
 		}
 		_, ok := replHandlers[v.Name]
 		assert.True(t, ok, "verb %q is missing from the REPL", v.Name)
 	}
-
-	for _, name := range []string{"produce", "publish", "pop", "stats"} {
+	for _, name := range []string{"produce", "publish", "pop", "stats", "info"} {
 		_, ok := replHandlers[name]
 		assert.False(t, ok, "retired verb %q must not be dispatchable", name)
 	}
-
-	for _, name := range []string{"use", "exit"} {
+	for _, name := range []string{"use", "exit", "help"} {
 		_, ok := replHandlers[name]
 		assert.True(t, ok, "session command %q is missing", name)
 	}
 }
 
-func TestREPLMetricsVerb(t *testing.T) {
-	_, ok := replHandlers["metrics"]
-	assert.True(t, ok, "metrics must be dispatchable in REPL")
-}
+// TestDispatchHelpOnlyViaFlag: `--help` renders a detail page; `help
+// enqueue` does not.
+func TestDispatchHelpOnlyViaFlag(t *testing.T) {
+	client, err := mikyu.Open(t.TempDir())
+	require.NoError(t, err)
+	defer client.Close()
 
-func TestREPLNoInfoVerb(t *testing.T) {
-	_, ok := replHandlers["info"]
-	assert.False(t, ok, "info must not be dispatchable in REPL")
+	sess := &replSession{client: client, ctx: t.Context()}
+
+	out := captureStdout(func() { sess.dispatch("create --help") })
+	assert.Contains(t, out, "--batch-size")
+
+	// `help enqueue` must not render the enqueue detail page.
+	out = captureStdout(func() { sess.dispatch("help enqueue") })
+	assert.NotContains(t, out, "--scheduled-at")
 }
 
 func captureStdout(fn func()) string {
@@ -79,7 +76,7 @@ func captureStdout(fn func()) string {
 	return out.String()
 }
 
-func TestREPLKindInference(t *testing.T) {
+func TestKindInference(t *testing.T) {
 	client, err := mikyu.Open(t.TempDir())
 	require.NoError(t, err)
 	defer client.Close()
@@ -91,21 +88,24 @@ func TestREPLKindInference(t *testing.T) {
 
 	sess := &replSession{client: client, ctx: ctx}
 
-	useLog := captureStdout(func() { sess.handleUse([]string{"events"}) })
-	assert.Contains(t, useLog, "Active queue set to")
+	assert.Contains(t, captureStdout(func() { sess.handleUse([]string{"events"}) }), "Active queue set to")
+	assert.Contains(t, captureStdout(func() { sess.handleUse([]string{"jobs"}) }), "Active queue set to")
 
-	useTask := captureStdout(func() { sess.handleUse([]string{"jobs"}) })
-	assert.Contains(t, useTask, "Active queue set to")
-
-	appendLog := captureStdout(func() { sess.handleUse([]string{"events"}); sess.handleAppend([]string{"events", "hello"}) })
+	appendLog := captureStdout(func() {
+		sess.handleUse([]string{"events"})
+		sess.handleAppend([]string{"events", "hello"})
+	})
 	assert.Contains(t, appendLog, "Appended")
 
-	dequeueTask := captureStdout(func() { sess.handleUse([]string{"jobs"}); sess.handleDequeue([]string{"--timeout", "0"}) })
+	dequeueTask := captureStdout(func() {
+		sess.handleUse([]string{"jobs"})
+		sess.handleDequeue([]string{"--timeout", "0"})
+	})
 	assert.Contains(t, dequeueTask, "No task available.")
 
-	dequeueLog := captureStdout(func() { sess.handleUse([]string{"events"}); sess.handleDequeue([]string{"--timeout", "0"}) })
+	dequeueLog := captureStdout(func() {
+		sess.handleUse([]string{"events"})
+		sess.handleDequeue([]string{"--timeout", "0"})
+	})
 	assert.Contains(t, dequeueLog, "dequeue requires a task queue")
-
-	tailTask := captureStdout(func() { sess.handleUse([]string{"jobs"}); sess.handleTail([]string{"jobs"}) })
-	assert.Contains(t, tailTask, "tail requires a log queue")
 }

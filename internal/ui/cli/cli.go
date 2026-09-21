@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -18,7 +17,8 @@ import (
 	"github.com/dmunish/mikyu/internal/ui/command"
 )
 
-// App is one CLI process surface: the streams it reads and writes, plus the confirmation hook tests replace.
+// App is one CLI process surface: the streams it reads and writes, plus
+// the confirmation hook tests replace.
 type App struct {
 	Stdin   io.Reader
 	Stdout  io.Writer
@@ -78,40 +78,29 @@ func (a *App) Run(target string, args []string) error {
 		Color: isWriterTerminal(a.Stdout),
 	}
 
-	if global.Help {
+	if global.Help || len(rest) == 0 {
 		_ = command.WriteIndex(a.Stdout, opts)
-		return nil
-	}
-	if len(rest) == 0 {
-		_ = command.WriteIndex(a.Stdout, opts)
+		if global.Help {
+			return nil
+		}
 		return a.usage("no command given")
 	}
 
 	verb, vargs := rest[0], rest[1:]
 
-	// `mikyu help [verb]` — index, or one verb's detail page.
+	// `help` alone prints the index.
 	if verb == "help" {
-		if len(vargs) > 0 {
-			if v, ok := command.LookupVerb(vargs[0]); ok {
-				_ = command.WriteVerb(a.Stdout, v, opts)
-				return nil
-			}
-		}
-		_ = command.WriteIndex(a.Stdout, opts)
-		return nil
+		return command.WriteIndex(a.Stdout, opts)
 	}
 
-	// `mikyu <verb> help` / `-h` / `--help` — detail page, no dispatch.
-	for _, arg := range vargs {
-		if arg == "help" || arg == "-h" || arg == "--help" {
-			v, ok := command.LookupVerb(verb)
-			if !ok {
-				_ = command.WriteIndex(a.Stdout, opts)
-				return a.usage("unknown command: %s", verb)
-			}
-			_ = command.WriteVerb(a.Stdout, v, opts)
-			return nil
+	// Per-verb help is revealed by --help / -h only.
+	if command.HasHelpFlag(vargs) {
+		v, ok := command.LookupVerb(verb)
+		if !ok {
+			_ = command.WriteIndex(a.Stdout, opts)
+			return a.usage("unknown command: %s", verb)
 		}
+		return command.WriteVerb(a.Stdout, v, opts)
 	}
 
 	handler, ok := handlers[verb]
@@ -178,8 +167,21 @@ func isTerminal(f *os.File) bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-// newFlagSet returns a silent flag set for the presentation flags that are not spec parameters (--json, -y, --timeout).
-func newFlagSet(name string) *flag.FlagSet { return command.NewFlagSet(name) }
+func isWriterTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && isTerminal(f)
+}
+
+// confirmFn returns the confirmation callback for command helpers: nil
+// when the prompt was skipped with -y.
+func (in *invocation) confirmFn(prompt string, skip bool) func() (bool, error) {
+	if skip {
+		return nil
+	}
+	return func() (bool, error) { return in.app.confirm(prompt, false) }
+}
+
+// ---- queue verbs ----
 
 func (in *invocation) handleList(args []string) error {
 	if len(args) > 0 {
@@ -266,7 +268,7 @@ func (in *invocation) handleUpdate(args []string) error {
 
 func (in *invocation) handleDescribe(args []string) error {
 	var asJSON bool
-	fs := newFlagSet("describe")
+	fs := command.NewFlagSet("describe")
 	fs.BoolVar(&asJSON, "json", false, "emit the machine-readable description")
 
 	rest, err := command.ParseAnywhere(fs, args)
@@ -295,17 +297,17 @@ func (in *invocation) handleDescribe(args []string) error {
 	if d.Effective.Engine.Compaction != nil && *d.Effective.Engine.Compaction {
 		compaction = "on"
 	}
-	fmt.Fprintf(in.app.Stdout, "queue:     %s (%s)\n", rest[0], d.Kind)
+	fmt.Fprintf(in.app.Stdout, "queue:      %s (%s)\n", rest[0], d.Kind)
 	fmt.Fprintf(in.app.Stdout, "compaction: %s\n", compaction)
-	fmt.Fprintf(in.app.Stdout, "stored:    %s\n", stored)
-	fmt.Fprintf(in.app.Stdout, "effective: %s\n", effective)
-	fmt.Fprintf(in.app.Stdout, "defaults:  %s\n", defaults)
+	fmt.Fprintf(in.app.Stdout, "stored:     %s\n", stored)
+	fmt.Fprintf(in.app.Stdout, "effective:  %s\n", effective)
+	fmt.Fprintf(in.app.Stdout, "defaults:   %s\n", defaults)
 	return nil
 }
 
 func (in *invocation) handleDelete(args []string) error {
 	var yes bool
-	fs := newFlagSet("delete")
+	fs := command.NewFlagSet("delete")
 	fs.BoolVar(&yes, "y", false, "skip the confirmation")
 	fs.BoolVar(&yes, "yes", false, "skip the confirmation")
 
@@ -318,7 +320,8 @@ func (in *invocation) handleDelete(args []string) error {
 	}
 	name := rest[0]
 
-	executed, err := command.Delete(in.ctx, in.client, name, in.confirmFn(fmt.Sprintf("delete queue %q? [y/N]: ", name), yes))
+	executed, err := command.Delete(in.ctx, in.client, name,
+		in.confirmFn(fmt.Sprintf("delete queue %q? [y/N]: ", name), yes))
 	if err != nil {
 		return err
 	}
@@ -330,9 +333,11 @@ func (in *invocation) handleDelete(args []string) error {
 	return nil
 }
 
+// ---- log verbs ----
+
 func (in *invocation) handleAppend(args []string) error {
 	var key string
-	fs := newFlagSet("append")
+	fs := command.NewFlagSet("append")
 	fs.StringVar(&key, "key", "", "the subject key this record belongs to")
 
 	rest, err := command.ParseAnywhere(fs, args)
@@ -379,8 +384,7 @@ func (in *invocation) handleTail(args []string) error {
 			return in.app.usage("invalid offset: %v", err)
 		}
 	}
-
-	err := command.Tail(in.ctx, in.client, args[0], start, func(msg mikyu.Record) error {
+	return command.Tail(in.ctx, in.client, args[0], start, func(msg mikyu.Record) error {
 		prefix := fmt.Sprintf("offset=%d id=%s ts=%s payload=", msg.Offset, msg.ID, msg.Timestamp.Format(time.RFC3339Nano))
 		termWidth := command.GetTerminalWidth()
 		avail := -1
@@ -390,12 +394,11 @@ func (in *invocation) handleTail(args []string) error {
 		fmt.Fprintf(in.app.Stdout, "%s%s\n", prefix, command.FormatSingleLinePayload(msg.Payload, avail))
 		return nil
 	})
-	return err
 }
 
 func (in *invocation) handleTruncate(args []string) error {
 	var yes bool
-	fs := newFlagSet("truncate")
+	fs := command.NewFlagSet("truncate")
 	fs.BoolVar(&yes, "y", false, "skip the confirmation")
 	fs.BoolVar(&yes, "yes", false, "skip the confirmation")
 
@@ -432,10 +435,12 @@ func (in *invocation) handleTruncate(args []string) error {
 	return nil
 }
 
+// ---- admin verbs ----
+
 func (in *invocation) handleMetrics(args []string) error {
 	var asJSON, watch bool
 	var queueFilter string
-	fs := newFlagSet("metrics")
+	fs := command.NewFlagSet("metrics")
 	fs.BoolVar(&asJSON, "json", false, "emit the snapshot as JSON")
 	fs.BoolVar(&watch, "watch", false, "stream snapshots until interrupted")
 	fs.StringVar(&queueFilter, "queue", "", "restrict output to one queue")
@@ -556,7 +561,7 @@ func (in *invocation) trySubscribe() (<-chan mikyu.Metrics, func()) {
 }
 
 func (in *invocation) handleLogin(args []string) error {
-	fs := newFlagSet("login")
+	fs := command.NewFlagSet("login")
 	var target string
 	fs.StringVar(&target, "target", in.target, "target to authenticate against")
 	rest, err := command.ParseAnywhere(fs, args)
@@ -571,7 +576,7 @@ func (in *invocation) handleLogin(args []string) error {
 }
 
 func (in *invocation) handleLogout(args []string) error {
-	fs := newFlagSet("logout")
+	fs := command.NewFlagSet("logout")
 	var target string
 	fs.StringVar(&target, "target", in.target, "target to forget")
 	rest, err := command.ParseAnywhere(fs, args)
@@ -587,7 +592,7 @@ func (in *invocation) handleLogout(args []string) error {
 
 func (in *invocation) handleShutdown(args []string) error {
 	var yes bool
-	fs := newFlagSet("shutdown")
+	fs := command.NewFlagSet("shutdown")
 	fs.BoolVar(&yes, "y", false, "skip the confirmation")
 	fs.BoolVar(&yes, "yes", false, "skip the confirmation")
 
@@ -612,12 +617,4 @@ func (in *invocation) handleShutdown(args []string) error {
 	}
 	fmt.Fprintln(in.app.Stdout, "shutdown signal sent")
 	return nil
-}
-
-// confirmFn returns the confirmation callback for command helpers: nil when the prompt was skipped with -y.
-func (in *invocation) confirmFn(prompt string, skip bool) func() (bool, error) {
-	if skip {
-		return nil
-	}
-	return func() (bool, error) { return in.app.confirm(prompt, false) }
 }

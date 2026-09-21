@@ -7,6 +7,7 @@ import (
 	"unsafe"
 )
 
+// init enables virtual terminal processing on Windows stdout/stderr.
 func init() {
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
 	getStdHandle := kernel32.NewProc("GetStdHandle")
