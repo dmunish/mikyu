@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/dmunish/mikyu/internal/spec"
 )
 
 // Helper to construct a temporary test queue with custom parameters.
@@ -22,13 +24,9 @@ func newTestQueue(t *testing.T, maxSegBytes int64) (*Queue, string) {
 		t.Fatalf("failed to open offset store: %v", err)
 	}
 
-	cfg := Config{
-		BatchSize:       16,
-		MaxInterval:     10 * time.Millisecond,
-		SegmentSize:     maxSegBytes,
-		MaxMessageBytes: 1024 * 1024,
-		Fsync:           false, // Async for fast test execution
-	}
+	cfg := testConfig()
+	cfg.MaxSegment = maxSegBytes
+	cfg.Durability = spec.DurabilityAsync // Async for fast test execution
 
 	q, err := openQueue(dir, "compact-test-queue", cfg, store)
 	if err != nil {
@@ -233,11 +231,9 @@ func TestCompact_CrashRecoveryAfterTruncation(t *testing.T) {
 		t.Fatalf("openOffsetStore failed: %v", err)
 	}
 
-	cfg := Config{
-		BatchSize:   16,
-		SegmentSize: 256,
-		Fsync:       false,
-	}
+	cfg := testConfig()
+	cfg.MaxSegment = 256
+	cfg.Durability = spec.DurabilityAsync
 
 	q, err := openQueue(dir, "crash-queue", cfg, store)
 	if err != nil {
@@ -500,13 +496,9 @@ func TestFloorForSizeDropsWholeSegments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openOffsetStore failed: %v", err)
 	}
-	cfg := Config{
-		BatchSize:       16,
-		MaxInterval:     10 * time.Millisecond,
-		SegmentSize:     256,
-		MaxMessageBytes: 1024 * 1024,
-		Fsync:           true,
-	}
+	cfg := testConfig()
+	cfg.MaxSegment = 256
+
 	q, err := openQueue(dir, "floor-for-size-queue", cfg, store)
 	if err != nil {
 		t.Fatalf("openQueue failed: %v", err)

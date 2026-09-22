@@ -83,17 +83,17 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 	// positions until a complete per-segment group is ready to commit.
 	ts := time.Now()
 	for i, payload := range payloads {
-		if int64(len(payload)) > q.cfg.MaxMessageBytes {
+		if int64(len(payload)) > q.cfg.MaxPayload {
 			q.mu.Unlock()
-			return nil, fmt.Errorf("%w: queue %q payload of %d bytes exceeds max_message_bytes %d", ErrMessageTooLarge, q.name, len(payload), q.cfg.MaxMessageBytes)
+			return nil, fmt.Errorf("%w: queue %q payload of %d bytes exceeds max_payload %d", ErrMessageTooLarge, q.name, len(payload), q.cfg.MaxPayload)
 		}
 		totalBytes += int64(len(payload))
 		id := uuid.NewV7()
 		rec := encodeRecord(id, ts, group, payload)
 		recLen := int64(len(rec))
-		if recLen > q.cfg.SegmentSize {
+		if recLen > q.cfg.MaxSegment {
 			q.mu.Unlock()
-			return nil, fmt.Errorf("%w: queue %q record of %d bytes exceeds segment_size %d", ErrRecordTooLarge, q.name, recLen, q.cfg.SegmentSize)
+			return nil, fmt.Errorf("%w: queue %q record of %d bytes exceeds max_segment %d", ErrRecordTooLarge, q.name, recLen, q.cfg.MaxSegment)
 		}
 		ids[i], recs[i], recLens[i] = id, rec, recLen
 	}
@@ -143,22 +143,22 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 
 	for i := range payloads {
 		recLen := recLens[i]
-		rollRequired := q.active.pos+staged.totalLen+recLen > q.cfg.SegmentSize || time.Since(q.active.createdAt) > q.cfg.SegmentAge
-		if rollRequired {
-			if len(staged.recs) == 0 {
-				// An old/aged active segment may already be unable to accept the next
-				// record. Roll before staging the record so every group fits entirely
-				// inside one segment.
-				if err := q.roll(); err != nil {
-					q.mu.Unlock()
-					return nil, err
-				}
-				reset(i)
-				rollRequired = false
+		rollRequired := q.active.pos+staged.totalLen+recLen > q.cfg.MaxSegment || time.Since(q.active.createdAt) > q.cfg.MaxSegmentAge
+		if rollRequired && len(staged.recs) == 0 {
+			// An old/aged active segment may already be unable to accept the next
+			// record. Roll before staging the record so every group fits entirely
+			// inside one segment.
+			if err := q.roll(); err != nil {
+				q.mu.Unlock()
+				return nil, err
 			}
+			reset(i)
+			rollRequired = false
 		}
-		if rollRequired {
-			if !q.cfg.Fsync {
+		// The staged group also commits once it would overflow the WAL byte budget.
+		flushRequired := len(staged.recs) > 0 && staged.totalLen+recLen > q.cfg.MaxFlushBytes
+		if rollRequired || flushRequired {
+			if q.cfg.Async() {
 				if err := commitAsync(&staged); err != nil {
 					q.mu.Unlock()
 					return nil, err
@@ -185,9 +185,11 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 					return nil, ErrQueueClosed
 				}
 			}
-			if err := q.roll(); err != nil {
-				q.mu.Unlock()
-				return nil, err
+			if rollRequired {
+				if err := q.roll(); err != nil {
+					q.mu.Unlock()
+					return nil, err
+				}
 			}
 			reset(i)
 		}
@@ -209,7 +211,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 		q.warnKeyIndexSizeLocked()
 	}
 
-	if !q.cfg.Fsync {
+	if q.cfg.Async() {
 		if err := commitAsync(&staged); err != nil {
 			q.mu.Unlock()
 			return nil, err

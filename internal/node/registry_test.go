@@ -18,7 +18,7 @@ func TestRegistryRoundTrip(t *testing.T) {
 	r := &registry{
 		Version: registryVersion,
 		Queues: map[string]QueueEntry{
-			key: {Name: "payments", Kind: manager.KindLog, Spec: spec.Spec{Engine: spec.EngineSpec{BatchSize: new(7)}}},
+			key: {Name: "payments", Kind: manager.KindLog, Spec: spec.Spec{Flush: spec.FlushSpec{MaxBytes: new(int64(7))}}},
 		},
 	}
 	require.NoError(t, saveRegistry(dir, r))
@@ -28,8 +28,8 @@ func TestRegistryRoundTrip(t *testing.T) {
 	entry, ok := loaded.Queues[key]
 	require.True(t, ok)
 	assert.Equal(t, manager.KindLog, entry.Kind)
-	require.NotNil(t, entry.Spec.Engine.BatchSize)
-	assert.Equal(t, 7, *entry.Spec.Engine.BatchSize)
+	require.NotNil(t, entry.Spec.Flush.MaxBytes)
+	assert.Equal(t, int64(7), *entry.Spec.Flush.MaxBytes)
 }
 
 func TestRegistryMissingFileIsEmpty(t *testing.T) {

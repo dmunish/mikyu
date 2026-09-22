@@ -11,7 +11,7 @@ func (q *Queue) readFromSegment(seg *segment, offset uint64) (Record, error) {
 	pos, recLen, err := seg.readIndexEntry(offset)
 	if err != nil || recLen < (minRecordSize-recordLengthSize) {
 		// A zeroed slot in a compactable queue means compaction dropped the record.
-		if q.cfg.Compaction {
+		if q.cfg.KeyedCompaction() {
 			return Record{}, ErrRecordCompacted
 		}
 		return Record{}, ErrOffsetNotFound

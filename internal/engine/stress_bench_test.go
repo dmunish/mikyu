@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/dmunish/mikyu/internal/spec"
 )
 
 // Helper to create a queue for benchmarking.
@@ -25,6 +27,17 @@ func newBenchQueue(b *testing.B, cfg Config) (*Queue, *OffsetStore) {
 	return q, store
 }
 
+// benchConfig returns the benchmark baseline over the resolved defaults.
+func benchConfig(fsync bool, maxPayload int64) Config {
+	cfg := testConfig()
+	cfg.MaxPayload = maxPayload
+	cfg.MaxFlushWait = time.Millisecond
+	if !fsync {
+		cfg.Durability = spec.DurabilityAsync
+	}
+	return cfg
+}
+
 // BenchmarkProduceOnly measures concurrent produce throughput across fsync modes.
 func BenchmarkProduceOnly(b *testing.B) {
 	for _, fsync := range []bool{true, false} {
@@ -35,12 +48,7 @@ func BenchmarkProduceOnly(b *testing.B) {
 				for i := range payload {
 					payload[i] = byte(i)
 				}
-				q, store := newBenchQueue(b, Config{
-					MaxMessageBytes: int64(msgSize * 2),
-					BatchSize:       256,
-					MaxInterval:     time.Millisecond,
-					Fsync:           fsync,
-				})
+				q, store := newBenchQueue(b, benchConfig(fsync, int64(msgSize*2)))
 				defer store.Close()
 				defer q.Close()
 
@@ -66,12 +74,7 @@ func BenchmarkReadOnly(b *testing.B) {
 	for _, msgSize := range []int{64, 1024, 64 * 1024} {
 		b.Run(fmt.Sprintf("size=%d", msgSize), func(b *testing.B) {
 			payload := make([]byte, msgSize)
-			q, store := newBenchQueue(b, Config{
-				MaxMessageBytes: int64(msgSize * 2),
-				BatchSize:       256,
-				MaxInterval:     time.Millisecond,
-				Fsync:           false, // Fast pre-fill for read-only benchmark
-			})
+			q, store := newBenchQueue(b, benchConfig(false, int64(msgSize*2)))
 			defer store.Close()
 			defer q.Close()
 
@@ -115,12 +118,7 @@ func BenchmarkMixedWorkload(b *testing.B) {
 		} {
 			name := fmt.Sprintf("fsync=%t/%s", fsync, workload.name)
 			b.Run(name, func(b *testing.B) {
-				q, store := newBenchQueue(b, Config{
-					MaxMessageBytes: 1024 * 1024,
-					BatchSize:       256,
-					MaxInterval:     time.Millisecond,
-					Fsync:           fsync,
-				})
+				q, store := newBenchQueue(b, benchConfig(fsync, 1024*1024))
 				defer store.Close()
 				defer q.Close()
 
@@ -160,12 +158,7 @@ func BenchmarkBatchOperations(b *testing.B) {
 		for _, batchSize := range []int{1, 10, 100, 1000} {
 			name := fmt.Sprintf("fsync=%t/batch=%d", fsync, batchSize)
 			b.Run(name, func(b *testing.B) {
-				q, store := newBenchQueue(b, Config{
-					MaxMessageBytes: 1024 * 1024,
-					BatchSize:       256,
-					MaxInterval:     time.Millisecond,
-					Fsync:           fsync,
-				})
+				q, store := newBenchQueue(b, benchConfig(fsync, 1024*1024))
 				defer store.Close()
 				defer q.Close()
 
@@ -205,12 +198,7 @@ func BenchmarkBatchOperations(b *testing.B) {
 func BenchmarkHighConcurrencyStress(b *testing.B) {
 	for _, fsync := range []bool{true, false} {
 		b.Run(fmt.Sprintf("fsync=%t", fsync), func(b *testing.B) {
-			q, store := newBenchQueue(b, Config{
-				MaxMessageBytes: 64 * 1024,
-				BatchSize:       256,
-				MaxInterval:     time.Millisecond,
-				Fsync:           fsync,
-			})
+			q, store := newBenchQueue(b, benchConfig(fsync, 64*1024))
 			defer store.Close()
 			defer q.Close()
 

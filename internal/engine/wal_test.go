@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync"
@@ -33,15 +34,16 @@ func TestWALPushAndWait(t *testing.T) {
 	require.NoError(t, err)
 	defer f.Close()
 
-	cfg := Config{BatchSize: 2, MaxInterval: time.Millisecond}
+	cfg := testConfig()
+	cfg.MaxFlushWait = time.Millisecond
 	w := newWAL(f, cfg, 0)
 	w.start()
 	defer w.stop()
 
 	seq, wake, err := w.push([]byte("record"), 0)
 	require.NoError(t, err)
-	assert.Equal(t, int64(0), seq)
-	assert.True(t, wake)
+	assert.Equal(t, int64(6), seq, "seq is the byte offset after the record")
+	assert.False(t, wake, "a small push stays under the byte budget")
 
 	time.Sleep(5 * time.Millisecond)
 	require.NoError(t, w.wait(seq))
@@ -57,7 +59,9 @@ func TestWALBatch(t *testing.T) {
 	logPath := filepath.Join(dir, "wal.log")
 	f, _ := os.Create(logPath)
 	defer f.Close()
-	cfg := Config{BatchSize: 3, MaxInterval: time.Hour}
+	cfg := testConfig()
+	cfg.MaxFlushBytes = 3 // bytes, so three one-byte records hit the budget
+	cfg.MaxFlushWait = time.Hour
 	w := newWAL(f, cfg, 0)
 	w.start()
 	defer w.stop()
@@ -66,10 +70,10 @@ func TestWALBatch(t *testing.T) {
 	positions := []int64{0, 1, 2}
 	seq, wake, err := w.pushBatch(recs, positions)
 	require.NoError(t, err)
-	assert.Equal(t, int64(2), seq)
-	assert.True(t, wake)
+	assert.Equal(t, int64(3), seq)
+	assert.True(t, wake, "the byte budget was reached")
 
-	// Signal the flusher to run immediately (batch threshold was reached)
+	// Signal the flusher to run immediately (byte threshold was reached)
 	if wake {
 		select {
 		case w.wake <- struct{}{}:
@@ -78,7 +82,7 @@ func TestWALBatch(t *testing.T) {
 	}
 
 	require.NoError(t, w.wait(seq))
-	assert.Equal(t, int64(3), w.published)
+	assert.Equal(t, int64(3), w.publishedBytes)
 }
 
 func TestWALErrorPropagation(t *testing.T) {
@@ -87,14 +91,15 @@ func TestWALErrorPropagation(t *testing.T) {
 	logPath := filepath.Join(dir, "wal.log")
 	f, _ := os.Create(logPath)
 	f.Close() // force write error
-	cfg := Config{BatchSize: 1, MaxInterval: time.Millisecond}
+	cfg := testConfig()
+	cfg.MaxFlushWait = time.Millisecond
 	w := newWAL(f, cfg, 0)
 	w.start()
 	defer w.stop()
 
 	_, _, err := w.push([]byte("x"), 0)
 	require.NoError(t, err)
-	err = w.wait(0)
+	err = w.wait(int64(len("x")))
 	assert.Error(t, err)
 }
 
@@ -104,7 +109,8 @@ func TestWALStopFlushesPending(t *testing.T) {
 	logPath := filepath.Join(dir, "wal.log")
 	f, _ := os.Create(logPath)
 	defer f.Close()
-	cfg := Config{BatchSize: 10, MaxInterval: time.Hour}
+	cfg := testConfig()
+	cfg.MaxFlushWait = time.Hour
 	w := newWAL(f, cfg, 0)
 	w.start()
 	_, _, _ = w.push([]byte("data"), 0)
@@ -120,7 +126,8 @@ func TestWALConcurrentPush(t *testing.T) {
 	logPath := filepath.Join(dir, "wal.log")
 	f, _ := os.Create(logPath)
 	defer f.Close()
-	cfg := Config{BatchSize: 100, MaxInterval: time.Millisecond}
+	cfg := testConfig()
+	cfg.MaxFlushWait = time.Millisecond
 	w := newWAL(f, cfg, 0)
 	w.start()
 	defer w.stop()
@@ -135,7 +142,7 @@ func TestWALConcurrentPush(t *testing.T) {
 			defer wg.Done()
 			for i := range msgs {
 				payload := []byte{byte(g), byte(i)}
-				seq, _, err := w.push(payload, int64(g*msgs+i))
+				seq, _, err := w.push(payload, int64(g*msgs+i)*2)
 				if err != nil {
 					errCh <- err
 					return
@@ -154,6 +161,45 @@ func TestWALConcurrentPush(t *testing.T) {
 	}
 }
 
+// TestWALByteBackpressure fills the async channel to its byte-derived capacity and asserts the next push blocks until cancel.
+func TestWALByteBackpressure(t *testing.T) {
+	testWithTimeout(t, 2*time.Second)
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "backpressure.log")
+	f, err := os.Create(logPath)
+	require.NoError(t, err)
+	defer f.Close()
+
+	// The WAL is never started, so nothing drains the channel and
+	// MaxFlushBytes/4096 is the exact capacity.
+	cfg := testConfig()
+	cfg.MaxFlushBytes = 8192
+	w := newWAL(f, cfg, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	entry := asyncEntry{seg: &segment{}, rec: []byte("x"), pos: 0, recLen: 1, offset: 0}
+
+	const capacity = 8192 / 4096
+	for range capacity {
+		require.NoError(t, w.pushAsync(ctx, entry))
+	}
+
+	blocked := make(chan error, 1)
+	go func() { blocked <- w.pushAsync(ctx, entry) }()
+	select {
+	case err := <-blocked:
+		t.Fatalf("pushAsync returned %v; expected it to block on a full channel", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-blocked:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("pushAsync did not honor cancellation")
+	}
+}
+
 func TestWALWakeTokenLossRace(t *testing.T) {
 	testWithTimeout(t, 2*time.Second)
 	dir := t.TempDir()
@@ -162,28 +208,32 @@ func TestWALWakeTokenLossRace(t *testing.T) {
 	require.NoError(t, err)
 	defer f.Close()
 
-	// MaxInterval set to 5s so ticker won't hide the missing wake signal
-	cfg := Config{BatchSize: 10, MaxInterval: 5 * time.Second, MinInterval: 10 * time.Millisecond}
+	// MaxFlushWait set to 5s so the ticker won't hide the missing wake signal
+	cfg := testConfig()
+	cfg.MaxFlushBytes = 8
+	cfg.MaxFlushWait = 5 * time.Second
+	cfg.FlushLinger = 10 * time.Millisecond
 	w := newWAL(f, cfg, 0)
 	w.start()
 	defer w.stop()
 
-	// 1. Initial push triggers flusher
+	// 1. Initial push is under the byte budget; nudge the flusher so it enters
+	// its adaptive linger.
 	seq1, wake1, err := w.push([]byte("msg1"), 0)
 	require.NoError(t, err)
-	if wake1 {
-		select {
-		case w.wake <- struct{}{}:
-		default:
-		}
+	require.False(t, wake1)
+	select {
+	case w.wake <- struct{}{}:
+	default:
 	}
 
 	// 2. Allow flusher to enter adaptiveFlush sleep
 	time.Sleep(5 * time.Millisecond)
 
-	// 3. Second push while adaptiveFlush is in flight
+	// 3. Second push reaches the byte budget while adaptiveFlush is in flight
 	seq2, wake2, err := w.push([]byte("msg2"), 4)
 	require.NoError(t, err)
+	require.True(t, wake2)
 	if wake2 {
 		select {
 		case w.wake <- struct{}{}:
@@ -215,7 +265,8 @@ func BenchmarkWALFlushAllocations(b *testing.B) {
 	}
 	defer f.Close()
 
-	cfg := Config{BatchSize: 256, MaxInterval: time.Millisecond}
+	cfg := testConfig()
+	cfg.MaxFlushWait = time.Millisecond
 	w := newWAL(f, cfg, 0)
 	w.start()
 	defer w.stop()

@@ -27,10 +27,10 @@ func WithMetrics(cfg MetricsConfig) AcquireOption {
 // MetricsFromSession extracts the collector settings from a resolved session.
 func MetricsFromSession(s spec.Session) MetricsConfig {
 	return MetricsConfig{
-		Enabled:    s.MetricsEnabled,
-		Interval:   s.MetricsInterval.Duration(),
-		History:    s.MetricsHistory,
-		Histograms: s.MetricsHistograms,
+		Enabled:    s.Metrics.Enabled,
+		Interval:   s.Metrics.Interval.Duration(),
+		History:    s.Metrics.History,
+		Histograms: s.Metrics.Histograms,
 	}
 }
 

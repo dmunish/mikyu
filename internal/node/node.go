@@ -171,10 +171,7 @@ func (n *Node) createQueue(ctx context.Context, name string, kind manager.Kind, 
 	}
 
 	eff := s.Effective(n.defaults, spec.Builtin())
-	if err := spec.ValidateCreate(eff); err != nil {
-		return nil, spec.Spec{}, err
-	}
-	if kind == manager.KindTask && eff.Engine.Compaction != nil && *eff.Engine.Compaction {
+	if kind == manager.KindTask && deref(eff.Storage.Compaction, spec.CompactionNone) == spec.CompactionKeys {
 		return nil, spec.Spec{}, fmt.Errorf("%w: compaction is a log-queue setting", spec.ErrInvalidConfig)
 	}
 	storage, err := n.mgr.Create(ctx, name, kind, toEngineConfig(eff))
@@ -282,10 +279,10 @@ func (n *Node) UpdateQueue(ctx context.Context, name string, patch spec.Spec) er
 	// The patch is the more specific layer: it overrides the stored spec and
 	// the stored spec fills whatever the patch leaves unset.
 	merged := patch.Merge(current)
-	eff := merged.Effective(n.defaults, spec.Builtin())
-	if err := spec.ValidateCreate(eff); err != nil {
+	if err := spec.ValidateCreate(merged); err != nil {
 		return err
 	}
+	eff := merged.Effective(n.defaults, spec.Builtin())
 	n.registry.Queues[key] = QueueEntry{Name: name, Kind: kind, Spec: merged}
 	if err := saveRegistry(n.dir, n.registry); err != nil {
 		n.registry.Queues[key] = QueueEntry{Name: name, Kind: kind, Spec: current}
@@ -471,66 +468,43 @@ func (n *Node) ListQueues(ctx context.Context) ([]QueueInfo, error) {
 	return n.mgr.List(ctx)
 }
 
-// taskDefaultsFor converts an effective spec's task block into driver defaults.
+// taskDefaultsFor converts a resolved spec's task block into driver defaults.
 func taskDefaultsFor(s spec.Spec) taskqueue.Defaults {
-	var d taskqueue.Defaults
-	if s.Task.DefaultVisibility != nil {
-		d.Visibility = s.Task.DefaultVisibility.Duration()
+	return taskqueue.Defaults{
+		Visibility:  s.Task.Lease.Duration(),
+		MaxAttempts: deref(s.Task.MaxAttempts, 5),
+		MaxInFlight: deref(s.Task.MaxInFlight, 100_000),
+		MaxDLQ:      deref(s.Task.MaxDeadLetters, 100_000),
 	}
-	if s.Task.DefaultMaxAttempts != nil {
-		d.MaxAttempts = *s.Task.DefaultMaxAttempts
-	}
-	if s.Task.MaxInFlight != nil {
-		d.MaxInFlight = *s.Task.MaxInFlight
-	}
-	if s.Task.MaxDLQ != nil {
-		d.MaxDLQ = *s.Task.MaxDLQ
-	}
-	return d
 }
 
-// policyFor converts a total (effective) spec's retention block into a
-// coordinator policy. Nil fields are read as unlimited.
+// policyFor converts a resolved spec's retention block into a coordinator policy.
 func policyFor(s spec.Spec) retention.Policy {
-	var p retention.Policy
-	if s.Retention.Age != nil {
-		p.Age = s.Retention.Age.Duration()
+	return retention.Policy{
+		Age:   s.Retention.MaxAge.Duration(),
+		Bytes: deref(s.Retention.MaxBytes, 0),
 	}
-	if s.Retention.Bytes != nil {
-		p.Bytes = *s.Retention.Bytes
-	}
-	return p
 }
 
-// toEngineConfig converts an effective spec into an engine.Config.
+// toEngineConfig converts a resolved spec into an engine.Config.
 func toEngineConfig(s spec.Spec) engine.Config {
-	cfg := engine.Config{}
-	if s.Engine.BatchSize != nil {
-		cfg.BatchSize = *s.Engine.BatchSize
+	return engine.Config{
+		Durability:    deref(s.Storage.Durability, spec.DurabilitySync),
+		Encryption:    deref(s.Storage.Encryption, spec.EncryptionNone),
+		Compaction:    deref(s.Storage.Compaction, spec.CompactionNone),
+		MaxSegment:    deref(s.Storage.MaxSegment, 64<<20),
+		MaxSegmentAge: s.Storage.MaxSegmentAge.Duration(),
+		MaxPayload:    deref(s.Storage.MaxPayload, 1<<20),
+		MaxCache:      deref(s.Storage.MaxCache, 32<<20),
+		MaxFlushBytes: deref(s.Flush.MaxBytes, 1<<20),
+		MaxFlushWait:  s.Flush.MaxWait.Duration(),
+		FlushLinger:   spec.FlushLinger(s),
 	}
-	if s.Engine.MaxInterval != nil {
-		cfg.MaxInterval = s.Engine.MaxInterval.Duration()
+}
+
+func deref[T any](p *T, fallback T) T {
+	if p == nil {
+		return fallback
 	}
-	if s.Engine.MinInterval != nil {
-		cfg.MinInterval = s.Engine.MinInterval.Duration()
-	}
-	if s.Engine.SegmentSize != nil {
-		cfg.SegmentSize = *s.Engine.SegmentSize
-	}
-	if s.Engine.MaxMessageBytes != nil {
-		cfg.MaxMessageBytes = *s.Engine.MaxMessageBytes
-	}
-	if s.Engine.SegmentAge != nil {
-		cfg.SegmentAge = s.Engine.SegmentAge.Duration()
-	}
-	if s.Engine.Encrypted != nil {
-		cfg.Encrypted = *s.Engine.Encrypted
-	}
-	if s.Engine.Fsync != nil {
-		cfg.Fsync = *s.Engine.Fsync
-	}
-	if s.Engine.Compaction != nil {
-		cfg.Compaction = *s.Engine.Compaction
-	}
-	return cfg
+	return *p
 }

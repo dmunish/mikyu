@@ -3,6 +3,8 @@ package engine
 import (
 	"errors"
 	"time"
+
+	"github.com/dmunish/mikyu/internal/spec"
 )
 
 var (
@@ -11,7 +13,7 @@ var (
 	ErrOffsetNotFound  = errors.New("offset not found")
 	ErrMessageTooLarge = errors.New("message payload exceeds maximum allowed size")
 	ErrRecordTooLarge  = errors.New("record size exceeds max segment size")
-	ErrOffsetTruncated  = errors.New("offset has been truncated from storage")
+	ErrOffsetTruncated = errors.New("offset has been truncated from storage")
 	ErrQueueClosed     = errors.New("queue is closed")
 	ErrNoData          = errors.New("no data available")
 	ErrRecordCompacted = errors.New("record has been compacted")
@@ -33,40 +35,26 @@ func (p CompactionPolicy) groupOf(group, payload []byte) []byte {
 	return group
 }
 
-// Config holds per-queue configuration parameters.
+// Config holds per-queue configuration parameters; callers pass a spec.Resolve output, so every field is total.
 type Config struct {
-	BatchSize        int
-	MaxInterval      time.Duration
-	MinInterval      time.Duration
-	SegmentSize      int64
-	MaxMessageBytes  int64
-	SegmentAge       time.Duration
-	Encrypted        bool
-	Fsync            bool
-	Compaction       bool
+	Durability       spec.Durability
+	Encryption       spec.Encryption
+	Compaction       spec.Compaction
+	MaxSegment       int64
+	MaxSegmentAge    time.Duration
+	MaxPayload       int64
+	MaxCache         int64
+	MaxFlushBytes    int64
+	MaxFlushWait     time.Duration
+	FlushLinger      time.Duration
 	CompactionPolicy CompactionPolicy
 }
 
-func (c Config) withDefaults() Config {
-	if c.BatchSize <= 0 {
-		c.BatchSize = 256
-	}
-	if c.MaxInterval <= 0 {
-		c.MaxInterval = 10 * time.Millisecond
-	}
-	if c.MinInterval == 0 {
-		c.MinInterval = 30 * time.Microsecond
-	} else if c.MinInterval < 0 {
-		c.MinInterval = 0 // Negative duration explicitly disables linger
-	}
-	if c.SegmentSize <= 0 {
-		c.SegmentSize = 64 * 1024 * 1024
-	}
-	if c.MaxMessageBytes <= 0 {
-		c.MaxMessageBytes = 1 * 1024 * 1024
-	}
-	if c.SegmentAge <= 0 {
-		c.SegmentAge = 1 * time.Hour
-	}
-	return c
-}
+// Async reports whether appends publish without waiting for the flusher.
+func (c Config) Async() bool { return c.Durability == spec.DurabilityAsync }
+
+// KeyedCompaction reports whether closed segments shed superseded keys.
+func (c Config) KeyedCompaction() bool { return c.Compaction == spec.CompactionKeys }
+
+// EncryptedStorage reports whether the queue directory uses OS encryption.
+func (c Config) EncryptedStorage() bool { return c.Encryption == spec.EncryptionOS }

@@ -46,8 +46,8 @@ func TestAcquireDefaultsMismatch(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = r1() }()
 
-	seven := 7
-	_, _, err = Acquire(dir, spec.Spec{Engine: spec.EngineSpec{BatchSize: &seven}})
+	seven := int64(7)
+	_, _, err = Acquire(dir, spec.Spec{Flush: spec.FlushSpec{MaxBytes: &seven}})
 	require.ErrorIs(t, err, ErrSessionDefaultsMismatch)
 	require.Contains(t, err.Error(), dir)
 

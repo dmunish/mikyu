@@ -16,6 +16,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
+
+	"github.com/dmunish/mikyu/internal/spec"
 )
 
 func TestMain(m *testing.M) {
@@ -28,7 +30,7 @@ func TestQueueProduceAndRead(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	q, err := openQueue(dir, "test", Config{MaxMessageBytes: 1024}, store)
+	q, err := openQueue(dir, "test", testConfig(), store)
 	require.NoError(t, err)
 	defer q.Close()
 
@@ -54,7 +56,7 @@ func TestQueueProduceBatch(t *testing.T) {
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
 
-	q, err := openQueue(dir, "batch", Config{}, store)
+	q, err := openQueue(dir, "batch", testConfig(), store)
 	require.NoError(t, err)
 	defer q.Close()
 
@@ -79,7 +81,7 @@ func TestQueueProduceConcurrentBatch(t *testing.T) {
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
 
-	q, err := openQueue(dir, "concurrent-batch", Config{}, store)
+	q, err := openQueue(dir, "concurrent-batch", testConfig(), store)
 	require.NoError(t, err)
 	defer q.Close()
 
@@ -129,7 +131,7 @@ func TestQueueReadOutOfRange(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
-	q, _ := openQueue(dir, "range", Config{}, store)
+	q, _ := openQueue(dir, "range", testConfig(), store)
 	defer q.Close()
 	_, err := q.Read(t.Context(), 10)
 	assert.True(t, errors.Is(err, ErrOffsetNotFound))
@@ -139,7 +141,9 @@ func TestQueueRolling(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
-	q, err := openQueue(dir, "roll", Config{SegmentSize: 128}, store)
+	cfg := testConfig()
+	cfg.MaxSegment = 128
+	q, err := openQueue(dir, "roll", cfg, store)
 	require.NoError(t, err)
 	defer q.Close()
 
@@ -160,7 +164,7 @@ func TestQueueProduceConcurrentBatchExactOffsets(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
-	q, err := openQueue(dir, "concurrent-batch-exact", Config{BatchSize: 10}, store)
+	q, err := openQueue(dir, "concurrent-batch-exact", testConfig(), store)
 	require.NoError(t, err)
 	defer q.Close()
 
@@ -220,7 +224,10 @@ func TestQueueAsyncWriteFailureStopsSubsequentAppends(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	q, err := openQueue(dir, "async-error", Config{Fsync: false, BatchSize: 1, MaxInterval: time.Millisecond}, store)
+	cfg := testConfig()
+	cfg.Durability = spec.DurabilityAsync
+	cfg.MaxFlushWait = time.Millisecond
+	q, err := openQueue(dir, "async-error", cfg, store)
 	require.NoError(t, err)
 	defer q.Close()
 	q.mu.RLock()
@@ -249,7 +256,7 @@ func TestQueueOperationsAfterCloseReturnErrQueueClosed(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	q, err := openQueue(dir, "closed", Config{}, store)
+	q, err := openQueue(dir, "closed", testConfig(), store)
 	require.NoError(t, err)
 	require.NoError(t, q.Close())
 
@@ -265,13 +272,11 @@ func TestQueueAppendBatchAcrossSegmentRoll(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	q, err := openQueue(dir, "batch-roll", Config{
-		SegmentSize:     256,
-		MaxMessageBytes: 128,
-		BatchSize:       8,
-		MaxInterval:     time.Millisecond,
-		Fsync:           true,
-	}, store)
+	cfg := testConfig()
+	cfg.MaxSegment = 256
+	cfg.MaxPayload = 128
+	cfg.MaxFlushWait = time.Millisecond
+	q, err := openQueue(dir, "batch-roll", cfg, store)
 	require.NoError(t, err)
 
 	payloads := make([][]byte, 20)
@@ -292,7 +297,7 @@ func TestQueueAppendBatchAcrossSegmentRoll(t *testing.T) {
 	store2, err := openOffsetStore(dir)
 	require.NoError(t, err)
 	defer store2.Close()
-	q2, err := openQueue(dir, "batch-roll", Config{}, store2)
+	q2, err := openQueue(dir, "batch-roll", testConfig(), store2)
 	require.NoError(t, err)
 	defer q2.Close()
 	for i, off := range offsets {
@@ -306,7 +311,9 @@ func TestQueueProduceMessageTooLarge(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
-	q, _ := openQueue(dir, "large", Config{MaxMessageBytes: 10}, store)
+	cfg := testConfig()
+	cfg.MaxPayload = 10
+	q, _ := openQueue(dir, "large", cfg, store)
 	defer q.Close()
 
 	_, err := q.Append(t.Context(), make([]byte, 11))
@@ -318,7 +325,10 @@ func TestQueueProduceBatchRecordExceedsSegmentSize(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
-	q, err := openQueue(dir, "oversized-batch", Config{SegmentSize: 64, MaxMessageBytes: 1024}, store)
+	cfg := testConfig()
+	cfg.MaxSegment = 64
+	cfg.MaxPayload = 1024
+	q, err := openQueue(dir, "oversized-batch", cfg, store)
 	require.NoError(t, err)
 	defer q.Close()
 
@@ -331,7 +341,7 @@ func TestQueueCommitOffset(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
-	q, _ := openQueue(dir, "offset", Config{}, store)
+	q, _ := openQueue(dir, "offset", testConfig(), store)
 	defer q.Close()
 
 	ctx := t.Context()
@@ -347,7 +357,9 @@ func TestQueueUngracefulCrashRecovery(t *testing.T) {
 	store, err := openOffsetStore(dir)
 	require.NoError(t, err)
 
-	q, err := openQueue(dir, "crash-queue", Config{BatchSize: 1, MaxInterval: time.Millisecond}, store)
+	cfg := testConfig()
+	cfg.MaxFlushWait = time.Millisecond
+	q, err := openQueue(dir, "crash-queue", cfg, store)
 	require.NoError(t, err)
 
 	ctx := t.Context()
@@ -363,7 +375,7 @@ func TestQueueUngracefulCrashRecovery(t *testing.T) {
 	require.NoError(t, err)
 	defer store2.Close()
 
-	recoveredQueue, err := openQueue(dir, "crash-queue", Config{}, store2)
+	recoveredQueue, err := openQueue(dir, "crash-queue", testConfig(), store2)
 	require.NoError(t, err)
 	defer recoveredQueue.Close()
 
@@ -391,13 +403,11 @@ func TestQueueRealCrashRecovery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		q, err := openQueue(dir, "real-crash", Config{
-			BatchSize:       64,
-			MaxInterval:     10 * time.Millisecond,
-			SegmentSize:     1024,
-			MaxMessageBytes: 64,
-			Fsync:           true,
-		}, store)
+		cfg := testConfig()
+		cfg.MaxSegment = 1024
+		cfg.MaxPayload = 64
+		cfg.MaxFlushWait = 10 * time.Millisecond
+		q, err := openQueue(dir, "real-crash", cfg, store)
 		if err != nil {
 			_ = store.Close()
 			t.Fatal(err)
@@ -471,13 +481,11 @@ func TestQueueRealCrashRecovery(t *testing.T) {
 	store, err := openOffsetStore(dir)
 	require.NoError(t, err)
 	defer store.Close()
-	q, err := openQueue(dir, "real-crash", Config{
-		BatchSize:       8,
-		MaxInterval:     2 * time.Millisecond,
-		SegmentSize:     128,
-		MaxMessageBytes: 64,
-		Fsync:           true,
-	}, store)
+	cfg := testConfig()
+	cfg.MaxSegment = 128
+	cfg.MaxPayload = 64
+	cfg.MaxFlushWait = 2 * time.Millisecond
+	q, err := openQueue(dir, "real-crash", cfg, store)
 	require.NoError(t, err)
 	defer q.Close()
 
@@ -494,7 +502,9 @@ func TestQueueConcurrentProduceDuringRoll(t *testing.T) {
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
 
-	q, err := openQueue(dir, "roll-race", Config{SegmentSize: 256, BatchSize: 10}, store)
+	cfg := testConfig()
+	cfg.MaxSegment = 256
+	q, err := openQueue(dir, "roll-race", cfg, store)
 	require.NoError(t, err)
 	defer q.Close()
 
@@ -530,7 +540,9 @@ func TestQueueReadUsesMMapOnRolledSegments(t *testing.T) {
 	store, _ := openOffsetStore(dir)
 	defer store.Close()
 
-	q, err := openQueue(dir, "mmap-verify", Config{SegmentSize: 100}, store)
+	cfg := testConfig()
+	cfg.MaxSegment = 100
+	q, err := openQueue(dir, "mmap-verify", cfg, store)
 	require.NoError(t, err)
 	defer q.Close()
 
@@ -557,7 +569,9 @@ func TestQueueConcurrentIndexDiskOrdering(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	q, err := openQueue(dir, "disk-index-order", Config{BatchSize: 10, MaxInterval: time.Millisecond}, store)
+	cfg := testConfig()
+	cfg.MaxFlushWait = time.Millisecond
+	q, err := openQueue(dir, "disk-index-order", cfg, store)
 	require.NoError(t, err)
 
 	ctx := t.Context()
@@ -600,8 +614,8 @@ func TestQueueVelocityPreallocationScaling(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	// MaxSegmentBytes set to 64 MiB so it doesn't clamp minSegmentPrealloc (8 MiB)
-	q, err := openQueue(dir, "velocity-test", Config{SegmentSize: 64 * 1024 * 1024}, store)
+	// MaxSegment set to 64 MiB so it doesn't clamp minSegmentPrealloc (8 MiB)
+	q, err := openQueue(dir, "velocity-test", testConfig(), store)
 	require.NoError(t, err)
 	defer q.Close()
 
@@ -638,7 +652,7 @@ func TestSegmentPreallocationTruncatedOnClose(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	q, err := openQueue(dir, "trunc-test", Config{SegmentSize: 64 * 1024 * 1024}, store)
+	q, err := openQueue(dir, "trunc-test", testConfig(), store)
 	require.NoError(t, err)
 
 	ctx := t.Context()

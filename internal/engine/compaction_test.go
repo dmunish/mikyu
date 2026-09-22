@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"log"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dmunish/mikyu/internal/spec"
 )
 
 // newCompactionQueue opens a queue with compaction enabled and small segments.
@@ -19,14 +20,10 @@ func newCompactionQueue(t *testing.T, dir string, maxSegBytes int64) *Queue {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
-	cfg := Config{
-		BatchSize:       16,
-		MaxInterval:     10 * time.Millisecond,
-		SegmentSize:     maxSegBytes,
-		MaxMessageBytes: 1024 * 1024,
-		Fsync:           false,
-		Compaction:      true,
-	}
+	cfg := testConfig()
+	cfg.MaxSegment = maxSegBytes
+	cfg.Durability = spec.DurabilityAsync
+	cfg.Compaction = spec.CompactionKeys
 	q, err := openQueue(dir, "compaction-queue", cfg, store)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = q.Close() })
@@ -150,14 +147,10 @@ func TestKeyIndexRebuildsOnOpen(t *testing.T) {
 	store, err := openOffsetStore(dir)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
-	cfg := Config{
-		BatchSize:       16,
-		MaxInterval:     10 * time.Millisecond,
-		SegmentSize:     256,
-		MaxMessageBytes: 1024 * 1024,
-		Fsync:           false,
-		Compaction:      true,
-	}
+	cfg := testConfig()
+	cfg.MaxSegment = 256
+	cfg.Durability = spec.DurabilityAsync
+	cfg.Compaction = spec.CompactionKeys
 	q, err := openQueue(dir, "rebuild-queue", cfg, store)
 	require.NoError(t, err)
 	key := []byte("user-42")

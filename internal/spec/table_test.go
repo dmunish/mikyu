@@ -19,10 +19,11 @@ func TestSessionScopeAssignments(t *testing.T) {
 	want := map[string]Scope{
 		"target":                       ScopeBoth,
 		"data_dir":                     ScopeBoth,
+		"max_connections":              ScopeBoth,
 		"tls_enabled":                  ScopeBoth,
-		"tls_cert_file":                ScopeBoth,
-		"tls_key_file":                 ScopeBoth,
-		"max_conns":                    ScopeBoth,
+		"tls_cert":                     ScopeBoth,
+		"tls_key":                      ScopeBoth,
+		"tls_client_ca":                ScopeServer,
 		"metrics_enabled":              ScopeBoth,
 		"metrics_interval":             ScopeBoth,
 		"metrics_history":              ScopeBoth,
@@ -32,12 +33,38 @@ func TestSessionScopeAssignments(t *testing.T) {
 		"auth_method":                  ScopeServer,
 		"auth_token_file":              ScopeBoth,
 		"auth_token":                   ScopeBoth,
-		"tls_client_ca_file":           ScopeServer,
 	}
 
 	require.Len(t, want, len(Params(LayerSession)), "a session key was added or removed")
 	for _, p := range Params(LayerSession) {
 		assert.Equal(t, want[p.Key], p.Scope, p.Key)
+	}
+}
+
+// TestSessionPathsAreNested pins the nested server.* path of every session key.
+func TestSessionPathsAreNested(t *testing.T) {
+	want := map[string]string{
+		"target":                       "server.target",
+		"data_dir":                     "server.data_dir",
+		"max_connections":              "server.max_connections",
+		"tls_enabled":                  "server.tls.enabled",
+		"tls_cert":                     "server.tls.cert",
+		"tls_key":                      "server.tls.key",
+		"tls_client_ca":                "server.tls.client_ca",
+		"auth_method":                  "server.auth.method",
+		"auth_token":                   "server.auth.token",
+		"auth_token_file":              "server.auth.token_file",
+		"metrics_enabled":              "server.metrics.enabled",
+		"metrics_interval":             "server.metrics.interval",
+		"metrics_history":              "server.metrics.history",
+		"metrics_listen":               "server.metrics.listen",
+		"metrics_per_queue_prometheus": "server.metrics.per_queue_prometheus",
+		"metrics_histograms":           "server.metrics.histograms",
+	}
+
+	require.Len(t, want, len(Params(LayerSession)), "a session key was added or removed")
+	for _, p := range Params(LayerSession) {
+		assert.Equal(t, want[p.Key], p.Path, p.Key)
 	}
 }
 
@@ -55,10 +82,10 @@ func TestParamsInScope(t *testing.T) {
 	assert.Empty(t, keys(client), "no session parameter is client-only")
 
 	server := ParamsInScope(LayerSession, ScopeServer)
-	assert.Equal(t, []string{"metrics_listen", "metrics_per_queue_prometheus", "auth_method", "tls_client_ca_file"}, keys(server))
+	assert.Equal(t, []string{"tls_client_ca", "auth_method", "metrics_listen", "metrics_per_queue_prometheus"}, keys(server))
 
 	both := keys(ParamsInScope(LayerSession, ScopeBoth))
-	assert.Contains(t, both, "max_conns", "max_conns configures both the client pool and the server cap")
+	assert.Contains(t, both, "max_connections", "max_connections configures both the client pool and the server cap")
 	assert.NotContains(t, both, "metrics_listen", "a server-only parameter leaked into both")
 
 	visible := ParamsInScope(LayerSession, ScopeClient, ScopeBoth)

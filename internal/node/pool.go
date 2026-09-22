@@ -28,6 +28,9 @@ func Acquire(dir string, defaults spec.Spec, opts ...AcquireOption) (*Node, func
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := spec.ValidateCreate(defaults); err != nil {
+		return nil, nil, err
+	}
 
 	mc := MetricsConfig{}
 	for _, opt := range opts {

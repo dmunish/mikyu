@@ -2,65 +2,50 @@ package spec
 
 import "time"
 
-// Spec holds every tunable parameter of a queue or session, sparsely.
+// Spec holds every tunable parameter of a queue, sparsely.
 type Spec struct {
-	Engine    EngineSpec    `json:"engine,omitzero" yaml:"engine,omitempty"`
+	Storage   StorageSpec   `json:"storage,omitzero"   yaml:"storage,omitempty"`
+	Flush     FlushSpec     `json:"flush,omitzero"     yaml:"flush,omitempty"`
 	Retention RetentionSpec `json:"retention,omitzero" yaml:"retention,omitempty"`
-	Task      TaskSpec      `json:"task,omitzero" yaml:"task,omitempty"`
+	Task      TaskSpec      `json:"task,omitzero"      yaml:"task,omitempty"`
 }
 
-// EngineSpec covers the log-segment writer.
-type EngineSpec struct {
-	BatchSize       *int      `json:"batch_size,omitempty" yaml:"batch_size,omitempty"`
-	MaxInterval     *Duration `json:"max_interval,omitempty" yaml:"max_interval,omitempty"`
-	MinInterval     *Duration `json:"min_interval,omitempty" yaml:"min_interval,omitempty"`
-	SegmentSize     *int64    `json:"segment_size,omitempty" yaml:"segment_size,omitempty"`
-	SegmentAge      *Duration `json:"segment_age,omitempty" yaml:"segment_age,omitempty"`
-	MaxMessageBytes *int64    `json:"max_message_bytes,omitempty" yaml:"max_message_bytes,omitempty"`
-	Encrypted       *bool     `json:"encrypted,omitempty" yaml:"encrypted,omitempty"`
-	Fsync           *bool     `json:"fsync,omitempty" yaml:"fsync,omitempty"`
-	Compaction      *bool     `json:"compaction,omitempty" yaml:"compaction,omitempty"`
+// StorageSpec shapes the segment files and their protection.
+type StorageSpec struct {
+	Durability    *Durability `json:"durability,omitempty"      yaml:"durability,omitempty"`
+	Encryption    *Encryption `json:"encryption,omitempty"      yaml:"encryption,omitempty"`
+	Compaction    *Compaction `json:"compaction,omitempty"      yaml:"compaction,omitempty"`
+	MaxSegment    *int64      `json:"max_segment,omitempty"     yaml:"max_segment,omitempty"`
+	MaxSegmentAge *Duration   `json:"max_segment_age,omitempty" yaml:"max_segment_age,omitempty"`
+	MaxPayload    *int64      `json:"max_payload,omitempty"     yaml:"max_payload,omitempty"`
+	MaxCache      *int64      `json:"max_cache,omitempty"       yaml:"max_cache,omitempty"`
+}
+
+// FlushSpec bounds the WAL write batch.
+type FlushSpec struct {
+	MaxBytes *int64    `json:"max_bytes,omitempty" yaml:"max_bytes,omitempty"`
+	MaxWait  *Duration `json:"max_wait,omitempty"  yaml:"max_wait,omitempty"`
 }
 
 // RetentionSpec caps how much history may be deleted. Zero means unlimited.
 type RetentionSpec struct {
-	Age   *Duration `json:"age,omitempty" yaml:"age,omitempty"`
-	Bytes *int64    `json:"bytes,omitempty" yaml:"bytes,omitempty"`
+	MaxAge   *Duration `json:"max_age,omitempty"   yaml:"max_age,omitempty"`
+	MaxBytes *int64    `json:"max_bytes,omitempty" yaml:"max_bytes,omitempty"`
 }
 
 // TaskSpec holds the task-queue defaults and bounds resolved under per-call options.
 type TaskSpec struct {
-	DefaultVisibility  *Duration `json:"default_visibility,omitempty" yaml:"default_visibility,omitempty"`
-	DefaultMaxAttempts *uint32   `json:"default_max_attempts,omitempty" yaml:"default_max_attempts,omitempty"`
-	MaxInFlight        *uint32   `json:"max_in_flight,omitempty" yaml:"max_in_flight,omitempty"`
-	MaxDLQ             *uint32   `json:"max_dlq,omitempty" yaml:"max_dlq,omitempty"`
-}
-
-// Session carries the process-level parameters that never reach a queue spec or the wire.
-type Session struct {
-	Target          string `yaml:"target"`
-	DataDir         string `yaml:"data_dir"`
-	TLSEnabled      bool   `yaml:"tls_enabled"`
-	TLSCertFile     string `yaml:"tls_cert_file"`
-	TLSKeyFile      string `yaml:"tls_key_file"`
-	MaxConns        int    `yaml:"max_conns"`
-	AuthMethod      string `yaml:"auth_method"`
-	AuthTokenFile   string `yaml:"auth_token_file"`
-	AuthToken       string `yaml:"auth_token"`
-	TLSClientCaFile string `yaml:"tls_client_ca_file"`
-
-	MetricsEnabled            bool     `yaml:"metrics_enabled"`
-	MetricsInterval           Duration `yaml:"metrics_interval"`
-	MetricsHistory            int      `yaml:"metrics_history"`
-	MetricsListen             string   `yaml:"metrics_listen"`
-	MetricsPerQueuePrometheus bool     `yaml:"metrics_per_queue_prometheus"`
-	MetricsHistograms         bool     `yaml:"metrics_histograms"`
+	Lease          *Duration `json:"lease,omitempty"            yaml:"lease,omitempty"`
+	MaxAttempts    *uint32   `json:"max_attempts,omitempty"     yaml:"max_attempts,omitempty"`
+	MaxInFlight    *uint32   `json:"max_in_flight,omitempty"    yaml:"max_in_flight,omitempty"`
+	MaxDeadLetters *uint32   `json:"max_dead_letters,omitempty" yaml:"max_dead_letters,omitempty"`
 }
 
 // Merge returns s with each unset field filled from other.
 func (s Spec) Merge(other Spec) Spec {
 	return Spec{
-		Engine:    s.Engine.merge(other.Engine),
+		Storage:   s.Storage.merge(other.Storage),
+		Flush:     s.Flush.merge(other.Flush),
 		Retention: s.Retention.merge(other.Retention),
 		Task:      s.Task.merge(other.Task),
 	}
@@ -68,140 +53,119 @@ func (s Spec) Merge(other Spec) Spec {
 
 // Effective resolves s against the session layer and the built-in layer, in that precedence order.
 func (s Spec) Effective(session, builtin Spec) Spec {
-	return s.Merge(session).Merge(builtin)
+	return Resolve(s.Merge(session).Merge(builtin))
 }
 
-func (e EngineSpec) merge(o EngineSpec) EngineSpec {
-	if e.BatchSize == nil {
-		e.BatchSize = o.BatchSize
+func (st StorageSpec) merge(o StorageSpec) StorageSpec {
+	if st.Durability == nil {
+		st.Durability = o.Durability
 	}
-	if e.MaxInterval == nil {
-		e.MaxInterval = o.MaxInterval
+	if st.Encryption == nil {
+		st.Encryption = o.Encryption
 	}
-	if e.MinInterval == nil {
-		e.MinInterval = o.MinInterval
+	if st.Compaction == nil {
+		st.Compaction = o.Compaction
 	}
-	if e.SegmentSize == nil {
-		e.SegmentSize = o.SegmentSize
+	if st.MaxSegment == nil {
+		st.MaxSegment = o.MaxSegment
 	}
-	if e.SegmentAge == nil {
-		e.SegmentAge = o.SegmentAge
+	if st.MaxSegmentAge == nil {
+		st.MaxSegmentAge = o.MaxSegmentAge
 	}
-	if e.MaxMessageBytes == nil {
-		e.MaxMessageBytes = o.MaxMessageBytes
+	if st.MaxPayload == nil {
+		st.MaxPayload = o.MaxPayload
 	}
-	if e.Encrypted == nil {
-		e.Encrypted = o.Encrypted
+	if st.MaxCache == nil {
+		st.MaxCache = o.MaxCache
 	}
-	if e.Fsync == nil {
-		e.Fsync = o.Fsync
+	return st
+}
+
+func (f FlushSpec) merge(o FlushSpec) FlushSpec {
+	if f.MaxBytes == nil {
+		f.MaxBytes = o.MaxBytes
 	}
-	if e.Compaction == nil {
-		e.Compaction = o.Compaction
+	if f.MaxWait == nil {
+		f.MaxWait = o.MaxWait
 	}
-	return e
+	return f
 }
 
 func (r RetentionSpec) merge(o RetentionSpec) RetentionSpec {
-	if r.Age == nil {
-		r.Age = o.Age
+	if r.MaxAge == nil {
+		r.MaxAge = o.MaxAge
 	}
-	if r.Bytes == nil {
-		r.Bytes = o.Bytes
+	if r.MaxBytes == nil {
+		r.MaxBytes = o.MaxBytes
 	}
 	return r
 }
 
 func (t TaskSpec) merge(o TaskSpec) TaskSpec {
-	if t.DefaultVisibility == nil {
-		t.DefaultVisibility = o.DefaultVisibility
+	if t.Lease == nil {
+		t.Lease = o.Lease
 	}
-	if t.DefaultMaxAttempts == nil {
-		t.DefaultMaxAttempts = o.DefaultMaxAttempts
+	if t.MaxAttempts == nil {
+		t.MaxAttempts = o.MaxAttempts
 	}
 	if t.MaxInFlight == nil {
 		t.MaxInFlight = o.MaxInFlight
 	}
-	if t.MaxDLQ == nil {
-		t.MaxDLQ = o.MaxDLQ
+	if t.MaxDeadLetters == nil {
+		t.MaxDeadLetters = o.MaxDeadLetters
 	}
 	return t
 }
 
-// Built-in defaults shared by every layer that resolves them.
-const (
-	// DefaultVisibility is the lease length when neither call, spec, nor session sets one.
-	DefaultVisibility = 30 * time.Second
-	// DefaultMaxAttempts is the retry budget when neither call, spec, nor session sets one.
-	DefaultMaxAttempts = uint32(5)
-)
-
-// Every Spec and Session field appears here exactly once; Builtin and BuiltinSession are total.
-const (
-	builtinBatchSize                 = 256
-	builtinMaxInterval               = Duration(10 * time.Millisecond)
-	builtinMinInterval               = Duration(30 * time.Microsecond)
-	builtinSegmentSize               = int64(64 << 20)
-	builtinSegmentAge                = Duration(time.Hour)
-	builtinMaxMessageBytes           = int64(1 << 20)
-	builtinEncrypted                 = false
-	builtinFsync                     = true
-	builtinCompaction                = false
-	builtinRetentionAge              = Duration(0)
-	builtinRetentionBytes            = int64(0)
-	builtinDefaultVisibility         = Duration(DefaultVisibility)
-	builtinDefaultMaxAttempts        = DefaultMaxAttempts
-	builtinMaxInFlight               = uint32(100_000)
-	builtinMaxDLQ                    = uint32(100_000)
-	builtinTarget                    = "tcp://127.0.0.1:7420"
-	builtinDataDir                   = "./data"
-	builtinMaxConns                  = 10
-	builtinMetricsEnabled            = true
-	builtinMetricsInterval           = Duration(time.Second)
-	builtinMetricsHistory            = 300
-	builtinMetricsListen             = ""
-	builtinMetricsPerQueuePrometheus = false
-	builtinMetricsHistograms         = true
-)
-
-// Builtin returns the fully-populated built-in layer.
-func Builtin() Spec {
-	return Spec{
-		Engine: EngineSpec{
-			BatchSize:       new(builtinBatchSize),
-			MaxInterval:     new(builtinMaxInterval),
-			MinInterval:     new(builtinMinInterval),
-			SegmentSize:     new(builtinSegmentSize),
-			SegmentAge:      new(builtinSegmentAge),
-			MaxMessageBytes: new(builtinMaxMessageBytes),
-			Encrypted:       new(builtinEncrypted),
-			Fsync:           new(builtinFsync),
-			Compaction:      new(builtinCompaction),
-		},
-		Retention: RetentionSpec{
-			Age:   new(builtinRetentionAge),
-			Bytes: new(builtinRetentionBytes),
-		},
-		Task: TaskSpec{
-			DefaultVisibility:  new(builtinDefaultVisibility),
-			DefaultMaxAttempts: new(builtinDefaultMaxAttempts),
-			MaxInFlight:        new(builtinMaxInFlight),
-			MaxDLQ:             new(builtinMaxDLQ),
-		},
-	}
+// Session carries the process-level parameters that never reach a queue spec or the wire.
+type Session struct {
+	Target         string        `yaml:"target"`
+	DataDir        string        `yaml:"data_dir"`
+	MaxConnections int           `yaml:"max_connections"`
+	TLS            TLSConfig     `yaml:"tls"`
+	Auth           AuthConfig    `yaml:"auth"`
+	Metrics        MetricsConfig `yaml:"metrics"`
 }
+
+// TLSConfig holds the wire encryption material.
+type TLSConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Cert     string `yaml:"cert"`
+	Key      string `yaml:"key"`
+	ClientCA string `yaml:"client_ca"`
+}
+
+// AuthConfig holds the handshake credentials.
+type AuthConfig struct {
+	Method    string `yaml:"method"`
+	Token     string `yaml:"token"`
+	TokenFile string `yaml:"token_file"`
+}
+
+// MetricsConfig holds the collector settings.
+type MetricsConfig struct {
+	Enabled            bool     `yaml:"enabled"`
+	Interval           Duration `yaml:"interval"`
+	History            int      `yaml:"history"`
+	Listen             string   `yaml:"listen"`
+	PerQueuePrometheus bool     `yaml:"per_queue_prometheus"`
+	Histograms         bool     `yaml:"histograms"`
+}
+
+// Builtin returns the fully-resolved built-in layer.
+func Builtin() Spec { return Resolve(Spec{}) }
 
 // BuiltinSession returns the built-in session layer. TLS is off at this layer; metrics run enabled at a one-second tick.
 func BuiltinSession() Session {
 	return Session{
-		Target:                    builtinTarget,
-		MaxConns:                  builtinMaxConns,
-		AuthMethod:                "none",
-		MetricsEnabled:            builtinMetricsEnabled,
-		MetricsInterval:           builtinMetricsInterval,
-		MetricsHistory:            builtinMetricsHistory,
-		MetricsListen:             builtinMetricsListen,
-		MetricsPerQueuePrometheus: builtinMetricsPerQueuePrometheus,
-		MetricsHistograms:         builtinMetricsHistograms,
+		Target:         "tcp://127.0.0.1:7420",
+		MaxConnections: 10,
+		Auth:           AuthConfig{Method: "none"},
+		Metrics: MetricsConfig{
+			Enabled:    true,
+			Interval:   Duration(time.Second),
+			History:    300,
+			Histograms: true,
+		},
 	}
 }

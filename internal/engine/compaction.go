@@ -66,7 +66,7 @@ func (q *Queue) superseded(group []byte, off uint64) bool {
 
 // compactClosedLocked physically drops superseded records from every closed segment; caller holds q.mu.
 func (q *Queue) compactClosedLocked() error {
-	if !q.cfg.Compaction {
+	if !q.cfg.KeyedCompaction() {
 		return nil
 	}
 	for _, seg := range q.segments {

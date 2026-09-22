@@ -3,6 +3,7 @@ package spec
 import (
 	"fmt"
 	"net"
+	"time"
 )
 
 // ValidateCreate checks a proposed spec.
@@ -23,100 +24,139 @@ func ValidateUpdate(patch Spec) error {
 
 // ValidateSession checks the process-level parameters: the tick interval must be positive when metrics are enabled, the history depth is bounded away from zero, and the listen address, when set, is a host:port.
 func ValidateSession(s Session) error {
-	if s.MaxConns < 1 {
-		return errInvalid("max_conns", ruleAtLeastOne, s.MaxConns)
+	if s.MaxConnections < 1 {
+		return errInvalid("max_connections", ruleAtLeastOne, s.MaxConnections)
 	}
-	if s.MetricsEnabled && s.MetricsInterval <= 0 {
-		return errInvalid("metrics_interval", rulePositive, s.MetricsInterval)
+	if s.Metrics.Enabled && s.Metrics.Interval <= 0 {
+		return errInvalid("metrics_interval", rulePositive, s.Metrics.Interval)
 	}
-	if s.MetricsHistory < 1 {
-		return errInvalid("metrics_history", ruleAtLeastOne, s.MetricsHistory)
+	if s.Metrics.History < 1 {
+		return errInvalid("metrics_history", ruleAtLeastOne, s.Metrics.History)
 	}
-	if s.MetricsListen != "" {
-		if _, _, err := net.SplitHostPort(s.MetricsListen); err != nil {
-			return fmt.Errorf("%w: metrics_listen must be host:port, got %q", ErrInvalidConfig, s.MetricsListen)
+	if s.Metrics.Listen != "" {
+		if _, _, err := net.SplitHostPort(s.Metrics.Listen); err != nil {
+			return fmt.Errorf("%w: metrics_listen must be host:port, got %q", ErrInvalidConfig, s.Metrics.Listen)
 		}
 	}
-	switch s.AuthMethod {
+	switch s.Auth.Method {
 	case "", "none", "none-insecure", "token", "mtls":
 	default:
-		return errInvalid("auth_method", "one of none|none-insecure|token|mtls", s.AuthMethod)
+		return errInvalid("auth_method", "one of none|none-insecure|token|mtls", s.Auth.Method)
 	}
-	if s.AuthMethod == "token" && s.AuthToken == "" && s.AuthTokenFile == "" {
+	if s.Auth.Method == "token" && s.Auth.Token == "" && s.Auth.TokenFile == "" {
 		return errInvalid("auth_token_file", "be set when auth_method=token", "")
 	}
-	if s.AuthToken != "" && len(s.AuthToken) < 16 {
+	if s.Auth.Token != "" && len(s.Auth.Token) < 16 {
 		return errInvalid("auth_token", "be at least 16 bytes", "")
 	}
-	if s.AuthMethod == "mtls" && !s.TLSEnabled {
-		return errInvalid("tls_enabled", "be true when auth_method=mtls", s.TLSEnabled)
+	if s.Auth.Method == "mtls" && !s.TLS.Enabled {
+		return errInvalid("tls_enabled", "be true when auth_method=mtls", s.TLS.Enabled)
 	}
 	return nil
 }
 
 func validate(s Spec) error {
-	e, r, t := s.Engine, s.Retention, s.Task
-	if err := positive("batch_size", e.BatchSize); err != nil {
+	st := s.Storage
+	if err := positiveBytes("max_segment", st.MaxSegment); err != nil {
 		return err
 	}
-	if err := positive("max_interval", e.MaxInterval); err != nil {
+	if err := positiveDur("max_segment_age", st.MaxSegmentAge); err != nil {
 		return err
 	}
-	if err := nonNegative("min_interval", e.MinInterval); err != nil {
+	if err := positiveBytes("max_payload", st.MaxPayload); err != nil {
 		return err
 	}
-	if err := positive("segment_size", e.SegmentSize); err != nil {
+	if err := positiveBytes("max_cache", st.MaxCache); err != nil {
 		return err
 	}
-	if err := positive("segment_age", e.SegmentAge); err != nil {
+	if st.Durability != nil && !st.Durability.Valid() {
+		return errInvalid("durability", "one of sync|async", *st.Durability)
+	}
+	if st.Encryption != nil && !st.Encryption.Valid() {
+		return errInvalid("encryption", "one of none|os", *st.Encryption)
+	}
+	if st.Compaction != nil && !st.Compaction.Valid() {
+		return errInvalid("compaction", "one of none|keys", *st.Compaction)
+	}
+	if err := positiveBytes("max_flush_bytes", s.Flush.MaxBytes); err != nil {
 		return err
 	}
-	if err := positive("max_message_bytes", e.MaxMessageBytes); err != nil {
+	if s.Flush.MaxWait != nil {
+		if *s.Flush.MaxWait <= 0 {
+			return errInvalid("max_flush_wait", rulePositive, *s.Flush.MaxWait)
+		}
+		if *s.Flush.MaxWait < Duration(100*time.Microsecond) {
+			return errInvalid("max_flush_wait", "at least 100µs", *s.Flush.MaxWait)
+		}
+	}
+	if err := nonNegativeDur("max_retention_age", s.Retention.MaxAge); err != nil {
 		return err
 	}
-	if err := nonNegative("retention_age", r.Age); err != nil {
+	if err := nonNegativeBytes("max_retention_bytes", s.Retention.MaxBytes); err != nil {
 		return err
 	}
-	if err := nonNegative("retention_bytes", r.Bytes); err != nil {
+	if err := positiveDur("lease", s.Task.Lease); err != nil {
 		return err
 	}
-	if err := positive("default_visibility", t.DefaultVisibility); err != nil {
+	if err := positiveU32("max_attempts", s.Task.MaxAttempts); err != nil {
 		return err
 	}
-	if err := positive("default_max_attempts", t.DefaultMaxAttempts); err != nil {
+	if err := positiveU32("max_in_flight", s.Task.MaxInFlight); err != nil {
 		return err
 	}
-	if err := positive("max_in_flight", t.MaxInFlight); err != nil {
-		return err
-	}
-	if err := positive("max_dlq", t.MaxDLQ); err != nil {
+	if err := positiveU32("max_dead_letters", s.Task.MaxDeadLetters); err != nil {
 		return err
 	}
 	return validatePairs(s)
 }
 
+// validatePairs rejects a conflict between two fields the user set explicitly; a derived field never conflicts with its source.
 func validatePairs(s Spec) error {
-	size, msg := s.Engine.SegmentSize, s.Engine.MaxMessageBytes
-	if size != nil && msg != nil && *msg > *size {
-		return fmt.Errorf("%w: max_message_bytes (%d) exceeds segment_size (%d)", ErrInvalidConfig, *msg, *size)
+	st := s.Storage
+	if st.MaxPayload != nil && st.MaxSegment != nil && *st.MaxPayload > *st.MaxSegment-RecordOverhead {
+		return fmt.Errorf("%w: max_payload (%d) exceeds max_segment (%d) minus the %d-byte record overhead",
+			ErrInvalidConfig, *st.MaxPayload, *st.MaxSegment, RecordOverhead)
+	}
+	if st.MaxCache != nil && st.MaxSegment != nil {
+		// The cache must at least hold the smaller of a full segment and the
+		// built-in budget, so the derived default never conflicts.
+		if floor := min(builtinMaxCache, *st.MaxSegment); *st.MaxCache < floor {
+			return fmt.Errorf("%w: max_cache (%d) is smaller than max_segment (%d)",
+				ErrInvalidConfig, *st.MaxCache, *st.MaxSegment)
+		}
 	}
 	return nil
 }
 
-// numeric bounds the magnitude checks to the types Spec fields actually use;
-// Duration's underlying type is int64.
-type numeric interface {
-	~int | ~int64 | ~uint32
-}
-
-func positive[T numeric](key string, p *T) error {
+func positiveBytes(key string, p *int64) error {
 	if p != nil && *p <= 0 {
 		return errInvalid(key, rulePositive, *p)
 	}
 	return nil
 }
 
-func nonNegative[T numeric](key string, p *T) error {
+func positiveDur(key string, p *Duration) error {
+	if p != nil && *p <= 0 {
+		return errInvalid(key, rulePositive, *p)
+	}
+	return nil
+}
+
+func positiveU32(key string, p *uint32) error {
+	if p != nil && *p == 0 {
+		return errInvalid(key, rulePositive, *p)
+	}
+	return nil
+}
+
+func nonNegativeDur(key string, p *Duration) error {
+	if p != nil && *p < 0 {
+		return errInvalid(key, ruleNonNegative, *p)
+	}
+	return nil
+}
+
+func nonNegativeBytes(key string, p *int64) error {
 	if p != nil && *p < 0 {
 		return errInvalid(key, ruleNonNegative, *p)
 	}

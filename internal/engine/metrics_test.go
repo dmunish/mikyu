@@ -12,7 +12,7 @@ import (
 func TestEngineAppendCounters(t *testing.T) {
 	dir := t.TempDir()
 	reg := metrics.NewRegistry(metrics.Config{Histograms: true})
-	mgr, err := OpenManager(dir, Config{}, nil, reg)
+	mgr, err := OpenManager(dir, testConfig(), nil, reg)
 	require.NoError(t, err)
 	defer mgr.Close()
 
@@ -34,7 +34,7 @@ func TestEngineAppendCounters(t *testing.T) {
 func TestEngineReadCounters(t *testing.T) {
 	dir := t.TempDir()
 	reg := metrics.NewRegistry(metrics.Config{Histograms: true})
-	mgr, err := OpenManager(dir, Config{}, nil, reg)
+	mgr, err := OpenManager(dir, testConfig(), nil, reg)
 	require.NoError(t, err)
 	defer mgr.Close()
 
@@ -58,7 +58,9 @@ func TestEngineReadCounters(t *testing.T) {
 func TestWALFlushCounter(t *testing.T) {
 	dir := t.TempDir()
 	reg := metrics.NewRegistry(metrics.Config{})
-	mgr, err := OpenManager(dir, Config{BatchSize: 1, MaxInterval: time.Millisecond}, nil, reg)
+	cfg := testConfig()
+	cfg.MaxFlushWait = time.Millisecond
+	mgr, err := OpenManager(dir, cfg, nil, reg)
 	require.NoError(t, err)
 	defer mgr.Close()
 
@@ -74,7 +76,7 @@ func TestWALFlushCounter(t *testing.T) {
 
 func TestManagerCollectShape(t *testing.T) {
 	dir := t.TempDir()
-	mgr, err := OpenManager(dir, Config{}, nil)
+	mgr, err := OpenManager(dir, testConfig(), nil)
 	require.NoError(t, err)
 	defer mgr.Close()
 
@@ -105,7 +107,8 @@ func BenchmarkQueueAppendWithoutMetrics(b *testing.B) { benchmarkQueueAppend(b, 
 
 func benchmarkQueueAppend(b *testing.B, withMetrics bool) {
 	dir := b.TempDir()
-	cfg := Config{BatchSize: 256, MaxInterval: time.Millisecond}
+	cfg := testConfig()
+	cfg.MaxFlushWait = time.Millisecond
 	var (
 		mgr *Manager
 		err error

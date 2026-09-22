@@ -16,7 +16,7 @@ func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	assert.Equal(t, "tcp://127.0.0.1:7420", cfg.Server.Target)
 	assert.Equal(t, "./data", cfg.Server.DataDir)
-	assert.Equal(t, 10, cfg.Server.MaxConns)
+	assert.Equal(t, 10, cfg.Server.MaxConnections)
 	assert.Equal(t, spec.Spec{}, cfg.Defaults)
 	assert.Empty(t, cfg.Queues)
 }
@@ -26,38 +26,38 @@ func TestLoadDefaultsAndQueues(t *testing.T) {
 	require.NoError(t, os.WriteFile(cfgPath, []byte(`
 server:
   target: "tcp://127.0.0.1:9999"
-  max_conns: 4
+  max_connections: 4
 defaults:
-  engine:
-    batch_size: 100
+  flush:
+    max_bytes: 100
   retention:
-    age: "72h"
+    max_age: "72h"
 queues:
   payments:
     kind: log
     spec:
-      engine:
-        fsync: false
+      storage:
+        durability: async
 `), 0o644))
 
 	cfg, path, err := Load(cfgPath)
 	require.NoError(t, err)
 	assert.Equal(t, cfgPath, path)
 	assert.Equal(t, "tcp://127.0.0.1:9999", cfg.Server.Target)
-	assert.Equal(t, 4, cfg.Server.MaxConns)
+	assert.Equal(t, 4, cfg.Server.MaxConnections)
 
-	require.NotNil(t, cfg.Defaults.Engine.BatchSize)
-	assert.Equal(t, 100, *cfg.Defaults.Engine.BatchSize)
-	require.NotNil(t, cfg.Defaults.Retention.Age)
-	assert.Equal(t, 72*time.Hour, cfg.Defaults.Retention.Age.Duration())
+	require.NotNil(t, cfg.Defaults.Flush.MaxBytes)
+	assert.Equal(t, int64(100), *cfg.Defaults.Flush.MaxBytes)
+	require.NotNil(t, cfg.Defaults.Retention.MaxAge)
+	assert.Equal(t, 72*time.Hour, cfg.Defaults.Retention.MaxAge.Duration())
 
 	payments, ok := cfg.Queues["payments"]
 	require.True(t, ok)
 	assert.Equal(t, manager.KindLog, payments.Kind)
-	require.NotNil(t, payments.Spec.Engine.Fsync)
-	assert.False(t, *payments.Spec.Engine.Fsync)
+	require.NotNil(t, payments.Spec.Storage.Durability)
+	assert.Equal(t, spec.DurabilityAsync, *payments.Spec.Storage.Durability)
 	// The queue entry is sparse: unset fields inherit the session layer.
-	assert.Nil(t, payments.Spec.Engine.BatchSize)
+	assert.Nil(t, payments.Spec.Flush.MaxBytes)
 }
 
 func TestLoadAutoBootstrapWhenMissing(t *testing.T) {
@@ -70,19 +70,19 @@ func TestLoadAutoBootstrapWhenMissing(t *testing.T) {
 	cfg, path, err := Load("")
 	require.NoError(t, err)
 	assert.Equal(t, wantPath, path)
-	assert.NotNil(t, cfg)
-	assert.Equal(t, 256, *cfg.Defaults.Engine.BatchSize)
+	require.NotNil(t, cfg)
+	assert.Equal(t, int64(1<<20), *cfg.Defaults.Flush.MaxBytes)
 }
 
 func TestEnvOverrides(t *testing.T) {
 	t.Setenv("MIKYU_TARGET", "tcp://0.0.0.0:1234")
-	t.Setenv("MIKYU_BATCH_SIZE", "150")
+	t.Setenv("MIKYU_MAX_FLUSH_BYTES", "150")
 
 	cfg := DefaultConfig()
 	require.NoError(t, applyEnvOverrides(&cfg))
 	assert.Equal(t, "tcp://0.0.0.0:1234", cfg.Server.Target)
-	require.NotNil(t, cfg.Defaults.Engine.BatchSize)
-	assert.Equal(t, 150, *cfg.Defaults.Engine.BatchSize)
+	require.NotNil(t, cfg.Defaults.Flush.MaxBytes)
+	assert.Equal(t, int64(150), *cfg.Defaults.Flush.MaxBytes)
 }
 
 func TestLegacyEnvVarsHardError(t *testing.T) {
@@ -92,17 +92,17 @@ func TestLegacyEnvVarsHardError(t *testing.T) {
 	err := applyEnvOverrides(&cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "MIKYU_ENGINE_BATCH_SIZE")
-	assert.Contains(t, err.Error(), "MIKYU_BATCH_SIZE")
+	assert.Contains(t, err.Error(), "MIKYU_MAX_FLUSH_BYTES")
 }
 
 func TestConfigOldKeyHardError(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "mikyu.yaml")
-	require.NoError(t, os.WriteFile(cfgPath, []byte("engine:\n  max_segment_bytes: 1024\n"), 0o644))
+	require.NoError(t, os.WriteFile(cfgPath, []byte("defaults:\n  storage:\n    batch_size: 1024\n"), 0o644))
 
 	_, _, err := Load(cfgPath)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "max_segment_bytes")
-	assert.Contains(t, err.Error(), "segment_size")
+	assert.Contains(t, err.Error(), "batch_size")
+	assert.Contains(t, err.Error(), "max_flush_bytes")
 }
 
 // Every session-layer parameter in spec.Table must be reachable from its env var.
@@ -111,9 +111,9 @@ func TestConfigEnvOverridesFromTable(t *testing.T) {
 		"target":                       "tcp://10.0.0.1:7000",
 		"data_dir":                     "D:/mikyu-data",
 		"tls_enabled":                  "true",
-		"tls_cert_file":                "cert.pem",
-		"tls_key_file":                 "key.pem",
-		"max_conns":                    "7",
+		"tls_cert":                     "cert.pem",
+		"tls_key":                      "key.pem",
+		"max_connections":              "7",
 		"metrics_enabled":              "true",
 		"metrics_interval":             "2s",
 		"metrics_history":              "50",
@@ -123,7 +123,7 @@ func TestConfigEnvOverridesFromTable(t *testing.T) {
 		"auth_method":                  "none",
 		"auth_token_file":              "token.txt",
 		"auth_token":                   "0123456789abcdef",
-		"tls_client_ca_file":           "ca.pem",
+		"tls_client_ca":                "ca.pem",
 	}
 	for _, p := range spec.Params(spec.LayerSession) {
 		t.Run(p.Key, func(t *testing.T) {
@@ -137,34 +137,34 @@ func TestConfigEnvOverridesFromTable(t *testing.T) {
 				assert.Equal(t, values["target"], cfg.Server.Target)
 			case "data_dir":
 				assert.Equal(t, values["data_dir"], cfg.Server.DataDir)
+			case "max_connections":
+				assert.Equal(t, 7, cfg.Server.MaxConnections)
 			case "tls_enabled":
-				assert.True(t, cfg.Server.TLSEnabled)
-			case "tls_cert_file":
-				assert.Equal(t, values["tls_cert_file"], cfg.Server.TLSCertFile)
-			case "tls_key_file":
-				assert.Equal(t, values["tls_key_file"], cfg.Server.TLSKeyFile)
-			case "max_conns":
-				assert.Equal(t, 7, cfg.Server.MaxConns)
-			case "metrics_enabled":
-				assert.True(t, cfg.Server.MetricsEnabled)
-			case "metrics_interval":
-				assert.Equal(t, 2*time.Second, cfg.Server.MetricsInterval.Duration())
-			case "metrics_history":
-				assert.Equal(t, 50, cfg.Server.MetricsHistory)
-			case "metrics_listen":
-				assert.Equal(t, values["metrics_listen"], cfg.Server.MetricsListen)
-			case "metrics_per_queue_prometheus":
-				assert.True(t, cfg.Server.MetricsPerQueuePrometheus)
-			case "metrics_histograms":
-				assert.True(t, cfg.Server.MetricsHistograms)
+				assert.True(t, cfg.Server.TLS.Enabled)
+			case "tls_cert":
+				assert.Equal(t, values["tls_cert"], cfg.Server.TLS.Cert)
+			case "tls_key":
+				assert.Equal(t, values["tls_key"], cfg.Server.TLS.Key)
+			case "tls_client_ca":
+				assert.Equal(t, values["tls_client_ca"], cfg.Server.TLS.ClientCA)
 			case "auth_method":
-				assert.Equal(t, values["auth_method"], cfg.Server.AuthMethod)
-			case "auth_token_file":
-				assert.Equal(t, values["auth_token_file"], cfg.Server.AuthTokenFile)
+				assert.Equal(t, values["auth_method"], cfg.Server.Auth.Method)
 			case "auth_token":
-				assert.Equal(t, values["auth_token"], cfg.Server.AuthToken)
-			case "tls_client_ca_file":
-				assert.Equal(t, values["tls_client_ca_file"], cfg.Server.TLSClientCaFile)
+				assert.Equal(t, values["auth_token"], cfg.Server.Auth.Token)
+			case "auth_token_file":
+				assert.Equal(t, values["auth_token_file"], cfg.Server.Auth.TokenFile)
+			case "metrics_enabled":
+				assert.True(t, cfg.Server.Metrics.Enabled)
+			case "metrics_interval":
+				assert.Equal(t, 2*time.Second, cfg.Server.Metrics.Interval.Duration())
+			case "metrics_history":
+				assert.Equal(t, 50, cfg.Server.Metrics.History)
+			case "metrics_listen":
+				assert.Equal(t, values["metrics_listen"], cfg.Server.Metrics.Listen)
+			case "metrics_per_queue_prometheus":
+				assert.True(t, cfg.Server.Metrics.PerQueuePrometheus)
+			case "metrics_histograms":
+				assert.True(t, cfg.Server.Metrics.Histograms)
 			default:
 				t.Fatalf("session parameter %q has no assertion", p.Key)
 			}
@@ -174,7 +174,7 @@ func TestConfigEnvOverridesFromTable(t *testing.T) {
 
 func TestLoadRejectsInvalidSession(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mikyu.yaml")
-	require.NoError(t, os.WriteFile(path, []byte("server:\n  metrics_enabled: true\n  metrics_interval: \"0s\"\n"), 0o644))
+	require.NoError(t, os.WriteFile(path, []byte("server:\n  metrics:\n    enabled: true\n    interval: \"0s\"\n"), 0o644))
 
 	_, _, err := Load(path)
 	require.ErrorIs(t, err, spec.ErrInvalidConfig)
@@ -183,13 +183,13 @@ func TestLoadRejectsInvalidSession(t *testing.T) {
 
 func TestLoadRejectsInvalidDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mikyu.yaml")
-	body := "defaults:\n  engine:\n    max_message_bytes: 2000000\n    segment_size: 1000000\n"
+	body := "defaults:\n  storage:\n    max_payload: 2000000\n    max_segment: 1000000\n"
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
 
 	_, _, err := Load(path)
 	require.ErrorIs(t, err, spec.ErrInvalidConfig)
-	assert.Contains(t, err.Error(), "max_message_bytes")
-	assert.Contains(t, err.Error(), "segment_size")
+	assert.Contains(t, err.Error(), "max_payload")
+	assert.Contains(t, err.Error(), "max_segment")
 }
 
 func TestBootstrapWriteFailureHintsConfigFlag(t *testing.T) {

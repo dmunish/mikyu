@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dmunish/mikyu/internal/spec"
 )
 
 // TestPerQueueConfigAppliesOnLoad is the regression test for the bug this
@@ -14,36 +16,38 @@ import (
 func TestPerQueueConfigAppliesOnLoad(t *testing.T) {
 	dir := t.TempDir()
 
-	mgr1, err := OpenManager(dir, Config{}, nil)
+	small := testConfig()
+	small.MaxPayload = 100
+	large := testConfig()
+	large.MaxPayload = 10000
+
+	mgr1, err := OpenManager(dir, testConfig(), nil)
 	require.NoError(t, err)
-	_, err = mgr1.Create("small", Config{MaxMessageBytes: 100})
+	_, err = mgr1.Create("small", small)
 	require.NoError(t, err)
-	_, err = mgr1.Create("large", Config{MaxMessageBytes: 10000})
+	_, err = mgr1.Create("large", large)
 	require.NoError(t, err)
 	require.NoError(t, mgr1.Close())
 
-	perQueue := map[string]Config{
-		"small": {MaxMessageBytes: 100},
-		"large": {MaxMessageBytes: 10000},
-	}
-	mgr2, err := OpenManager(dir, Config{}, perQueue)
+	perQueue := map[string]Config{"small": small, "large": large}
+	mgr2, err := OpenManager(dir, testConfig(), perQueue)
 	require.NoError(t, err)
 	defer mgr2.Close()
 
-	small, err := mgr2.Get("small")
+	smallQ, err := mgr2.Get("small")
 	require.NoError(t, err)
-	large, err := mgr2.Get("large")
+	largeQ, err := mgr2.Get("large")
 	require.NoError(t, err)
 
-	_, err = small.Append(t.Context(), make([]byte, 101))
+	_, err = smallQ.Append(t.Context(), make([]byte, 101))
 	require.ErrorIs(t, err, ErrMessageTooLarge)
 
-	_, err = large.Append(t.Context(), make([]byte, 10000))
+	_, err = largeQ.Append(t.Context(), make([]byte, 10000))
 	require.NoError(t, err)
 }
 
 // TestApplyConfigLiveEffect proves ApplyConfig reaches the running WAL: the
-// flusher's batch threshold, ticker interval, and linger window all observe
+// flusher's byte threshold, ticker interval, and linger window all observe
 // the new values immediately, and a pending append flushes under the new
 // budget.
 func TestApplyConfigLiveEffect(t *testing.T) {
@@ -52,33 +56,30 @@ func TestApplyConfigLiveEffect(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	q, err := openQueue(dir, "live", Config{
-		BatchSize:   256,
-		MaxInterval: 10 * time.Millisecond,
-		MinInterval: 30 * time.Microsecond,
-		SegmentAge:  time.Hour,
-	}, store)
+	q, err := openQueue(dir, "live", testConfig(), store)
 	require.NoError(t, err)
 	defer q.Close()
 
 	q.ApplyConfig(Config{
-		BatchSize:   7,
-		MaxInterval: 42 * time.Millisecond,
-		MinInterval: 99 * time.Microsecond,
-		SegmentAge:  2 * time.Hour,
+		MaxSegmentAge: 2 * time.Hour,
+		MaxCache:      64 << 20,
+		MaxFlushBytes: 7,
+		MaxFlushWait:  42 * time.Millisecond,
+		FlushLinger:   99 * time.Microsecond,
 	})
 
 	q.mu.RLock()
-	assert.Equal(t, 7, q.cfg.BatchSize)
-	assert.Equal(t, 42*time.Millisecond, q.cfg.MaxInterval)
-	assert.Equal(t, 99*time.Microsecond, q.cfg.MinInterval)
-	assert.Equal(t, 2*time.Hour, q.cfg.SegmentAge)
+	assert.Equal(t, 2*time.Hour, q.cfg.MaxSegmentAge)
+	assert.Equal(t, int64(64<<20), q.cfg.MaxCache)
+	assert.Equal(t, int64(7), q.cfg.MaxFlushBytes)
+	assert.Equal(t, 42*time.Millisecond, q.cfg.MaxFlushWait)
+	assert.Equal(t, 99*time.Microsecond, q.cfg.FlushLinger)
 	q.mu.RUnlock()
 
 	q.w.mu.Lock()
-	assert.Equal(t, 7, q.w.cfg.BatchSize)
-	assert.Equal(t, 42*time.Millisecond, q.w.cfg.MaxInterval)
-	assert.Equal(t, 99*time.Microsecond, q.w.cfg.MinInterval)
+	assert.Equal(t, int64(7), q.w.cfg.MaxFlushBytes)
+	assert.Equal(t, 42*time.Millisecond, q.w.cfg.MaxFlushWait)
+	assert.Equal(t, 99*time.Microsecond, q.w.cfg.FlushLinger)
 	q.w.mu.Unlock()
 }
 
@@ -88,48 +89,42 @@ func TestApplyConfigIgnoresImmutable(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	q, err := openQueue(dir, "immutable", Config{
-		SegmentSize:     1024,
-		MaxMessageBytes: 100,
-		Encrypted:       false,
-		Fsync:           true,
-	}, store)
+	q, err := openQueue(dir, "immutable", testConfig(), store)
 	require.NoError(t, err)
 	defer q.Close()
 
 	// Passing create-only fields through ApplyConfig must not change them.
 	q.ApplyConfig(Config{
-		BatchSize:       7,
-		SegmentSize:     9999,
-		MaxMessageBytes: 9999,
-		Encrypted:       true,
-		Fsync:           false,
+		Durability:   spec.DurabilityAsync,
+		Encryption:   spec.EncryptionOS,
+		Compaction:   spec.CompactionKeys,
+		MaxSegment:   9999,
+		MaxPayload:   9999,
+		MaxFlushWait: time.Millisecond,
 	})
 
 	q.mu.RLock()
 	defer q.mu.RUnlock()
-	assert.Equal(t, 7, q.cfg.BatchSize)
-	assert.Equal(t, int64(1024), q.cfg.SegmentSize)
-	assert.Equal(t, int64(100), q.cfg.MaxMessageBytes)
-	assert.False(t, q.cfg.Encrypted)
-	assert.True(t, q.cfg.Fsync)
+	assert.Equal(t, spec.DurabilitySync, q.cfg.Durability)
+	assert.Equal(t, spec.EncryptionNone, q.cfg.Encryption)
+	assert.Equal(t, spec.CompactionNone, q.cfg.Compaction)
+	assert.Equal(t, int64(64<<20), q.cfg.MaxSegment)
+	assert.Equal(t, int64(1<<20), q.cfg.MaxPayload)
+	assert.Equal(t, 1250*time.Microsecond, q.cfg.FlushLinger)
 }
 
-// TestApplyConfigNegativeMinIntervalDisablesLinger confirms the documented
-// withDefaults semantics survive the live path: a negative MinInterval is
-// normalised to 0 (no linger).
-func TestApplyConfigNegativeMinIntervalDisablesLinger(t *testing.T) {
+func TestMaxAppendPayloadBytes(t *testing.T) {
 	dir := t.TempDir()
 	store, err := openOffsetStore(dir)
 	require.NoError(t, err)
 	defer store.Close()
 
-	q, err := openQueue(dir, "linger", Config{}, store)
+	cfg := testConfig()
+	cfg.MaxPayload = 1 << 20
+	cfg.MaxSegment = 1<<20 + 36
+	q, err := openQueue(dir, "bounds", cfg, store)
 	require.NoError(t, err)
 	defer q.Close()
 
-	q.ApplyConfig(Config{MinInterval: -1})
-	q.mu.RLock()
-	assert.Equal(t, time.Duration(0), q.cfg.MinInterval)
-	q.mu.RUnlock()
+	assert.Equal(t, int64(1<<20), q.MaxAppendPayloadBytes())
 }
