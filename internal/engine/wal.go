@@ -199,6 +199,17 @@ func (w *wal) writeAt(p []byte, off int64) (int, error) {
 
 // pushAsync stages one record on the async path, blocking while the channel is full and honoring ctx.
 func (w *wal) pushAsync(ctx context.Context, e asyncEntry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case w.asyncChan <- e:
+		return nil
+	default:
+	}
+	w.m.blockEvents.Inc()
+	w.m.blockedProducers.Add(1)
+	defer w.m.blockedProducers.Add(-1)
 	select {
 	case w.asyncChan <- e:
 		return nil
@@ -207,6 +218,32 @@ func (w *wal) pushAsync(ctx context.Context, e asyncEntry) error {
 	case <-w.shutdown:
 		return ErrQueueClosed
 	}
+}
+
+// bytes returns the WAL's committed, flushed, and staged byte counts.
+func (w *wal) bytes() (pushed, published, pending int64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.pushedBytes, w.publishedBytes, w.pendingBytes
+}
+
+// channelFill reports the async channel occupancy as a fraction in [0,1].
+func (w *wal) channelFill() float64 {
+	if capacity := cap(w.asyncChan); capacity > 0 {
+		return min(float64(len(w.asyncChan))/float64(capacity), 1)
+	}
+	return 0
+}
+
+// byteFill reports staged WAL bytes as a fraction of the flush budget.
+func (w *wal) byteFill() float64 {
+	w.mu.Lock()
+	pending, maxBytes := w.pendingBytes, w.cfg.MaxFlushBytes
+	w.mu.Unlock()
+	if maxBytes <= 0 {
+		return 0
+	}
+	return min(float64(pending)/float64(maxBytes), 1)
 }
 
 // wait blocks until the flusher has published every byte staged before seq.

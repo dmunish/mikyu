@@ -142,6 +142,19 @@ type StorageView struct {
 	OffsetStoreBytes int64  `json:"offset_store_bytes"`
 }
 
+// StorageQueueView is one queue's on-disk and cache state.
+type StorageQueueView struct {
+	Segments       int64 `json:"segments"`
+	SizeBytes      int64 `json:"size_bytes"`
+	CacheBytes     int64 `json:"cache_bytes"`
+	CacheLimit     int64 `json:"cache_limit"`
+	CacheHits      int64 `json:"cache_hits"`
+	CacheMisses    int64 `json:"cache_misses"`
+	CommittedBytes int64 `json:"committed_bytes"`
+	FlushedBytes   int64 `json:"flushed_bytes"`
+	PendingBytes   int64 `json:"pending_bytes"`
+}
+
 // QueueView is a queue's spec, instrument readings, and derived views.
 type QueueView struct {
 	Name       string                   `json:"name"`

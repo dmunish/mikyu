@@ -167,6 +167,21 @@ func (s *OffsetStore) Commit(queueName, group string, offset uint64) error {
 	return nil
 }
 
+// Size returns the offset store file size in bytes.
+func (s *OffsetStore) Size() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.file == nil {
+		return 0
+	}
+	info, err := s.file.Stat()
+	if err != nil {
+		return 0
+	}
+	return info.Size()
+}
+
+// Fetch returns the committed offset for a queue/group pair.
 func (s *OffsetStore) Fetch(queueName, group string) uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

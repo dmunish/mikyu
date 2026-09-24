@@ -52,12 +52,24 @@ func (q *Queue) Fetch(ctx context.Context, offset uint64, maxCount int, maxWait 
 		}
 		timer := time.NewTimer(remaining)
 		select {
+		case <-notify:
+			timer.Stop()
+			continue
+		default:
+		}
+		q.m.fetchParkEvents.Inc()
+		q.m.parkedFetch.Add(1)
+		select {
 		case <-ctx.Done():
+			q.m.parkedFetch.Add(-1)
 			timer.Stop()
 			return nil, ctx.Err()
 		case <-notify:
+			q.m.parkedFetch.Add(-1)
 			timer.Stop()
+			continue
 		case <-timer.C:
+			q.m.parkedFetch.Add(-1)
 			return nil, ErrNoData
 		}
 	}

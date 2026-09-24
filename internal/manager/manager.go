@@ -159,6 +159,7 @@ func (m *Manager) Collect(ctx context.Context, dst *metrics.Snapshot) {
 	for i := logEnd; i < len(dst.Queues); i++ {
 		dst.Queues[i].Kind = KindTask.String()
 	}
+	dst.Storage.DataDir = m.dir
 }
 
 // Close shuts down the task root first (final checkpoints) and then the log root.

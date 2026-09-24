@@ -42,6 +42,9 @@ func (q *Queue) Append(ctx context.Context, payload []byte, opts ...AppendOption
 
 // AppendBatch implements Storage.AppendBatch.
 func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...AppendOption) ([]uint64, error) {
+	q.m.inFlightApp.Add(1)
+	defer q.m.inFlightApp.Add(-1)
+
 	group := ResolveAppendOptions(opts...)
 	if err := ctx.Err(); err != nil {
 		return nil, err
