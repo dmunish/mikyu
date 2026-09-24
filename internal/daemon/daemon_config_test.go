@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,104 +24,101 @@ func writeConfig(tb testing.TB, dir, name, body string) string {
 	return path
 }
 
-// batchConfig writes a config whose session-default batch size is the given value.
-func batchConfig(tb testing.TB, batch int) string {
+// flushConfig writes a config whose session-default flush budget is the given value.
+func flushConfig(tb testing.TB, n int) string {
 	tb.Helper()
-	return writeConfig(tb, tb.TempDir(), "mikyu.yaml", fmt.Sprintf("defaults:\n  engine:\n    batch_size: %d\n", batch))
+	return writeConfig(tb, tb.TempDir(), "mikyu.yaml", fmt.Sprintf("defaults:\n  flush:\n    max_bytes: %d\n", n))
 }
 
 func TestDaemonFlagsOverrideConfig(t *testing.T) {
-	path := batchConfig(t, 100)
+	path := flushConfig(t, 100)
 
-	cfg, _, err := resolveConfig([]string{"--config", path, "--batch-size", "200"}, io.Discard, io.Discard)
+	cfg, _, err := resolveConfig([]string{"--config", path, "--max-flush-bytes", "200"}, io.Discard, io.Discard)
 	require.NoError(t, err)
-	assert.Equal(t, 200, *cfg.Defaults.Engine.BatchSize)
+	assert.Equal(t, int64(200), *cfg.Defaults.Flush.MaxBytes)
 }
 
 func TestDaemonFlagsRespectConfigDefaults(t *testing.T) {
-	path := batchConfig(t, 100)
+	path := flushConfig(t, 100)
 
 	cfg, resolvedPath, err := resolveConfig([]string{"--config", path}, io.Discard, io.Discard)
 	require.NoError(t, err)
 	assert.Equal(t, path, resolvedPath)
-	assert.Equal(t, 100, *cfg.Defaults.Engine.BatchSize)
+	assert.Equal(t, int64(100), *cfg.Defaults.Flush.MaxBytes)
 	// Untouched fields stay unset; the built-in layer supplies them at resolve time.
-	assert.Nil(t, cfg.Defaults.Engine.MaxInterval)
-	assert.Nil(t, cfg.Defaults.Engine.Fsync)
+	assert.Nil(t, cfg.Defaults.Flush.MaxWait)
+	assert.Nil(t, cfg.Defaults.Storage.Durability)
 	assert.Equal(t, "tcp://127.0.0.1:7420", cfg.Server.Target)
 }
 
 func TestDaemonEnvThenFlagPrecedence(t *testing.T) {
-	path := batchConfig(t, 100)
-	t.Setenv("MIKYU_BATCH_SIZE", "150")
+	path := flushConfig(t, 100)
+	t.Setenv("MIKYU_MAX_FLUSH_BYTES", "150")
 
 	// Environment overrides the config file...
 	cfg, _, err := resolveConfig([]string{"--config", path}, io.Discard, io.Discard)
 	require.NoError(t, err)
-	assert.Equal(t, 150, *cfg.Defaults.Engine.BatchSize)
+	assert.Equal(t, int64(150), *cfg.Defaults.Flush.MaxBytes)
 
 	// ...and explicit flags override the environment.
-	cfg, _, err = resolveConfig([]string{"--config", path, "--batch-size", "200"}, io.Discard, io.Discard)
+	cfg, _, err = resolveConfig([]string{"--config", path, "--max-flush-bytes", "200"}, io.Discard, io.Discard)
 	require.NoError(t, err)
-	assert.Equal(t, 200, *cfg.Defaults.Engine.BatchSize)
+	assert.Equal(t, int64(200), *cfg.Defaults.Flush.MaxBytes)
 }
 
-func TestDaemonBooleanFlagsOverrideBothDirections(t *testing.T) {
-	dir := t.TempDir()
-	offFile := writeConfig(t, dir, "off.yaml", "defaults:\n  engine:\n    fsync: false\n")
-	onFile := writeConfig(t, dir, "on.yaml", "defaults:\n  engine:\n    fsync: true\n")
+func TestDaemonEnumFlagsReachConfig(t *testing.T) {
+	path := flushConfig(t, 100)
 
-	// A bare --fsync sets true even when the file says false.
-	cfg, _, err := resolveConfig([]string{"--config", offFile, "--fsync"}, io.Discard, io.Discard)
+	cfg, _, err := resolveConfig([]string{
+		"--config", path,
+		"--durability", "async",
+		"--encryption", "os",
+		"--compaction", "keys",
+	}, io.Discard, io.Discard)
 	require.NoError(t, err)
-	require.NotNil(t, cfg.Defaults.Engine.Fsync)
-	assert.True(t, *cfg.Defaults.Engine.Fsync)
+	assert.Equal(t, spec.DurabilityAsync, *cfg.Defaults.Storage.Durability)
+	assert.Equal(t, spec.EncryptionOS, *cfg.Defaults.Storage.Encryption)
+	assert.Equal(t, spec.CompactionKeys, *cfg.Defaults.Storage.Compaction)
 
-	// --fsync=false overrides a true config value.
-	cfg, _, err = resolveConfig([]string{"--config", onFile, "--fsync=false"}, io.Discard, io.Discard)
-	require.NoError(t, err)
-	require.NotNil(t, cfg.Defaults.Engine.Fsync)
-	assert.False(t, *cfg.Defaults.Engine.Fsync)
+	_, _, err = resolveConfig([]string{"--config", path, "--durability", "eventual"}, io.Discard, io.Discard)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUsage)
 }
 
-func TestDaemonAllEngineFlagsReachConfig(t *testing.T) {
-	path := batchConfig(t, 100)
+func TestDaemonAllStorageFlagsReachConfig(t *testing.T) {
+	path := flushConfig(t, 100)
 
 	cfg, _, err := resolveConfig([]string{
 		"--config", path,
 		"--target", "tcp://127.0.0.1:9999",
 		"--data-dir", "D:/elsewhere",
 		"--tls-enabled",
-		"--tls-cert-file", "cert.pem",
-		"--tls-key-file", "key.pem",
-		"--batch-size", "7",
-		"--max-interval", "5s",
-		"--min-interval", "50us",
-		"--segment-size", "4096",
-		"--max-message-bytes", "1024",
-		"--segment-age", "2h",
-		"--encrypted",
-		"--fsync=false",
+		"--tls-cert", "cert.pem",
+		"--tls-key", "key.pem",
+		"--max-segment", "4096",
+		"--max-segment-age", "2h",
+		"--max-payload", "1024",
+		"--max-cache", "8192",
+		"--max-flush-bytes", "7",
+		"--max-flush-wait", "5s",
 	}, io.Discard, io.Discard)
 	require.NoError(t, err)
 
 	assert.Equal(t, "tcp://127.0.0.1:9999", cfg.Server.Target)
 	assert.Equal(t, "D:/elsewhere", cfg.Server.DataDir)
-	assert.True(t, cfg.Server.TLSEnabled)
-	assert.Equal(t, "cert.pem", cfg.Server.TLSCertFile)
-	assert.Equal(t, "key.pem", cfg.Server.TLSKeyFile)
-	assert.Equal(t, 7, *cfg.Defaults.Engine.BatchSize)
-	assert.Equal(t, 5*time.Second, cfg.Defaults.Engine.MaxInterval.Duration())
-	assert.Equal(t, 50*time.Microsecond, cfg.Defaults.Engine.MinInterval.Duration())
-	assert.Equal(t, int64(4096), *cfg.Defaults.Engine.SegmentSize)
-	assert.Equal(t, int64(1024), *cfg.Defaults.Engine.MaxMessageBytes)
-	assert.Equal(t, 2*time.Hour, cfg.Defaults.Engine.SegmentAge.Duration())
-	assert.True(t, *cfg.Defaults.Engine.Encrypted)
-	assert.False(t, *cfg.Defaults.Engine.Fsync)
+	assert.True(t, cfg.Server.TLS.Enabled)
+	assert.Equal(t, "cert.pem", cfg.Server.TLS.Cert)
+	assert.Equal(t, "key.pem", cfg.Server.TLS.Key)
+	assert.Equal(t, int64(4096), *cfg.Defaults.Storage.MaxSegment)
+	assert.Equal(t, 2*time.Hour, cfg.Defaults.Storage.MaxSegmentAge.Duration())
+	assert.Equal(t, int64(1024), *cfg.Defaults.Storage.MaxPayload)
+	assert.Equal(t, int64(8192), *cfg.Defaults.Storage.MaxCache)
+	assert.Equal(t, int64(7), *cfg.Defaults.Flush.MaxBytes)
+	assert.Equal(t, 5*time.Second, cfg.Defaults.Flush.MaxWait.Duration())
 }
 
 func TestMetricsFlagOverride(t *testing.T) {
-	path := batchConfig(t, 100)
+	path := flushConfig(t, 100)
 
 	cfg, _, err := resolveConfig([]string{
 		"--config", path,
@@ -133,25 +131,25 @@ func TestMetricsFlagOverride(t *testing.T) {
 	}, io.Discard, io.Discard)
 	require.NoError(t, err)
 
-	assert.False(t, cfg.Server.MetricsEnabled)
-	assert.Equal(t, 5*time.Second, cfg.Server.MetricsInterval.Duration())
-	assert.Equal(t, 42, cfg.Server.MetricsHistory)
-	assert.Equal(t, "127.0.0.1:9090", cfg.Server.MetricsListen)
-	assert.True(t, cfg.Server.MetricsPerQueuePrometheus)
-	assert.True(t, cfg.Server.MetricsHistograms)
+	assert.False(t, cfg.Server.Metrics.Enabled)
+	assert.Equal(t, 5*time.Second, cfg.Server.Metrics.Interval.Duration())
+	assert.Equal(t, 42, cfg.Server.Metrics.History)
+	assert.Equal(t, "127.0.0.1:9090", cfg.Server.Metrics.Listen)
+	assert.True(t, cfg.Server.Metrics.PerQueuePrometheus)
+	assert.True(t, cfg.Server.Metrics.Histograms)
 }
 
 func TestMetricsListenFromConfigFile(t *testing.T) {
-	cfgPath := writeConfig(t, t.TempDir(), "mikyu.yaml", "server:\n  metrics_listen: 127.0.0.1:9090\n")
+	cfgPath := writeConfig(t, t.TempDir(), "mikyu.yaml", "server:\n  metrics:\n    listen: 127.0.0.1:9090\n")
 
 	cfg, _, err := resolveConfig([]string{"--config", cfgPath}, io.Discard, io.Discard)
 	require.NoError(t, err)
-	assert.Equal(t, "127.0.0.1:9090", cfg.Server.MetricsListen)
+	assert.Equal(t, "127.0.0.1:9090", cfg.Server.Metrics.Listen)
 
 	// An explicit flag still wins over the file.
 	cfg, _, err = resolveConfig([]string{"--config", cfgPath, "--metrics-listen", "127.0.0.1:9091"}, io.Discard, io.Discard)
 	require.NoError(t, err)
-	assert.Equal(t, "127.0.0.1:9091", cfg.Server.MetricsListen)
+	assert.Equal(t, "127.0.0.1:9091", cfg.Server.Metrics.Listen)
 }
 
 func TestDaemonRejectsUnknownFlag(t *testing.T) {
@@ -177,25 +175,25 @@ func TestDaemonRejectsPositionalConfigPath(t *testing.T) {
 }
 
 func TestDaemonRejectsInvalidFlagValues(t *testing.T) {
-	path := batchConfig(t, 100)
+	path := flushConfig(t, 100)
 
 	tests := []struct {
 		name string
 		args []string
 	}{
-		{"zero batch", []string{"--config", path, "--batch-size", "0"}},
-		{"negative batch", []string{"--config", path, "--batch-size", "-5"}},
-		{"zero max-interval", []string{"--config", path, "--max-interval", "0s"}},
-		{"negative max-interval", []string{"--config", path, "--max-interval", "-1s"}},
-		{"negative min-interval", []string{"--config", path, "--min-interval", "-1s"}},
-		{"zero segment bytes", []string{"--config", path, "--segment-size", "0"}},
-		{"negative message bytes", []string{"--config", path, "--max-message-bytes", "-1"}},
-		{"zero segment age", []string{"--config", path, "--segment-age", "0s"}},
+		{"zero flush bytes", []string{"--config", path, "--max-flush-bytes", "0"}},
+		{"negative flush bytes", []string{"--config", path, "--max-flush-bytes", "-5"}},
+		{"zero max-flush-wait", []string{"--config", path, "--max-flush-wait", "0s"}},
+		{"negative max-flush-wait", []string{"--config", path, "--max-flush-wait", "-1s"}},
+		{"zero segment bytes", []string{"--config", path, "--max-segment", "0"}},
+		{"negative payload bytes", []string{"--config", path, "--max-payload", "-1"}},
+		{"zero segment age", []string{"--config", path, "--max-segment-age", "0s"}},
+		{"bad durability", []string{"--config", path, "--durability", "eventual"}},
 		{"bad target scheme", []string{"--config", path, "--target", "http://x"}},
 		{"empty target", []string{"--config", path, "--target", ""}},
 		{"empty data dir", []string{"--config", path, "--data-dir", ""}},
-		{"zero max-conns", []string{"--config", path, "--max-conns", "0"}},
-		{"negative max-conns", []string{"--config", path, "--max-conns", "-1"}},
+		{"zero max-connections", []string{"--config", path, "--max-connections", "0"}},
+		{"negative max-connections", []string{"--config", path, "--max-connections", "-1"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -217,12 +215,15 @@ func TestDaemonHelpListsEveryFlag(t *testing.T) {
 	assert.Contains(t, help, "Usage: mikyu daemon")
 	for _, name := range []string{
 		"config", "target", "data-dir",
-		"tls-enabled", "tls-cert-file", "tls-key-file", "max-conns",
-		"batch-size", "max-interval", "min-interval",
-		"segment-size", "max-message-bytes", "segment-age",
-		"encrypted", "fsync",
+		"tls-enabled", "tls-cert", "tls-key", "max-connections",
+		"durability", "encryption", "compaction",
+		"max-segment", "max-segment-age", "max-payload", "max-cache",
+		"max-flush-bytes", "max-flush-wait",
+		"max-retention-age", "max-retention-bytes",
+		"lease", "max-attempts", "max-in-flight", "max-dead-letters",
 		"metrics-enabled", "metrics-interval", "metrics-history", "metrics-listen",
 		"metrics-per-queue-prometheus", "metrics-histograms",
+		"auth-method", "auth-token-file",
 	} {
 		assert.Contains(t, help, "-"+name, "help should list --%s", name)
 	}
@@ -264,11 +265,11 @@ func TestDaemonBootstrapWithoutConfigFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.FileExists(t, resolvedPath)
 	assert.Equal(t, wantPath, resolvedPath)
-	assert.Equal(t, 256, *cfg.Defaults.Engine.BatchSize) // bootstrapped default survived
+	assert.Equal(t, int64(1<<20), *cfg.Defaults.Flush.MaxBytes) // bootstrapped default survived
 	assert.Equal(t, dataDir, cfg.Server.DataDir)
 
 	// Flags still win over the freshly bootstrapped file.
-	cfg, _, err = resolveConfig([]string{"--data-dir", dataDir, "--batch-size", "777"}, io.Discard, io.Discard)
+	cfg, _, err = resolveConfig([]string{"--data-dir", dataDir, "--max-flush-bytes", "777"}, io.Discard, io.Discard)
 	require.NoError(t, err)
-	assert.Equal(t, 777, *cfg.Defaults.Engine.BatchSize)
+	assert.Equal(t, int64(777), *cfg.Defaults.Flush.MaxBytes)
 }

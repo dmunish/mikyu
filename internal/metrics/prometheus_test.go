@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,8 +52,11 @@ func TestPrometheusEncodeShape(t *testing.T) {
 	}
 	want, err := os.ReadFile(golden)
 	require.NoError(t, err)
-	assert.Equal(t, string(want), buf.String())
+	assert.Equal(t, normalizeNewlines(string(want)), normalizeNewlines(buf.String()))
 }
+
+// normalizeNewlines makes the golden comparison independent of checkout line endings.
+func normalizeNewlines(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
 
 func TestPrometheusGlobalOnlyByDefault(t *testing.T) {
 	var buf bytes.Buffer

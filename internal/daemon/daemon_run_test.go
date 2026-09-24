@@ -72,7 +72,7 @@ func startDaemon(tb *testing.T, target string, args ...string) (finish func()) {
 // drives).
 func TestDaemonRunServesUntilShutdownSignal(t *testing.T) {
 	tmp := t.TempDir()
-	cfgPath := writeConfig(t, tmp, "mikyu.yaml", "defaults:\n  engine:\n    batch_size: 100\n")
+	cfgPath := writeConfig(t, tmp, "mikyu.yaml", "defaults:\n  flush:\n    max_bytes: 65536\n")
 	target := "tcp://" + freeTCPAddr(t)
 
 	startDaemon(t, target, "--config", cfgPath, "--target", target, "--data-dir", filepath.Join(tmp, "data"))()
@@ -91,7 +91,7 @@ func TestDaemonRunStartsWithoutConfigFile(t *testing.T) {
 // cleanup) instead of exiting the process mid-defer or blocking forever.
 func TestDaemonRunBindFailureReturnsError(t *testing.T) {
 	tmp := t.TempDir()
-	cfgPath := writeConfig(t, tmp, "mikyu.yaml", "defaults:\n  engine:\n    batch_size: 100\n")
+	cfgPath := writeConfig(t, tmp, "mikyu.yaml", "defaults:\n  flush:\n    max_bytes: 65536\n")
 
 	// Hold the port so the daemon's bind fails.
 	busy, err := net.Listen("tcp", "127.0.0.1:0")

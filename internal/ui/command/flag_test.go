@@ -17,15 +17,15 @@ func TestParseAnywhereAcceptsBothFlagForms(t *testing.T) {
 
 	rest, err := command.ParseAnywhere(fs, []string{
 		"queue_name",
-		"--batch-size", "32",
-		"--max-interval=5s",
+		"--max-flush-bytes", "32",
+		"--max-flush-wait=5s",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"queue_name"}, rest)
-	require.NotNil(t, patch.Engine.BatchSize)
-	assert.Equal(t, 32, *patch.Engine.BatchSize)
-	require.NotNil(t, patch.Engine.MaxInterval)
-	assert.Equal(t, "5s", patch.Engine.MaxInterval.Duration().String())
+	require.NotNil(t, patch.Flush.MaxBytes)
+	assert.Equal(t, int64(32), *patch.Flush.MaxBytes)
+	require.NotNil(t, patch.Flush.MaxWait)
+	assert.Equal(t, "5s", patch.Flush.MaxWait.Duration().String())
 }
 
 // TestParseAnywhereRejectsImmutableFlag: an update-only parser flags a
@@ -34,19 +34,19 @@ func TestParseAnywhereRejectsImmutableFlag(t *testing.T) {
 	var patch spec.Spec
 	fs := command.QueuePatchFlagSet("update", &patch)
 
-	_, err := command.ParseAnywhere(fs, []string{"--segment-size", "1024", "q"})
+	_, err := command.ParseAnywhere(fs, []string{"--max-segment", "1024", "q"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create-only")
 }
 
-func TestParseAnywhereAcceptsBareBoolFlag(t *testing.T) {
+func TestParseAnywhereAcceptsEnumFlag(t *testing.T) {
 	var patch spec.Spec
 	fs := command.QueueFlagSet("test", &patch)
 
-	_, err := command.ParseAnywhere(fs, []string{"--fsync", "queue_name"})
+	_, err := command.ParseAnywhere(fs, []string{"--durability", "async", "queue_name"})
 	require.NoError(t, err)
-	require.NotNil(t, patch.Engine.Fsync)
-	assert.True(t, *patch.Engine.Fsync)
+	require.NotNil(t, patch.Storage.Durability)
+	assert.Equal(t, spec.DurabilityAsync, *patch.Storage.Durability)
 }
 
 func TestHasHelpFlag(t *testing.T) {
@@ -60,10 +60,10 @@ func TestHasHelpFlag(t *testing.T) {
 // TestParseGlobalAcceptsBothFlagForms: leading session flags accept both
 // spellings too.
 func TestParseGlobalAcceptsBothFlagForms(t *testing.T) {
-	g, rest, err := command.ParseGlobal("", []string{"--data-dir=/tmp/x", "--max-conns", "4", "list"})
+	g, rest, err := command.ParseGlobal("", []string{"--data-dir=/tmp/x", "--max-connections", "4", "list"})
 	require.NoError(t, err)
 	assert.Equal(t, "/tmp/x", g.Session.DataDir)
-	assert.Equal(t, 4, g.Session.MaxConns)
+	assert.Equal(t, 4, g.Session.MaxConnections)
 	assert.Equal(t, []string{"list"}, rest)
 
 	g, rest, err = command.ParseGlobal("", []string{"--dir", "/tmp/y", "list"})

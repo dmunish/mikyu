@@ -10,6 +10,7 @@ import (
 	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/enginetest"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
+	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,12 +36,13 @@ func newTestQueueWithBounds(t *testing.T, maxInFlight, maxDLQ uint32) (*queue, *
 	t.Helper()
 	dir := t.TempDir()
 	mgr, err := engine.OpenManager(dir, engine.Config{
-		BatchSize:       8,
-		MaxInterval:     time.Millisecond,
-		MinInterval:     0,
-		SegmentSize:     16 * 1024,
-		MaxMessageBytes: 2 * 1024 * 1024,
-		Fsync:           false,
+		Durability:    spec.DurabilityAsync,
+		MaxSegment:    16 * 1024,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    2 * 1024 * 1024,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
 	}, nil)
 	require.NoError(t, err)
 	storage, err := mgr.Create("tasks")
@@ -61,12 +63,13 @@ func newTestQueueWithArchive(t *testing.T, appender ArchiveAppender) (*queue, *e
 	t.Helper()
 	dir := t.TempDir()
 	mgr, err := engine.OpenManager(dir, engine.Config{
-		BatchSize:       8,
-		MaxInterval:     time.Millisecond,
-		MinInterval:     0,
-		SegmentSize:     16 * 1024,
-		MaxMessageBytes: 2 * 1024 * 1024,
-		Fsync:           false,
+		Durability:    spec.DurabilityAsync,
+		MaxSegment:    16 * 1024,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    2 * 1024 * 1024,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
 	}, nil)
 	require.NoError(t, err)
 	storage, err := mgr.Create("tasks")
@@ -88,7 +91,7 @@ func TestStalledIncrementsOnVisibilityExpiry(t *testing.T) {
 		q := newMemTaskQueue(t, "stalled")
 		ctx := t.Context()
 
-		_, err := q.Enqueue(ctx, []byte("task"), WithVisibility(40*time.Millisecond), WithMaxAttempts(3))
+		_, err := q.Enqueue(ctx, []byte("task"), WithLease(40*time.Millisecond), WithMaxAttempts(3))
 		require.NoError(t, err)
 		first, err := q.Dequeue(ctx)
 		require.NoError(t, err)
@@ -109,7 +112,7 @@ func TestStalledNotInLeaseIdentity(t *testing.T) {
 	q, _, _ := newTestTaskQueue(t)
 	ctx := t.Context()
 
-	_, err := q.Enqueue(ctx, []byte("lease"), WithVisibility(time.Second), WithMaxAttempts(3))
+	_, err := q.Enqueue(ctx, []byte("lease"), WithLease(time.Second), WithMaxAttempts(3))
 	require.NoError(t, err)
 	first, err := q.Dequeue(ctx)
 	require.NoError(t, err)
@@ -155,7 +158,7 @@ func TestArchiveInFlight(t *testing.T) {
 		q := newMemTaskQueue(t, "archive-inflight")
 		ctx := t.Context()
 
-		_, err := q.Enqueue(ctx, []byte("data"), WithVisibility(30*time.Second), WithMaxAttempts(3))
+		_, err := q.Enqueue(ctx, []byte("data"), WithLease(30*time.Second), WithMaxAttempts(3))
 		require.NoError(t, err)
 		leased, err := q.Dequeue(ctx)
 		require.NoError(t, err)
@@ -204,12 +207,13 @@ func TestArchiveFromDLQ(t *testing.T) {
 func TestArchiveAutoCreatesLogQueue(t *testing.T) {
 	dir := t.TempDir()
 	mgr, err := engine.OpenManager(dir, engine.Config{
-		BatchSize:       8,
-		MaxInterval:     time.Millisecond,
-		MinInterval:     0,
-		SegmentSize:     16 * 1024,
-		MaxMessageBytes: 2 * 1024 * 1024,
-		Fsync:           false,
+		Durability:    spec.DurabilityAsync,
+		MaxSegment:    16 * 1024,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    2 * 1024 * 1024,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
 	}, nil)
 	require.NoError(t, err)
 	defer mgr.Close()
@@ -233,7 +237,7 @@ func TestArchiveAutoCreatesLogQueue(t *testing.T) {
 	defer func() { _ = Close(q) }()
 
 	ctx := t.Context()
-	_, err = q.Enqueue(ctx, []byte("data"), WithVisibility(30*time.Second), WithMaxAttempts(3))
+	_, err = q.Enqueue(ctx, []byte("data"), WithLease(30*time.Second), WithMaxAttempts(3))
 	require.NoError(t, err)
 	leased, err := q.Dequeue(ctx)
 	require.NoError(t, err)
@@ -248,12 +252,13 @@ func TestArchiveAutoCreatesLogQueue(t *testing.T) {
 func TestArchiveExplicitPreCreationWins(t *testing.T) {
 	dir := t.TempDir()
 	mgr, err := engine.OpenManager(dir, engine.Config{
-		BatchSize:       8,
-		MaxInterval:     time.Millisecond,
-		MinInterval:     0,
-		SegmentSize:     16 * 1024,
-		MaxMessageBytes: 2 * 1024 * 1024,
-		Fsync:           false,
+		Durability:    spec.DurabilityAsync,
+		MaxSegment:    16 * 1024,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    2 * 1024 * 1024,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
 	}, nil)
 	require.NoError(t, err)
 	defer mgr.Close()
@@ -277,7 +282,7 @@ func TestArchiveExplicitPreCreationWins(t *testing.T) {
 	defer func() { _ = Close(q) }()
 
 	ctx := t.Context()
-	_, err = q.Enqueue(ctx, []byte("data"), WithVisibility(30*time.Second), WithMaxAttempts(3))
+	_, err = q.Enqueue(ctx, []byte("data"), WithLease(30*time.Second), WithMaxAttempts(3))
 	require.NoError(t, err)
 	leased, err := q.Dequeue(ctx)
 	require.NoError(t, err)
@@ -289,12 +294,13 @@ func TestArchiveExplicitPreCreationWins(t *testing.T) {
 func TestArchiveRefusesWrongKind(t *testing.T) {
 	dir := t.TempDir()
 	mgr, err := engine.OpenManager(dir, engine.Config{
-		BatchSize:       8,
-		MaxInterval:     time.Millisecond,
-		MinInterval:     0,
-		SegmentSize:     16 * 1024,
-		MaxMessageBytes: 2 * 1024 * 1024,
-		Fsync:           false,
+		Durability:    spec.DurabilityAsync,
+		MaxSegment:    16 * 1024,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    2 * 1024 * 1024,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
 	}, nil)
 	require.NoError(t, err)
 	defer mgr.Close()
@@ -323,7 +329,7 @@ func TestArchiveRefusesWrongKind(t *testing.T) {
 	defer func() { _ = Close(q) }()
 
 	ctx := t.Context()
-	_, err = q.Enqueue(ctx, []byte("data"), WithVisibility(30*time.Second), WithMaxAttempts(3))
+	_, err = q.Enqueue(ctx, []byte("data"), WithLease(30*time.Second), WithMaxAttempts(3))
 	require.NoError(t, err)
 	leased, err := q.Dequeue(ctx)
 	require.NoError(t, err)
@@ -336,7 +342,7 @@ func TestArchiveFailureLeavesTaskInPlace(t *testing.T) {
 	q, _, _ := newTestQueueWithArchive(t, &failingArchiveAppender{})
 	ctx := t.Context()
 
-	_, err := q.Enqueue(ctx, []byte("data"), WithVisibility(30*time.Second), WithMaxAttempts(3))
+	_, err := q.Enqueue(ctx, []byte("data"), WithLease(30*time.Second), WithMaxAttempts(3))
 	require.NoError(t, err)
 	leased, err := q.Dequeue(ctx)
 	require.NoError(t, err)
@@ -352,7 +358,7 @@ func TestArchiveFailureLeavesTaskInPlace(t *testing.T) {
 
 func TestCheckpointRecoveryVerifiesCounts(t *testing.T) {
 	dir := t.TempDir()
-	cfg := engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 256, MaxMessageBytes: 1 << 20}
+	cfg := engine.Config{Durability: spec.DurabilitySync, MaxSegment: 256, MaxSegmentAge: time.Hour, MaxPayload: 1 << 20, MaxCache: 32 << 20, MaxFlushBytes: 1 << 20, MaxFlushWait: time.Millisecond}
 	mgr, err := engine.OpenManager(dir, cfg, nil)
 	require.NoError(t, err)
 	storage, err := mgr.Create("tasks")
@@ -487,7 +493,7 @@ func TestArchiveRetentionFloor(t *testing.T) {
 		q := newMemTaskQueue(t, "archive-ret")
 		ctx := t.Context()
 
-		_, err := q.Enqueue(ctx, []byte("data"), WithVisibility(30*time.Second), WithMaxAttempts(3))
+		_, err := q.Enqueue(ctx, []byte("data"), WithLease(30*time.Second), WithMaxAttempts(3))
 		require.NoError(t, err)
 		leased, err := q.Dequeue(ctx)
 		require.NoError(t, err)

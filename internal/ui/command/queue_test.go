@@ -57,12 +57,12 @@ func TestTightensRetention(t *testing.T) {
 		return &d
 	}
 	assert.True(t, command.TightensRetention(
-		mikyu.Spec{Retention: mikyu.RetentionSpec{Age: age("24h")}},
-		mikyu.Spec{Retention: mikyu.RetentionSpec{Age: age("1h")}},
+		mikyu.Spec{Retention: mikyu.RetentionSpec{MaxAge: age("24h")}},
+		mikyu.Spec{Retention: mikyu.RetentionSpec{MaxAge: age("1h")}},
 	))
 	assert.False(t, command.TightensRetention(
-		mikyu.Spec{Retention: mikyu.RetentionSpec{Age: age("1h")}},
-		mikyu.Spec{Retention: mikyu.RetentionSpec{Age: age("24h")}},
+		mikyu.Spec{Retention: mikyu.RetentionSpec{MaxAge: age("1h")}},
+		mikyu.Spec{Retention: mikyu.RetentionSpec{MaxAge: age("24h")}},
 	))
 }
 

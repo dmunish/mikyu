@@ -1,5 +1,4 @@
-// Package style holds the shared color palette and text styles used by
-// the CLI, the REPL, and the help renderer.
+// Package style holds the shared color palette and text styles used by the CLI, the REPL, and the help renderer.
 package style
 
 import (
@@ -41,8 +40,7 @@ var Default = Palette{
 	},
 }
 
-// HelpStyles bundles every style a help page renders. The zero value is
-// the no-color form; every field is a no-op lipgloss.Style.
+// HelpStyles bundles every style a help page renders; the zero value is the no-color form.
 type HelpStyles struct {
 	Header      lipgloss.Style
 	Name        lipgloss.Style

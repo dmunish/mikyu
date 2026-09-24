@@ -130,7 +130,7 @@ func TestServerMaxConnsRejectsExtra(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = release() }()
 
-	srv := New(n, WithMaxConns(1))
+	srv := New(n, WithMaxConnections(1))
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	srv.listener = ln

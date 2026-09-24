@@ -43,10 +43,10 @@ func (s *Server) queueTaskDefaults(ctx context.Context, name string) (visibility
 	if err != nil {
 		return 0, 0
 	}
-	if v := d.Spec.Task.DefaultVisibility; v != nil {
+	if v := d.Spec.Task.Lease; v != nil {
 		visibility = v.Duration()
 	}
-	if m := d.Spec.Task.DefaultMaxAttempts; m != nil {
+	if m := d.Spec.Task.MaxAttempts; m != nil {
 		maxAttempts = *m
 	}
 	return
@@ -89,9 +89,9 @@ func (s *Server) handleEnqueue(ctx context.Context, body []byte) (byte, []byte) 
 		defVis, defMax = s.queueTaskDefaults(ctx, string(name))
 	}
 	if visRaw > 0 {
-		opts = append(opts, taskqueue.WithVisibility(time.Duration(int64(visRaw))))
+		opts = append(opts, taskqueue.WithLease(time.Duration(int64(visRaw))))
 	} else if defVis > 0 {
-		opts = append(opts, taskqueue.WithVisibility(defVis))
+		opts = append(opts, taskqueue.WithLease(defVis))
 	}
 	if maxAttempts > 0 {
 		opts = append(opts, taskqueue.WithMaxAttempts(maxAttempts))

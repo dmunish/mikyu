@@ -28,7 +28,7 @@ func testClient() *http.Client {
 func startMetricsDaemon(tb *testing.T, listen string, extra ...string) (finish func()) {
 	tb.Helper()
 	tmp := tb.TempDir()
-	cfgPath := writeConfig(tb, tmp, "mikyu.yaml", "defaults:\n  engine:\n    batch_size: 100\n")
+	cfgPath := writeConfig(tb, tmp, "mikyu.yaml", "defaults:\n  flush:\n    max_bytes: 102400\n")
 	target := "tcp://" + freeTCPAddr(tb)
 	args := append([]string{
 		"--config", cfgPath,
@@ -203,7 +203,7 @@ func TestMetricsHTTPSSESlowClientDoesNotBlock(t *testing.T) {
 
 func TestMetricsHTTPDisabledByDefault(t *testing.T) {
 	tmp := t.TempDir()
-	cfgPath := writeConfig(t, tmp, "mikyu.yaml", "defaults:\n  engine:\n    batch_size: 100\n")
+	cfgPath := writeConfig(t, tmp, "mikyu.yaml", "defaults:\n  flush:\n    max_bytes: 102400\n")
 	target := "tcp://" + freeTCPAddr(t)
 
 	startDaemon(t, target, "--config", cfgPath, "--target", target, "--data-dir", filepath.Join(tmp, "data"))()
@@ -219,7 +219,7 @@ func TestMetricsHTTPDisabledByDefault(t *testing.T) {
 // stopped, mirroring the wire-bind-failure contract.
 func TestMetricsHTTPBindFailureReturnsError(t *testing.T) {
 	tmp := t.TempDir()
-	cfgPath := writeConfig(t, tmp, "mikyu.yaml", "defaults:\n  engine:\n    batch_size: 100\n")
+	cfgPath := writeConfig(t, tmp, "mikyu.yaml", "defaults:\n  flush:\n    max_bytes: 102400\n")
 
 	busy, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)

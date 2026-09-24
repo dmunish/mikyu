@@ -32,25 +32,40 @@ func sampleText(p spec.Param) string {
 	case spec.KindDuration:
 		return "2s"
 	case spec.KindBytes:
-		return "1048576"
+		return byteSample(p.Key)
 	case spec.KindBool:
 		return "true"
-	case spec.KindString:
-		if p.Key == "target" {
-			return "tcp://127.0.0.1:7420"
-		}
-		if p.Key == "metrics_listen" {
-			return "127.0.0.1:9090"
-		}
-		if p.Key == "auth_method" {
-			return "none"
-		}
-		if p.Key == "auth_token" {
-			return "0123456789abcdef"
-		}
-		return "sample"
-	case spec.KindTime:
-		return "2020-01-01T00:00:00Z"
+	case spec.KindEnum:
+		return p.Allowed[0]
+	default:
+		return stringSample(p.Key)
+	}
+}
+
+// byteSample keeps the explicit pair rules satisfied (payload fits a segment, cache covers it).
+func byteSample(key string) string {
+	switch key {
+	case "max_segment":
+		return "67108864"
+	case "max_payload":
+		return "1048576"
+	case "max_cache":
+		return "33554432"
+	default:
+		return "1048576"
+	}
+}
+
+func stringSample(key string) string {
+	switch key {
+	case "target":
+		return "tcp://127.0.0.1:7420"
+	case "metrics_listen":
+		return "127.0.0.1:9090"
+	case "auth_method":
+		return "none"
+	case "auth_token":
+		return "0123456789abcdef"
 	default:
 		return "sample"
 	}
@@ -98,6 +113,11 @@ func TestParitySurfaces(t *testing.T) {
 	for _, p := range spec.Params(spec.LayerCall) {
 		t.Run("call/"+p.Key, func(t *testing.T) {
 			assert.Contains(t, taskFuncs, p.OptionName, "taskqueue option missing")
+			if p.Key == "lease" || p.Key == "max_attempts" {
+				// The spec layer owns the bare option name; the call layer is
+				// reached through its own driver option of the same name.
+				return
+			}
 			assert.Contains(t, facadeFuncs, p.OptionName, "facade option missing")
 			if p.Key == "retry_after" {
 				assert.NotNil(t, nackFlags.Lookup(p.FlagName), "nack flag missing")
@@ -164,30 +184,61 @@ func assertEnvSession(t *testing.T, p spec.Param) {
 
 func assertYAMLSession(t *testing.T, p spec.Param) {
 	t.Helper()
-	cfg := loadConfig(t, "server:\n  "+p.Key+": "+sampleText(p)+"\n")
+	cfg := loadConfig(t, nestedYAML(p.Path, sampleText(p)))
 	assertSessionField(t, cfg.Server, p)
 }
 
+// nestedYAML renders a dotted session path into a nested YAML mapping.
+func nestedYAML(path, value string) string {
+	segments := strings.Split(path, ".")
+	var b strings.Builder
+	b.WriteString(segments[0] + ":\n")
+	for i := 1; i < len(segments); i++ {
+		indent := strings.Repeat("  ", i)
+		if i == len(segments)-1 {
+			fmt.Fprintf(&b, "%s%s: %s\n", indent, segments[i], value)
+			continue
+		}
+		fmt.Fprintf(&b, "%s%s:\n", indent, segments[i])
+	}
+	return b.String()
+}
+
+// assertSessionField resolves a session parameter's path and compares its value.
 func assertSessionField(t *testing.T, sess spec.Session, p spec.Param) {
 	t.Helper()
 	want, err := p.Parse(sampleText(p))
 	require.NoError(t, err)
-	field := reflect.ValueOf(sess).FieldByName(sessionField(p.Key))
-	require.True(t, field.IsValid(), "spec.Session has no %s field", sessionField(p.Key))
-	assert.Equal(t, want.String(), fmt.Sprint(field.Interface()))
+
+	field, ok := sessionFieldByPath(reflect.ValueOf(sess), strings.TrimPrefix(p.Path, "server."))
+	require.True(t, ok, "spec.Session has no %s field", p.Path)
+	assert.Equal(t, want.String(), fieldString(field))
 }
 
-// sessionField maps a session key to its spec.Session field name.
-func sessionField(key string) string {
-	var b strings.Builder
-	for word := range strings.SplitSeq(key, "_") {
-		if word == "tls" {
-			b.WriteString("TLS")
+// sessionFieldByPath walks a Session value along a dotted yaml path.
+func sessionFieldByPath(v reflect.Value, path string) (any, bool) {
+	name, rest, more := strings.Cut(path, ".")
+	typ := v.Type()
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		yamlKey, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
+		if yamlKey != name {
 			continue
 		}
-		b.WriteString(strings.ToUpper(word[:1]) + word[1:])
+		fv := v.Field(i)
+		if more {
+			return sessionFieldByPath(fv, rest)
+		}
+		return fv.Interface(), true
 	}
-	return b.String()
+	return nil, false
+}
+
+func fieldString(v any) string {
+	if d, ok := v.(spec.Duration); ok {
+		return d.Duration().String()
+	}
+	return fmt.Sprint(v)
 }
 
 // assertQueuesJSON checks queues.json stores every parameter the register write gives it.

@@ -271,7 +271,7 @@ func (s *replSession) handleUpdate(args []string) {
 	}
 	name := rest[0]
 
-	if patch.Retention.Age != nil || patch.Retention.Bytes != nil {
+	if patch.Retention.MaxAge != nil || patch.Retention.MaxBytes != nil {
 		current, err := command.Describe(s.ctx, s.client, name)
 		if err != nil {
 			s.fail(err)

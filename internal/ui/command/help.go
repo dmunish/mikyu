@@ -441,8 +441,7 @@ func formatArgsStyled(raw string, s style.HelpStyles) string {
 	return sb.String()
 }
 
-// FormatArgsStyled is the exported, color-bool form of formatArgsStyled
-// for callers outside the help renderer (the REPL banner).
+// FormatArgsStyled is the color-bool form of formatArgsStyled for callers outside the help renderer.
 func FormatArgsStyled(raw string, color bool) string {
 	return formatArgsStyled(raw, style.NewHelpStyles(color))
 }

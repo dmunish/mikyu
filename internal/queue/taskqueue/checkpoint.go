@@ -352,7 +352,7 @@ func decodeSnapshot(data []byte) ([]taskState, map[string]Task, error) {
 		if err != nil {
 			return nil, nil, ErrCheckpointCorrupt
 		}
-				flag, err := r.readByte()
+		flag, err := r.readByte()
 		if err != nil || (flag != 0 && flag != 1) {
 			return nil, nil, ErrCheckpointCorrupt
 		}

@@ -58,8 +58,7 @@ type Example struct {
 	Invocation string
 }
 
-// Verb is one row of the command registry: the single source of truth for
-// dispatch, help, and the naming-law tests.
+// Verb is one row of the command registry: the single source of truth for dispatch, help, and the naming-law tests.
 type Verb struct {
 	Name        string
 	Args        string
@@ -117,14 +116,14 @@ var Verbs = []Verb{
 		Summary: "Create a log or task queue",
 		Long: "The queue's kind is structural: it lives under `log/` or `task/` in the " +
 			"data directory, and a name may exist under both kinds without collision. " +
-			"Task queues reject `engine.compaction`.",
+			"Task queues reject `storage.compaction`.",
 		Usage: []string{
 			"create --type log  [flags] <queue>",
 			"create --type task [flags] <queue>",
 		},
 		Examples: []Example{
 			{Invocation: "create --type log events"},
-			{Invocation: "create --type task jobs --default-visibility 60s"},
+			{Invocation: "create --type task jobs --lease 60s"},
 		},
 		ExtraFlags: []FlagDoc{
 			{Name: "type", Kind: "string", Doc: "Queue kind: log or task"},
@@ -135,12 +134,12 @@ var Verbs = []Verb{
 		Name: "update", Args: "<queue>", Kind: KindLog, Modes: ModeCLI | ModeREPL,
 		Summary: "Change a mutable queue parameter",
 		Long: "Only mutable parameters may change after create. Touching a create-only " +
-			"parameter (segment_size, max_message_bytes, encrypted, fsync, compaction) " +
+			"parameter (durability, encryption, compaction, max_segment, max_payload) " +
 			"returns ErrImmutableField. Shrinking retention prompts before applying.",
 		Usage: []string{"update [flags] <queue>"},
 		Examples: []Example{
-			{Invocation: "update events --retention-age 24h"},
-			{Invocation: "update events --retention-age 1h --yes"},
+			{Invocation: "update events --max-retention-age 24h"},
+			{Invocation: "update events --max-retention-age 1h --yes"},
 		},
 		ExtraFlags: []FlagDoc{
 			{Name: "yes", Kind: "bool", Doc: "Skip the retention-shrink confirmation"},
@@ -170,7 +169,7 @@ var Verbs = []Verb{
 	{
 		Name: "append", Args: "<queue> <payload>", Kind: KindLog, Modes: ModeCLI | ModeREPL,
 		Summary: "Append one record to a log queue",
-		Long: "Durable before ack by default; set `--fsync false` for a small crash " +
+		Long: "Durable before ack by default; set `--durability async` for a small crash " +
 			"window at lower latency. The returned offset is crash-safe. The payload " +
 			"may be a literal string, `@path` to read a file, or `-` to read stdin.",
 		Usage: []string{"append [--key <key>] <queue> <payload|@file|->"},

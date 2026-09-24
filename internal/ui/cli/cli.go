@@ -17,8 +17,7 @@ import (
 	"github.com/dmunish/mikyu/internal/ui/command"
 )
 
-// App is one CLI process surface: the streams it reads and writes, plus
-// the confirmation hook tests replace.
+// App is one CLI process surface: streams plus a replaceable confirmation hook.
 type App struct {
 	Stdin   io.Reader
 	Stdout  io.Writer
@@ -239,7 +238,7 @@ func (in *invocation) handleUpdate(args []string) error {
 	}
 	name := rest[0]
 
-	if patch.Retention.Age != nil || patch.Retention.Bytes != nil {
+	if patch.Retention.MaxAge != nil || patch.Retention.MaxBytes != nil {
 		current, err := command.Describe(in.ctx, in.client, name)
 		if err != nil {
 			return err
@@ -294,7 +293,7 @@ func (in *invocation) handleDescribe(args []string) error {
 	effective, _ := json.Marshal(d.Effective)
 	defaults, _ := json.Marshal(d.Defaults)
 	compaction := "off"
-	if d.Effective.Engine.Compaction != nil && *d.Effective.Engine.Compaction {
+	if d.Effective.Storage.Compaction != nil && *d.Effective.Storage.Compaction == spec.CompactionKeys {
 		compaction = "on"
 	}
 	fmt.Fprintf(in.app.Stdout, "queue:      %s (%s)\n", rest[0], d.Kind)

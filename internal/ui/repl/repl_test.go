@@ -53,7 +53,7 @@ func TestDispatchHelpOnlyViaFlag(t *testing.T) {
 	sess := &replSession{client: client, ctx: t.Context()}
 
 	out := captureStdout(func() { sess.dispatch("create --help") })
-	assert.Contains(t, out, "--batch-size")
+	assert.Contains(t, out, "--max-flush-bytes")
 
 	// `help enqueue` must not render the enqueue detail page.
 	out = captureStdout(func() { sess.dispatch("help enqueue") })

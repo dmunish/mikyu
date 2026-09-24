@@ -74,8 +74,7 @@ func writeCredentials(path string, m map[string]string) error {
 	return os.Rename(tmp, path)
 }
 
-// LoadToken reads the stored token for the given target, or ("", false)
-// if none.
+// LoadToken reads the stored token for target, or ("", false) when none is stored.
 func LoadToken(target string) (string, bool) {
 	path, err := CredentialsPath()
 	if err != nil {
@@ -129,8 +128,7 @@ func Login(ctx context.Context, target string) error {
 	return LoginWithToken(ctx, target, tok)
 }
 
-// LoginWithToken verifies an already-obtained token against target
-// before persisting it.
+// LoginWithToken verifies an already-obtained token against target before persisting it.
 func LoginWithToken(ctx context.Context, target, tok string) error {
 	tok = strings.TrimSpace(tok)
 	if tok == "" {

@@ -35,6 +35,9 @@ type Server struct {
 	doneCh    chan struct{}
 	metrics   *serverMetrics
 	auth      *authMode
+
+	connsMu sync.Mutex
+	conns   map[net.Conn]struct{}
 }
 
 type ServerOption func(*Server)
@@ -45,6 +48,7 @@ func New(n *node.Node, opts ...ServerOption) *Server {
 		node:    n,
 		stopCh:  make(chan struct{}),
 		doneCh:  make(chan struct{}),
+		conns:   make(map[net.Conn]struct{}),
 		metrics: newServerMetrics(n.Collector().Registry().Scope(serverScopeName)),
 	}
 	for _, opt := range opts {
@@ -73,8 +77,8 @@ func WithTLS(tlsConfig *tls.Config) ServerOption {
 	}
 }
 
-// WithMaxConns caps concurrent client connections; zero or less means unlimited.
-func WithMaxConns(n int) ServerOption {
+// WithMaxConnections caps concurrent client connections; zero or less means unlimited.
+func WithMaxConnections(n int) ServerOption {
 	return func(s *Server) {
 		s.maxConns = n
 	}
@@ -183,7 +187,7 @@ func (s *Server) Done() <-chan struct{} {
 	return s.doneCh
 }
 
-// Stop closes the listener and wakes any Serve loop.
+// Stop closes the listener and every active connection so parked handlers drain deterministically.
 func (s *Server) Stop() {
 	s.mu.Lock()
 	select {
@@ -198,9 +202,24 @@ func (s *Server) Stop() {
 		close(s.doneCh)
 	}
 	s.mu.Unlock()
+
+	s.connsMu.Lock()
+	for c := range s.conns {
+		_ = c.Close()
+	}
+	s.connsMu.Unlock()
 }
 
 func (s *Server) serveConn(conn net.Conn) {
+	s.connsMu.Lock()
+	s.conns[conn] = struct{}{}
+	s.connsMu.Unlock()
+	defer func() {
+		s.connsMu.Lock()
+		delete(s.conns, conn)
+		s.connsMu.Unlock()
+	}()
+
 	s.metrics.connections.Add(1)
 	defer s.metrics.connections.Add(-1)
 

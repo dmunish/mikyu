@@ -67,26 +67,26 @@ func TestAppendRoundTrip(t *testing.T) {
 func TestFlagValueEqualsSign(t *testing.T) {
 	app := newTestApp(t)
 	app.run(t, "create", "--type", "log", "q",
-		"--batch-size=64",
-		"--segment-size", "2048",
-		"--max-message-bytes=1024")
+		"--max-flush-bytes=64",
+		"--max-segment", "2048",
+		"--max-payload=1024")
 
 	var got mikyu.QueueDescription
 	require.NoError(t, json.Unmarshal([]byte(app.run(t, "describe", "q", "--json")), &got))
-	require.NotNil(t, got.Spec.Engine.BatchSize)
-	assert.Equal(t, 64, *got.Spec.Engine.BatchSize)
-	require.NotNil(t, got.Spec.Engine.SegmentSize)
-	assert.Equal(t, int64(2048), *got.Spec.Engine.SegmentSize)
+	require.NotNil(t, got.Spec.Flush.MaxBytes)
+	assert.Equal(t, int64(64), *got.Spec.Flush.MaxBytes)
+	require.NotNil(t, got.Spec.Storage.MaxSegment)
+	assert.Equal(t, int64(2048), *got.Spec.Storage.MaxSegment)
 }
 
 func TestPerVerbHelpViaFlagOnly(t *testing.T) {
 	app := newTestApp(t)
 
 	out := app.run(t, "create", "--help")
-	assert.Contains(t, out, "--batch-size")
+	assert.Contains(t, out, "--max-flush-bytes")
 
 	out = app.run(t, "create", "-h")
-	assert.Contains(t, out, "--batch-size")
+	assert.Contains(t, out, "--max-flush-bytes")
 
 	// `create help` must not be treated as a detail-page request.
 	_, err := app.runRaw(t, "--dir", app.dir, "create", "help")
@@ -120,28 +120,28 @@ func TestUpdateImmutableIsUsageError(t *testing.T) {
 	app := newTestApp(t)
 	app.run(t, "create", "--type", "task", "q")
 
-	err := app.runErr(t, "update", "q", "--segment-size", "128")
+	err := app.runErr(t, "update", "q", "--max-segment", "128")
 	require.ErrorIs(t, err, daemon.ErrUsage)
-	assert.Contains(t, app.errOut.String(), "segment_size")
+	assert.Contains(t, app.errOut.String(), "max_segment")
 }
 
 func TestRetentionShrinkPrompts(t *testing.T) {
 	app := newTestApp(t)
-	app.run(t, "create", "--type", "log", "q", "--retention-age", "24h")
+	app.run(t, "create", "--type", "log", "q", "--max-retention-age", "24h")
 
 	app.Confirm = func(string) (bool, error) { return false, nil }
-	assert.Contains(t, app.run(t, "update", "q", "--retention-age", "1h"), "aborted")
+	assert.Contains(t, app.run(t, "update", "q", "--max-retention-age", "1h"), "aborted")
 
 	app.Confirm = func(string) (bool, error) { t.Error("loosening must not prompt"); return true, nil }
-	app.run(t, "update", "q", "--retention-age", "48h")
+	app.run(t, "update", "q", "--max-retention-age", "48h")
 
 	app.Confirm = func(string) (bool, error) { t.Error("--yes must skip the prompt"); return true, nil }
-	app.run(t, "update", "q", "--retention-age", "1h", "--yes")
+	app.run(t, "update", "q", "--max-retention-age", "1h", "--yes")
 
 	var got mikyu.QueueDescription
 	require.NoError(t, json.Unmarshal([]byte(app.run(t, "describe", "q", "--json")), &got))
-	require.NotNil(t, got.Spec.Retention.Age)
-	assert.Equal(t, time.Hour, got.Spec.Retention.Age.Duration())
+	require.NotNil(t, got.Spec.Retention.MaxAge)
+	assert.Equal(t, time.Hour, got.Spec.Retention.MaxAge.Duration())
 }
 
 func TestTaskRecordRoundTrip(t *testing.T) {
@@ -179,7 +179,7 @@ func TestGlobalFlagsBothForms(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out, "created queue")
 
-	out, err = app.runRaw(t, "--dir", app.dir, "--max-conns=4", "list")
+	out, err = app.runRaw(t, "--dir", app.dir, "--max-connections=4", "list")
 	require.NoError(t, err)
 	assert.Contains(t, out, "q")
 }

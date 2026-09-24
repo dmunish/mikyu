@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -200,6 +201,10 @@ func TestWALByteBackpressure(t *testing.T) {
 	}
 }
 
+// TestWALWakeTokenLossRace pins the wake-token protocol: a push that crosses the
+// byte budget returns wake=true, and the token survives a flusher that is mid-linger,
+// so wait(seq) unblocks. Virtual time (synctest) makes the interleaving deterministic;
+// real sleeps here raced the flusher's FlushLinger under load.
 func TestWALWakeTokenLossRace(t *testing.T) {
 	testWithTimeout(t, 2*time.Second)
 	dir := t.TempDir()
@@ -213,47 +218,46 @@ func TestWALWakeTokenLossRace(t *testing.T) {
 	cfg.MaxFlushBytes = 8
 	cfg.MaxFlushWait = 5 * time.Second
 	cfg.FlushLinger = 10 * time.Millisecond
-	w := newWAL(f, cfg, 0)
-	w.start()
-	defer w.stop()
 
-	// 1. Initial push is under the byte budget; nudge the flusher so it enters
-	// its adaptive linger.
-	seq1, wake1, err := w.push([]byte("msg1"), 0)
-	require.NoError(t, err)
-	require.False(t, wake1)
-	select {
-	case w.wake <- struct{}{}:
-	default:
-	}
+	synctest.Test(t, func(t *testing.T) {
+		w := newWAL(f, cfg, 0)
+		w.start()
+		defer w.stop()
 
-	// 2. Allow flusher to enter adaptiveFlush sleep
-	time.Sleep(5 * time.Millisecond)
-
-	// 3. Second push reaches the byte budget while adaptiveFlush is in flight
-	seq2, wake2, err := w.push([]byte("msg2"), 4)
-	require.NoError(t, err)
-	require.True(t, wake2)
-	if wake2 {
+		// 1. Initial push is under the byte budget; nudge the flusher so it enters
+		// its adaptive linger.
+		seq1, wake1, err := w.push([]byte("msg1"), 0)
+		require.NoError(t, err)
+		require.False(t, wake1)
 		select {
 		case w.wake <- struct{}{}:
 		default:
 		}
-	}
 
-	// 4. Must complete within 200ms; if wake token was stolen, wait times out after 5s
-	done := make(chan error, 1)
-	go func() {
-		done <- w.wait(seq2)
-	}()
+		// 2. Advance to mid-linger: the flusher has consumed the token and is parked
+		// in its linger sleep, while the producer's 5ms sleep elapses first.
+		time.Sleep(5 * time.Millisecond)
 
-	select {
-	case err := <-done:
+		// 3. Second push reaches the byte budget while adaptiveFlush is in flight
+		seq2, wake2, err := w.push([]byte("msg2"), 4)
 		require.NoError(t, err)
+		require.True(t, wake2)
+		if wake2 {
+			select {
+			case w.wake <- struct{}{}:
+			default:
+			}
+		}
+
+		// 4. The linger ends, both records publish, and wait unblocks. A lost token
+		// would leave wait parked and the bubble deadlocks instead of hanging.
+		assert.NoError(t, w.wait(seq2))
 		assert.NoError(t, w.wait(seq1))
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("WAL wait timed out! Wake token was drained by adaptiveFlush for an unflushed message.")
-	}
+		w.mu.Lock()
+		published := w.publishedBytes
+		w.mu.Unlock()
+		assert.GreaterOrEqual(t, published, seq2, "linger-time flush must publish both records")
+	})
 }
 
 func BenchmarkWALFlushAllocations(b *testing.B) {

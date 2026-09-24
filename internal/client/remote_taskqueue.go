@@ -64,8 +64,20 @@ type remoteTaskQueue struct {
 	name   string
 }
 
+// TryDequeue performs one non-blocking scheduling pass; an idle queue surfaces ErrTaskNotAvailable.
 func (q *remoteTaskQueue) TryDequeue(ctx context.Context) (taskqueue.Task, error) {
-	return q.Dequeue(ctx)
+	var b protocol.Buffer
+	protocol.EncodeTaskDequeue(&b, q.name, 0)
+	resp, err := q.client.exchange(ctx, protocol.OpDequeue, b.Bytes())
+	if err != nil {
+		return taskqueue.Task{}, err
+	}
+	r := protocol.NewReader(resp)
+	wt, err := protocol.DecodeTask(r)
+	if err != nil {
+		return taskqueue.Task{}, err
+	}
+	return fromWireTask(wt), nil
 }
 
 func (q *remoteTaskQueue) Name() string { return q.name }

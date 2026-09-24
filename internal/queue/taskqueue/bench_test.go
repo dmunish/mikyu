@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/spec"
 )
 
 func BenchmarkTaskQueueEnqueue(b *testing.B) {
@@ -44,7 +45,15 @@ func BenchmarkTaskQueueDequeueAck(b *testing.B) {
 func newBenchTaskQueue(b *testing.B) (*queue, *engine.Manager, engine.Storage) {
 	b.Helper()
 	dir := b.TempDir()
-	mgr, err := engine.OpenManager(dir, engine.Config{BatchSize: 32, MaxInterval: time.Millisecond, SegmentSize: 64 * 1024, MaxMessageBytes: 1 << 20}, nil)
+	mgr, err := engine.OpenManager(dir, engine.Config{
+		Durability:    spec.DurabilityAsync,
+		MaxSegment:    64 * 1024,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    1 << 20,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
+	}, nil)
 	if err != nil {
 		b.Fatal(err)
 	}

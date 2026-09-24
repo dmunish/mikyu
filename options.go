@@ -30,17 +30,17 @@ func WithTarget(target string) ClientOption { return client.WithTarget(target) }
 // WithDataDir sets the directory an embedded client opens.
 func WithDataDir(dir string) ClientOption { return client.WithDataDir(dir) }
 
-// WithMaxConns caps the remote connection pool.
-func WithMaxConns(n int) ClientOption { return client.WithMaxConns(n) }
+// WithMaxConnections caps the remote connection pool.
+func WithMaxConnections(n int) ClientOption { return client.WithMaxConnections(n) }
 
 // WithTLSEnabled turns on TLS for remote tcp:// connections.
 func WithTLSEnabled(enabled bool) ClientOption { return client.WithTLSEnabled(enabled) }
 
-// WithTLSCertFile sets the client certificate presented to a TLS server.
-func WithTLSCertFile(path string) ClientOption { return client.WithTLSCertFile(path) }
+// WithTLSCert sets the client certificate presented to a TLS server.
+func WithTLSCert(path string) ClientOption { return client.WithTLSCert(path) }
 
-// WithTLSKeyFile sets the private key matching the client certificate.
-func WithTLSKeyFile(path string) ClientOption { return client.WithTLSKeyFile(path) }
+// WithTLSKey sets the private key matching the client certificate.
+func WithTLSKey(path string) ClientOption { return client.WithTLSKey(path) }
 
 // WithAutoStart makes Dial spawn a daemon with the session's settings when the
 // target is not already serving.
@@ -55,8 +55,8 @@ func WithAuthToken(tok string) ClientOption { return client.WithAuthToken(tok) }
 // WithAuthTokenFile sets a file containing the bearer token.
 func WithAuthTokenFile(path string) ClientOption { return client.WithAuthTokenFile(path) }
 
-// WithTLSClientCaFile sets the client CA bundle for mTLS servers.
-func WithTLSClientCaFile(path string) ClientOption { return client.WithTLSClientCaFile(path) }
+// WithTLSClientCA sets the client CA bundle for mTLS servers.
+func WithTLSClientCA(path string) ClientOption { return client.WithTLSClientCA(path) }
 
 // WithMetricsEnabled turns the embedded node's live collector on or off; a
 // remote client cannot configure the server's collector.
@@ -84,54 +84,59 @@ func WithMetricsPerQueuePrometheus(enabled bool) ClientOption {
 // snapshot; a remote client cannot configure the server's collector.
 func WithMetricsHistograms(enabled bool) ClientOption { return client.WithMetricsHistograms(enabled) }
 
-// WithBatchSize sets the max pending appends before a WAL flush.
-func WithBatchSize(n int) QueueOption { return client.WithBatchSize(n) }
+// WithDurability selects the append ack policy (create-only).
+func WithDurability(d Durability) QueueOption { return client.WithDurability(d) }
 
-// WithMaxInterval sets the max delay forcing a WAL flush.
-func WithMaxInterval(d time.Duration) QueueOption { return client.WithMaxInterval(d) }
+// WithEncryption selects at-rest protection (create-only).
+func WithEncryption(e Encryption) QueueOption { return client.WithEncryption(e) }
 
-// WithMinInterval sets the micro-linger window grouping concurrent appends.
-func WithMinInterval(d time.Duration) QueueOption { return client.WithMinInterval(d) }
-
-// WithSegmentSize sets the bytes at which a log segment rolls (create-only).
-func WithSegmentSize(b int64) QueueOption { return client.WithSegmentSize(b) }
-
-// WithMaxMessageBytes sets the producer payload contract (create-only).
-func WithMaxMessageBytes(b int64) QueueOption { return client.WithMaxMessageBytes(b) }
-
-// WithSegmentAge sets the age at which an inactive segment rolls.
-func WithSegmentAge(d time.Duration) QueueOption { return client.WithSegmentAge(d) }
-
-// WithEncrypted enables OS transparent directory encryption (create-only).
-func WithEncrypted(enabled bool) QueueOption { return client.WithEncrypted(enabled) }
-
-// WithFsync selects physical-disk durability on produce (create-only).
-func WithFsync(enabled bool) QueueOption { return client.WithFsync(enabled) }
-
-// WithCompaction enables roll-time compaction of superseded keyed records
+// WithCompaction selects how closed segments shed superseded keys
 // (create-only, log queues only).
-func WithCompaction(enabled bool) QueueOption { return client.WithCompaction(enabled) }
+func WithCompaction(c Compaction) QueueOption { return client.WithCompaction(c) }
 
-// WithRetentionAge deletes records older than d, capped by consumer lag.
-func WithRetentionAge(d time.Duration) QueueOption { return client.WithRetentionAge(d) }
+// WithMaxSegment sets the bytes at which a segment rolls (create-only).
+func WithMaxSegment(n int64) QueueOption { return client.WithMaxSegment(n) }
 
-// WithRetentionBytes caps on-disk size, dropping whole oldest segments.
-func WithRetentionBytes(b int64) QueueOption { return client.WithRetentionBytes(b) }
+// WithMaxSegmentAge sets the age at which the active segment rolls.
+func WithMaxSegmentAge(d time.Duration) QueueOption { return client.WithMaxSegmentAge(d) }
 
-// WithDefaultVisibility sets the queue's fallback lease for optionless enqueues.
-func WithDefaultVisibility(d time.Duration) QueueOption { return client.WithDefaultVisibility(d) }
+// WithMaxPayload sets the producer payload contract (create-only).
+func WithMaxPayload(n int64) QueueOption { return client.WithMaxPayload(n) }
 
-// WithDefaultMaxAttempts sets the queue's fallback retry budget.
-func WithDefaultMaxAttempts(n uint32) QueueOption { return client.WithDefaultMaxAttempts(n) }
+// WithMaxCache sets the tail cache byte budget.
+func WithMaxCache(n int64) QueueOption { return client.WithMaxCache(n) }
 
-// WithVisibility sets how long a dequeued task stays leased.
-func WithVisibility(d time.Duration) EnqueueOption { return taskqueue.WithVisibility(d) }
+// WithMaxFlushBytes sets the pending WAL size that triggers a flush.
+func WithMaxFlushBytes(n int64) QueueOption { return client.WithMaxFlushBytes(n) }
 
-// WithMaxDLQ caps the durable dead-letter queue; overflow drops the oldest entry.
-func WithMaxDLQ(n uint32) QueueOption { return client.WithMaxDLQ(n) }
+// WithMaxFlushWait sets the longest a batch waits before flushing.
+func WithMaxFlushWait(d time.Duration) QueueOption { return client.WithMaxFlushWait(d) }
+
+// WithMaxRetentionAge deletes records older than d, capped by consumer lag.
+func WithMaxRetentionAge(d time.Duration) QueueOption { return client.WithMaxRetentionAge(d) }
+
+// WithMaxRetentionBytes caps on-disk size, dropping whole oldest segments.
+func WithMaxRetentionBytes(n int64) QueueOption { return client.WithMaxRetentionBytes(n) }
+
+// WithLease sets the queue's fallback lease for optionless enqueues.
+func WithLease(d time.Duration) QueueOption { return client.WithLease(d) }
+
+// WithMaxAttempts sets the retry budget before a task is dead-lettered.
+func WithMaxAttempts(n uint32) QueueOption { return client.WithMaxAttempts(n) }
 
 // WithMaxInFlight caps the number of tasks that can be in flight at once.
 func WithMaxInFlight(n uint32) QueueOption { return client.WithMaxInFlight(n) }
+
+// WithMaxDeadLetters caps the durable dead-letter queue; overflow drops the
+// oldest entry.
+func WithMaxDeadLetters(n uint32) QueueOption { return client.WithMaxDeadLetters(n) }
+
+// WithTaskLease sets how long this dequeued task stays leased.
+func WithTaskLease(d time.Duration) EnqueueOption { return taskqueue.WithLease(d) }
+
+// WithTaskMaxAttempts sets the maximum number of deliveries before
+// dead-lettering this task.
+func WithTaskMaxAttempts(n uint32) EnqueueOption { return taskqueue.WithMaxAttempts(n) }
 
 // WithKey associates a key with the task for archival or compaction.
 func WithKey(k []byte) EnqueueOption { return taskqueue.WithKey(k) }
@@ -139,9 +144,6 @@ func WithKey(k []byte) EnqueueOption { return taskqueue.WithKey(k) }
 // WithRecordKey associates a compaction key with a log record; records with the
 // same key are versions, and only the newest survives compaction.
 func WithRecordKey(k []byte) AppendOption { return logqueue.WithKey(k) }
-
-// WithMaxAttempts sets the maximum number of deliveries before dead-lettering.
-func WithMaxAttempts(n uint32) EnqueueOption { return taskqueue.WithMaxAttempts(n) }
 
 // WithScheduledAt delays the first delivery until the supplied time.
 func WithScheduledAt(at time.Time) EnqueueOption { return taskqueue.WithScheduledAt(at) }

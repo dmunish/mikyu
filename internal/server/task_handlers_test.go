@@ -55,11 +55,7 @@ func nackBody(name string, task protocol.Task, mode byte, delay time.Duration) [
 }
 
 func TestTaskHandlersLifecycle(t *testing.T) {
-	n, release, err := node.Acquire(t.TempDir(), spec.Spec{
-		Engine: spec.EngineSpec{
-			MaxMessageBytes: new(int64(1 << 20)),
-		},
-	})
+	n, release, err := node.Acquire(t.TempDir(), spec.Spec{Flush: spec.FlushSpec{MaxBytes: new(int64(1 << 20))}})
 	require.NoError(t, err)
 	defer func() { _ = release() }()
 	_, err = n.CreateTaskQueue(t.Context(), "tasks", spec.Spec{})

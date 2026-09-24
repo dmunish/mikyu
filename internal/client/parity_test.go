@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net"
 	"testing"
 	"time"
@@ -118,7 +117,7 @@ func runOpScript(t *testing.T, c Client) opScriptResults {
 	require.NoError(t, err)
 	require.NoError(t, tq.Archive(ctx, d4))
 
-	mustCreateTask(t, c, "dlq", WithDefaultMaxAttempts(1))
+	mustCreateTask(t, c, "dlq", WithMaxAttempts(1))
 	dlq, err := c.TaskQueue("dlq")
 	require.NoError(t, err)
 	_, err = dlq.Enqueue(ctx, []byte("doomed"))
@@ -146,7 +145,7 @@ func runOpScript(t *testing.T, c Client) opScriptResults {
 	require.NoError(t, err)
 	r.descTaskJSON = marshalJSON(t, descTask)
 
-	require.NoError(t, c.UpdateQueue(ctx, "events", WithBatchSize(64)))
+	require.NoError(t, c.UpdateQueue(ctx, "events", WithMaxFlushBytes(64<<10)))
 	updated, err := c.DescribeQueue(ctx, "events")
 	require.NoError(t, err)
 	r.descUpdatedJSON = marshalJSON(t, updated)
@@ -283,7 +282,7 @@ func TestParityEveryError(t *testing.T) {
 			return err
 		}, engine.ErrOffsetNotFound},
 		{"offset truncated", func(t *testing.T, c Client) error {
-			mustCreateLog(t, c, "q", WithSegmentSize(128), WithMaxMessageBytes(128))
+			mustCreateLog(t, c, "q", WithMaxSegment(200), WithMaxPayload(128))
 			lq, err := c.LogQueue("q")
 			require.NoError(t, err)
 			for range 8 {
@@ -331,7 +330,7 @@ func TestParityEveryError(t *testing.T) {
 			mustCreateTask(t, c, "jobs")
 			tq, err := c.TaskQueue("jobs")
 			require.NoError(t, err)
-			_, err = tq.Dequeue(ctx)
+			_, err = tq.TryDequeue(ctx)
 			return err
 		}, taskqueue.ErrTaskNotAvailable},
 		{"queue full", func(t *testing.T, c Client) error {
@@ -350,7 +349,7 @@ func TestParityEveryError(t *testing.T) {
 			return tq.AckDeadLetter(ctx, taskqueue.ID("no-such-task"))
 		}, taskqueue.ErrDeadLetterNotFound},
 		{"dead letter stale", func(t *testing.T, c Client) error {
-			mustCreateTask(t, c, "doomed", WithDefaultMaxAttempts(1))
+			mustCreateTask(t, c, "doomed", WithMaxAttempts(1))
 			tq, err := c.TaskQueue("doomed")
 			require.NoError(t, err)
 			_, err = tq.Enqueue(ctx, []byte("doomed"))
@@ -364,14 +363,14 @@ func TestParityEveryError(t *testing.T) {
 		}, taskqueue.ErrDeadLetterStale},
 		{"immutable field", func(t *testing.T, c Client) error {
 			mustCreateLog(t, c, "q")
-			return c.UpdateQueue(ctx, "q", WithSegmentSize(128))
+			return c.UpdateQueue(ctx, "q", WithMaxSegment(128))
 		}, spec.ErrImmutableField},
 		{"invalid config", func(t *testing.T, c Client) error {
-			_, err := c.CreateTaskQueue(ctx, "bad", WithBatchSize(0))
+			_, err := c.CreateTaskQueue(ctx, "bad", WithMaxFlushBytes(0))
 			return err
 		}, spec.ErrInvalidConfig},
 		{"record compacted", func(t *testing.T, c Client) error {
-			mustCreateLog(t, c, "cc", WithCompaction(true), WithSegmentSize(256))
+			mustCreateLog(t, c, "cc", WithCompaction(spec.CompactionKeys), WithMaxSegment(256))
 			lq, err := c.LogQueue("cc")
 			require.NoError(t, err)
 			var offs []uint64
@@ -384,14 +383,14 @@ func TestParityEveryError(t *testing.T) {
 			return err
 		}, engine.ErrRecordCompacted},
 		{"record too large", func(t *testing.T, c Client) error {
-			mustCreateLog(t, c, "big", WithSegmentSize(128))
+			mustCreateLog(t, c, "big", WithMaxSegment(128))
 			lq, err := c.LogQueue("big")
 			require.NoError(t, err)
 			_, err = lq.Append(ctx, make([]byte, 200))
 			return err
 		}, engine.ErrRecordTooLarge},
 		{"message too large", func(t *testing.T, c Client) error {
-			mustCreateLog(t, c, "small", WithMaxMessageBytes(8))
+			mustCreateLog(t, c, "small", WithMaxPayload(8))
 			lq, err := c.LogQueue("small")
 			require.NoError(t, err)
 			_, err = lq.Append(ctx, make([]byte, 64))
@@ -402,6 +401,7 @@ func TestParityEveryError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			c := newLoopbackServer(t)
 			err := tc.force(t, c)
 			require.Error(t, err, "server must raise %v", tc.want)
@@ -411,16 +411,16 @@ func TestParityEveryError(t *testing.T) {
 	}
 }
 
-// forceUnauthorized dials a token-mode server with a wrong token and expects
-// the handshake to be rejected.
+// forceUnauthorized dials a token-mode server with a wrong token and expects the handshake to be rejected.
 func forceUnauthorized(t *testing.T, c Client) error {
 	t.Helper()
 	_ = c
+
 	n, release, err := node.Acquire(t.TempDir(), spec.Spec{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = release() })
 
-	mode, err := server.NewAuthMode(spec.Session{AuthMethod: "token", AuthToken: "0123456789abcdef"})
+	mode, err := server.NewAuthMode(spec.Session{Auth: spec.AuthConfig{Method: "token", Token: "0123456789abcdef"}})
 	require.NoError(t, err)
 	srv := server.New(n, server.WithAuth(mode))
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -436,35 +436,42 @@ func forceUnauthorized(t *testing.T, c Client) error {
 	return err
 }
 
-// forceTooManyConnections parks one long-poll on the only allowed connection
-// and expects the next dial to be refused.
+// forceTooManyConnections parks one long-poll on the only allowed connection and expects the next dial to be refused.
 func forceTooManyConnections(t *testing.T, c Client) error {
 	t.Helper()
+	_ = c
+
 	n, release, err := node.Acquire(t.TempDir(), spec.Spec{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = release() })
-	srv := server.New(n, server.WithMaxConns(1))
+
+	srv := server.New(n, server.WithMaxConnections(1))
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ln.Close() })
 	go srv.Serve(ln)
 	t.Cleanup(srv.Stop)
 
-	full, err := NewRemote("tcp://"+ln.Addr().String())
+	hook, sent := frameWatcher(protocol.OpDequeue)
+	full, err := NewRemote("tcp://"+ln.Addr().String(), withFrameHook(hook))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = full.Close() })
 
 	mustCreateTask(t, full, "jobs")
 	tq, err := full.TaskQueue("jobs")
 	require.NoError(t, err)
+
 	pollCtx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	go func() { _, _ = tq.Dequeue(pollCtx) }()
-	time.Sleep(500 * time.Millisecond)
+
+	// The frame has been written; the server's handler now holds the only connection slot.
+	select {
+	case <-sent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Dequeue request never went out")
+	}
 
 	_, err = full.ListQueues(t.Context())
-	if err != nil && !errors.Is(err, protocol.ErrTooManyConnections) {
-		return err
-	}
 	return err
 }

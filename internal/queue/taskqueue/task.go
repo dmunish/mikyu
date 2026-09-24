@@ -128,8 +128,8 @@ func ResolveWireEnqueueOptions(opts ...EnqueueOption) (visibilityTimeout time.Du
 	return o.visibilityTimeout, o.maxAttempts, o.scheduledAt
 }
 
-// WithVisibility controls how long a dequeued task stays leased.
-func WithVisibility(timeout time.Duration) EnqueueOption {
+// WithLease controls how long a dequeued task stays leased.
+func WithLease(timeout time.Duration) EnqueueOption {
 	return func(o *enqueueOptions) {
 		if timeout > 0 {
 			o.visibilityTimeout = timeout
