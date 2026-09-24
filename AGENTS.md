@@ -209,10 +209,6 @@ cmd                                         → mikyu, daemon, cli, repl
 ### Layered Diagram
 
 ```mermaid
----
-config:
-  layout: elk
----
 flowchart TB
     subgraph L6["Layer 6 — Access & Deployment"]
         CLI[ui/cli]:::c
