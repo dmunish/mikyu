@@ -275,28 +275,107 @@ Risk check: run `mikyu metrics --json` against an embedded client and eyeball th
 
 ### Phase 2 — Runtime source via `runtime/metrics`
 
-Rewrite `internal/node/runtime_source.go`. Precompute the sample name list once; reuse a `[]runtime/metrics.Sample` slice across ticks to avoid allocations.
+Rewrite `internal/node/runtime_source.go` to read from `runtime/metrics` instead of `runtime.ReadMemStats`. Precompute the sample name list once at construction, reuse a `[]runtime/metrics.Sample` slice across ticks, and skip metrics the running Go build does not expose. OS-specific process readings live in build-tagged files, exactly like `lock_unix.go` / `lock_windows.go` and `sync_darwin.go` / `sync_windows.go` already do elsewhere in the tree.
 
-Files:
-- `internal/node/runtime_source.go` — new implementation.
-- `internal/node/runtime_source_unix.go`, `runtime_source_windows.go` — keep, but extend to fill `Threads` and `OpenFDs` (Linux: `/proc/self/status` and `/proc/self/fd`; Windows: `GetProcessHandleCount`).
-- `internal/metrics/snapshot.go` — no change beyond Phase 1.
+#### Files
 
-Histogram names in `runtime/metrics` are `Histogram[float64]`. Convert each to `HistogramSnapshot` at tick time. The `Bounds` come from the runtime's own `Histogram.Buckets`; **do not replace them**.
+- `internal/node/runtime_source.go` (no build tag) — defines `RuntimeSource`, `newRuntimeSource`, `Collect`, `cpuPercent`, and the portable interface the tagged files satisfy.
+- `internal/node/runtime_source_linux.go` (`//go:build linux`) — `/proc/self/stat` (VSZ), `/proc/self/status` (`Threads:`), `/proc/self/fd` (open FDs).
+- `internal/node/runtime_source_darwin.go` (`//go:build darwin`) — `sysctl(KERN_PROC)` and `proc_pidinfo(PROC_PIDTASKALLINFO)` for VSZ, threads, FDs.
+- `internal/node/runtime_source_bsd.go` (`//go:build freebsd || netbsd || openbsd`) — same via `sysctl`; return zeros for FDs (not worth the syscall on those platforms).
+- `internal/node/runtime_source_unix.go` (`//go:build unix`) — `syscall.Getrusage` for RSS, user seconds, sys seconds. Shared by Linux, Darwin, and the BSDs; the VSZ/threads/FDs readers come from the per-OS files above.
+- `internal/node/runtime_source_windows.go` (`//go:build windows`) — `GetProcessMemoryInfo` (RSS, PagefileUsage → VSZ), `GetProcessTimes` (user/sys seconds), `GetProcessHandleCount` (FDs), and a `Toolhelp32Snapshot` thread count.
+- `internal/node/runtime_source_other.go` (`//go:build !linux && !darwin && !freebsd && !netbsd && !openbsd && !windows`) — every reader returns 0. Keeps the build green on js/wasm, plan9, and future ports.
+- `internal/node/runtime_source_test.go` — portable tests (see below).
+- `internal/node/runtime_source_unix_test.go` (`//go:build unix`) — asserts the POSIX readers return non-negative values.
+- `internal/node/runtime_source_windows_test.go` (`//go:build windows`) — asserts the Windows readers return non-negative values.
 
-Tests:
-- `TestRuntimeSourceShape` (existing) — extend to assert every new field is populated and non-negative.
-- `TestRuntimeSourceGCPercentiles` — force GC with `runtime.GC()` a few times, then assert `GC.Pause.Total > 0` and `P50 <= P90 <= P99 <= Max`.
-- `TestRuntimeSourceSchedulerLatency` — spin a busy loop for ~50ms, assert `Scheduler.Latency.P99 > 0`.
-- `TestRuntimeSourceMemoryClassesSum` — sum of `Heap.Alloc + Heap.Idle + Heap.Released + Stack.Inuse + Metadata.Inuse` is within 10% of `Heap.Sys` (sanity, not exact).
-- `TestRuntimeSourceGoroutineStates` — spawn 10 known parked goroutines on a channel, tick, assert `Waiting >= 10`.
-- `TestRuntimeSourceNoAllocationSteadyState` — using `testing.AllocsPerRun`, assert the source allocates < 5 objects per tick after the first (the runtime sample slice must be reused).
-- Platform tests: `runtime_source_unix_test.go` and `runtime_source_windows_test.go` assert `Threads > 0` and `OpenFDs >= 3` (stdin/stdout/stderr).
+Every symbol declared by the portable file (`readProcessRSS`, `readProcessVSZ`, `readProcessThreads`, `readProcessFDs`, `readProcessUserSeconds`, `readProcessSysSeconds`) has exactly one definition per GOOS/GOARCH combination. A missing symbol on a platform fails the build, which is the point.
 
-Edge cases to cover:
-- First tick before any GC has run — must not panic and must return zeros where appropriate.
-- `runtime/metrics` name not supported on this Go version — filter unsupported names out at construction, not per tick.
-- Bucket counts summing to zero (histogram never observed) — `Percentile` returns 0.
+#### Portable `RuntimeSource`
+
+```go
+// runtimeMetricNames is the set of runtime/metrics samples the collector reads.
+// Names not present in the running build are filtered out at construction, so
+// a build on a platform that lacks, say, /cpu/classes/* still starts cleanly.
+var runtimeMetricNames = []string{
+    "/sched/goroutines:goroutines",
+    "/sched/gomaxprocs:threads",
+    "/sched/latencies:seconds",
+    "/gc/cycles/total:gc-cycles",
+    "/gc/pauses:seconds",
+    "/gc/heap/goal:bytes",
+    "/gc/gomemlimit:bytes",
+    "/gc/heap/allocs:bytes",
+    "/gc/heap/frees:bytes",
+    "/memory/classes/total:bytes",
+    "/memory/classes/heap/objects:bytes",
+    "/memory/classes/heap/unused:bytes",
+    "/memory/classes/heap/released:bytes",
+    "/memory/classes/heap/free:bytes",
+    "/memory/classes/stack:bytes",
+    "/memory/classes/metadata/mcache/inuse:bytes",
+    "/memory/classes/metadata/mspan/inuse:bytes",
+    "/sync/mutex/wait/total:seconds",
+    "/cpu/classes/user/total:cpu-seconds",
+    "/cpu/classes/gc/total:cpu-seconds",
+}
+
+func newRuntimeSource() *RuntimeSource {
+    have := map[string]bool{}
+    for _, d := range runtime_metrics.All() {
+        have[d.Name] = true
+    }
+    names := make([]string, 0, len(runtimeMetricNames))
+    for _, n := range runtimeMetricNames {
+        if have[n] {
+            names = append(names, n)
+        }
+    }
+    return &RuntimeSource{
+        start:   time.Now(),
+        samples: make([]runtime_metrics.Sample, len(names)),
+    }
+}
+```
+
+`Collect` iterates the samples slice, calls `runtime_metrics.Read(s.samples)`, and switches on `s.Name` to populate `dst.Runtime`, `dst.GC`, and `dst.Scheduler`. `s.Value.Kind()` may be `KindBad`; check it and skip rather than call `Float64()` / `Uint64()` on a bad value.
+
+Histogram-valued metrics (`/gc/pauses:seconds`, `/sched/latencies:seconds`) decode to `*runtime_metrics.Float64Histogram`. Copy their `Buckets` and `Counts` into a `metrics.HistogramSnapshot` and let Phase 1's `Percentile` method fill the quantile fields. Do **not** replace the runtime's bucket layout — its bounds are already tuned for the underlying distributions.
+
+`GOMAXPROCS` is read from `runtime.GOMAXPROCS(0)` at each tick, not cached. Since Go 1.25 the runtime re-evaluates it when a cgroup CPU limit changes, and a cached value would drift.
+
+The existing `cpuPercent` helper moves here unchanged: it takes cumulative process CPU nanoseconds, converts to a percentage against wall-clock delta, and reports zero on the first sample.
+
+#### Tests (`internal/node/runtime_source_test.go`)
+
+- `TestRuntimeSourceShape` — tick once, assert every `RuntimeView`, `GCView`, `SchedulerView`, and `ProcessView` field is populated and non-negative.
+- `TestRuntimeSourceUptimeGrows` — tick, sleep, tick; second `UptimeSec > first`.
+- `TestRuntimeSourceGCPercentiles` — call `runtime.GC()` ten times, tick; assert `GC.Pause.Total > 0`, `P50 <= P90 <= P99 <= Max`, and every value is finite.
+- `TestRuntimeSourceSchedulerLatency` — run a busy loop for 50ms, tick, assert `Scheduler.Latency.P99 > 0`.
+- `TestRuntimeSourceGoroutineStates` — spawn ten goroutines parked on a channel, `synctest.Wait()`, tick; assert `GoroutineStates.Waiting >= 10`. Release the channel in a defer so `goleak` stays quiet.
+- `TestRuntimeSourceMemoryClassesSum` — sum of `Heap.Alloc + Heap.Idle + Heap.Released + Stack.Inuse + Metadata.Inuse` is within 10% of `Heap.Sys` on the same tick. Loose enough to tolerate GC races, tight enough to catch a misread.
+- `TestRuntimeSourceNoAllocationSteadyState` — using `testing.AllocsPerRun(1000, tick)`, assert fewer than 5 allocations per tick after the first. The sample slice must be reused; a per-tick `make` will fail this immediately.
+- `TestRuntimeSourceSkipsUnavailableMetrics` — run `newRuntimeSource()` on every CI OS; assert no panic, and that `Collect` succeeds even if some metrics are missing.
+- `TestRuntimeSourceFirstTickWithoutGC` — construct a source, tick before any `runtime.GC()` has run; assert no panic and `GC.Pause.Total == 0`.
+- `TestRuntimeSourceBucketCountsMatchBounds` — for both runtime histograms, `len(Counts) == len(Bounds)+1`; `Total` equals the sum of `Counts`.
+- `TestRuntimeSourceConcurrentSnapshot` — eight goroutines call `Collect` on one source while another goroutine mutates runtime state (goroutine spawn/exit); run under `-race`.
+
+
+Both are tagged so they compile only on their GOOS. Cross-compiled binaries cannot run, so these tests are executed by the CI matrix on their native OS.
+
+#### Edge cases
+
+- A runtime histogram with zero observations: `Percentile` returns 0, `Max` returns 0. Covered by `TestRuntimeSourceFirstTickWithoutGC`.
+- A `Sample.Value.Kind() == KindBad`: skipped silently; no `Float64()` panic. Add an explicit unit test that fakes a sample slice with one bad entry and asserts the field stays zero.
+- A platform where `/proc/self/status` is unreadable (chroot, hardened container): `readProcessThreads` returns 0 and logs once. Do not fail the tick.
+- A Windows process whose handle count query fails under low privilege: same — return 0.
+
+#### Acceptance criteria
+
+- `go test -race ./internal/node/...` passes on all three native platforms.
+- `go vet ./...` passes with `stdversion`, `hostport`, and `waitgroup` enabled (they are the defaults since Go 1.25 — no flags needed).
+- `TestRuntimeSourceNoAllocationSteadyState` reports fewer than 5 allocs per tick.
 
 ### Phase 3 — Engine counters and WAL block events
 
