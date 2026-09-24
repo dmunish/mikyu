@@ -57,6 +57,19 @@ func TestDispatchableVerbsHaveLongAndUsage(t *testing.T) {
 	}
 }
 
+func TestLongDescriptionsAreUserFacing(t *testing.T) {
+	banned := []string{
+		"ErrImmutableField", "ErrRecordCompacted", "ErrTaskStale",
+		"OpShutdown", "metrics.Snapshot",
+	}
+	for _, v := range command.Verbs {
+		for _, b := range banned {
+			assert.NotContains(t, v.Long, b,
+				"%s long description names internal symbol %s", v.Name, b)
+		}
+	}
+}
+
 func TestEverySpecParamHasDoc(t *testing.T) {
 	for _, layer := range []spec.Layer{spec.LayerSpec, spec.LayerSession, spec.LayerCall} {
 		for _, p := range spec.Params(layer) {

@@ -133,9 +133,9 @@ var Verbs = []Verb{
 	{
 		Name: "update", Args: "<queue>", Kind: KindLog, Modes: ModeCLI | ModeREPL,
 		Summary: "Change a mutable queue parameter",
-		Long: "Only mutable parameters may change after create. Touching a create-only " +
-			"parameter (durability, encryption, compaction, max_segment, max_payload) " +
-			"returns ErrImmutableField. Shrinking retention prompts before applying.",
+		Long: "Only mutable parameters may change after create. Create-only parameters " +
+			"— durability, encryption, compaction, max_segment, max_payload — are " +
+			"rejected. Shrinking retention prompts before applying.",
 		Usage: []string{"update [flags] <queue>"},
 		Examples: []Example{
 			{Invocation: "update events --max-retention-age 24h"},
@@ -184,8 +184,9 @@ var Verbs = []Verb{
 	{
 		Name: "read", Args: "<queue> <offset>", Kind: KindLog, Modes: ModeCLI | ModeREPL,
 		Summary: "Read the record at one offset",
-		Long: "Returns the record's id, timestamp, group, and payload. A compacted " +
-			"offset returns ErrRecordCompacted.",
+		Long: "Returns the record's id, timestamp, group key, and payload. On a " +
+			"keyed-compaction queue, an offset whose key has a newer version reports " +
+			"that the record was compacted away.",
 		Usage: []string{"read <queue> <offset>"},
 	},
 	{
@@ -246,9 +247,10 @@ var Verbs = []Verb{
 	{
 		Name: "ack", Args: "<queue> <task>", Kind: KindTask, Modes: ModeCLI | ModeREPL,
 		Summary: "Acknowledge a task",
-		Long: "Passing a full task record (from `dequeue --json`) enforces the strict " +
-			"lease check: a task whose offset, attempt count, or delivery ID no longer " +
-			"matches is rejected with ErrTaskStale. A bare ID skips the strict check.",
+		Long: "Passing a full task record (from `dequeue --json`) enforces a strict " +
+			"lease check: the offset, attempt count, and delivery ID must all still " +
+			"match, or the ack is rejected as stale. A bare ID skips that check — " +
+			"useful when you only know the task id.",
 		Usage: []string{"ack <queue> <task|json|id>"},
 	},
 	{
@@ -273,7 +275,7 @@ var Verbs = []Verb{
 	{
 		Name: "dlq", Args: "<queue>", Kind: KindTask, Modes: ModeCLI | ModeREPL,
 		Summary: "List dead-lettered tasks",
-		Long:    "Dead-letter entries are durable per queue and bounded by `task.max_dlq`.",
+		Long:    "Dead-letter entries are durable per queue and bounded by `task.max_dead_letters`.",
 		Usage:   []string{"dlq <queue> [--json]"},
 		ExtraFlags: []FlagDoc{
 			{Name: "json", Kind: "bool", Doc: "Emit the dead-letter records as JSON"},
@@ -302,8 +304,10 @@ var Verbs = []Verb{
 	{
 		Name: "metrics", Args: "", Kind: KindAdmin, Modes: ModeCLI | ModeREPL,
 		Summary: "Show a live telemetry snapshot",
-		Long: "`--watch` streams snapshots until interrupted. The embedded client and " +
-			"the daemon expose the same metrics.Snapshot.",
+		Long: "Prints a point-in-time view of the process and storage: goroutines and " +
+			"heap, CPU and resident memory, segment count and size, and per-queue " +
+			"message rates, depth, and consumer lag. Works the same against an " +
+			"embedded data directory and a remote daemon.",
 		Usage: []string{"metrics [--json] [--watch] [--queue name]"},
 		ExtraFlags: []FlagDoc{
 			{Name: "json", Kind: "bool", Doc: "Emit the snapshot as JSON"},
@@ -314,8 +318,8 @@ var Verbs = []Verb{
 	{
 		Name: "shutdown", Args: "", Kind: KindAdmin, Modes: ModeCLI | ModeREPL,
 		Summary: "Stop the running daemon",
-		Long: "Sends an OpShutdown frame; the daemon drains the server and exits. " +
-			"Fails when the current process is embedded (`--dir`) and has no daemon to stop.",
+		Long: "Asks the daemon to drain in-flight requests and exit cleanly. Fails " +
+			"when the session is embedded (`--dir`) and has no daemon to stop.",
 		Usage: []string{"shutdown [--yes]"},
 		ExtraFlags: []FlagDoc{
 			{Name: "yes", Kind: "bool", Doc: "Skip the confirmation"},

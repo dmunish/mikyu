@@ -96,6 +96,9 @@ func WriteVerb(w io.Writer, v Verb, opts RenderOptions) error {
 	if err := writeVerbLong(w, v, s, width); err != nil {
 		return err
 	}
+	if err := writeVerbUsage(w, v, s); err != nil {
+		return err
+	}
 	if err := writeVerbFlags(w, v, s); err != nil {
 		return err
 	}
@@ -139,6 +142,21 @@ func writeVerbLong(w io.Writer, v Verb, s style.HelpStyles, width int) error {
 			continue
 		}
 		if _, err := fmt.Fprintf(w, "    %s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeVerbUsage(w io.Writer, v Verb, s style.HelpStyles) error {
+	if len(v.Usage) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintf(w, "\n  %s\n", s.Section.Render("USAGE")); err != nil {
+		return err
+	}
+	for _, u := range v.Usage {
+		if _, err := fmt.Fprintf(w, "    %s\n", formatArgsStyled(u, s)); err != nil {
 			return err
 		}
 	}
