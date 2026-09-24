@@ -17,7 +17,7 @@ func (s *Server) handleAppend(ctx context.Context, body []byte) (byte, []byte) {
 	group, _ := r.ReadBytes()
 	q, err := s.getOrCreateLogQueue(string(name))
 	if err != nil {
-		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
+		return taskErr(err)
 	}
 	off, err := q.Append(ctx, payload, logqueue.WithKey(group))
 	if err != nil {
@@ -42,7 +42,7 @@ func (s *Server) handleAppendBatch(ctx context.Context, body []byte) (byte, []by
 	}
 	q, err := s.getOrCreateLogQueue(string(name))
 	if err != nil {
-		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
+		return taskErr(err)
 	}
 	offs, err := q.AppendBatch(ctx, payloads, logqueue.WithKey(group))
 	if err != nil {
@@ -65,7 +65,7 @@ func (s *Server) handleFetch(ctx context.Context, body []byte) (byte, []byte) {
 	}
 	q, err := s.getOrCreateLogQueue(name)
 	if err != nil {
-		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
+		return taskErr(err)
 	}
 	if wait > maxFetchWait {
 		wait = maxFetchWait
@@ -100,7 +100,7 @@ func (s *Server) handleRead(ctx context.Context, body []byte) (byte, []byte) {
 	off, _ := r.ReadU64()
 	q, err := s.getOrCreateLogQueue(string(name))
 	if err != nil {
-		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
+		return taskErr(err)
 	}
 	msg, err := q.Read(ctx, off)
 	if err != nil {
@@ -121,7 +121,7 @@ func (s *Server) handleReadBatch(ctx context.Context, body []byte) (byte, []byte
 	}
 	q, err := s.getOrCreateLogQueue(string(name))
 	if err != nil {
-		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
+		return taskErr(err)
 	}
 	msgs, err := q.ReadBatch(ctx, start, int(count))
 	if err != nil {
@@ -141,7 +141,7 @@ func (s *Server) handleLastOffset(ctx context.Context, body []byte) (byte, []byt
 	name, _ := r.ReadBytes()
 	q, err := s.getOrCreateLogQueue(string(name))
 	if err != nil {
-		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
+		return taskErr(err)
 	}
 	last, err := q.LastOffset(ctx)
 	if err != nil {
@@ -159,7 +159,7 @@ func (s *Server) handleCommit(ctx context.Context, body []byte) (byte, []byte) {
 	off, _ := r.ReadU64()
 	q, err := s.getOrCreateLogQueue(string(qname))
 	if err != nil {
-		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
+		return taskErr(err)
 	}
 	if err := q.CommitOffset(ctx, string(gname), off); err != nil {
 		return taskErr(err)
@@ -173,7 +173,7 @@ func (s *Server) handleCommitted(ctx context.Context, body []byte) (byte, []byte
 	gname, _ := r.ReadBytes()
 	q, err := s.getOrCreateLogQueue(string(qname))
 	if err != nil {
-		return opErr(protocol.ErrCodeQueueNotFound, err.Error())
+		return taskErr(err)
 	}
 	off, err := q.Committed(ctx, string(gname))
 	if err != nil {

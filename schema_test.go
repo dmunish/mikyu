@@ -29,9 +29,19 @@ func TestSchemaIsTotalAndStable(t *testing.T) {
 }
 
 func TestLookupFindsEverySchemaKey(t *testing.T) {
+	counts := map[string]int{}
+	for _, p := range mikyu.Schema() {
+		counts[p.Key]++
+	}
 	for _, p := range mikyu.Schema() {
 		got, ok := mikyu.Lookup(p.Key)
 		require.True(t, ok, "Lookup(%q) misses", p.Key)
+		require.Equal(t, p.Key, got.Key)
+		if counts[p.Key] > 1 {
+			// A key shared across layers (lease, max_attempts) resolves to the
+			// spec-layer row; only its key is contractual.
+			continue
+		}
 		a, err := json.Marshal(p)
 		require.NoError(t, err)
 		b, err := json.Marshal(got)
@@ -75,19 +85,19 @@ func TestJSONIsValidYAML(t *testing.T) {
 }
 
 func TestDecodeSpecRejectsUnknownKey(t *testing.T) {
-	_, err := mikyu.DecodeSpec([]byte(`{"engine":{"bogus":1}}`))
+	_, err := mikyu.DecodeSpec([]byte(`{"storage":{"bogus":1}}`))
 	require.ErrorIs(t, err, mikyu.ErrInvalidConfig)
 	assert.Contains(t, err.Error(), "bogus")
 }
 
 func TestValidateCreateRejectsPairConflict(t *testing.T) {
 	s := mikyu.Builtin()
-	s.Engine.SegmentSize = new(int64(1 << 10))
-	s.Engine.MaxMessageBytes = new(int64(1 << 20))
+	s.Storage.MaxSegment = new(int64(1 << 10))
+	s.Storage.MaxPayload = new(int64(1 << 20))
 	err := mikyu.ValidateCreate(s)
 	require.ErrorIs(t, err, mikyu.ErrInvalidConfig)
-	assert.Contains(t, err.Error(), "max_message_bytes")
-	assert.Contains(t, err.Error(), "segment_size")
+	assert.Contains(t, err.Error(), "max_payload")
+	assert.Contains(t, err.Error(), "max_segment")
 }
 
 // TestValidateUpdateRejectsCreateOnly exercises every create-only row of the
@@ -119,9 +129,9 @@ func TestBuiltinIsTotal(t *testing.T) {
 func TestBuiltinSessionIsTotal(t *testing.T) {
 	s := mikyu.BuiltinSession()
 	require.NotEmpty(t, s.Target)
-	require.Greater(t, s.MaxConns, 0)
-	require.Greater(t, s.MetricsInterval.Duration(), time.Duration(0))
-	require.Greater(t, s.MetricsHistory, 0)
+	require.Greater(t, s.MaxConnections, 0)
+	require.Greater(t, s.Metrics.Interval.Duration(), time.Duration(0))
+	require.Greater(t, s.Metrics.History, 0)
 }
 
 // TestSchemaGateParity holds the facade to the table: every option name the

@@ -33,6 +33,8 @@ const (
 	KindString = spec.KindString
 	// KindTime values are instants.
 	KindTime = spec.KindTime
+	// KindEnum values are one of a row's declared constants.
+	KindEnum = spec.KindEnum
 
 	// LayerCall parameters are per-call arguments, never persisted.
 	LayerCall = spec.LayerCall

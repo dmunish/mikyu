@@ -271,7 +271,7 @@ func (s *replSession) handleUpdate(args []string) {
 	}
 	name := rest[0]
 
-	if patch.Retention.Age != nil || patch.Retention.Bytes != nil {
+	if patch.Retention.MaxAge != nil || patch.Retention.MaxBytes != nil {
 		current, err := command.Describe(s.ctx, s.client, name)
 		if err != nil {
 			s.fail(err)
@@ -320,9 +320,11 @@ func (s *replSession) handleDescribe(args []string) {
 		return
 	}
 	stored, _ := json.Marshal(d.Spec)
+	derived, _ := json.Marshal(d.Derived)
 	effective, _ := json.Marshal(d.Effective)
 	fmt.Println(infoStyle.Render(fmt.Sprintf("Queue %q", rest[0])))
 	fmt.Printf("  stored:    %s\n", stored)
+	fmt.Printf("  derived:   %s\n", derived)
 	fmt.Printf("  effective: %s\n", effective)
 }
 

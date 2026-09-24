@@ -46,24 +46,22 @@ func Describe(ctx context.Context, client mikyu.Client, name string) (mikyu.Queu
 	return client.DescribeQueue(ctx, name)
 }
 
-// TightensRetention reports whether patch narrows a retention bound below
-// what current (an effective spec) already allows.
+// TightensRetention reports whether patch narrows a retention bound below what current already allows.
 func TightensRetention(current, patch mikyu.Spec) bool {
-	if next := patch.Retention.Age; next != nil {
-		if cur := current.Retention.Age; cur == nil || next.Duration() < cur.Duration() {
+	if next := patch.Retention.MaxAge; next != nil {
+		if cur := current.Retention.MaxAge; cur == nil || next.Duration() < cur.Duration() {
 			return true
 		}
 	}
-	if next := patch.Retention.Bytes; next != nil {
-		if cur := current.Retention.Bytes; cur == nil || *next < *cur {
+	if next := patch.Retention.MaxBytes; next != nil {
+		if cur := current.Retention.MaxBytes; cur == nil || *next < *cur {
 			return true
 		}
 	}
 	return false
 }
 
-// Delete removes a queue and its stored data. If confirmFn is provided,
-// deletion occurs only if confirmFn returns true.
+// Delete removes a queue and its stored data, gated by confirmFn when provided.
 func Delete(ctx context.Context, client mikyu.Client, name string, confirmFn func() (bool, error)) (executed bool, err error) {
 	if confirmFn != nil {
 		ok, err := confirmFn()

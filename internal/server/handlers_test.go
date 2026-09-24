@@ -84,12 +84,12 @@ func TestHandleUpdateRejectsImmutableField(t *testing.T) {
 	var b protocol.Buffer
 	b.WriteBytes([]byte("q"))
 	b.WriteU16(spec.CurrentSpecVersion)
-	b.WriteBytes([]byte(`{"engine":{"segment_size":128}}`))
+	b.WriteBytes([]byte(`{"storage":{"max_segment":128}}`))
 	respOp, respBody := srv.handleUpdate(t.Context(), b.Bytes())
 	assert.Equal(t, protocol.OpError, respOp)
 	code, msg := protocol.DecodeError(respBody)
 	assert.Equal(t, protocol.ErrCodeImmutableField, code)
-	assert.Contains(t, msg, "segment_size")
+	assert.Contains(t, msg, "max_segment")
 }
 
 func TestHandleAppendErrors(t *testing.T) {

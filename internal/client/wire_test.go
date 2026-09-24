@@ -20,9 +20,7 @@ import (
 // client for it.
 func newRemoteClient(tb testing.TB) *remoteClient {
 	tb.Helper()
-	n, release, err := node.Acquire(tb.TempDir(), spec.Spec{
-		Engine: spec.EngineSpec{MaxMessageBytes: new(int64(1 << 20))},
-	})
+	n, release, err := node.Acquire(tb.TempDir(), spec.Spec{Flush: spec.FlushSpec{MaxBytes: new(int64(1 << 20))}})
 	require.NoError(tb, err)
 	tb.Cleanup(func() { _ = release() })
 
@@ -40,20 +38,17 @@ func newRemoteClient(tb testing.TB) *remoteClient {
 }
 
 // TestRemoteEnqueueUsesQueueDefaults: a queue created with
-// default_visibility 1m leases tasks dequeued from an optionless Enqueue for
+// lease 1m leases tasks dequeued from an optionless Enqueue for
 // about a minute â€” the zeros on the wire inherit the queue spec, not the
 // client's pre-resolved built-ins.
 func TestRemoteEnqueueUsesQueueDefaults(t *testing.T) {
-	n, release, err := node.Acquire(t.TempDir(), spec.Spec{
-		Engine: spec.EngineSpec{MaxMessageBytes: new(int64(1 << 20))},
-	})
+	n, release, err := node.Acquire(t.TempDir(), spec.Spec{Flush: spec.FlushSpec{MaxBytes: new(int64(1 << 20))}})
 	require.NoError(t, err)
 	defer func() { _ = release() }()
 
 	oneMinute := spec.Duration(time.Minute)
 	_, err = n.CreateTaskQueue(t.Context(), "tasks", spec.Spec{
-		Engine: spec.EngineSpec{MaxMessageBytes: new(int64(1 << 20))},
-		Task:   spec.TaskSpec{DefaultVisibility: &oneMinute},
+		Task: spec.TaskSpec{Lease: &oneMinute},
 	})
 	require.NoError(t, err)
 
@@ -75,7 +70,7 @@ func TestRemoteEnqueueUsesQueueDefaults(t *testing.T) {
 	leased, err := tq.Dequeue(t.Context())
 	require.NoError(t, err)
 
-	left := time.Until(leased.Visibility)
+	left := time.Until(leased.Lease)
 	assert.GreaterOrEqual(t, left, 55*time.Second, "lease deadline should be ~1m out, got %v remaining", left)
 	assert.LessOrEqual(t, left, time.Minute+5*time.Second)
 }
@@ -86,10 +81,10 @@ func TestUpdateQueueRejectsImmutableField(t *testing.T) {
 	c := newRemoteClient(t)
 	mustCreateLog(t, c, "q")
 
-	err := c.UpdateQueue(t.Context(), "q", WithSegmentSize(128))
+	err := c.UpdateQueue(t.Context(), "q", WithMaxSegment(128))
 	require.Error(t, err)
 	assert.ErrorIs(t, err, spec.ErrImmutableField)
-	assert.Contains(t, err.Error(), "segment_size")
+	assert.Contains(t, err.Error(), "max_segment")
 }
 
 // TestDescribeQueueRoundTrip: the JSON DescribeResult decodes into the
@@ -100,8 +95,8 @@ func TestDescribeQueueRoundTrip(t *testing.T) {
 
 	d, err := c.DescribeQueue(t.Context(), "q")
 	require.NoError(t, err)
-	require.NotNil(t, d.Effective.Engine.SegmentSize)
-	assert.Equal(t, int64(64<<20), *d.Effective.Engine.SegmentSize)
+	require.NotNil(t, d.Effective.Storage.MaxSegment)
+	assert.Equal(t, int64(64<<20), *d.Effective.Storage.MaxSegment)
 }
 
 // TestRemoteSchemaMatchesLocal: Schema over OpSchema returns exactly the

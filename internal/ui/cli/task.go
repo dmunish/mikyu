@@ -19,8 +19,8 @@ func shortTaskID(id string) string {
 
 func renderCLITask(task mikyu.Task) string {
 	lease := "pending"
-	if !task.Visibility.IsZero() {
-		d := time.Until(task.Visibility)
+	if !task.Lease.IsZero() {
+		d := time.Until(task.Lease)
 		if d <= 0 {
 			lease = "expired"
 		} else {

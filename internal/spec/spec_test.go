@@ -14,41 +14,41 @@ import (
 
 func TestDurationRoundTrip(t *testing.T) {
 	t.Run("json string form", func(t *testing.T) {
-		var e EngineSpec
-		require.NoError(t, json.Unmarshal([]byte(`{"max_interval":"10ms","min_interval":"30us"}`), &e))
-		require.Equal(t, 10*time.Millisecond, e.MaxInterval.Duration())
-		require.Equal(t, 30*time.Microsecond, e.MinInterval.Duration())
+		var f FlushSpec
+		require.NoError(t, json.Unmarshal([]byte(`{"max_wait":"10ms","max_bytes":1048576}`), &f))
+		require.Equal(t, 10*time.Millisecond, f.MaxWait.Duration())
+		require.Equal(t, int64(1048576), *f.MaxBytes)
 
-		e.MinInterval = nil
-		data, err := json.Marshal(e)
+		f.MaxBytes = nil
+		data, err := json.Marshal(f)
 		require.NoError(t, err)
-		require.Equal(t, `{"max_interval":"10ms"}`, string(data))
+		require.Equal(t, `{"max_wait":"10ms"}`, string(data))
 	})
 
 	t.Run("json nanos form", func(t *testing.T) {
-		var e EngineSpec
-		require.NoError(t, json.Unmarshal([]byte(`{"max_interval":10000000}`), &e))
-		require.Equal(t, 10*time.Millisecond, e.MaxInterval.Duration())
+		var f FlushSpec
+		require.NoError(t, json.Unmarshal([]byte(`{"max_wait":10000000}`), &f))
+		require.Equal(t, 10*time.Millisecond, f.MaxWait.Duration())
 	})
 
 	t.Run("yaml forms", func(t *testing.T) {
 		for _, doc := range []string{
-			"max_interval: 10ms\n",
-			"max_interval: \"10ms\"\n",
-			"max_interval: 10000000\n",
+			"max_wait: 10ms\n",
+			"max_wait: \"10ms\"\n",
+			"max_wait: 10000000\n",
 		} {
-			var e EngineSpec
-			require.NoError(t, yaml.Unmarshal([]byte(doc), &e), doc)
-			require.NotNil(t, e.MaxInterval, doc)
-			require.Equal(t, 10*time.Millisecond, e.MaxInterval.Duration(), doc)
+			var f FlushSpec
+			require.NoError(t, yaml.Unmarshal([]byte(doc), &f), doc)
+			require.NotNil(t, f.MaxWait, doc)
+			require.Equal(t, 10*time.Millisecond, f.MaxWait.Duration(), doc)
 		}
 	})
 
 	t.Run("rejects junk", func(t *testing.T) {
-		var e EngineSpec
-		require.Error(t, json.Unmarshal([]byte(`{"max_interval":"soon"}`), &e))
+		var f FlushSpec
+		require.Error(t, json.Unmarshal([]byte(`{"max_wait":"soon"}`), &f))
 
-		err := yaml.UnmarshalWithOptions([]byte("max_interval: soon\n"), &e, yaml.DisallowUnknownField())
+		err := yaml.UnmarshalWithOptions([]byte("max_wait: soon\n"), &f, yaml.DisallowUnknownField())
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "soon")
 	})
@@ -58,18 +58,18 @@ func TestMergePresence(t *testing.T) {
 	builtin := Builtin()
 
 	queue := Spec{}
-	queue.Engine.BatchSize = new(7)
-	queue.Task.DefaultMaxAttempts = new(uint32(2))
+	queue.Storage.MaxSegment = new(int64(4096))
+	queue.Task.MaxAttempts = new(uint32(2))
 
 	merged := queue.Merge(builtin)
-	require.Equal(t, 7, *merged.Engine.BatchSize, "a set field wins")
-	require.Equal(t, *builtin.Engine.Fsync, *merged.Engine.Fsync, "an unset field inherits")
-	require.Equal(t, uint32(2), *merged.Task.DefaultMaxAttempts)
+	require.Equal(t, int64(4096), *merged.Storage.MaxSegment, "a set field wins")
+	require.Equal(t, *builtin.Storage.Durability, *merged.Storage.Durability, "an unset field inherits")
+	require.Equal(t, uint32(2), *merged.Task.MaxAttempts)
 
-	require.Nil(t, Spec{}.Engine.MaxInterval, "nil stays nil over nil")
-	require.NotNil(t, Spec{}.Merge(builtin).Engine.MaxInterval)
+	require.Nil(t, Spec{}.Flush.MaxWait, "nil stays nil over nil")
+	require.NotNil(t, Spec{}.Merge(builtin).Flush.MaxWait)
 
-	require.Nil(t, queue.Engine.MinInterval, "merge must not mutate the receiver")
+	require.Nil(t, queue.Storage.MaxCache, "merge must not mutate the receiver")
 	require.Equal(t, Builtin(), builtin, "merge must not mutate the argument")
 }
 
@@ -77,17 +77,17 @@ func TestEffectivePrecedence(t *testing.T) {
 	builtin := Builtin()
 
 	session := Spec{}
-	session.Engine.Fsync = new(false)
-	session.Engine.SegmentAge = new(Duration(time.Hour))
-	session.Task.DefaultVisibility = new(Duration(time.Minute))
+	session.Storage.Compaction = new(CompactionKeys)
+	session.Storage.MaxSegmentAge = new(Duration(time.Hour))
+	session.Task.Lease = new(Duration(time.Minute))
 
 	queue := Spec{}
-	queue.Engine.Fsync = new(true)
+	queue.Storage.MaxSegmentAge = new(Duration(2 * time.Hour))
 
 	eff := queue.Effective(session, builtin)
-	require.True(t, *eff.Engine.Fsync, "queue spec beats session")
-	require.Equal(t, time.Minute, eff.Task.DefaultVisibility.Duration(), "session beats built-in")
-	require.Equal(t, *builtin.Engine.MaxInterval, *eff.Engine.MaxInterval, "built-in fills the rest")
+	require.Equal(t, 2*time.Hour, eff.Storage.MaxSegmentAge.Duration(), "queue spec beats session")
+	require.Equal(t, CompactionKeys, *eff.Storage.Compaction, "session beats built-in")
+	require.Equal(t, *builtin.Flush.MaxWait, *eff.Flush.MaxWait, "built-in fills the rest")
 
 	for _, p := range Params(LayerSpec) {
 		_, set := eff.Field(p)
@@ -145,13 +145,10 @@ func TestTableMatchesSpecFields(t *testing.T) {
 	require.Equal(t, fromTable, fromStruct, "the table and Spec must describe the same fields")
 }
 
-// Session has no per-field getter, so its table binding is checked by shape:
-// every yaml key must have exactly one session param.
+// Session nests TLS, Auth, and Metrics, so the table paths are walked recursively.
 func TestTableMatchesSessionFields(t *testing.T) {
 	var fromStruct []string
-	for field := range reflect.TypeFor[Session]().Fields() {
-		fromStruct = append(fromStruct, "server."+tagName(field.Tag.Get("yaml")))
-	}
+	collectSessionTypeLeaves(reflect.TypeFor[Session](), "server.", &fromStruct)
 	slices.Sort(fromStruct)
 
 	var fromTable []string
@@ -165,11 +162,17 @@ func TestTableMatchesSessionFields(t *testing.T) {
 
 func TestTableSelfCheck(t *testing.T) {
 	seen := map[string]Param{}
+	paths := map[string]bool{}
 	for _, p := range Table {
-		require.NotContains(t, seen, p.Key, "duplicate canonical key")
-		seen[p.Key] = p
+		id := p.Layer.String() + "/" + p.Key
+		require.NotContains(t, seen, id, "duplicate canonical key on a layer")
+		seen[id] = p
+
+		require.False(t, paths[p.Path], "duplicate path "+p.Path)
+		paths[p.Path] = true
 
 		require.NotEmpty(t, p.Key)
+		require.NotEmpty(t, p.Path)
 		require.NotEqual(t, KindUnknown, p.Kind, p.Key)
 		require.NotEqual(t, LayerUnspecified, p.Layer, p.Key)
 		require.NotEqual(t, MutUnspecified, p.Mutability, p.Key)
@@ -180,9 +183,11 @@ func TestTableSelfCheck(t *testing.T) {
 			require.Equal(t, envName(p.Key), p.EnvName, p.Key)
 		}
 
-		normalized := strings.ReplaceAll(p.Path, ".", "_")
-		require.True(t, normalized == p.Key || strings.HasSuffix(normalized, "_"+p.Key),
-			p.Path+" does not name "+p.Key)
+		if p.Kind == KindEnum {
+			require.NotEmpty(t, p.Allowed, p.Key+" must declare its constants")
+		} else {
+			require.Empty(t, p.Allowed, p.Key)
+		}
 
 		switch p.Layer {
 		case LayerCall:
@@ -199,7 +204,7 @@ func TestTableSelfCheck(t *testing.T) {
 			require.NotEqual(t, ScopeUnspecified, p.Scope, p.Key)
 		}
 
-		got, ok := Lookup(p.Key)
+		got, ok := lookupByLayer(p.Layer, p.Key)
 		require.True(t, ok, p.Key)
 		require.Equal(t, withoutFuncs(p), withoutFuncs(got))
 	}
@@ -210,15 +215,13 @@ func TestTableSelfCheck(t *testing.T) {
 	for _, leaf := range specLeafFields() {
 		p, ok := lookupByPath(leaf.path)
 		require.True(t, ok, leaf.path+" has no table entry")
-		require.Contains(t, []string{leaf.key, leaf.group + "_" + leaf.key}, p.Key,
-			leaf.path+" canonical key is neither the leaf nor its group prefix")
 		require.Equal(t, kindOf(leaf.typ.Elem()), p.Kind, leaf.path+" kind disagrees with its field type")
 	}
 }
 
 func TestSettersAndGettersAgree(t *testing.T) {
 	for _, p := range Params(LayerSpec) {
-		want := sampleValue(p.Kind)
+		want := sampleValueFor(p)
 
 		var s Spec
 		p.Apply(&s, want)
@@ -232,35 +235,31 @@ func TestSettersAndGettersAgree(t *testing.T) {
 func TestSessionSettersLandOnTheirOwnField(t *testing.T) {
 	for _, p := range Params(LayerSession) {
 		var s Session
-		p.ApplySession(&s, sampleValue(p.Kind))
+		p.ApplySession(&s, sampleValueFor(p))
 
 		var changed []string
-		v := reflect.ValueOf(s)
-		for i := range v.NumField() {
-			if !v.Field(i).IsZero() {
-				changed = append(changed, tagName(v.Type().Field(i).Tag.Get("yaml")))
-			}
-		}
-		require.Equal(t, []string{p.Key}, changed, p.Key+" must write exactly its own field")
+		collectSessionLeaves(reflect.ValueOf(s), "", &changed)
+		require.Equal(t, []string{strings.TrimPrefix(p.Path, "server.")}, changed,
+			p.Key+" must write exactly its own field")
 	}
 }
 
-func TestBuiltinIsTotalAndValid(t *testing.T) {
+func TestBuiltinIsTotal(t *testing.T) {
 	builtin := Builtin()
 	for _, p := range Params(LayerSpec) {
 		_, set := builtin.Field(p)
 		require.True(t, set, "built-in layer must set "+p.Key)
 	}
-	require.NoError(t, ValidateCreate(builtin))
+	require.Equal(t, Resolve(Spec{}), builtin, "built-in is the resolved empty spec")
 }
 
 func TestSparseEncoding(t *testing.T) {
 	var s Spec
-	s.Engine.Fsync = new(true)
+	s.Flush.MaxWait = new(Duration(10 * time.Millisecond))
 
 	data, err := EncodeSpec(s)
 	require.NoError(t, err)
-	require.Equal(t, `{"engine":{"fsync":true}}`, string(data))
+	require.Equal(t, `{"flush":{"max_wait":"10ms"}}`, string(data))
 
 	back, err := DecodeSpec(data)
 	require.NoError(t, err)
@@ -273,37 +272,37 @@ func TestSparseEncoding(t *testing.T) {
 
 func TestDecodeYAMLMatchesBuiltin(t *testing.T) {
 	doc := `
-engine:
-  batch_size: 256
-  max_interval: "10ms"
-  min_interval: "30us"
-  segment_size: 67108864
-  max_message_bytes: 1048576
-  segment_age: "1h"
-  encrypted: false
-  fsync: true
-  compaction: false
+storage:
+  durability: sync
+  encryption: none
+  compaction: none
+  max_segment: 67108864
+  max_segment_age: "1h"
+  max_payload: 1048576
+  max_cache: 33554432
+flush:
+  max_bytes: 1048576
+  max_wait: "10ms"
 retention:
-  age: "0s"
-  bytes: 0
+  max_age: "0s"
+  max_bytes: 0
 task:
-  default_visibility: "30s"
-  default_max_attempts: 5
+  lease: "30s"
+  max_attempts: 5
   max_in_flight: 100000
-  max_dlq: 100000
+  max_dead_letters: 100000
 `
 	s, err := DecodeSpecYAML([]byte(doc))
 	require.NoError(t, err)
 	require.Equal(t, Builtin(), s)
-	require.NoError(t, ValidateCreate(s))
 }
 
 func TestDecodeRejectsUnknownKey(t *testing.T) {
-	_, err := DecodeSpec([]byte(`{"engine":{"fsync":true,"bogus":1}}`))
+	_, err := DecodeSpec([]byte(`{"storage":{"max_segment":1,"bogus":2}}`))
 	require.ErrorIs(t, err, ErrInvalidConfig)
 	require.Contains(t, err.Error(), "bogus")
 
-	_, err = DecodeSpecYAML([]byte("engine:\n  fsync: true\n  bogus: 1\n"))
+	_, err = DecodeSpecYAML([]byte("storage:\n  max_segment: 1\n  bogus: 2\n"))
 	require.ErrorIs(t, err, ErrInvalidConfig)
 	require.Contains(t, err.Error(), "bogus")
 }
@@ -315,14 +314,14 @@ func TestDecodeRejectsOversizedPayload(t *testing.T) {
 }
 
 func TestDecodeRejectsTrailingData(t *testing.T) {
-	_, err := DecodeSpec([]byte(`{"engine":{"fsync":true}} {"engine":{"fsync":false}}`))
+	_, err := DecodeSpec([]byte(`{"flush":{"max_wait":"10ms"}} {"flush":{"max_wait":"20ms"}}`))
 	require.ErrorIs(t, err, ErrInvalidConfig)
 	require.Contains(t, err.Error(), "trailing")
 }
 
 func TestParseValueFromText(t *testing.T) {
 	for _, p := range Table {
-		text := sampleText(p.Kind)
+		text := sampleTextFor(p)
 		v, err := p.Parse(text)
 		require.NoError(t, err, p.Key)
 		require.Equal(t, p.Kind, v.Kind(), p.Key)
@@ -341,10 +340,31 @@ func TestParseValueAcceptsNanos(t *testing.T) {
 	require.Equal(t, 10*time.Millisecond, v.Duration())
 }
 
+func TestEnumValuesAreChecked(t *testing.T) {
+	p, ok := Lookup("durability")
+	require.True(t, ok)
+
+	v, err := p.Parse("sync")
+	require.NoError(t, err)
+	require.Equal(t, "sync", v.Enum())
+
+	_, err = p.Parse("eventual")
+	require.ErrorIs(t, err, ErrInvalidConfig)
+	require.Contains(t, err.Error(), "sync|async")
+
+	require.Equal(t, "sync", DurabilitySync.String())
+	require.Equal(t, "async", DurabilityAsync.String())
+	require.False(t, Durability("eventual").Valid())
+	require.Equal(t, "os", EncryptionOS.String())
+	require.False(t, Encryption("vault").Valid())
+	require.Equal(t, "keys", CompactionKeys.String())
+	require.False(t, Compaction("eventually").Valid())
+}
+
 func TestSpecYAMLRoundTrip(t *testing.T) {
 	var s Spec
-	s.Engine.MinInterval = new(Duration(30 * time.Microsecond))
-	s.Task.DefaultVisibility = new(Duration(90 * time.Second))
+	s.Storage.MaxCache = new(int64(4096))
+	s.Task.Lease = new(Duration(90 * time.Second))
 
 	data, err := yaml.Marshal(s)
 	require.NoError(t, err)
@@ -358,18 +378,19 @@ func TestBuiltinSessionLayer(t *testing.T) {
 	s := BuiltinSession()
 	require.Equal(t, "tcp://127.0.0.1:7420", s.Target)
 	require.Empty(t, s.DataDir)
-	require.Equal(t, 10, s.MaxConns)
-	require.False(t, s.TLSEnabled)
+	require.Equal(t, 10, s.MaxConnections)
+	require.False(t, s.TLS.Enabled)
+	require.Equal(t, "none", s.Auth.Method)
 }
 
 func TestMetricsSessionDefaults(t *testing.T) {
 	s := BuiltinSession()
-	require.True(t, s.MetricsEnabled)
-	require.Equal(t, time.Second, s.MetricsInterval.Duration())
-	require.Equal(t, 300, s.MetricsHistory)
-	require.Empty(t, s.MetricsListen)
-	require.False(t, s.MetricsPerQueuePrometheus)
-	require.True(t, s.MetricsHistograms)
+	require.True(t, s.Metrics.Enabled)
+	require.Equal(t, time.Second, s.Metrics.Interval.Duration())
+	require.Equal(t, 300, s.Metrics.History)
+	require.Empty(t, s.Metrics.Listen)
+	require.False(t, s.Metrics.PerQueuePrometheus)
+	require.True(t, s.Metrics.Histograms)
 }
 
 func TestLayerKindAndParamNames(t *testing.T) {
@@ -379,18 +400,29 @@ func TestLayerKindAndParamNames(t *testing.T) {
 	require.Equal(t, "unknown", LayerUnspecified.String())
 
 	require.Equal(t, "timestamp", KindTime.String())
+	require.Equal(t, "enum", KindEnum.String())
 	require.Equal(t, "unknown", KindUnknown.String())
 
-	p, ok := Lookup("batch_size")
+	p, ok := Lookup("durability")
 	require.True(t, ok)
-	require.Equal(t, "batch_size", p.String())
-	require.Equal(t, "WithBatchSize", p.OptionName)
-	require.Equal(t, "batch-size", p.FlagName)
-	require.Equal(t, "MIKYU_BATCH_SIZE", p.EnvName)
+	require.Equal(t, "durability", p.String())
+	require.Equal(t, "WithDurability", p.OptionName)
+	require.Equal(t, "durability", p.FlagName)
+	require.Equal(t, "MIKYU_DURABILITY", p.EnvName)
 
-	tls, ok := Lookup("tls_cert_file")
+	maxConn, ok := Lookup("max_connections")
 	require.True(t, ok)
-	require.Equal(t, "WithTLSCertFile", tls.OptionName)
+	require.Equal(t, "WithMaxConnections", maxConn.OptionName)
+	require.Equal(t, "max-connections", maxConn.FlagName)
+
+	tls, ok := Lookup("tls_cert")
+	require.True(t, ok)
+	require.Equal(t, "WithTLSCert", tls.OptionName)
+	require.Equal(t, "server.tls.cert", tls.Path)
+
+	ca, ok := Lookup("tls_client_ca")
+	require.True(t, ok)
+	require.Equal(t, "WithTLSClientCA", ca.OptionName)
 
 	require.Panics(t, func() { _ = sampleValue(KindBool).Time() })
 	require.Panics(t, func() { Builtin().Field(tls) })
@@ -398,36 +430,36 @@ func TestLayerKindAndParamNames(t *testing.T) {
 
 // The wire carries the spec schema number, not a protocol version.
 func TestCheckSpecVersion(t *testing.T) {
-	require.Equal(t, uint16(3), CurrentSpecVersion)
+	require.Equal(t, uint16(4), CurrentSpecVersion)
 	require.NoError(t, CheckSpecVersion(0))
 	require.NoError(t, CheckSpecVersion(CurrentSpecVersion))
 
 	err := CheckSpecVersion(CurrentSpecVersion + 1)
 	require.ErrorIs(t, err, ErrSpecTooNew)
-	require.Contains(t, err.Error(), "3")
+	require.Contains(t, err.Error(), "4")
 }
 
 // Equal is presence-aware: a field set to zero differs from a field left unset.
 func TestSpecEqual(t *testing.T) {
-	seven := 7
+	seg := int64(4096)
 	hour := Duration(time.Hour)
 	a := Spec{
-		Engine:    EngineSpec{BatchSize: &seven, SegmentAge: &hour},
-		Retention: RetentionSpec{Age: new(Duration)}, // explicitly zero
-		Task:      TaskSpec{DefaultMaxAttempts: new(uint32)},
+		Storage:   StorageSpec{MaxSegment: &seg, MaxSegmentAge: &hour},
+		Retention: RetentionSpec{MaxAge: new(Duration)}, // explicitly zero
+		Task:      TaskSpec{MaxAttempts: new(uint32)},
 	}
 	require.True(t, Equal(a, a))
 	require.True(t, Equal(Spec{}, Spec{}))
 
 	// A different value is a mismatch.
-	eight := 8
+	bigger := int64(8192)
 	b := a
-	b.Engine.BatchSize = &eight
+	b.Storage.MaxSegment = &bigger
 	require.False(t, Equal(a, b))
 
 	// Set-to-zero differs from unset, in both directions.
 	c := a
-	c.Retention.Age = nil
+	c.Retention.MaxAge = nil
 	require.False(t, Equal(a, c))
 	require.False(t, Equal(c, a))
 }
@@ -439,12 +471,15 @@ func TestValueRendersAnyKind(t *testing.T) {
 	require.Equal(t, "1m30s", sampleValue(KindDuration).String())
 	require.Equal(t, "true", sampleValue(KindBool).String())
 	require.Equal(t, "sample", sampleValue(KindString).String())
+	require.Equal(t, "sync", sampleValue(KindEnum).String())
 	require.Equal(t, "2026-01-02T03:04:05Z", sampleValue(KindTime).String())
 	require.Equal(t, "<unset>", Value{}.String())
 
 	require.Equal(t, "sample", sampleValue(KindString).Text())
+	require.Equal(t, "sync", sampleValue(KindEnum).Enum())
 	require.Panics(t, func() { _ = sampleValue(KindInt).Text() })
 	require.Panics(t, func() { _ = sampleValue(KindInt).Duration() })
+	require.Panics(t, func() { _ = sampleValue(KindInt).Enum() })
 }
 
 // UnixNano overflows outside the years 1678-2262, so a Value stores Times whole.
@@ -477,6 +512,46 @@ func withoutFuncs(p Param) Param {
 func tagName(tag string) string {
 	name, _, _ := strings.Cut(tag, ",")
 	return name
+}
+
+// collectSessionLeaves walks Session-shaped values, appending the dotted path of every non-zero leaf.
+func collectSessionLeaves(v reflect.Value, prefix string, out *[]string) {
+	typ := v.Type()
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		fv := v.Field(i)
+		path := prefix + tagName(field.Tag.Get("yaml"))
+		if fv.Kind() == reflect.Struct {
+			collectSessionLeaves(fv, path+".", out)
+			continue
+		}
+		if !fv.IsZero() {
+			*out = append(*out, path)
+		}
+	}
+}
+
+// collectSessionTypeLeaves walks a Session-shaped type, appending the dotted path of every leaf.
+func collectSessionTypeLeaves(typ reflect.Type, prefix string, out *[]string) {
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		path := prefix + tagName(field.Tag.Get("yaml"))
+		if field.Type.Kind() == reflect.Struct {
+			collectSessionTypeLeaves(field.Type, path+".", out)
+			continue
+		}
+		*out = append(*out, path)
+	}
+}
+
+// lookupByLayer resolves a key within one layer, since call and spec layers share some canonical keys.
+func lookupByLayer(layer Layer, key string) (Param, bool) {
+	for _, p := range Table {
+		if p.Layer == layer && p.Key == key {
+			return p, true
+		}
+	}
+	return Param{}, false
 }
 
 type leafField struct {
@@ -530,6 +605,8 @@ func kindOf(typ reflect.Type) Kind {
 		return KindString
 	case reflect.TypeFor[time.Time]():
 		return KindTime
+	case reflect.TypeFor[Durability](), reflect.TypeFor[Encryption](), reflect.TypeFor[Compaction]():
+		return KindEnum
 	default:
 		return KindUnknown
 	}
@@ -549,6 +626,8 @@ func sampleValue(k Kind) Value {
 		return NewBool(true)
 	case KindString:
 		return NewString("sample")
+	case KindEnum:
+		return NewEnum("sync")
 	case KindTime:
 		return NewTime(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
 	default:
@@ -570,9 +649,25 @@ func sampleText(k Kind) string {
 		return "true"
 	case KindString:
 		return "sample"
+	case KindEnum:
+		return "sync"
 	case KindTime:
 		return "2026-01-02T03:04:05Z"
 	default:
 		panic("no sample text for kind " + k.String())
 	}
+}
+
+func sampleValueFor(p Param) Value {
+	if p.Kind == KindEnum {
+		return NewEnum(p.Allowed[0])
+	}
+	return sampleValue(p.Kind)
+}
+
+func sampleTextFor(p Param) string {
+	if p.Kind == KindEnum {
+		return p.Allowed[0]
+	}
+	return sampleText(p.Kind)
 }

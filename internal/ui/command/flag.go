@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -17,8 +18,7 @@ type Global struct {
 	Help    bool
 }
 
-// SessionFlags returns the global flag set every verb accepts: one flag
-// per session parameter, plus --dir as the short spelling of data_dir.
+// SessionFlags returns the global flag set every verb accepts: one flag per session parameter, plus --dir for data_dir.
 func SessionFlags(sess *spec.Session, help *bool) *flag.FlagSet {
 	fs := NewFlagSet("mikyu")
 	for _, p := range spec.ParamsInScope(spec.LayerSession, spec.ScopeClient, spec.ScopeBoth) {
@@ -34,8 +34,7 @@ func SessionFlags(sess *spec.Session, help *bool) *flag.FlagSet {
 	return fs
 }
 
-// ParseGlobal consumes the session flags that precede a verb and returns
-// the remaining arguments.
+// ParseGlobal consumes the session flags that precede a verb and returns the remaining arguments.
 func ParseGlobal(target string, args []string) (Global, []string, error) {
 	g := Global{Session: spec.BuiltinSession()}
 	g.Session.Target = target
@@ -83,8 +82,7 @@ func leadingFlagTokens(fs *flag.FlagSet, args []string) []string {
 	return flags
 }
 
-// ParseAnywhere parses fs over args, accepting flags before or after
-// positionals and both "--flag value" and "--flag=value" forms.
+// ParseAnywhere parses fs over args, accepting flags before or after positionals in both --flag value and --flag=value forms.
 func ParseAnywhere(fs *flag.FlagSet, args []string) ([]string, error) {
 	var flags, positional []string
 	for i := 0; i < len(args); i++ {
@@ -125,8 +123,7 @@ func ParseAnywhere(fs *flag.FlagSet, args []string) ([]string, error) {
 	return positional, nil
 }
 
-// HasHelpFlag reports whether args contain a per-verb help request before
-// any "--" terminator.
+// HasHelpFlag reports whether args contain a per-verb help request before any -- terminator.
 func HasHelpFlag(args []string) bool {
 	for _, a := range args {
 		if a == "--" {
@@ -139,22 +136,19 @@ func HasHelpFlag(args []string) bool {
 	return false
 }
 
-// NewFlagSet returns a silent flag set for presentation flags that are
-// not spec parameters (--json, -y, --timeout).
+// NewFlagSet returns a silent flag set for presentation flags that are not spec parameters.
 func NewFlagSet(name string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	return fs
 }
 
-// QueueFlagSet returns a flag set over every queue-scoped parameter,
-// writing into s.
+// QueueFlagSet returns a flag set over every queue-scoped parameter, writing into s.
 func QueueFlagSet(name string, s *spec.Spec) *flag.FlagSet {
 	return queueFlagSet(name, s, spec.Params(spec.LayerSpec))
 }
 
-// QueuePatchFlagSet returns a flag set over the mutable queue parameters
-// only, which is what an update patch may contain.
+// QueuePatchFlagSet returns a flag set over the mutable queue parameters only.
 func QueuePatchFlagSet(name string, s *spec.Spec) *flag.FlagSet {
 	return queueFlagSet(name, s, spec.Updatable())
 }
@@ -183,11 +177,11 @@ func EnqueueFlagSet(name string, o *EnqueueOptions) *flag.FlagSet {
 
 	for _, p := range spec.Params(spec.LayerCall) {
 		switch p.Key {
-		case "visibility":
+		case "lease":
 			fs.Var(&valueFunc{
 				kind: p.Kind,
-				str:  func() string { return o.Visibility.String() },
-				set:  func(v spec.Value) { o.Visibility = v.Duration() },
+				str:  func() string { return o.Lease.String() },
+				set:  func(v spec.Value) { o.Lease = v.Duration() },
 			}, p.FlagName, p.Doc)
 		case "max_attempts":
 			fs.Var(&valueFunc{
@@ -206,8 +200,7 @@ func EnqueueFlagSet(name string, o *EnqueueOptions) *flag.FlagSet {
 	return fs
 }
 
-// NackFlagSet returns the per-call flag set for nack, writing into
-// retryAfter and setting explicit when --retry-after is given.
+// NackFlagSet returns the per-call flag set for nack, writing into retryAfter and setting explicit for --retry-after.
 func NackFlagSet(name string, retryAfter *time.Duration, explicit *bool) *flag.FlagSet {
 	fs := NewFlagSet(name)
 	for _, p := range spec.Params(spec.LayerCall) {
@@ -236,41 +229,55 @@ func (v *sessionValue) String() string {
 	if v == nil || v.session == nil {
 		return ""
 	}
-	switch v.param.Key {
-	case "target":
-		return v.session.Target
-	case "data_dir":
-		return v.session.DataDir
-	case "tls_enabled":
-		return strconv.FormatBool(v.session.TLSEnabled)
-	case "tls_cert_file":
-		return v.session.TLSCertFile
-	case "tls_key_file":
-		return v.session.TLSKeyFile
-	case "tls_client_ca_file":
-		return v.session.TLSClientCaFile
-	case "max_conns":
-		return strconv.Itoa(v.session.MaxConns)
-	case "metrics_enabled":
-		return strconv.FormatBool(v.session.MetricsEnabled)
-	case "metrics_interval":
-		return v.session.MetricsInterval.Duration().String()
-	case "metrics_history":
-		return strconv.Itoa(v.session.MetricsHistory)
-	case "metrics_listen":
-		return v.session.MetricsListen
-	case "metrics_per_queue_prometheus":
-		return strconv.FormatBool(v.session.MetricsPerQueuePrometheus)
-	case "metrics_histograms":
-		return strconv.FormatBool(v.session.MetricsHistograms)
-	case "auth_method":
-		return v.session.AuthMethod
-	case "auth_token_file":
-		return v.session.AuthTokenFile
-	case "auth_token":
-		return "<redacted>"
+	field, ok := sessionFieldByPath(reflect.ValueOf(*v.session), strings.TrimPrefix(v.param.Path, "server."))
+	if !ok {
+		return ""
 	}
-	return ""
+	switch value := field.(type) {
+	case string:
+		if v.param.Key == "auth_token" {
+			return "<redacted>"
+		}
+		return value
+	case bool:
+		return strconv.FormatBool(value)
+	case int:
+		return strconv.Itoa(value)
+	case spec.Duration:
+		return value.Duration().String()
+	default:
+		return ""
+	}
+}
+
+// sessionFieldByPath walks a Session value along a dotted yaml path and returns the leaf.
+func sessionFieldByPath(v reflect.Value, path string) (any, bool) {
+	name, rest, more := strings.Cut(path, ".")
+	typ := v.Type()
+	for i := range typ.NumField() {
+		field := typ.Field(i)
+		yamlKey, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
+		if yamlKey != name {
+			continue
+		}
+		fv := v.Field(i)
+		if !more {
+			switch fv.Kind() {
+			case reflect.String:
+				return fv.String(), true
+			case reflect.Bool:
+				return fv.Bool(), true
+			case reflect.Int, reflect.Int64:
+				if fv.Type() == reflect.TypeFor[spec.Duration]() {
+					return spec.Duration(fv.Int()), true
+				}
+				return int(fv.Int()), true
+			}
+			return nil, false
+		}
+		return sessionFieldByPath(fv, rest)
+	}
+	return nil, false
 }
 
 func (v *sessionValue) Set(text string) error {

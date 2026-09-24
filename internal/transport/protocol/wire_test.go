@@ -8,14 +8,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// sampleTask is a delivered task (non-zero Visibility requires a DeliveryID).
+// sampleTask is a delivered task (non-zero Lease requires a DeliveryID).
 func sampleTask() Task {
 	return Task{
 		ID:          "task-1",
 		Payload:     []byte("payload"),
 		Attempts:    1,
 		MaxAttempts: 5,
-		Visibility:  time.Unix(123, 0),
+		Lease:  time.Unix(123, 0),
 		ScheduledAt: time.Unix(100, 0),
 		DeliveryID:  "delivery-1",
 		Offset:      42,

@@ -8,25 +8,22 @@ import (
 	"github.com/dmunish/mikyu/internal/spec"
 )
 
-// SpecOption returns the single option carrying an already-built spec,
-// which is how the front-ends hand table-built flag values to the SDK.
+// SpecOption returns the single option carrying an already-built spec to the SDK.
 func SpecOption(s spec.Spec) mikyu.QueueOption {
 	return func(dst *spec.Spec) { *dst = s }
 }
 
-// OpenClient returns an embedded client over the session's data
-// directory, or a remote client for the session's target when no
-// directory is set.
+// OpenClient returns an embedded client for the session's data dir, or a remote client for its target.
 func OpenClient(sess spec.Session) (mikyu.Client, error) {
 	opts := []mikyu.ClientOption{
-		mikyu.WithMaxConns(sess.MaxConns),
-		mikyu.WithTLSEnabled(sess.TLSEnabled),
-		mikyu.WithTLSCertFile(sess.TLSCertFile),
-		mikyu.WithTLSKeyFile(sess.TLSKeyFile),
-		mikyu.WithMetricsEnabled(sess.MetricsEnabled),
-		mikyu.WithMetricsInterval(sess.MetricsInterval.Duration()),
-		mikyu.WithMetricsHistory(sess.MetricsHistory),
-		mikyu.WithMetricsHistograms(sess.MetricsHistograms),
+		mikyu.WithMaxConnections(sess.MaxConnections),
+		mikyu.WithTLSEnabled(sess.TLS.Enabled),
+		mikyu.WithTLSCert(sess.TLS.Cert),
+		mikyu.WithTLSKey(sess.TLS.Key),
+		mikyu.WithMetricsEnabled(sess.Metrics.Enabled),
+		mikyu.WithMetricsInterval(sess.Metrics.Interval.Duration()),
+		mikyu.WithMetricsHistory(sess.Metrics.History),
+		mikyu.WithMetricsHistograms(sess.Metrics.Histograms),
 	}
 
 	if sess.DataDir != "" {
@@ -40,28 +37,28 @@ func OpenClient(sess spec.Session) (mikyu.Client, error) {
 	if err := spec.ApplyEnvSession(&sess, os.Getenv); err != nil {
 		return nil, err
 	}
-	if sess.AuthToken == "" && sess.AuthTokenFile == "" {
+	if sess.Auth.Token == "" && sess.Auth.TokenFile == "" {
 		if tok, ok := LoadToken(sess.Target); ok {
-			sess.AuthToken = tok
+			sess.Auth.Token = tok
 		}
 	}
 
 	opts = append(opts,
-		mikyu.WithAuthMethod(sess.AuthMethod),
-		mikyu.WithAuthToken(sess.AuthToken),
-		mikyu.WithAuthTokenFile(sess.AuthTokenFile),
-		mikyu.WithTLSClientCaFile(sess.TLSClientCaFile),
+		mikyu.WithAuthMethod(sess.Auth.Method),
+		mikyu.WithAuthToken(sess.Auth.Token),
+		mikyu.WithAuthTokenFile(sess.Auth.TokenFile),
+		mikyu.WithTLSClientCA(sess.TLS.ClientCA),
 	)
 
 	if err := daemon.EnsureDaemonRunning(daemon.SpawnOptions{
-		Target:          sess.Target,
-		DataDir:         sess.DataDir,
-		TLSEnabled:      sess.TLSEnabled,
-		TLSCertFile:     sess.TLSCertFile,
-		TLSKeyFile:      sess.TLSKeyFile,
-		AuthMethod:      sess.AuthMethod,
-		AuthTokenFile:   sess.AuthTokenFile,
-		TLSClientCaFile: sess.TLSClientCaFile,
+		Target:        sess.Target,
+		DataDir:       sess.DataDir,
+		TLSEnabled:    sess.TLS.Enabled,
+		TLSCert:       sess.TLS.Cert,
+		TLSKey:        sess.TLS.Key,
+		AuthMethod:    sess.Auth.Method,
+		AuthTokenFile: sess.Auth.TokenFile,
+		TLSClientCA:   sess.TLS.ClientCA,
 	}); err != nil {
 		return nil, err
 	}

@@ -2,16 +2,26 @@ package logqueue_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
+	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestLogQueue_TruncateFloor_ConsumerGroups(t *testing.T) {
 	dir := t.TempDir()
-	mgr, err := engine.OpenManager(dir, engine.Config{SegmentSize: 256}, nil)
+	mgr, err := engine.OpenManager(dir, engine.Config{
+		Durability:    spec.DurabilitySync,
+		MaxSegment:    256,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    64,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  10 * time.Millisecond,
+	}, nil)
 	require.NoError(t, err)
 	defer mgr.Close()
 
@@ -56,7 +66,15 @@ func TestLogQueue_TruncateFloor_ConsumerGroups(t *testing.T) {
 
 func TestLogQueue_TruncateExecution(t *testing.T) {
 	dir := t.TempDir()
-	mgr, err := engine.OpenManager(dir, engine.Config{SegmentSize: 256}, nil)
+	mgr, err := engine.OpenManager(dir, engine.Config{
+		Durability:    spec.DurabilitySync,
+		MaxSegment:    256,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    64,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  10 * time.Millisecond,
+	}, nil)
 	require.NoError(t, err)
 	defer mgr.Close()
 

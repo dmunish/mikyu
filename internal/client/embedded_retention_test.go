@@ -17,7 +17,7 @@ func TestRetentionHonorsSingleDriver(t *testing.T) {
 	defer func() { _ = client.Close() }()
 	ctx := t.Context()
 	const name = "logs"
-	mustCreateLog(t, client, name, WithSegmentSize(128), WithMaxMessageBytes(128))
+	mustCreateLog(t, client, name, WithMaxSegment(256), WithMaxPayload(64))
 storage, _, err := client.node.Manager().Get(name)
 	require.NoError(t, err)
 	for range 24 {

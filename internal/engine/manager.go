@@ -21,11 +21,10 @@ type Manager struct {
 
 // OpenManager creates a Manager and loads existing queues.
 func OpenManager(dir string, cfg Config, perQueue map[string]Config, regs ...*metrics.Registry) (*Manager, error) {
-	cfg = cfg.withDefaults()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	if cfg.Encrypted {
+	if cfg.EncryptedStorage() {
 		_ = EnsureDirectoryEncrypted(dir)
 	}
 	root, err := os.OpenRoot(dir)

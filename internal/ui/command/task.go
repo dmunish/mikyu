@@ -11,7 +11,7 @@ import (
 
 // EnqueueOptions carries the per-call values for enqueue.
 type EnqueueOptions struct {
-	Visibility  time.Duration
+	Lease  time.Duration
 	MaxAttempts uint32
 	ScheduledAt time.Time
 	Key         []byte
@@ -29,11 +29,11 @@ func Enqueue(ctx context.Context, client mikyu.Client, queue, input string, opts
 	}
 
 	var taskOpts []mikyu.EnqueueOption
-	if opts.Visibility > 0 {
-		taskOpts = append(taskOpts, mikyu.WithVisibility(opts.Visibility))
+	if opts.Lease > 0 {
+		taskOpts = append(taskOpts, mikyu.WithTaskLease(opts.Lease))
 	}
 	if opts.MaxAttempts > 0 {
-		taskOpts = append(taskOpts, mikyu.WithMaxAttempts(opts.MaxAttempts))
+		taskOpts = append(taskOpts, mikyu.WithTaskMaxAttempts(opts.MaxAttempts))
 	}
 	if !opts.ScheduledAt.IsZero() {
 		taskOpts = append(taskOpts, mikyu.WithScheduledAt(opts.ScheduledAt))
@@ -49,8 +49,7 @@ func Enqueue(ctx context.Context, client mikyu.Client, queue, input string, opts
 	return task, len(payload), nil
 }
 
-// Dequeue waits up to timeout for a due task. timeout < 0 waits
-// indefinitely; timeout == 0 makes a short non-blocking attempt.
+// Dequeue waits up to timeout for a due task; timeout < 0 waits indefinitely, 0 is a single non-blocking attempt.
 func Dequeue(ctx context.Context, client mikyu.Client, queue string, timeout time.Duration) (mikyu.Task, error) {
 	tq, err := client.TaskQueue(queue)
 	if err != nil {
@@ -85,8 +84,7 @@ func TaskAck(ctx context.Context, client mikyu.Client, queue string, ref mikyu.T
 	return tq.Ack(ctx, ref)
 }
 
-// TaskNack returns a task for redelivery, with either the server-computed
-// backoff or an explicit retry delay.
+// TaskNack returns a task for redelivery with either the server-computed backoff or an explicit retry delay.
 func TaskNack(ctx context.Context, client mikyu.Client, queue string, ref mikyu.TaskRef, retryAfter time.Duration, explicitRetry bool) error {
 	tq, err := client.TaskQueue(queue)
 	if err != nil {
@@ -134,14 +132,12 @@ func TaskArchive(ctx context.Context, client mikyu.Client, queue string, ref mik
 	return tq.Archive(ctx, ref)
 }
 
-// TaskRecord is the JSON shape a task takes on the CLI, and the shape the
-// task verbs accept back: `dequeue --json` feeds straight into ack, nack,
-// extend, and dlq-ack, carrying the delivery token for the strict check.
+// TaskRecord is the JSON shape a task takes on the CLI, accepted back by the task verbs for the strict lease check.
 type TaskRecord struct {
 	ID          string    `json:"id"`
 	Attempts    uint32    `json:"attempts"`
 	MaxAttempts uint32    `json:"max_attempts"`
-	Visibility  time.Time `json:"visibility"`
+	Lease  time.Time `json:"lease"`
 	ScheduledAt time.Time `json:"scheduled_at"`
 	DeliveryID  string    `json:"delivery_id"`
 	Offset      uint64    `json:"offset"`
@@ -156,7 +152,7 @@ func Record(t mikyu.Task) TaskRecord {
 		ID:          t.ID,
 		Attempts:    t.Attempts,
 		MaxAttempts: t.MaxAttempts,
-		Visibility:  t.Visibility,
+		Lease:  t.Lease,
 		ScheduledAt: t.ScheduledAt,
 		DeliveryID:  t.DeliveryID,
 		Offset:      t.Offset,
@@ -166,8 +162,7 @@ func Record(t mikyu.Task) TaskRecord {
 	}
 }
 
-// ParseTaskRef accepts a JSON task record or a bare task ID, returning
-// the ref and the task ID for display.
+// ParseTaskRef accepts a JSON task record or a bare task ID, returning the ref and the task ID for display.
 func ParseTaskRef(arg string) (mikyu.TaskRef, string) {
 	var rec TaskRecord
 	if err := json.Unmarshal([]byte(arg), &rec); err == nil && rec.ID != "" {
@@ -176,7 +171,7 @@ func ParseTaskRef(arg string) (mikyu.TaskRef, string) {
 			Payload:     []byte(rec.Payload),
 			Attempts:    rec.Attempts,
 			MaxAttempts: rec.MaxAttempts,
-			Visibility:  rec.Visibility,
+			Lease:  rec.Lease,
 			ScheduledAt: rec.ScheduledAt,
 			DeliveryID:  rec.DeliveryID,
 			Offset:      rec.Offset,

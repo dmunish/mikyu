@@ -11,6 +11,7 @@ import (
 
 	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/enginetest"
+	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,12 +20,13 @@ func newTestTaskQueue(t *testing.T) (*queue, *engine.Manager, engine.Storage) {
 	t.Helper()
 	dir := t.TempDir()
 	mgr, err := engine.OpenManager(dir, engine.Config{
-		BatchSize:       8,
-		MaxInterval:     time.Millisecond,
-		MinInterval:     0,
-		SegmentSize:     16 * 1024,
-		MaxMessageBytes: 2 * 1024 * 1024,
-		Fsync:           false,
+		Durability:    spec.DurabilityAsync,
+		MaxSegment:    16 * 1024,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    2 * 1024 * 1024,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
 	}, nil)
 	require.NoError(t, err)
 	storage, err := mgr.Create("tasks")
@@ -70,13 +72,13 @@ func TestTaskQueueBasicLifecycle(t *testing.T) {
 	q, _, _ := newTestTaskQueue(t)
 	ctx := t.Context()
 
-	task, err := q.Enqueue(ctx, []byte("hello"), WithMaxAttempts(3), WithVisibility(time.Second))
+	task, err := q.Enqueue(ctx, []byte("hello"), WithMaxAttempts(3), WithLease(time.Second))
 	require.NoError(t, err)
 	assert.NotEmpty(t, task.ID)
 	assert.Equal(t, uint32(0), task.Attempts)
 	assert.Equal(t, uint32(3), task.MaxAttempts)
 	assert.False(t, task.ScheduledAt.IsZero())
-	assert.Empty(t, task.Visibility)
+	assert.Empty(t, task.Lease)
 
 	got, err := q.Dequeue(ctx)
 	require.NoError(t, err)
@@ -84,7 +86,7 @@ func TestTaskQueueBasicLifecycle(t *testing.T) {
 	assert.Equal(t, []byte("hello"), got.Payload)
 	assert.Equal(t, uint32(1), got.Attempts)
 	assert.NotEmpty(t, got.DeliveryID)
-	assert.WithinDuration(t, time.Now().Add(time.Second), got.Visibility, 250*time.Millisecond)
+	assert.WithinDuration(t, time.Now().Add(time.Second), got.Lease, 250*time.Millisecond)
 
 	require.NoError(t, q.Ack(ctx, got))
 	_, err = dequeueWithTimeout(t, q, 50*time.Millisecond)
@@ -109,12 +111,12 @@ func TestTaskQueueScheduleAndContextCancellation(t *testing.T) {
 	assert.Equal(t, "future", string(got.Payload))
 }
 
-func TestTaskQueueVisibilityAndStaleLeaseProtection(t *testing.T) {
+func TestTaskQueueLeaseAndStaleLeaseProtection(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		q := newMemTaskQueue(t, "tasks")
 		ctx := t.Context()
 
-		original, err := q.Enqueue(ctx, []byte("lease"), WithVisibility(40*time.Millisecond), WithMaxAttempts(3))
+		original, err := q.Enqueue(ctx, []byte("lease"), WithLease(40*time.Millisecond), WithMaxAttempts(3))
 		require.NoError(t, err)
 		first, err := q.Dequeue(ctx)
 		require.NoError(t, err)
@@ -136,7 +138,7 @@ func TestTaskQueueFailRetryAndDeadLetter(t *testing.T) {
 	q, _, _ := newTestTaskQueue(t)
 	ctx := t.Context()
 
-	_, err := q.Enqueue(ctx, []byte("retry"), WithMaxAttempts(2), WithVisibility(time.Second))
+	_, err := q.Enqueue(ctx, []byte("retry"), WithMaxAttempts(2), WithLease(time.Second))
 	require.NoError(t, err)
 	first, err := q.Dequeue(ctx)
 	require.NoError(t, err)
@@ -156,13 +158,13 @@ func TestTaskQueueDeliveryIDAndLeaseExtension(t *testing.T) {
 		q := newMemTaskQueue(t, "tasks")
 		ctx := t.Context()
 
-		_, err := q.Enqueue(ctx, []byte("long-job"), WithVisibility(40*time.Millisecond), WithMaxAttempts(3))
+		_, err := q.Enqueue(ctx, []byte("long-job"), WithLease(40*time.Millisecond), WithMaxAttempts(3))
 		require.NoError(t, err)
 		first, err := q.Dequeue(ctx)
 		require.NoError(t, err)
 		assert.NotEmpty(t, first.DeliveryID)
 
-		before := first.Visibility
+		before := first.Lease
 		require.NoError(t, q.Extend(ctx, first, 250*time.Millisecond))
 		secondView := first
 		q.mu.Lock()
@@ -173,13 +175,13 @@ func TestTaskQueueDeliveryIDAndLeaseExtension(t *testing.T) {
 
 		assert.Equal(t, first.DeliveryID, secondView.DeliveryID)
 		assert.Equal(t, first.Attempts, secondView.Attempts)
-		assert.True(t, secondView.Visibility.After(before))
+		assert.True(t, secondView.Lease.After(before))
 
 		stale := first
 		stale.DeliveryID = "stale-delivery"
 		assert.ErrorIs(t, q.Extend(ctx, stale, time.Second), ErrTaskStale)
 
-		deadline := secondView.Visibility
+		deadline := secondView.Lease
 		synctest.Sleep(time.Until(deadline) + 10*time.Millisecond)
 		redelivered, err := q.Dequeue(ctx)
 		require.NoError(t, err)
@@ -195,7 +197,7 @@ func TestTaskQueueExpiredLeaseCannotBeAcknowledgedOrExtended(t *testing.T) {
 		q := newMemTaskQueue(t, "tasks")
 		ctx := t.Context()
 
-		_, err := q.Enqueue(ctx, []byte("expires-late"), WithMaxAttempts(3), WithVisibility(20*time.Millisecond))
+		_, err := q.Enqueue(ctx, []byte("expires-late"), WithMaxAttempts(3), WithLease(20*time.Millisecond))
 		require.NoError(t, err)
 		leased, err := q.Dequeue(ctx)
 		require.NoError(t, err)
@@ -211,7 +213,7 @@ func TestTaskQueueFinalLeaseExpiryDeadLetters(t *testing.T) {
 		q := newMemTaskQueue(t, "tasks")
 		ctx := t.Context()
 
-		_, err := q.Enqueue(ctx, []byte("expires"), WithMaxAttempts(1), WithVisibility(20*time.Millisecond))
+		_, err := q.Enqueue(ctx, []byte("expires"), WithMaxAttempts(1), WithLease(20*time.Millisecond))
 		require.NoError(t, err)
 		leased, err := q.Dequeue(ctx)
 		require.NoError(t, err)
@@ -232,13 +234,21 @@ func TestTaskQueueFinalLeaseExpiryDeadLetters(t *testing.T) {
 
 func TestTaskQueueCheckpointRecovery(t *testing.T) {
 	dir := t.TempDir()
-	mgr, err := engine.OpenManager(dir, engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 256, MaxMessageBytes: 1 << 20}, nil)
+	mgr, err := engine.OpenManager(dir, engine.Config{
+		Durability:    spec.DurabilitySync,
+		MaxSegment:    256,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    1 << 20,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
+	}, nil)
 	require.NoError(t, err)
 	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
 	q := mustQueue(t, "tasks", storage)
 
-	inflightSource, err := q.Enqueue(t.Context(), []byte("inflight"), WithVisibility(50*time.Millisecond))
+	inflightSource, err := q.Enqueue(t.Context(), []byte("inflight"), WithLease(50*time.Millisecond))
 	require.NoError(t, err)
 	pending, err := q.Enqueue(t.Context(), []byte("pending"))
 	require.NoError(t, err)
@@ -262,7 +272,15 @@ func TestTaskQueueCheckpointRecovery(t *testing.T) {
 	require.NoError(t, q.Close())
 	require.NoError(t, mgr.Close())
 
-	mgr2, err := engine.OpenManager(dir, engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 256, MaxMessageBytes: 1 << 20}, nil)
+	mgr2, err := engine.OpenManager(dir, engine.Config{
+		Durability:    spec.DurabilityAsync,
+		MaxSegment:    256,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    1 << 20,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
+	}, nil)
 	require.NoError(t, err)
 	defer mgr2.Close()
 	storage2, err := mgr2.Get("tasks")
@@ -284,7 +302,15 @@ func TestTaskQueueCheckpointRecovery(t *testing.T) {
 
 func TestTaskQueueCheckpointPreservesActiveDeliveryLease(t *testing.T) {
 	dir := t.TempDir()
-	cfg := engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 256, MaxMessageBytes: 1 << 20}
+	cfg := engine.Config{
+		Durability:    spec.DurabilityAsync,
+		MaxSegment:    256,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    1 << 20,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
+	}
 	mgr, err := engine.OpenManager(dir, cfg, nil)
 	require.NoError(t, err)
 	storage, err := mgr.Create("tasks")
@@ -293,7 +319,7 @@ func TestTaskQueueCheckpointPreservesActiveDeliveryLease(t *testing.T) {
 
 	// A generous lease keeps the test deterministic: what is under test is
 	// lease survival across restart, not expiry under package-load latency.
-	_, err = q.Enqueue(t.Context(), []byte("lease"), WithMaxAttempts(3), WithVisibility(30*time.Second))
+	_, err = q.Enqueue(t.Context(), []byte("lease"), WithMaxAttempts(3), WithLease(30*time.Second))
 	require.NoError(t, err)
 	leased, err := q.Dequeue(t.Context())
 	require.NoError(t, err)
@@ -371,7 +397,7 @@ func TestTaskQueueConcurrentConsumersNoDuplicateDeliveryPerLease(t *testing.T) {
 	ctx := t.Context()
 	const total = 200
 	for i := range total {
-		_, err := q.Enqueue(ctx, fmt.Appendf(nil, "task-%d", i), WithVisibility(2*time.Second))
+		_, err := q.Enqueue(ctx, fmt.Appendf(nil, "task-%d", i), WithLease(2*time.Second))
 		require.NoError(t, err)
 	}
 
@@ -447,7 +473,15 @@ func TestTaskQueueAppendAndConsumeUnderConcurrentLoad(t *testing.T) {
 
 func TestTaskQueueCorruptLatestCheckpointFallsBackToPriorCheckpoint(t *testing.T) {
 	dir := t.TempDir()
-	cfg := engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 1024, MaxMessageBytes: 1 << 20}
+	cfg := engine.Config{
+		Durability:    spec.DurabilityAsync,
+		MaxSegment:    1024,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    1 << 20,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
+	}
 	mgr, err := engine.OpenManager(dir, cfg, nil)
 	require.NoError(t, err)
 	storage, err := mgr.Create("tasks")
@@ -480,7 +514,15 @@ func TestTaskQueueCorruptLatestCheckpointFallsBackToPriorCheckpoint(t *testing.T
 
 func TestTaskQueueIncompleteCheckpointIsIgnored(t *testing.T) {
 	dir := t.TempDir()
-	cfg := engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 1024, MaxMessageBytes: 1 << 20}
+	cfg := engine.Config{
+		Durability:    spec.DurabilityAsync,
+		MaxSegment:    1024,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    1 << 20,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
+	}
 	mgr, err := engine.OpenManager(dir, cfg, nil)
 	require.NoError(t, err)
 	storage, err := mgr.Create("tasks")
@@ -519,7 +561,7 @@ func TestTaskQueueLeaseChurnUnderConcurrency(t *testing.T) {
 	ctx := t.Context()
 	const total = 300
 	for i := range total {
-		_, err := q.Enqueue(ctx, fmt.Appendf(nil, "job-%d", i), WithMaxAttempts(20), WithVisibility(time.Second))
+		_, err := q.Enqueue(ctx, fmt.Appendf(nil, "job-%d", i), WithMaxAttempts(20), WithLease(time.Second))
 		require.NoError(t, err)
 	}
 
@@ -571,7 +613,15 @@ func TestTaskQueueLeaseChurnUnderConcurrency(t *testing.T) {
 
 func TestTaskQueueLargeCheckpointChunksRecover(t *testing.T) {
 	dir := t.TempDir()
-	cfg := engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 256 * 1024, MaxMessageBytes: 512 * 1024}
+	cfg := engine.Config{
+		Durability:    spec.DurabilityAsync,
+		MaxSegment:    256 * 1024,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    512 * 1024,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
+	}
 	mgr, err := engine.OpenManager(dir, cfg, nil)
 	require.NoError(t, err)
 	storage, err := mgr.Create("tasks")
@@ -605,7 +655,15 @@ func TestTaskQueueLargeCheckpointChunksRecover(t *testing.T) {
 
 func TestTaskQueueDeadLetterPersistsAndCanBeAcked(t *testing.T) {
 	dir := t.TempDir()
-	mgr, err := engine.OpenManager(dir, engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 256, MaxMessageBytes: 1 << 20}, nil)
+	mgr, err := engine.OpenManager(dir, engine.Config{
+		Durability:    spec.DurabilitySync,
+		MaxSegment:    256,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    1 << 20,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
+	}, nil)
 	require.NoError(t, err)
 	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
@@ -631,7 +689,15 @@ func TestTaskQueueDeadLetterPersistsAndCanBeAcked(t *testing.T) {
 	require.NoError(t, q.Close())
 	require.NoError(t, mgr.Close())
 
-	mgr2, err := engine.OpenManager(dir, engine.Config{BatchSize: 8, MaxInterval: time.Millisecond, SegmentSize: 256, MaxMessageBytes: 1 << 20}, nil)
+	mgr2, err := engine.OpenManager(dir, engine.Config{
+		Durability:    spec.DurabilityAsync,
+		MaxSegment:    256,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    1 << 20,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
+	}, nil)
 	require.NoError(t, err)
 	defer mgr2.Close()
 	storage2, err := mgr2.Get("tasks")

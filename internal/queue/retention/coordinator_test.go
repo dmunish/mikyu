@@ -8,6 +8,7 @@ import (
 
 	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/enginetest"
+	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +26,15 @@ func (d floorDriver) TruncateFloor(context.Context) (uint64, bool, error) {
 // with no policy set, ReconcileQueue deletes nothing.
 func TestCoordinatorDriverFloorsCapRequests(t *testing.T) {
 	dir := t.TempDir()
-	mgr, err := engine.OpenManager(dir, engine.Config{SegmentSize: 128}, nil)
+	mgr, err := engine.OpenManager(dir, engine.Config{
+		Durability:    spec.DurabilitySync,
+		MaxSegment:    128,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    64,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  10 * time.Millisecond,
+	}, nil)
 	require.NoError(t, err)
 	defer mgr.Close()
 	storage, err := mgr.Create("coordinated")

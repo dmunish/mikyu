@@ -52,8 +52,6 @@ var _ Storage = (*Queue)(nil)
 // creation, opening, and removal happen through os.Root handles. An optional
 // instrumentation scope records queue operations; without one they are no-ops.
 func openQueue(parentDir, name string, cfg Config, store *OffsetStore, scopes ...*metrics.Scope) (*Queue, error) {
-	cfg = cfg.withDefaults()
-
 	parent, err := os.OpenRoot(parentDir)
 	if err != nil {
 		return nil, err
@@ -65,14 +63,14 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore, scopes ..
 	}
 
 	dir := filepath.Join(parentDir, name)
-	if cfg.Encrypted {
+	if cfg.EncryptedStorage() {
 		if err := EnsureDirectoryEncrypted(dir); err != nil {
 			return nil, fmt.Errorf("failed to enable storage encryption for queue %q: %w", name, err)
 		}
 	}
 
-	// Clamp initial pre-allocation size to SegmentSize
-	initialPrealloc := min(int64(minSegmentPrealloc), cfg.SegmentSize)
+	// Clamp initial pre-allocation size to the segment cap
+	initialPrealloc := min(int64(minSegmentPrealloc), cfg.MaxSegment)
 
 	scope := scopeOf(scopes)
 	q := &Queue{
@@ -80,7 +78,7 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore, scopes ..
 		dir:               dir,
 		cfg:               cfg,
 		offsets:           store,
-		cache:             newRingCache(defaultRingCacheCapacity),
+		cache:             newRingCache(cfg.MaxCache),
 		nextPreallocBytes: initialPrealloc,
 		notify:            make(chan struct{}),
 		m:                 newQueueMetrics(scope),
@@ -89,7 +87,7 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore, scopes ..
 	if err := q.loadSegments(); err != nil {
 		return nil, err
 	}
-	if cfg.Compaction {
+	if cfg.KeyedCompaction() {
 		if err := q.buildKeyIndex(); err != nil {
 			return nil, err
 		}
@@ -185,7 +183,7 @@ func (q *Queue) loadSegments() error {
 	if len(q.segments) > 0 {
 		q.minOffset = q.segments[0].baseOff
 	}
-	q.w = newWAL(q.active.logFile, q.cfg, int64(q.nextOffset), q.scope)
+	q.w = newWAL(q.active.logFile, q.cfg, q.nextOffset, q.scope)
 	q.w.start()
 	return nil
 }
@@ -213,8 +211,8 @@ func (q *Queue) roll() error {
 	if q.active != nil {
 		fillDuration := time.Since(q.active.createdAt)
 
-		maxCap := min(q.cfg.SegmentSize, maxSegmentPrealloc)
-		minCap := min(int64(minSegmentPrealloc), q.cfg.SegmentSize)
+		maxCap := min(q.cfg.MaxSegment, maxSegmentPrealloc)
+		minCap := min(int64(minSegmentPrealloc), q.cfg.MaxSegment)
 
 		if fillDuration < fastFillThreshold {
 			q.nextPreallocBytes *= 2
@@ -255,13 +253,13 @@ func (q *Queue) roll() error {
 		return err
 	}
 	q.m.segmentRolls.Inc()
-	q.w = newWAL(seg.logFile, q.cfg, int64(q.nextOffset), q.scope)
+	q.w = newWAL(seg.logFile, q.cfg, q.nextOffset, q.scope)
 	q.w.start()
 	return nil
 }
 
 func (q *Queue) MaxAppendPayloadBytes() int64 {
-	maxPayload := min(q.cfg.MaxMessageBytes, q.cfg.SegmentSize-int64(minRecordSize))
+	maxPayload := min(q.cfg.MaxPayload, q.cfg.MaxSegment-int64(minRecordSize))
 	if maxPayload < 0 {
 		return 0
 	}
@@ -299,21 +297,23 @@ func (q *Queue) ApplyConfig(cfg Config) {
 	if q.closed {
 		return
 	}
-	if cfg.BatchSize > 0 {
-		q.cfg.BatchSize = cfg.BatchSize
+	if cfg.MaxSegmentAge > 0 {
+		q.cfg.MaxSegmentAge = cfg.MaxSegmentAge
 	}
-	if cfg.MaxInterval > 0 {
-		q.cfg.MaxInterval = cfg.MaxInterval
+	if cfg.MaxCache > 0 {
+		q.cfg.MaxCache = cfg.MaxCache
+		q.cache.SetMaxBytes(cfg.MaxCache)
 	}
-	if cfg.MinInterval < 0 {
-		q.cfg.MinInterval = 0
-	} else if cfg.MinInterval > 0 {
-		q.cfg.MinInterval = cfg.MinInterval
+	if cfg.MaxFlushBytes > 0 {
+		q.cfg.MaxFlushBytes = cfg.MaxFlushBytes
 	}
-	if cfg.SegmentAge > 0 {
-		q.cfg.SegmentAge = cfg.SegmentAge
+	if cfg.MaxFlushWait > 0 {
+		q.cfg.MaxFlushWait = cfg.MaxFlushWait
+	}
+	if cfg.FlushLinger > 0 {
+		q.cfg.FlushLinger = cfg.FlushLinger
 	}
 	if q.w != nil {
-		q.w.UpdateConfig(q.cfg.BatchSize, q.cfg.MaxInterval, q.cfg.MinInterval)
+		q.w.UpdateConfig(q.cfg.MaxFlushBytes, q.cfg.MaxFlushWait, q.cfg.FlushLinger)
 	}
 }

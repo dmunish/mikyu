@@ -106,8 +106,11 @@ type Spec = spec.Spec
 // SpecVersion is the spec schema number this build speaks over the wire.
 const SpecVersion = spec.CurrentSpecVersion
 
-// EngineSpec covers the log-segment writer parameters of a Spec.
-type EngineSpec = spec.EngineSpec
+// StorageSpec shapes the segment files and their protection.
+type StorageSpec = spec.StorageSpec
+
+// FlushSpec bounds the WAL write batch.
+type FlushSpec = spec.FlushSpec
 
 // RetentionSpec caps how much history may be deleted.
 type RetentionSpec = spec.RetentionSpec
@@ -117,6 +120,32 @@ type TaskSpec = spec.TaskSpec
 
 // Duration is a time span that serializes as a Go duration string such as "10ms".
 type Duration = spec.Duration
+
+// Durability selects the append acknowledgement policy.
+type Durability = spec.Durability
+
+// Encryption selects at-rest protection for queue files.
+type Encryption = spec.Encryption
+
+// Compaction selects how closed segments shed superseded records.
+type Compaction = spec.Compaction
+
+const (
+	// DurabilitySync fsyncs every batch before the append offset returns.
+	DurabilitySync = spec.DurabilitySync
+	// DurabilityAsync flushes in the background without blocking the producer.
+	DurabilityAsync = spec.DurabilityAsync
+
+	// EncryptionNone stores queue files unencrypted.
+	EncryptionNone = spec.EncryptionNone
+	// EncryptionOS applies the OS directory encryption at rest.
+	EncryptionOS = spec.EncryptionOS
+
+	// CompactionNone keeps every record in every segment.
+	CompactionNone = spec.CompactionNone
+	// CompactionKeys drops superseded keyed records when a segment closes.
+	CompactionKeys = spec.CompactionKeys
+)
 
 // Record is one record read from a log queue.
 type Record = engine.Record
@@ -130,7 +159,7 @@ type AppendOption = logqueue.AppendOption
 // Group tracks consumer offsets for a log queue.
 type Group = logqueue.Group
 
-// TaskQueue provides at-least-once delivery, visibility leases, retries,
+// TaskQueue provides at-least-once delivery, lease leases, retries,
 // stale-delivery protection, checkpoint recovery, and a durable per-queue
 // dead-letter queue.
 type TaskQueue = client.TaskQueue

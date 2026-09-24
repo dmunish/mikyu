@@ -14,19 +14,23 @@ import (
 
 // SessionConfig carries client-wide defaults and remote connection behavior.
 type SessionConfig struct {
-	Spec        spec.Spec
-	Target      string
-	DataDir     string
-	MaxConns    int
-	TLSEnabled  bool
-	TLSCertFile string
-	TLSKeyFile  string
-	AutoStart   bool
+	Spec           spec.Spec
+	Target         string
+	DataDir        string
+	MaxConnections int
+	TLSEnabled     bool
+	TLSCert        string
+	TLSKey         string
+	AutoStart      bool
 
-	AuthMethod      string
-	AuthToken       string
-	AuthTokenFile   string
-	TLSClientCaFile string
+	AuthMethod    string
+	AuthToken     string
+	AuthTokenFile string
+	TLSClientCA   string
+
+	Durability spec.Durability
+	Encryption spec.Encryption
+	Compaction spec.Compaction
 
 	MetricsEnabled            bool
 	MetricsInterval           time.Duration
@@ -34,11 +38,19 @@ type SessionConfig struct {
 	MetricsListen             string
 	MetricsPerQueuePrometheus bool
 	MetricsHistograms         bool
+
+	// testFrameSent runs after a request frame is written and before the response is read; test-only.
+	testFrameSent func(op byte)
+}
+
+// withFrameHook installs a test frame-sent callback.
+func withFrameHook(fn func(op byte)) Option {
+	return func(c *SessionConfig) { c.testFrameSent = fn }
 }
 
 // DefaultSessionConfig returns the built-in connection defaults.
 func DefaultSessionConfig() SessionConfig {
-	return SessionConfig{MaxConns: 10}
+	return SessionConfig{MaxConnections: 10}
 }
 
 // Option configures a client.
@@ -59,11 +71,11 @@ func WithDataDir(dir string) Option {
 	return func(c *SessionConfig) { c.DataDir = dir }
 }
 
-// WithMaxConns caps the remote connection pool.
-func WithMaxConns(n int) Option {
+// WithMaxConnections caps the remote connection pool.
+func WithMaxConnections(n int) Option {
 	return func(c *SessionConfig) {
 		if n > 0 {
-			c.MaxConns = n
+			c.MaxConnections = n
 		}
 	}
 }
@@ -73,14 +85,14 @@ func WithTLSEnabled(enabled bool) Option {
 	return func(c *SessionConfig) { c.TLSEnabled = enabled }
 }
 
-// WithTLSCertFile sets the client certificate presented to a TLS server.
-func WithTLSCertFile(path string) Option {
-	return func(c *SessionConfig) { c.TLSCertFile = path }
+// WithTLSCert sets the client certificate presented to a TLS server.
+func WithTLSCert(path string) Option {
+	return func(c *SessionConfig) { c.TLSCert = path }
 }
 
-// WithTLSKeyFile sets the private key matching the client certificate.
-func WithTLSKeyFile(path string) Option {
-	return func(c *SessionConfig) { c.TLSKeyFile = path }
+// WithTLSKey sets the private key matching the client certificate.
+func WithTLSKey(path string) Option {
+	return func(c *SessionConfig) { c.TLSKey = path }
 }
 
 // WithAutoStart makes Dial spawn a daemon with the session's settings when the target is not already serving.
@@ -103,9 +115,9 @@ func WithAuthTokenFile(path string) Option {
 	return func(c *SessionConfig) { c.AuthTokenFile = path }
 }
 
-// WithTLSClientCAFile sets the client CA bundle for mTLS servers.
-func WithTLSClientCaFile(path string) Option {
-	return func(c *SessionConfig) { c.TLSClientCaFile = path }
+// WithTLSClientCA sets the client CA bundle for mTLS servers.
+func WithTLSClientCA(path string) Option {
+	return func(c *SessionConfig) { c.TLSClientCA = path }
 }
 
 // WithMetricsEnabled turns the embedded node's live collector on or off; a remote client cannot configure the server's collector.
@@ -153,20 +165,20 @@ func (c SessionConfig) TLSConfig() (*tls.Config, error) {
 	if !c.TLSEnabled {
 		return nil, nil
 	}
-	if c.TLSCertFile == "" || c.TLSKeyFile == "" {
-		return nil, errors.New("tls_enabled needs tls_cert_file and tls_key_file")
+	if c.TLSCert == "" || c.TLSKey == "" {
+		return nil, errors.New("tls_enabled needs tls_cert and tls_key")
 	}
-	pair, err := tls.LoadX509KeyPair(c.TLSCertFile, c.TLSKeyFile)
+	pair, err := tls.LoadX509KeyPair(c.TLSCert, c.TLSKey)
 	if err != nil {
 		return nil, err
 	}
-	pem, err := os.ReadFile(c.TLSCertFile)
+	pem, err := os.ReadFile(c.TLSCert)
 	if err != nil {
 		return nil, err
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(pem) {
-		return nil, fmt.Errorf("no certificate found in %s", c.TLSCertFile)
+		return nil, fmt.Errorf("no certificate found in %s", c.TLSCert)
 	}
 	return &tls.Config{
 		Certificates: []tls.Certificate{pair},
@@ -178,69 +190,69 @@ func (c SessionConfig) TLSConfig() (*tls.Config, error) {
 // QueueOption sets one field of a queue's spec; each option names its field, so the result is sparse by construction.
 type QueueOption func(*spec.Spec)
 
-// WithBatchSize sets the max pending appends before a WAL flush.
-func WithBatchSize(n int) QueueOption {
-	return func(s *spec.Spec) { s.Engine.BatchSize = new(n) }
+// WithDurability selects the append ack policy (create-only).
+func WithDurability(d spec.Durability) QueueOption {
+	return func(s *spec.Spec) { s.Storage.Durability = new(d) }
 }
 
-// WithMaxInterval sets the max delay forcing a WAL flush.
-func WithMaxInterval(d time.Duration) QueueOption {
-	return func(s *spec.Spec) { s.Engine.MaxInterval = new(spec.Duration(d)) }
+// WithEncryption selects at-rest protection (create-only).
+func WithEncryption(e spec.Encryption) QueueOption {
+	return func(s *spec.Spec) { s.Storage.Encryption = new(e) }
 }
 
-// WithMinInterval sets the micro-linger window grouping concurrent appends.
-func WithMinInterval(d time.Duration) QueueOption {
-	return func(s *spec.Spec) { s.Engine.MinInterval = new(spec.Duration(d)) }
+// WithCompaction selects how closed segments shed superseded keys (create-only, log queues only).
+func WithCompaction(c spec.Compaction) QueueOption {
+	return func(s *spec.Spec) { s.Storage.Compaction = new(c) }
 }
 
-// WithSegmentSize sets the bytes at which a segment rolls (create-only).
-func WithSegmentSize(b int64) QueueOption {
-	return func(s *spec.Spec) { s.Engine.SegmentSize = new(b) }
+// WithMaxSegment sets the bytes at which a segment rolls (create-only).
+func WithMaxSegment(n int64) QueueOption {
+	return func(s *spec.Spec) { s.Storage.MaxSegment = new(n) }
 }
 
-// WithMaxMessageBytes sets the producer payload contract (create-only).
-func WithMaxMessageBytes(b int64) QueueOption {
-	return func(s *spec.Spec) { s.Engine.MaxMessageBytes = new(b) }
+// WithMaxSegmentAge sets the age at which the active segment rolls.
+func WithMaxSegmentAge(d time.Duration) QueueOption {
+	return func(s *spec.Spec) { s.Storage.MaxSegmentAge = new(spec.Duration(d)) }
 }
 
-// WithSegmentAge sets the age at which an inactive segment rolls.
-func WithSegmentAge(d time.Duration) QueueOption {
-	return func(s *spec.Spec) { s.Engine.SegmentAge = new(spec.Duration(d)) }
+// WithMaxPayload sets the producer payload contract (create-only).
+func WithMaxPayload(n int64) QueueOption {
+	return func(s *spec.Spec) { s.Storage.MaxPayload = new(n) }
 }
 
-// WithEncrypted enables OS transparent directory encryption (create-only).
-func WithEncrypted(enabled bool) QueueOption {
-	return func(s *spec.Spec) { s.Engine.Encrypted = new(enabled) }
+// WithMaxCache sets the tail cache byte budget.
+func WithMaxCache(n int64) QueueOption {
+	return func(s *spec.Spec) { s.Storage.MaxCache = new(n) }
 }
 
-// WithFsync selects physical-disk durability on produce (create-only).
-func WithFsync(enabled bool) QueueOption {
-	return func(s *spec.Spec) { s.Engine.Fsync = new(enabled) }
+// WithMaxFlushBytes sets the pending WAL size that triggers a flush.
+func WithMaxFlushBytes(n int64) QueueOption {
+	return func(s *spec.Spec) { s.Flush.MaxBytes = new(n) }
 }
 
-// WithCompaction enables roll-time compaction of superseded keyed records (create-only, log queues only).
-func WithCompaction(enabled bool) QueueOption {
-	return func(s *spec.Spec) { s.Engine.Compaction = new(enabled) }
+// WithMaxFlushWait sets the longest a batch waits before flushing.
+func WithMaxFlushWait(d time.Duration) QueueOption {
+	return func(s *spec.Spec) { s.Flush.MaxWait = new(spec.Duration(d)) }
 }
 
-// WithRetentionAge deletes records older than d, capped by consumer lag.
-func WithRetentionAge(d time.Duration) QueueOption {
-	return func(s *spec.Spec) { s.Retention.Age = new(spec.Duration(d)) }
+// WithMaxRetentionAge deletes records older than d, capped by consumer lag.
+func WithMaxRetentionAge(d time.Duration) QueueOption {
+	return func(s *spec.Spec) { s.Retention.MaxAge = new(spec.Duration(d)) }
 }
 
-// WithRetentionBytes caps on-disk size, dropping whole oldest segments.
-func WithRetentionBytes(b int64) QueueOption {
-	return func(s *spec.Spec) { s.Retention.Bytes = new(b) }
+// WithMaxRetentionBytes caps on-disk size, dropping whole oldest segments.
+func WithMaxRetentionBytes(n int64) QueueOption {
+	return func(s *spec.Spec) { s.Retention.MaxBytes = new(n) }
 }
 
-// WithDefaultVisibility sets the queue's fallback lease for optionless enqueues.
-func WithDefaultVisibility(d time.Duration) QueueOption {
-	return func(s *spec.Spec) { s.Task.DefaultVisibility = new(spec.Duration(d)) }
+// WithLease sets the queue's fallback lease for optionless enqueues.
+func WithLease(d time.Duration) QueueOption {
+	return func(s *spec.Spec) { s.Task.Lease = new(spec.Duration(d)) }
 }
 
-// WithDefaultMaxAttempts sets the queue's fallback retry budget.
-func WithDefaultMaxAttempts(n uint32) QueueOption {
-	return func(s *spec.Spec) { s.Task.DefaultMaxAttempts = new(n) }
+// WithMaxAttempts sets the queue's fallback retry budget.
+func WithMaxAttempts(n uint32) QueueOption {
+	return func(s *spec.Spec) { s.Task.MaxAttempts = new(n) }
 }
 
 // WithMaxInFlight caps the number of tasks that can be in flight at once.
@@ -248,9 +260,9 @@ func WithMaxInFlight(n uint32) QueueOption {
 	return func(s *spec.Spec) { s.Task.MaxInFlight = new(n) }
 }
 
-// WithMaxDLQ caps the durable dead-letter queue; overflow drops the oldest entry.
-func WithMaxDLQ(n uint32) QueueOption {
-	return func(s *spec.Spec) { s.Task.MaxDLQ = new(n) }
+// WithMaxDeadLetters caps the durable dead-letter queue; overflow drops the oldest entry.
+func WithMaxDeadLetters(n uint32) QueueOption {
+	return func(s *spec.Spec) { s.Task.MaxDeadLetters = new(n) }
 }
 
 // applyQueueOptions folds options into a sparse spec.

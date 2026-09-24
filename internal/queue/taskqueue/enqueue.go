@@ -15,9 +15,9 @@ func (q *queue) Enqueue(ctx context.Context, payload []byte, opts ...EnqueueOpti
 		q.mu.Unlock()
 		return Task{}, ErrQueueFull
 	}
-	visibilityTimeout, maxAttempts, scheduledAt, key := q.resolveEnqueueOptionsLocked(opts...)
+	lease, maxAttempts, scheduledAt, key := q.resolveEnqueueOptionsLocked(opts...)
 	q.mu.Unlock()
-	if visibilityTimeout <= 0 || maxAttempts == 0 || scheduledAt.IsZero() {
+	if lease <= 0 || maxAttempts == 0 || scheduledAt.IsZero() {
 		return Task{}, ErrInvalidTask
 	}
 	id := newID()
@@ -30,12 +30,12 @@ func (q *queue) Enqueue(ctx context.Context, payload []byte, opts ...EnqueueOpti
 		return Task{}, err
 	}
 	start := time.Now()
-	offset, err := q.storage.Append(ctx, encodeTaskRecord(id, maxAttempts, visibilityTimeout, scheduledAt, payload, key, 0))
+	offset, err := q.storage.Append(ctx, encodeTaskRecord(id, maxAttempts, lease, scheduledAt, payload, key, 0))
 	if err != nil {
 		return Task{}, err
 	}
 	q.recordEnqueue(start)
-	state := &taskState{task: Task{ID: id, Payload: bytes.Clone(payload), MaxAttempts: maxAttempts, ScheduledAt: scheduledAt, Offset: offset, Key: append([]byte(nil), key...)}, nextAt: scheduledAt, visibilityTimeout: visibilityTimeout}
+	state := &taskState{task: Task{ID: id, Payload: bytes.Clone(payload), MaxAttempts: maxAttempts, ScheduledAt: scheduledAt, Offset: offset, Key: append([]byte(nil), key...)}, nextAt: scheduledAt, lease: lease}
 	q.active[id] = state
 	q.pushScheduleLocked(state)
 	q.scanNext = offset + 1

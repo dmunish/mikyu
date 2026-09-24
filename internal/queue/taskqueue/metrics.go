@@ -56,7 +56,7 @@ func (q *queue) recordDequeue(due time.Time) {
 	q.m.dequeueWait.Observe(wait)
 }
 
-// recordStall counts a lease reclaimed after its visibility expired.
+// recordStall counts a lease reclaimed after its lease expired.
 func (q *queue) recordStall() {
 	q.m.taskStalls.Inc()
 }

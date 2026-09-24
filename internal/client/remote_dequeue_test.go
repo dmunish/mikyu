@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,17 +17,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newRemoteTaskQueue starts a live server on a loopback port and returns a
-// remote handle for its "tasks" queue.
-func newRemoteTaskQueue(tb testing.TB) TaskQueue {
+// newRemoteTaskQueue starts a live server on a loopback port and returns a remote handle for its "tasks" queue.
+func newRemoteTaskQueue(tb testing.TB, opts ...Option) TaskQueue {
 	tb.Helper()
 
-	n, release, err := node.Acquire(tb.TempDir(), spec.Spec{
-		Engine: spec.EngineSpec{MaxMessageBytes: new(int64(1 << 20))},
-	})
+	n, release, err := node.Acquire(tb.TempDir(), spec.Spec{Flush: spec.FlushSpec{MaxBytes: new(int64(1 << 20))}})
 	require.NoError(tb, err)
 	tb.Cleanup(func() { _ = release() })
-	_, err = n.CreateTaskQueue(context.Background(), "tasks", spec.Spec{})
+	_, err = n.CreateTaskQueue(tb.Context(), "tasks", spec.Spec{})
 	require.NoError(tb, err)
 
 	srv := server.New(n)
@@ -36,7 +34,7 @@ func newRemoteTaskQueue(tb testing.TB) TaskQueue {
 	go srv.Serve(ln)
 	tb.Cleanup(srv.Stop)
 
-	c, err := NewRemote("tcp://" + ln.Addr().String())
+	c, err := NewRemote("tcp://"+ln.Addr().String(), opts...)
 	require.NoError(tb, err)
 	tb.Cleanup(func() { _ = c.Close() })
 
@@ -45,12 +43,24 @@ func newRemoteTaskQueue(tb testing.TB) TaskQueue {
 	return tq
 }
 
+// frameWatcher returns a hook and a channel that closes the first time op is written.
+func frameWatcher(op byte) (func(byte), <-chan struct{}) {
+	ch := make(chan struct{})
+	var once sync.Once
+	return func(sent byte) {
+		if sent == op {
+			once.Do(func() { close(ch) })
+		}
+	}, ch
+}
+
 func TestRemoteDequeueBlocksUntilBudget(t *testing.T) {
+	t.Parallel()
+	// The server honors the client's long-poll budget; a modest budget proves the same property faster.
+	const budget = 150 * time.Millisecond
 	tq := newRemoteTaskQueue(t)
 
-	// An empty queue with a 200 ms budget must block for roughly the whole
-	// budget (server-side long-poll), not return after the old 10 ms pass.
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), budget)
 	defer cancel()
 
 	start := time.Now()
@@ -58,36 +68,44 @@ func TestRemoteDequeueBlocksUntilBudget(t *testing.T) {
 	elapsed := time.Since(start)
 
 	require.ErrorIs(t, err, context.DeadlineExceeded)
-	assert.GreaterOrEqual(t, elapsed.Milliseconds(), int64(190))
-	assert.Less(t, elapsed.Milliseconds(), int64(5000))
+	assert.GreaterOrEqual(t, elapsed, budget-20*time.Millisecond)
+	assert.Less(t, elapsed, 5*time.Second)
 }
 
 func TestRemoteDequeueCancelReturnsPromptly(t *testing.T) {
-	tq := newRemoteTaskQueue(t)
+	t.Parallel()
+	hook, sent := frameWatcher(protocol.OpDequeue)
+	tq := newRemoteTaskQueue(t, withFrameHook(hook))
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
 	result := make(chan error, 1)
 	go func() {
 		_, err := tq.Dequeue(ctx)
 		result <- err
 	}()
 
-	time.Sleep(150 * time.Millisecond)
-	cancel()
-	start := time.Now()
+	// The write happens in the calling goroutine, so this is race-free.
+	select {
+	case <-sent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Dequeue request never went out")
+	}
 
+	start := time.Now()
+	cancel()
 	select {
 	case err := <-result:
 		require.ErrorIs(t, err, context.Canceled)
-		// Cancellation must interrupt the socket read, not wait out the
-		// 30 s long-poll window.
-		assert.Less(t, time.Since(start).Milliseconds(), int64(2000))
+		assert.Less(t, time.Since(start), 2*time.Second)
 	case <-time.After(5 * time.Second):
 		t.Fatal("Dequeue did not return after cancel")
 	}
 }
 
 func TestRemoteDequeueReturnsTask(t *testing.T) {
+	t.Parallel()
 	tq := newRemoteTaskQueue(t)
 
 	task, err := tq.Enqueue(t.Context(), []byte("payload"))
@@ -100,80 +118,57 @@ func TestRemoteDequeueReturnsTask(t *testing.T) {
 }
 
 func TestRemoteDequeueSurfacesQueueClose(t *testing.T) {
-	n, release, err := node.Acquire(t.TempDir(), spec.Spec{
-		Engine: spec.EngineSpec{MaxMessageBytes: new(int64(1 << 20))},
-	})
+	t.Parallel()
+
+	n, release, err := node.Acquire(t.TempDir(), spec.Spec{Flush: spec.FlushSpec{MaxBytes: new(int64(1 << 20))}})
 	require.NoError(t, err)
-	defer func() { _ = release() }()
-	_, err = n.CreateTaskQueue(context.Background(), "tasks", spec.Spec{})
+	t.Cleanup(func() { _ = release() })
+	_, err = n.CreateTaskQueue(t.Context(), "tasks", spec.Spec{})
 	require.NoError(t, err)
+
 	srv := server.New(n)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer ln.Close()
+	t.Cleanup(func() { _ = ln.Close() })
 	go srv.Serve(ln)
-	defer srv.Stop()
+	t.Cleanup(srv.Stop)
 
-	c, err := NewRemote("tcp://" + ln.Addr().String())
+	hook, sent := frameWatcher(protocol.OpDequeue)
+	c, err := NewRemote("tcp://"+ln.Addr().String(), withFrameHook(hook))
 	require.NoError(t, err)
-	defer c.Close()
+	t.Cleanup(func() { _ = c.Close() })
+
 	tq, err := c.TaskQueue("tasks")
 	require.NoError(t, err)
 
-	// A worker parked on an infinite Dequeue must be released when the node
-	// shuts the queue down.
 	result := make(chan error, 1)
 	go func() {
-		_, err := tq.Dequeue(context.Background())
+		_, err := tq.Dequeue(t.Context())
 		result <- err
 	}()
-	time.Sleep(150 * time.Millisecond)
-	require.NoError(t, c.Close())
-	srv.Stop()
-	// Stop only closes the listener; the node's final release is what
-	// closes the queue and wakes the parked dequeue (release is idempotent,
-	// so the deferred release below stays a no-op).
-	_ = release()
+
+	// The server's handler is now parked on the queue, holding its connection slot.
+	select {
+	case <-sent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Dequeue request never went out")
+	}
+
+	// Releasing the node closes the queue and wakes the parked handler with ErrTaskClosed.
+	require.NoError(t, release())
 
 	select {
 	case err := <-result:
 		assert.ErrorIs(t, err, taskqueue.ErrTaskClosed)
 	case <-time.After(5 * time.Second):
-		t.Fatal("Dequeue did not return after server stop")
+		t.Fatal("Dequeue did not return after node release")
 	}
 }
 
-// BenchmarkRemoteTaskDequeue measures one idle dequeue attempt with a 100 ms
-// budget. The old 10 ms polling loop spent roughly ten request round trips
-// per attempt; long-poll spends exactly one.
-func BenchmarkRemoteTaskDequeue(b *testing.B) {
-	tq := newRemoteTaskQueue(b)
-
-	for b.Loop() {
-		ctx, cancel := context.WithTimeout(b.Context(), 100*time.Millisecond)
-		_, _ = tq.Dequeue(ctx)
-		cancel()
-	}
-}
-
-// BenchmarkRemoteTaskDequeueReady measures the hot path of a worker consuming
-// a task that is already queued: one round trip, no polling delay.
-func BenchmarkRemoteTaskDequeueReady(b *testing.B) {
-	tq := newRemoteTaskQueue(b)
-
-	for b.Loop() {
-		b.StopTimer()
-		_, err := tq.Enqueue(b.Context(), []byte("payload"))
-		require.NoError(b, err)
-		b.StartTimer()
-		_, err = tq.Dequeue(b.Context())
-		require.NoError(b, err)
-	}
-}
-
-// TestRemoteNackSendsModeZero pins the inherit wire shape: Nack with no options
-// sends mode 0 and no delay bytes, leaving the backoff to the server.
+// TestRemoteNackSendsModeZero pins the inherit wire shape: Nack with no options sends mode 0 and no delay bytes.
 func TestRemoteNackSendsModeZero(t *testing.T) {
+	t.Parallel()
+
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	defer ln.Close()
@@ -211,7 +206,7 @@ func TestRemoteNackSendsModeZero(t *testing.T) {
 			return
 		}
 		pr := protocol.NewReader(body)
-		if _, err := pr.ReadBytes(); err != nil { // queue name
+		if _, err := pr.ReadBytes(); err != nil {
 			got <- captured{mode: 0xFF}
 			return
 		}
@@ -224,7 +219,7 @@ func TestRemoteNackSendsModeZero(t *testing.T) {
 			got <- captured{mode: 0xFF}
 			return
 		}
-		_, trailing := pr.ReadU64() // inherit mode leaves nothing to read
+		_, trailing := pr.ReadU64()
 		got <- captured{mode: mode, trailing: trailing == nil}
 		_ = protocol.WriteFrame(conn, protocol.OpNack, nil)
 	}()
@@ -245,3 +240,27 @@ func TestRemoteNackSendsModeZero(t *testing.T) {
 	}
 }
 
+// BenchmarkRemoteTaskDequeue measures one idle dequeue attempt with a 100 ms budget: one round trip, not a polling loop.
+func BenchmarkRemoteTaskDequeue(b *testing.B) {
+	tq := newRemoteTaskQueue(b)
+
+	for b.Loop() {
+		ctx, cancel := context.WithTimeout(b.Context(), 100*time.Millisecond)
+		_, _ = tq.Dequeue(ctx)
+		cancel()
+	}
+}
+
+// BenchmarkRemoteTaskDequeueReady measures the hot path of a worker consuming an already-queued task.
+func BenchmarkRemoteTaskDequeueReady(b *testing.B) {
+	tq := newRemoteTaskQueue(b)
+
+	for b.Loop() {
+		b.StopTimer()
+		_, err := tq.Enqueue(b.Context(), []byte("payload"))
+		require.NoError(b, err)
+		b.StartTimer()
+		_, err = tq.Dequeue(b.Context())
+		require.NoError(b, err)
+	}
+}

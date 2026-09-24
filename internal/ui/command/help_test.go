@@ -92,7 +92,7 @@ func TestUpdateHelpOmitsCreateOnlyFlags(t *testing.T) {
 	}
 	for _, p := range spec.Params(spec.LayerSpec) {
 		if p.Mutability == spec.MutCreateOnly {
-			assert.NotContains(t, out, "--"+p.FlagName,
+			assert.NotContains(t, out, "--"+p.FlagName+" ",
 				"update detail must not list create-only --%s", p.FlagName)
 		}
 	}

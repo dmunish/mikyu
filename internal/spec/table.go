@@ -21,6 +21,7 @@ const (
 	KindBool
 	KindString
 	KindTime
+	KindEnum
 )
 
 func (k Kind) String() string {
@@ -39,6 +40,8 @@ func (k Kind) String() string {
 		return "string"
 	case KindTime:
 		return "timestamp"
+	case KindEnum:
+		return "enum"
 	default:
 		return "unknown"
 	}
@@ -100,7 +103,7 @@ func (k *Kind) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return err
 	}
-	for i := KindInt; i <= KindTime; i++ {
+	for i := KindInt; i <= KindEnum; i++ {
 		if i.String() == s {
 			*k = i
 			return nil
@@ -192,6 +195,7 @@ type Param struct {
 	Key        string     `json:"key"`
 	Path       string     `json:"path"`
 	Kind       Kind       `json:"kind"`
+	Allowed    []string   `json:"allowed,omitempty"`
 	Layer      Layer      `json:"layer"`
 	Scope      Scope      `json:"scope"`
 	Mutability Mutability `json:"mutability"`
@@ -206,21 +210,25 @@ type Param struct {
 
 func (p Param) String() string { return p.Key }
 
-// Parse converts flag or env text into a Value of this parameter's kind.
+// Parse converts flag or env text into a Value of this parameter's kind, checking enum values against the allowed set.
 func (p Param) Parse(text string) (Value, error) {
 	v, err := ParseValue(p.Kind, text)
 	if err != nil {
 		return Value{}, fmt.Errorf("%w: %s: %w", ErrInvalidConfig, p.Key, err)
 	}
+	if p.Kind == KindEnum && len(p.Allowed) > 0 && !slices.Contains(p.Allowed, v.Enum()) {
+		return Value{}, fmt.Errorf("%w: %s must be one of %s, got %q", ErrInvalidConfig, p.Key, strings.Join(p.Allowed, "|"), v.Enum())
+	}
 	return v, nil
 }
 
-// specParam declares a queue-scoped parameter grouped under group.
-func specParam(group, key string, kind Kind, mut Mutability, doc string) Param {
+// specParam declares a queue-scoped parameter grouped under the group named in path.
+func specParam(path, key string, kind Kind, mut Mutability, allowed []string, doc string) Param {
 	return Param{
 		Key:        key,
-		Path:       group + "." + strings.TrimPrefix(key, group+"_"),
+		Path:       path,
 		Kind:       kind,
+		Allowed:    allowed,
 		Layer:      LayerSpec,
 		Mutability: mut,
 		EnvName:    envName(key),
@@ -230,11 +238,11 @@ func specParam(group, key string, kind Kind, mut Mutability, doc string) Param {
 	}
 }
 
-// sessionParam declares a process-only parameter living in the server block.
-func sessionParam(key string, kind Kind, scope Scope, doc string) Param {
+// sessionParam declares a process-only parameter living in the server block at path.
+func sessionParam(path, key string, kind Kind, scope Scope, doc string) Param {
 	return Param{
 		Key:        key,
-		Path:       "server." + key,
+		Path:       path,
 		Kind:       kind,
 		Layer:      LayerSession,
 		Scope:      scope,
@@ -263,40 +271,40 @@ func callParam(key string, kind Kind, doc string) Param {
 // specSetters and sessionSetters bind each canonical key to its field. The
 // compiler checks the kind of every assignment.
 var specSetters = map[string]func(*Spec, Value){
-	"batch_size":           func(s *Spec, v Value) { s.Engine.BatchSize = new(v.Int()) },
-	"max_interval":         func(s *Spec, v Value) { s.Engine.MaxInterval = new(Duration(v.Duration())) },
-	"min_interval":         func(s *Spec, v Value) { s.Engine.MinInterval = new(Duration(v.Duration())) },
-	"segment_size":         func(s *Spec, v Value) { s.Engine.SegmentSize = new(v.Bytes()) },
-	"segment_age":          func(s *Spec, v Value) { s.Engine.SegmentAge = new(Duration(v.Duration())) },
-	"max_message_bytes":    func(s *Spec, v Value) { s.Engine.MaxMessageBytes = new(v.Bytes()) },
-	"encrypted":            func(s *Spec, v Value) { s.Engine.Encrypted = new(v.Bool()) },
-	"fsync":                func(s *Spec, v Value) { s.Engine.Fsync = new(v.Bool()) },
-	"compaction":           func(s *Spec, v Value) { s.Engine.Compaction = new(v.Bool()) },
-	"retention_age":        func(s *Spec, v Value) { s.Retention.Age = new(Duration(v.Duration())) },
-	"retention_bytes":      func(s *Spec, v Value) { s.Retention.Bytes = new(v.Bytes()) },
-	"default_visibility":   func(s *Spec, v Value) { s.Task.DefaultVisibility = new(Duration(v.Duration())) },
-	"default_max_attempts": func(s *Spec, v Value) { s.Task.DefaultMaxAttempts = new(v.Uint32()) },
-	"max_in_flight":        func(s *Spec, v Value) { s.Task.MaxInFlight = new(v.Uint32()) },
-	"max_dlq":              func(s *Spec, v Value) { s.Task.MaxDLQ = new(v.Uint32()) },
+	"durability":          func(s *Spec, v Value) { s.Storage.Durability = new(Durability(v.Enum())) },
+	"encryption":          func(s *Spec, v Value) { s.Storage.Encryption = new(Encryption(v.Enum())) },
+	"compaction":          func(s *Spec, v Value) { s.Storage.Compaction = new(Compaction(v.Enum())) },
+	"max_segment":         func(s *Spec, v Value) { s.Storage.MaxSegment = new(v.Bytes()) },
+	"max_segment_age":     func(s *Spec, v Value) { s.Storage.MaxSegmentAge = new(Duration(v.Duration())) },
+	"max_payload":         func(s *Spec, v Value) { s.Storage.MaxPayload = new(v.Bytes()) },
+	"max_cache":           func(s *Spec, v Value) { s.Storage.MaxCache = new(v.Bytes()) },
+	"max_flush_bytes":     func(s *Spec, v Value) { s.Flush.MaxBytes = new(v.Bytes()) },
+	"max_flush_wait":      func(s *Spec, v Value) { s.Flush.MaxWait = new(Duration(v.Duration())) },
+	"max_retention_age":   func(s *Spec, v Value) { s.Retention.MaxAge = new(Duration(v.Duration())) },
+	"max_retention_bytes": func(s *Spec, v Value) { s.Retention.MaxBytes = new(v.Bytes()) },
+	"lease":               func(s *Spec, v Value) { s.Task.Lease = new(Duration(v.Duration())) },
+	"max_attempts":        func(s *Spec, v Value) { s.Task.MaxAttempts = new(v.Uint32()) },
+	"max_in_flight":       func(s *Spec, v Value) { s.Task.MaxInFlight = new(v.Uint32()) },
+	"max_dead_letters":    func(s *Spec, v Value) { s.Task.MaxDeadLetters = new(v.Uint32()) },
 }
 
 var sessionSetters = map[string]func(*Session, Value){
 	"target":                       func(s *Session, v Value) { s.Target = v.Text() },
 	"data_dir":                     func(s *Session, v Value) { s.DataDir = v.Text() },
-	"tls_enabled":                  func(s *Session, v Value) { s.TLSEnabled = v.Bool() },
-	"tls_cert_file":                func(s *Session, v Value) { s.TLSCertFile = v.Text() },
-	"tls_key_file":                 func(s *Session, v Value) { s.TLSKeyFile = v.Text() },
-	"max_conns":                    func(s *Session, v Value) { s.MaxConns = v.Int() },
-	"metrics_enabled":              func(s *Session, v Value) { s.MetricsEnabled = v.Bool() },
-	"metrics_interval":             func(s *Session, v Value) { s.MetricsInterval = Duration(v.Duration()) },
-	"metrics_history":              func(s *Session, v Value) { s.MetricsHistory = v.Int() },
-	"metrics_listen":               func(s *Session, v Value) { s.MetricsListen = v.Text() },
-	"metrics_per_queue_prometheus": func(s *Session, v Value) { s.MetricsPerQueuePrometheus = v.Bool() },
-	"metrics_histograms":           func(s *Session, v Value) { s.MetricsHistograms = v.Bool() },
-	"auth_method":                  func(s *Session, v Value) { s.AuthMethod = v.Text() },
-	"auth_token_file":              func(s *Session, v Value) { s.AuthTokenFile = v.Text() },
-	"auth_token":                   func(s *Session, v Value) { s.AuthToken = v.Text() },
-	"tls_client_ca_file":           func(s *Session, v Value) { s.TLSClientCaFile = v.Text() },
+	"max_connections":              func(s *Session, v Value) { s.MaxConnections = v.Int() },
+	"tls_enabled":                  func(s *Session, v Value) { s.TLS.Enabled = v.Bool() },
+	"tls_cert":                     func(s *Session, v Value) { s.TLS.Cert = v.Text() },
+	"tls_key":                      func(s *Session, v Value) { s.TLS.Key = v.Text() },
+	"tls_client_ca":                func(s *Session, v Value) { s.TLS.ClientCA = v.Text() },
+	"auth_method":                  func(s *Session, v Value) { s.Auth.Method = v.Text() },
+	"auth_token":                   func(s *Session, v Value) { s.Auth.Token = v.Text() },
+	"auth_token_file":              func(s *Session, v Value) { s.Auth.TokenFile = v.Text() },
+	"metrics_enabled":              func(s *Session, v Value) { s.Metrics.Enabled = v.Bool() },
+	"metrics_interval":             func(s *Session, v Value) { s.Metrics.Interval = Duration(v.Duration()) },
+	"metrics_history":              func(s *Session, v Value) { s.Metrics.History = v.Int() },
+	"metrics_listen":               func(s *Session, v Value) { s.Metrics.Listen = v.Text() },
+	"metrics_per_queue_prometheus": func(s *Session, v Value) { s.Metrics.PerQueuePrometheus = v.Bool() },
+	"metrics_histograms":           func(s *Session, v Value) { s.Metrics.Histograms = v.Bool() },
 }
 
 // getter reads one Spec field so presence lives beside the canonical keys.
@@ -310,22 +318,26 @@ func getter[T any](field func(*Spec) *T, value func(T) Value) func(*Spec) (Value
 	}
 }
 
+func enumGetter[T ~string](field func(*Spec) *T) func(*Spec) (Value, bool) {
+	return getter(field, func(v T) Value { return NewEnum(string(v)) })
+}
+
 var specGetters = map[string]func(*Spec) (Value, bool){
-	"batch_size":           getter(func(s *Spec) *int { return s.Engine.BatchSize }, NewInt),
-	"max_interval":         getter(func(s *Spec) *Duration { return s.Engine.MaxInterval }, NewSpecDuration),
-	"min_interval":         getter(func(s *Spec) *Duration { return s.Engine.MinInterval }, NewSpecDuration),
-	"segment_size":         getter(func(s *Spec) *int64 { return s.Engine.SegmentSize }, NewBytes),
-	"segment_age":          getter(func(s *Spec) *Duration { return s.Engine.SegmentAge }, NewSpecDuration),
-	"max_message_bytes":    getter(func(s *Spec) *int64 { return s.Engine.MaxMessageBytes }, NewBytes),
-	"encrypted":            getter(func(s *Spec) *bool { return s.Engine.Encrypted }, NewBool),
-	"fsync":                getter(func(s *Spec) *bool { return s.Engine.Fsync }, NewBool),
-	"compaction":           getter(func(s *Spec) *bool { return s.Engine.Compaction }, NewBool),
-	"retention_age":        getter(func(s *Spec) *Duration { return s.Retention.Age }, NewSpecDuration),
-	"retention_bytes":      getter(func(s *Spec) *int64 { return s.Retention.Bytes }, NewBytes),
-	"default_visibility":   getter(func(s *Spec) *Duration { return s.Task.DefaultVisibility }, NewSpecDuration),
-	"default_max_attempts": getter(func(s *Spec) *uint32 { return s.Task.DefaultMaxAttempts }, NewUint32),
-	"max_in_flight":        getter(func(s *Spec) *uint32 { return s.Task.MaxInFlight }, NewUint32),
-	"max_dlq":              getter(func(s *Spec) *uint32 { return s.Task.MaxDLQ }, NewUint32),
+	"durability":          enumGetter(func(s *Spec) *Durability { return s.Storage.Durability }),
+	"encryption":          enumGetter(func(s *Spec) *Encryption { return s.Storage.Encryption }),
+	"compaction":          enumGetter(func(s *Spec) *Compaction { return s.Storage.Compaction }),
+	"max_segment":         getter(func(s *Spec) *int64 { return s.Storage.MaxSegment }, NewBytes),
+	"max_segment_age":     getter(func(s *Spec) *Duration { return s.Storage.MaxSegmentAge }, NewSpecDuration),
+	"max_payload":         getter(func(s *Spec) *int64 { return s.Storage.MaxPayload }, NewBytes),
+	"max_cache":           getter(func(s *Spec) *int64 { return s.Storage.MaxCache }, NewBytes),
+	"max_flush_bytes":     getter(func(s *Spec) *int64 { return s.Flush.MaxBytes }, NewBytes),
+	"max_flush_wait":      getter(func(s *Spec) *Duration { return s.Flush.MaxWait }, NewSpecDuration),
+	"max_retention_age":   getter(func(s *Spec) *Duration { return s.Retention.MaxAge }, NewSpecDuration),
+	"max_retention_bytes": getter(func(s *Spec) *int64 { return s.Retention.MaxBytes }, NewBytes),
+	"lease":               getter(func(s *Spec) *Duration { return s.Task.Lease }, NewSpecDuration),
+	"max_attempts":        getter(func(s *Spec) *uint32 { return s.Task.MaxAttempts }, NewUint32),
+	"max_in_flight":       getter(func(s *Spec) *uint32 { return s.Task.MaxInFlight }, NewUint32),
+	"max_dead_letters":    getter(func(s *Spec) *uint32 { return s.Task.MaxDeadLetters }, NewUint32),
 }
 
 // Field returns the value p holds in s and whether s sets it.
@@ -362,38 +374,41 @@ var Table = buildTable()
 
 func buildTable() []Param {
 	table := []Param{
-		specParam("engine", "batch_size", KindInt, MutMutable,
-			"Records per WAL flush"),
-		specParam("engine", "max_interval", KindDuration, MutMutable,
-			"Longest a batch waits before flushing"),
-		specParam("engine", "min_interval", KindDuration, MutMutable,
-			"Shortest linger before an adaptive flush"),
-		specParam("engine", "segment_size", KindBytes, MutCreateOnly,
-			"Bytes per segment file"),
-		specParam("engine", "segment_age", KindDuration, MutMutable,
-			"Maximum age before a segment rolls"),
-		specParam("engine", "max_message_bytes", KindBytes, MutCreateOnly,
-			"Largest payload an append accepts"),
-		specParam("engine", "encrypted", KindBool, MutCreateOnly,
+		specParam("storage.durability", "durability", KindEnum, MutCreateOnly,
+			[]string{string(DurabilitySync), string(DurabilityAsync)},
+			"Ack policy: sync fsyncs before the offset returns, async flushes in the background"),
+		specParam("storage.encryption", "encryption", KindEnum, MutCreateOnly,
+			[]string{string(EncryptionNone), string(EncryptionOS)},
 			"Use the OS directory encryption at rest"),
-		specParam("engine", "fsync", KindBool, MutCreateOnly,
-			"Fsync every batch before returning the offset"),
-		specParam("engine", "compaction", KindBool, MutCreateOnly,
+		specParam("storage.compaction", "compaction", KindEnum, MutCreateOnly,
+			[]string{string(CompactionNone), string(CompactionKeys)},
 			"Drop superseded keys when a segment closes"),
-		specParam("retention", "retention_age", KindDuration, MutMutable,
-			"Drop closed segments older than this"),
-		specParam("retention", "retention_bytes", KindBytes, MutMutable,
-			"Keep at most this many bytes of history"),
-		specParam("task", "default_visibility", KindDuration, MutMutable,
+		specParam("storage.max_segment", "max_segment", KindBytes, MutCreateOnly, nil,
+			"Bytes per segment file"),
+		specParam("storage.max_segment_age", "max_segment_age", KindDuration, MutMutable, nil,
+			"Maximum age before a segment rolls"),
+		specParam("storage.max_payload", "max_payload", KindBytes, MutCreateOnly, nil,
+			"Largest payload an append accepts"),
+		specParam("storage.max_cache", "max_cache", KindBytes, MutMutable, nil,
+			"Tail cache budget in bytes"),
+		specParam("flush.max_bytes", "max_flush_bytes", KindBytes, MutMutable, nil,
+			"Flush once the pending WAL reaches this many bytes"),
+		specParam("flush.max_wait", "max_flush_wait", KindDuration, MutMutable, nil,
+			"Longest a batch waits before flushing"),
+		specParam("retention.max_age", "max_retention_age", KindDuration, MutMutable, nil,
+			"Drop closed segments older than this; 0 keeps forever"),
+		specParam("retention.max_bytes", "max_retention_bytes", KindBytes, MutMutable, nil,
+			"Keep at most this many bytes of history; 0 keeps forever"),
+		specParam("task.lease", "lease", KindDuration, MutMutable, nil,
 			"Lease length assigned to a dequeued task"),
-		specParam("task", "default_max_attempts", KindUint32, MutMutable,
+		specParam("task.max_attempts", "max_attempts", KindUint32, MutMutable, nil,
 			"Deliveries before a task is dead-lettered"),
-		specParam("task", "max_in_flight", KindUint32, MutMutable,
+		specParam("task.max_in_flight", "max_in_flight", KindUint32, MutMutable, nil,
 			"Concurrent-lease upper bound"),
-		specParam("task", "max_dlq", KindUint32, MutMutable,
+		specParam("task.max_dead_letters", "max_dead_letters", KindUint32, MutMutable, nil,
 			"Dead-letter upper bound"),
 
-		callParam("visibility", KindDuration,
+		callParam("lease", KindDuration,
 			"Lease length for this task only"),
 		callParam("max_attempts", KindUint32,
 			"Attempt budget for this task only"),
@@ -402,40 +417,38 @@ func buildTable() []Param {
 		callParam("retry_after", KindDuration,
 			"Delay before this task becomes available again"),
 
-		sessionParam("target", KindString, ScopeBoth,
+		sessionParam("server.target", "target", KindString, ScopeBoth,
 			"Daemon target (tcp://, unix://, pipe://)"),
-		sessionParam("data_dir", KindString, ScopeBoth,
+		sessionParam("server.data_dir", "data_dir", KindString, ScopeBoth,
 			"Data directory for embedded mode"),
-		sessionParam("tls_enabled", KindBool, ScopeBoth,
-			"Wrap the wire in TLS 1.3"),
-		sessionParam("tls_cert_file", KindString, ScopeBoth,
-			"TLS server certificate file"),
-		sessionParam("tls_key_file", KindString, ScopeBoth,
-			"TLS server key file"),
-		sessionParam("max_conns", KindInt, ScopeBoth,
+		sessionParam("server.max_connections", "max_connections", KindInt, ScopeBoth,
 			"Connection pool size"),
-
-		sessionParam("metrics_enabled", KindBool, ScopeBoth,
-			"Enable the collector"),
-		sessionParam("metrics_interval", KindDuration, ScopeBoth,
-			"Collector tick interval"),
-		sessionParam("metrics_history", KindInt, ScopeBoth,
-			"Snapshots kept in the tick ring"),
-		sessionParam("metrics_listen", KindString, ScopeServer,
-			"HTTP bind address for /metrics and /api/*"),
-		sessionParam("metrics_per_queue_prometheus", KindBool, ScopeServer,
-			"Emit per-queue labeled Prometheus series"),
-		sessionParam("metrics_histograms", KindBool, ScopeBoth,
-			"Include histograms in snapshots"),
-
-		sessionParam("auth_method", KindString, ScopeServer,
-			"One of none, none-insecure, token, mtls"),
-		sessionParam("auth_token_file", KindString, ScopeBoth,
-			"File to read the token from"),
-		sessionParam("auth_token", KindString, ScopeBoth,
-			"Token to present; --auth-token-file wins"),
-		sessionParam("tls_client_ca_file", KindString, ScopeServer,
+		sessionParam("server.tls.enabled", "tls_enabled", KindBool, ScopeBoth,
+			"Wrap the wire in TLS 1.3"),
+		sessionParam("server.tls.cert", "tls_cert", KindString, ScopeBoth,
+			"TLS server certificate file"),
+		sessionParam("server.tls.key", "tls_key", KindString, ScopeBoth,
+			"TLS server key file"),
+		sessionParam("server.tls.client_ca", "tls_client_ca", KindString, ScopeServer,
 			"Client CA bundle for mTLS"),
+		sessionParam("server.auth.method", "auth_method", KindString, ScopeServer,
+			"One of none, none-insecure, token, mtls"),
+		sessionParam("server.auth.token", "auth_token", KindString, ScopeBoth,
+			"Token to present; the token file wins"),
+		sessionParam("server.auth.token_file", "auth_token_file", KindString, ScopeBoth,
+			"File to read the token from"),
+		sessionParam("server.metrics.enabled", "metrics_enabled", KindBool, ScopeBoth,
+			"Enable the collector"),
+		sessionParam("server.metrics.interval", "metrics_interval", KindDuration, ScopeBoth,
+			"Collector tick interval"),
+		sessionParam("server.metrics.history", "metrics_history", KindInt, ScopeBoth,
+			"Snapshots kept in the tick ring"),
+		sessionParam("server.metrics.listen", "metrics_listen", KindString, ScopeServer,
+			"HTTP bind address for /metrics and /api/*"),
+		sessionParam("server.metrics.per_queue_prometheus", "metrics_per_queue_prometheus", KindBool, ScopeServer,
+			"Emit per-queue labeled Prometheus series"),
+		sessionParam("server.metrics.histograms", "metrics_histograms", KindBool, ScopeBoth,
+			"Include histograms in snapshots"),
 	}
 
 	for i := range table {
@@ -519,7 +532,7 @@ func pascal(s string) string {
 }
 
 // initialisms keeps generated option names in Go's capitalization style.
-var initialisms = map[string]string{"tls": "TLS", "dlq": "DLQ"}
+var initialisms = map[string]string{"tls": "TLS", "ca": "CA"}
 
 // Value is a kind-tagged parameter value, as parsed from a flag, env var, or option.
 type Value struct {
@@ -535,6 +548,7 @@ func NewDuration(d time.Duration) Value { return Value{kind: KindDuration, num: 
 func NewBytes(b int64) Value            { return Value{kind: KindBytes, num: b} }
 func NewBool(b bool) Value              { return Value{kind: KindBool, num: boolNum(b)} }
 func NewString(s string) Value          { return Value{kind: KindString, str: s} }
+func NewEnum(s string) Value            { return Value{kind: KindEnum, str: s} }
 func NewSpecDuration(d Duration) Value  { return NewDuration(d.Duration()) }
 
 // NewTime strips any monotonic reading so Values compare and print the same way they were built.
@@ -547,6 +561,7 @@ func (v Value) Duration() time.Duration { return time.Duration(v.numOf(KindDurat
 func (v Value) Bytes() int64            { return v.numOf(KindBytes) }
 func (v Value) Bool() bool              { return v.numOf(KindBool) != 0 }
 func (v Value) Text() string            { return v.strOf(KindString) }
+func (v Value) Enum() string            { return v.strOf(KindEnum) }
 func (v Value) Time() time.Time         { return v.timeOf(KindTime) }
 
 // String renders the value for flags, logs, and describe output.
@@ -558,7 +573,7 @@ func (v Value) String() string {
 		return strconv.FormatBool(v.Bool())
 	case KindTime:
 		return v.Time().Format(time.RFC3339)
-	case KindString:
+	case KindString, KindEnum:
 		return v.str
 	case KindUnknown:
 		return "<unset>"
@@ -636,6 +651,8 @@ func ParseValue(kind Kind, text string) (Value, error) {
 		return NewBool(b), nil
 	case KindString:
 		return NewString(text), nil
+	case KindEnum:
+		return NewEnum(text), nil
 	case KindTime:
 		t, err := time.Parse(time.RFC3339, text)
 		if err != nil {

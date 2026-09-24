@@ -5,7 +5,7 @@ import "time"
 type taskState struct {
 	task              Task
 	nextAt            time.Time
-	visibilityTimeout time.Duration
+	lease time.Duration
 	inFlight          bool
 	version           uint64
 }
@@ -86,7 +86,7 @@ func schedDown(h scheduleHeap, i0, n int) {
 func (q *queue) pushScheduleLocked(state *taskState) {
 	due := state.nextAt
 	if state.inFlight {
-		due = state.task.Visibility
+		due = state.task.Lease
 	}
 	if due.IsZero() {
 		due = time.Now()
@@ -104,7 +104,7 @@ func (q *queue) pruneScheduleLocked() {
 	for _, state := range q.active {
 		due := state.nextAt
 		if state.inFlight {
-			due = state.task.Visibility
+			due = state.task.Lease
 		}
 		if due.IsZero() {
 			due = time.Now()

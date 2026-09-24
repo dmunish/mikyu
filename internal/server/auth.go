@@ -21,13 +21,13 @@ type authMode struct {
 
 // NewAuthMode resolves a session's auth settings into a verifier.
 func NewAuthMode(sess spec.Session) (*authMode, error) {
-	switch sess.AuthMethod {
+	switch sess.Auth.Method {
 	case "", "none", "none-insecure":
 		return &authMode{method: protocol.AuthMethodNone}, nil
 	case "token":
-		tok := sess.AuthToken
-		if tok == "" && sess.AuthTokenFile != "" {
-			data, err := os.ReadFile(sess.AuthTokenFile)
+		tok := sess.Auth.Token
+		if tok == "" && sess.Auth.TokenFile != "" {
+			data, err := os.ReadFile(sess.Auth.TokenFile)
 			if err != nil {
 				return nil, err
 			}
@@ -40,7 +40,7 @@ func NewAuthMode(sess spec.Session) (*authMode, error) {
 	case "mtls":
 		return &authMode{method: protocol.AuthMethodMTLS}, nil
 	}
-	return nil, errors.New("unknown auth_method " + sess.AuthMethod)
+	return nil, errors.New("unknown auth_method " + sess.Auth.Method)
 }
 
 // Required reports whether any non-anonymous credential is needed.

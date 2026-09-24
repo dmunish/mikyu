@@ -15,7 +15,7 @@ import (
 )
 
 // enqueueBody builds an Enqueue request:
-// bytes(name) bytes(payload) u64 visibility u32 maxAttempts u64 scheduledAt.
+// bytes(name) bytes(payload) u64 lease u32 maxAttempts u64 scheduledAt.
 func enqueueBody(name string, payload []byte) []byte {
 	var b protocol.Buffer
 	b.WriteBytes([]byte(name))
@@ -55,11 +55,7 @@ func nackBody(name string, task protocol.Task, mode byte, delay time.Duration) [
 }
 
 func TestTaskHandlersLifecycle(t *testing.T) {
-	n, release, err := node.Acquire(t.TempDir(), spec.Spec{
-		Engine: spec.EngineSpec{
-			MaxMessageBytes: new(int64(1 << 20)),
-		},
-	})
+	n, release, err := node.Acquire(t.TempDir(), spec.Spec{Flush: spec.FlushSpec{MaxBytes: new(int64(1 << 20))}})
 	require.NoError(t, err)
 	defer func() { _ = release() }()
 	_, err = n.CreateTaskQueue(t.Context(), "tasks", spec.Spec{})
@@ -112,7 +108,7 @@ func TestAckModeByteStrict(t *testing.T) {
 	require.NoError(t, err)
 
 	// Stale mode-0 ack: the pre-delivery task has the same ID but stale
-	// Attempts/Visibility/DeliveryID. (Checked before the fresh ack removes
+	// Attempts/Lease/DeliveryID. (Checked before the fresh ack removes
 	// the task from the active set.)
 	op, body = s.handleAck(t.Context(), ackBody("tasks", preDelivery))
 	assert.Equal(t, protocol.OpError, op)

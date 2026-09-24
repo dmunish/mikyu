@@ -31,9 +31,8 @@ func TestRestartPreservesSpec(t *testing.T) {
 	n1, release1, err := Acquire(dir, spec.Spec{})
 	require.NoError(t, err)
 	s := spec.Spec{
-		Engine: spec.EngineSpec{
-			BatchSize: new(7),
-			Fsync:     new(false),
+		Flush: spec.FlushSpec{
+			MaxBytes: new(int64(7)),
 		},
 	}
 	createLog(t, n1, "q", s)
@@ -45,10 +44,8 @@ func TestRestartPreservesSpec(t *testing.T) {
 
 	d, err := n2.DescribeQueue(t.Context(), "q")
 	require.NoError(t, err)
-	require.NotNil(t, d.Spec.Engine.BatchSize)
-	assert.Equal(t, 7, *d.Spec.Engine.BatchSize)
-	require.NotNil(t, d.Spec.Engine.Fsync)
-	assert.False(t, *d.Spec.Engine.Fsync)
+	require.NotNil(t, d.Spec.Flush.MaxBytes)
+	assert.Equal(t, int64(7), *d.Spec.Flush.MaxBytes)
 }
 
 func TestRegistryCorruptRefusesStartup(t *testing.T) {
@@ -98,16 +95,15 @@ func TestDescribeAfterCreateWithFlags(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = release() }()
 
-	s := spec.Spec{Engine: spec.EngineSpec{BatchSize: new(7)}}
+	s := spec.Spec{Flush: spec.FlushSpec{MaxBytes: new(int64(7))}}
 	createLog(t, n, "q", s)
 
 	d, err := n.DescribeQueue(t.Context(), "q")
 	require.NoError(t, err)
-	require.NotNil(t, d.Spec.Engine.BatchSize)
-	assert.Equal(t, 7, *d.Spec.Engine.BatchSize)
-	require.NotNil(t, d.Effective.Engine.BatchSize)
-	require.NotNil(t, d.Effective.Engine.SegmentSize)
-	require.NotNil(t, d.Defaults.Engine.SegmentSize)
+	require.NotNil(t, d.Spec.Flush.MaxBytes)
+	assert.Equal(t, int64(7), *d.Spec.Flush.MaxBytes)
+	require.NotNil(t, d.Effective.Storage.MaxSegment)
+	require.NotNil(t, d.Defaults.Storage.MaxSegment)
 }
 
 func TestUpdateQueueRejectsCreateOnly(t *testing.T) {
@@ -117,7 +113,7 @@ func TestUpdateQueueRejectsCreateOnly(t *testing.T) {
 	defer func() { _ = release() }()
 
 	createLog(t, n, "q", spec.Spec{})
-	patch := spec.Spec{Engine: spec.EngineSpec{SegmentSize: new(int64(1024))}}
+	patch := spec.Spec{Storage: spec.StorageSpec{MaxSegment: new(int64(1024))}}
 	err = n.UpdateQueue(t.Context(), "q", patch)
 	require.ErrorIs(t, err, spec.ErrImmutableField)
 }
@@ -129,12 +125,12 @@ func TestUpdateQueueMutable(t *testing.T) {
 	defer func() { _ = release() }()
 
 	createLog(t, n, "q", spec.Spec{})
-	require.NoError(t, n.UpdateQueue(t.Context(), "q", spec.Spec{Engine: spec.EngineSpec{BatchSize: new(42)}}))
+	require.NoError(t, n.UpdateQueue(t.Context(), "q", spec.Spec{Flush: spec.FlushSpec{MaxBytes: new(int64(42))}}))
 
 	d, err := n.DescribeQueue(t.Context(), "q")
 	require.NoError(t, err)
-	require.NotNil(t, d.Spec.Engine.BatchSize)
-	assert.Equal(t, 42, *d.Spec.Engine.BatchSize)
+	require.NotNil(t, d.Spec.Flush.MaxBytes)
+	assert.Equal(t, int64(42), *d.Spec.Flush.MaxBytes)
 }
 
 func TestRetentionShrinkTriggersImmediateReconcile(t *testing.T) {
@@ -145,11 +141,11 @@ func TestRetentionShrinkTriggersImmediateReconcile(t *testing.T) {
 	ctx := t.Context()
 
 	segSize := int64(256)
-	maxMsg := int64(128)
+	segAge := spec.Duration(time.Hour)
 	hour := spec.Duration(time.Hour)
 	createLog(t, n, "q", spec.Spec{
-		Engine:    spec.EngineSpec{SegmentSize: &segSize, MaxMessageBytes: &maxMsg},
-		Retention: spec.RetentionSpec{Age: &hour},
+		Storage:   spec.StorageSpec{MaxSegment: &segSize, MaxSegmentAge: &segAge},
+		Retention: spec.RetentionSpec{MaxAge: &hour},
 	})
 	lq, err := n.LogQueue("q")
 	require.NoError(t, err)
@@ -163,7 +159,7 @@ func TestRetentionShrinkTriggersImmediateReconcile(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	millis := spec.Duration(10 * time.Millisecond)
-	require.NoError(t, n.UpdateQueue(ctx, "q", spec.Spec{Retention: spec.RetentionSpec{Age: &millis}}))
+	require.NoError(t, n.UpdateQueue(ctx, "q", spec.Spec{Retention: spec.RetentionSpec{MaxAge: &millis}}))
 
 	// The shrink triggers an immediate reconcile; the 30s tick is never
 	// waited for.
@@ -181,29 +177,29 @@ func TestQueueDefaultUpdateAffectsFutureEnqueues(t *testing.T) {
 	ctx := t.Context()
 
 	minute := spec.Duration(time.Minute)
-	createTask(t, n, "q", spec.Spec{Task: spec.TaskSpec{DefaultVisibility: &minute}})
+	createTask(t, n, "q", spec.Spec{Task: spec.TaskSpec{Lease: &minute}})
 	tq, err := n.TaskQueue("q")
 	require.NoError(t, err)
 
 	// The materialized handle carries the spec default (1m), not the built-in.
-	// Visibility is the lease granted at dequeue time, so dequeue to observe it.
+	// Lease is the lease granted at dequeue time, so dequeue to observe it.
 	_, err = tq.Enqueue(ctx, []byte("first"))
 	require.NoError(t, err)
 	first, err := tq.Dequeue(ctx)
 	require.NoError(t, err)
-	assert.InDelta(t, time.Minute.Seconds(), time.Until(first.Visibility).Seconds(), 5)
+	assert.InDelta(t, time.Minute.Seconds(), time.Until(first.Lease).Seconds(), 5)
 	assert.Equal(t, uint32(5), first.MaxAttempts)
 
 	two := spec.Duration(2 * time.Minute)
-	require.NoError(t, n.UpdateQueue(ctx, "q", spec.Spec{Task: spec.TaskSpec{DefaultVisibility: &two}}))
+	require.NoError(t, n.UpdateQueue(ctx, "q", spec.Spec{Task: spec.TaskSpec{Lease: &two}}))
 
 	// Future enqueues observe the new default; the earlier task keeps its own.
 	_, err = tq.Enqueue(ctx, []byte("second"))
 	require.NoError(t, err)
 	second, err := tq.Dequeue(ctx)
 	require.NoError(t, err)
-	assert.InDelta(t, (2 * time.Minute).Seconds(), time.Until(second.Visibility).Seconds(), 5)
-	assert.InDelta(t, time.Minute.Seconds(), time.Until(first.Visibility).Seconds(), 5)
+	assert.InDelta(t, (2 * time.Minute).Seconds(), time.Until(second.Lease).Seconds(), 5)
+	assert.InDelta(t, time.Minute.Seconds(), time.Until(first.Lease).Seconds(), 5)
 }
 
 func TestQueueDefaultUpdateSurvivesRestart(t *testing.T) {
@@ -211,7 +207,7 @@ func TestQueueDefaultUpdateSurvivesRestart(t *testing.T) {
 	n1, r1, err := Acquire(dir, spec.Spec{})
 	require.NoError(t, err)
 	minute := spec.Duration(time.Minute)
-	createTask(t, n1, "q", spec.Spec{Task: spec.TaskSpec{DefaultVisibility: &minute}})
+	createTask(t, n1, "q", spec.Spec{Task: spec.TaskSpec{Lease: &minute}})
 	require.NoError(t, r1())
 
 	n2, r2, err := Acquire(dir, spec.Spec{})
@@ -225,15 +221,15 @@ func TestQueueDefaultUpdateSurvivesRestart(t *testing.T) {
 	require.NoError(t, err)
 	first, err := tq.Dequeue(ctx)
 	require.NoError(t, err)
-	assert.InDelta(t, time.Minute.Seconds(), time.Until(first.Visibility).Seconds(), 5)
+	assert.InDelta(t, time.Minute.Seconds(), time.Until(first.Lease).Seconds(), 5)
 
 	two := spec.Duration(2 * time.Minute)
-	require.NoError(t, n2.UpdateQueue(ctx, "q", spec.Spec{Task: spec.TaskSpec{DefaultVisibility: &two}}))
+	require.NoError(t, n2.UpdateQueue(ctx, "q", spec.Spec{Task: spec.TaskSpec{Lease: &two}}))
 	_, err = tq.Enqueue(ctx, []byte("after-update"))
 	require.NoError(t, err)
 	second, err := tq.Dequeue(ctx)
 	require.NoError(t, err)
-	assert.InDelta(t, (2 * time.Minute).Seconds(), time.Until(second.Visibility).Seconds(), 5)
+	assert.InDelta(t, (2 * time.Minute).Seconds(), time.Until(second.Lease).Seconds(), 5)
 }
 
 func TestNodeCollectorLifecycle(t *testing.T) {
@@ -328,56 +324,52 @@ func TestNodeCollectorDisabled(t *testing.T) {
 	require.False(t, ok, "disabled collector must return a closed channel")
 }
 
-// TestCreateQueueRejectsInheritedConflict: the proposal is valid alone but
-// conflicts with the session default it inherits.
-func TestCreateQueueRejectsInheritedConflict(t *testing.T) {
-	seg := int64(1 << 20)
-	n, release, err := Acquire(t.TempDir(), spec.Spec{Engine: spec.EngineSpec{SegmentSize: &seg}})
+// TestCreateQueueRejectsExplicitPairConflict: a proposal setting two fields
+// that conflict with each other is rejected, naming both keys.
+func TestCreateQueueRejectsExplicitPairConflict(t *testing.T) {
+	n, release, err := Acquire(t.TempDir(), spec.Spec{})
 	require.NoError(t, err)
 	defer func() { _ = release() }()
 
-	msg := int64(2 << 20)
-	_, err = n.CreateLogQueue(t.Context(), "q", spec.Spec{Engine: spec.EngineSpec{MaxMessageBytes: &msg}})
+	segment := int64(1 << 20)
+	payload := int64(2 << 20)
+	_, err = n.CreateLogQueue(t.Context(), "q", spec.Spec{
+		Storage: spec.StorageSpec{MaxSegment: &segment, MaxPayload: &payload},
+	})
 	require.ErrorIs(t, err, spec.ErrInvalidConfig)
-	assert.Contains(t, err.Error(), "max_message_bytes")
-	assert.Contains(t, err.Error(), "segment_size")
+	assert.Contains(t, err.Error(), "max_payload")
+	assert.Contains(t, err.Error(), "max_segment")
 }
 
-// TestUpdateQueueRejectsInheritedConflict: reopening a directory under smaller
-// session defaults makes a stored create-only field conflict with what it now
-// inherits, so even an unrelated update must revalidate the merged result.
-func TestUpdateQueueRejectsInheritedConflict(t *testing.T) {
+// TestUpdateQueueRejectsMergedConflict: an unrelated patch revalidates the
+// merged result, so a patch that conflicts with a stored field is caught.
+func TestUpdateQueueRejectsMergedConflict(t *testing.T) {
 	dir := t.TempDir()
-	msg := int64(512 << 10)
-	roomy := int64(1 << 20)
+	segment := int64(1 << 20)
 
-	n1, r1, err := Acquire(dir, spec.Spec{Engine: spec.EngineSpec{SegmentSize: &roomy}})
+	n1, r1, err := Acquire(dir, spec.Spec{})
 	require.NoError(t, err)
-	createLog(t, n1, "q", spec.Spec{Engine: spec.EngineSpec{MaxMessageBytes: &msg}})
+	createLog(t, n1, "q", spec.Spec{Storage: spec.StorageSpec{MaxSegment: &segment}})
 	require.NoError(t, r1())
 
-	small := int64(256 << 10)
-	n2, r2, err := Acquire(dir, spec.Spec{Engine: spec.EngineSpec{SegmentSize: &small}})
+	n2, r2, err := Acquire(dir, spec.Spec{})
 	require.NoError(t, err)
 	defer func() { _ = r2() }()
 
-	err = n2.UpdateQueue(t.Context(), "q", spec.Spec{Engine: spec.EngineSpec{BatchSize: new(7)}})
+	cache := int64(256 << 10)
+	err = n2.UpdateQueue(t.Context(), "q", spec.Spec{Storage: spec.StorageSpec{MaxCache: &cache}})
 	require.ErrorIs(t, err, spec.ErrInvalidConfig)
-	assert.Contains(t, err.Error(), "max_message_bytes")
-	assert.Contains(t, err.Error(), "segment_size")
+	assert.Contains(t, err.Error(), "max_cache")
+	assert.Contains(t, err.Error(), "max_segment")
 }
 
-// TestCreateQueueRejectsInvalidSessionDefault: a bad session default makes
-// every create fail, even for an empty proposal.
-func TestCreateQueueRejectsInvalidSessionDefault(t *testing.T) {
-	zero := 0
-	n, release, err := Acquire(t.TempDir(), spec.Spec{Engine: spec.EngineSpec{BatchSize: &zero}})
-	require.NoError(t, err)
-	defer func() { _ = release() }()
-
-	_, err = n.CreateLogQueue(t.Context(), "q", spec.Spec{})
+// TestAcquireRejectsInvalidSessionDefault: a bad session default makes the
+// whole node refuse to open.
+func TestAcquireRejectsInvalidSessionDefault(t *testing.T) {
+	zero := spec.Duration(0)
+	_, _, err := Acquire(t.TempDir(), spec.Spec{Task: spec.TaskSpec{Lease: &zero}})
 	require.ErrorIs(t, err, spec.ErrInvalidConfig)
-	assert.Contains(t, err.Error(), "batch_size")
+	assert.Contains(t, err.Error(), "lease")
 }
 
 // TestWrongKindRefused: a task queue addressed as a log queue is refused by name.

@@ -40,7 +40,7 @@ func TestServerTokenAuthAcceptsCorrectCredential(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = release() }()
 
-	mode, err := NewAuthMode(spec.Session{AuthMethod: "token", AuthToken: "0123456789abcdef"})
+	mode, err := NewAuthMode(spec.Session{Auth: spec.AuthConfig{Method: "token", Token: "0123456789abcdef"}})
 	require.NoError(t, err)
 	srv := New(n, WithAuth(mode))
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -67,7 +67,7 @@ func TestServerTokenAuthRejectsWrongAndAbsentCredential(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = release() }()
 
-	mode, err := NewAuthMode(spec.Session{AuthMethod: "token", AuthToken: "0123456789abcdef"})
+	mode, err := NewAuthMode(spec.Session{Auth: spec.AuthConfig{Method: "token", Token: "0123456789abcdef"}})
 	require.NoError(t, err)
 	srv := New(n, WithAuth(mode))
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -125,12 +125,12 @@ func TestServerAnonymousAcceptsAnyFirstFrame(t *testing.T) {
 }
 
 func TestNewAuthModeRejectsShortToken(t *testing.T) {
-	_, err := NewAuthMode(spec.Session{AuthMethod: "token", AuthToken: "short"})
+	_, err := NewAuthMode(spec.Session{Auth: spec.AuthConfig{Method: "token", Token: "short"}})
 	assert.Error(t, err)
 }
 
 func TestNewAuthModeRejectsTokenFileMissing(t *testing.T) {
-	_, err := NewAuthMode(spec.Session{AuthMethod: "token", AuthTokenFile: filepath.Join(t.TempDir(), "absent")})
+	_, err := NewAuthMode(spec.Session{Auth: spec.AuthConfig{Method: "token", TokenFile: filepath.Join(t.TempDir(), "absent")}})
 	assert.Error(t, err)
 }
 
@@ -138,7 +138,7 @@ func TestNewAuthModeReadsTokenFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token")
 	require.NoError(t, os.WriteFile(path, []byte("  0123456789abcdef\n"), 0o600))
 
-	mode, err := NewAuthMode(spec.Session{AuthMethod: "token", AuthTokenFile: path})
+	mode, err := NewAuthMode(spec.Session{Auth: spec.AuthConfig{Method: "token", TokenFile: path}})
 	require.NoError(t, err)
 	assert.NoError(t, mode.Verify(protocol.AuthMethodToken, []byte("0123456789abcdef"), nil))
 	assert.ErrorIs(t, mode.Verify(protocol.AuthMethodToken, []byte("0123456789abcdeff"), nil), protocol.ErrUnauthorized)
@@ -222,7 +222,7 @@ func TestServerMTLSEndToEnd(t *testing.T) {
 	defer func() { _ = release() }()
 
 	srvCfg, clientCfg := mTLSFixture(t)
-	mode, err := NewAuthMode(spec.Session{AuthMethod: "mtls"})
+	mode, err := NewAuthMode(spec.Session{Auth: spec.AuthConfig{Method: "mtls"}})
 	require.NoError(t, err)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -252,7 +252,7 @@ func TestServerMTLSAcceptsVerifiedClient(t *testing.T) {
 	defer func() { _ = release() }()
 
 	srvCfg, clientCfg := mTLSFixture(t)
-	mode, err := NewAuthMode(spec.Session{AuthMethod: "mtls"})
+	mode, err := NewAuthMode(spec.Session{Auth: spec.AuthConfig{Method: "mtls"}})
 	require.NoError(t, err)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

@@ -36,7 +36,9 @@ func TestSingleWriter(t *testing.T) {
 	require.NoError(t, err)
 	defer f.Close()
 
-	w := newWAL(f, Config{BatchSize: 32, MaxInterval: time.Millisecond}, 0)
+	cfg := testConfig()
+	cfg.MaxFlushWait = time.Millisecond
+	w := newWAL(f, cfg, 0)
 	w.start()
 	defer w.stop()
 
@@ -83,13 +85,17 @@ func TestBackpressureBlocksProducer(t *testing.T) {
 	require.NoError(t, err)
 	defer f.Close()
 
-	// The WAL is never started, so nothing drains the channel and BatchSize is the exact capacity.
-	w := newWAL(f, Config{BatchSize: 2}, 0)
+	// The WAL is never started, so nothing drains the channel and
+	// MaxFlushBytes/4096 is the exact capacity.
+	cfg := testConfig()
+	cfg.MaxFlushBytes = 8192
+	w := newWAL(f, cfg, 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	entry := asyncEntry{seg: &segment{}, rec: []byte("x"), pos: 0, recLen: 1, offset: 0}
 
-	require.NoError(t, w.pushAsync(ctx, entry))
-	require.NoError(t, w.pushAsync(ctx, entry))
+	for range 8192 / 4096 {
+		require.NoError(t, w.pushAsync(ctx, entry))
+	}
 
 	blocked := make(chan error, 1)
 	go func() { blocked <- w.pushAsync(ctx, entry) }()
@@ -114,7 +120,7 @@ func TestShutdownWakesParkedFetch(t *testing.T) {
 	store, err := openOffsetStore(dir)
 	require.NoError(t, err)
 	defer store.Close()
-	q, err := openQueue(dir, "fetch-park", Config{}, store)
+	q, err := openQueue(dir, "fetch-park", testConfig(), store)
 	require.NoError(t, err)
 
 	errCh := make(chan error, 1)
@@ -147,13 +153,11 @@ func TestDirectoryFsyncSites(t *testing.T) {
 
 	// Site 1: creating a new segment file syncs its directory.
 	count.Store(0)
-	q, err := openQueue(dir, "durable", Config{
-		SegmentSize:     256,
-		MaxMessageBytes: 128,
-		BatchSize:       4,
-		MaxInterval:     time.Millisecond,
-		Fsync:           true,
-	}, store)
+	cfg := testConfig()
+	cfg.MaxSegment = 256
+	cfg.MaxPayload = 128
+	cfg.MaxFlushWait = time.Millisecond
+	q, err := openQueue(dir, "durable", cfg, store)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, count.Load(), int64(1), "creating a segment must fsync its directory")
 

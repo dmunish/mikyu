@@ -186,7 +186,7 @@ func paramsFor(v Verb) []spec.Param {
 	case FlagsQueuePatch:
 		return spec.Updatable()
 	case FlagsEnqueue:
-		return pickCallParams("visibility", "max_attempts", "scheduled_at")
+		return pickCallParams("lease", "max_attempts", "scheduled_at")
 	case FlagsNack:
 		return pickCallParams("retry_after")
 	default:
@@ -441,8 +441,7 @@ func formatArgsStyled(raw string, s style.HelpStyles) string {
 	return sb.String()
 }
 
-// FormatArgsStyled is the exported, color-bool form of formatArgsStyled
-// for callers outside the help renderer (the REPL banner).
+// FormatArgsStyled is the color-bool form of formatArgsStyled for callers outside the help renderer.
 func FormatArgsStyled(raw string, color bool) string {
 	return formatArgsStyled(raw, style.NewHelpStyles(color))
 }

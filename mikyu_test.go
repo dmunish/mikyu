@@ -166,7 +166,7 @@ func TestEmbeddedTaskQueueLifecycle(t *testing.T) {
 
 	q, err := client.TaskQueue("tasks")
 	require.NoError(t, err)
-	task, err := q.Enqueue(t.Context(), []byte("hello"), mikyu.WithMaxAttempts(2), mikyu.WithVisibility(time.Second))
+	task, err := q.Enqueue(t.Context(), []byte("hello"), mikyu.WithTaskMaxAttempts(2), mikyu.WithTaskLease(time.Second))
 	require.NoError(t, err)
 	got, err := q.Dequeue(t.Context())
 	require.NoError(t, err)
@@ -222,9 +222,9 @@ func TestEmbeddedUpdateQueueImmutable(t *testing.T) {
 	defer client.Close()
 	createLog(t, client, "q")
 
-	err = client.UpdateQueue(t.Context(), "q", mikyu.WithSegmentSize(128))
+	err = client.UpdateQueue(t.Context(), "q", mikyu.WithMaxSegment(128))
 	require.ErrorIs(t, err, mikyu.ErrImmutableField)
-	assert.Contains(t, err.Error(), "segment_size")
+	assert.Contains(t, err.Error(), "max_segment")
 }
 
 func TestRemoteUpdateQueueImmutable(t *testing.T) {
@@ -233,9 +233,9 @@ func TestRemoteUpdateQueueImmutable(t *testing.T) {
 	defer client.Close()
 	createLog(t, client, "q")
 
-	err = client.UpdateQueue(t.Context(), "q", mikyu.WithSegmentSize(128))
+	err = client.UpdateQueue(t.Context(), "q", mikyu.WithMaxSegment(128))
 	require.ErrorIs(t, err, mikyu.ErrImmutableField)
-	assert.Contains(t, err.Error(), "segment_size")
+	assert.Contains(t, err.Error(), "max_segment")
 }
 
 // TestSchemaOverWire: embedded and remote Schema share the same table, field
@@ -270,20 +270,20 @@ func TestSchemaOverWire(t *testing.T) {
 func TestOpenDefaultsMismatch(t *testing.T) {
 	dir := t.TempDir()
 	first, err := mikyu.Open(dir, mikyu.WithSessionSpec(mikyu.Spec{
-		Engine: mikyu.EngineSpec{BatchSize: new(7)},
+		Flush: mikyu.FlushSpec{MaxBytes: new(int64(7))},
 	}))
 	require.NoError(t, err)
 	defer first.Close()
 
 	_, err = mikyu.Open(dir, mikyu.WithSessionSpec(mikyu.Spec{
-		Engine: mikyu.EngineSpec{BatchSize: new(8)},
+		Flush: mikyu.FlushSpec{MaxBytes: new(int64(8))},
 	}))
 	require.ErrorIs(t, err, mikyu.ErrSessionDefaultsMismatch)
 }
 
 func TestOpenDefaultsMatchSucceeds(t *testing.T) {
 	dir := t.TempDir()
-	session := mikyu.WithSessionSpec(mikyu.Spec{Engine: mikyu.EngineSpec{BatchSize: new(7)}})
+	session := mikyu.WithSessionSpec(mikyu.Spec{Flush: mikyu.FlushSpec{MaxBytes: new(int64(7))}})
 
 	first, err := mikyu.Open(dir, session)
 	require.NoError(t, err)
@@ -315,7 +315,7 @@ func TestDialRejectsDataDir(t *testing.T) {
 // defaults up front instead of deferring to the first CreateQueue.
 func TestOpenRejectsInvalidSessionSpec(t *testing.T) {
 	_, err := mikyu.Open(t.TempDir(), mikyu.WithSessionSpec(mikyu.Spec{
-		Engine: mikyu.EngineSpec{BatchSize: new(0)},
+		Task: mikyu.TaskSpec{Lease: new(mikyu.Duration)},
 	}))
 	require.ErrorIs(t, err, mikyu.ErrInvalidConfig)
 }
@@ -424,7 +424,7 @@ func TestNackInheritBackoffEmbedded(t *testing.T) {
 	q, err := c.TaskQueue("tasks")
 	require.NoError(t, err)
 
-	_, err = q.Enqueue(t.Context(), []byte("x"), mikyu.WithMaxAttempts(3), mikyu.WithVisibility(time.Second))
+	_, err = q.Enqueue(t.Context(), []byte("x"), mikyu.WithTaskMaxAttempts(3), mikyu.WithTaskLease(time.Second))
 	require.NoError(t, err)
 	first, err := q.Dequeue(t.Context())
 	require.NoError(t, err)
@@ -452,7 +452,7 @@ func TestNackInheritBackoffRemote(t *testing.T) {
 	q, err := c.TaskQueue("tasks")
 	require.NoError(t, err)
 
-	_, err = q.Enqueue(t.Context(), []byte("x"), mikyu.WithMaxAttempts(3))
+	_, err = q.Enqueue(t.Context(), []byte("x"), mikyu.WithTaskMaxAttempts(3))
 	require.NoError(t, err)
 	first, err := q.Dequeue(t.Context())
 	require.NoError(t, err)

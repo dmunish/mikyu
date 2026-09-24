@@ -32,12 +32,12 @@ type checkpointCommit struct {
 	coveredThrough uint64
 }
 
-func encodeTaskRecord(id string, maxAttempts uint32, visibilityTimeout time.Duration, scheduledAt time.Time, payload []byte, key []byte, stalled uint32) []byte {
+func encodeTaskRecord(id string, maxAttempts uint32, lease time.Duration, scheduledAt time.Time, payload []byte, key []byte, stalled uint32) []byte {
 	var b bytes.Buffer
 	writeHeader(&b, recordTask)
 	writeString(&b, id)
 	writeU32(&b, maxAttempts)
-	writeI64(&b, int64(visibilityTimeout))
+	writeI64(&b, int64(lease))
 	writeTime(&b, scheduledAt)
 	writeU32(&b, uint32(len(key)))
 	b.Write(key)
@@ -47,7 +47,7 @@ func encodeTaskRecord(id string, maxAttempts uint32, visibilityTimeout time.Dura
 	return b.Bytes()
 }
 
-func decodeTaskRecord(payload []byte) (id string, maxAttempts uint32, visibilityTimeout time.Duration, scheduledAt time.Time, key []byte, stalled uint32, taskPayload []byte, err error) {
+func decodeTaskRecord(payload []byte) (id string, maxAttempts uint32, lease time.Duration, scheduledAt time.Time, key []byte, stalled uint32, taskPayload []byte, err error) {
 	r, err := newRecordReader(payload, recordTask)
 	if err != nil {
 		return "", 0, 0, time.Time{}, nil, 0, nil, err
@@ -62,7 +62,7 @@ func decodeTaskRecord(payload []byte) (id string, maxAttempts uint32, visibility
 	if timeout, err = r.readI64(); err != nil || timeout <= 0 {
 		return "", 0, 0, time.Time{}, nil, 0, nil, ErrInvalidTask
 	}
-	visibilityTimeout = time.Duration(timeout)
+	lease = time.Duration(timeout)
 	if scheduledAt, err = r.readTime(); err != nil {
 		return "", 0, 0, time.Time{}, nil, 0, nil, ErrInvalidTask
 	}
@@ -75,7 +75,7 @@ func decodeTaskRecord(payload []byte) (id string, maxAttempts uint32, visibility
 	if taskPayload, err = r.readBytes(); err != nil || !r.empty() {
 		return "", 0, 0, time.Time{}, nil, 0, nil, ErrInvalidTask
 	}
-	return id, maxAttempts, visibilityTimeout, scheduledAt, key, stalled, taskPayload, nil
+	return id, maxAttempts, lease, scheduledAt, key, stalled, taskPayload, nil
 }
 
 func encodeDeadLetterRecord(task Task) []byte {
@@ -271,8 +271,8 @@ func encodeSnapshot(states []*taskState, dlq map[string]Task) []byte {
 		writeString(&b, state.task.ID)
 		writeU32(&b, state.task.Attempts)
 		writeU32(&b, state.task.MaxAttempts)
-		writeI64(&b, int64(state.visibilityTimeout))
-		writeTime(&b, state.task.Visibility)
+		writeI64(&b, int64(state.lease))
+		writeTime(&b, state.task.Lease)
 		writeTime(&b, state.task.ScheduledAt)
 		writeString(&b, state.task.DeliveryID)
 		writeTime(&b, state.nextAt)
@@ -332,11 +332,11 @@ func decodeSnapshot(data []byte) ([]taskState, map[string]Task, error) {
 		if err != nil || maxAttempts == 0 || attempts > maxAttempts {
 			return nil, nil, ErrCheckpointCorrupt
 		}
-		visibilityTimeout, err := r.readI64()
-		if err != nil || visibilityTimeout <= 0 {
+		lease, err := r.readI64()
+		if err != nil || lease <= 0 {
 			return nil, nil, ErrCheckpointCorrupt
 		}
-		visibility, err := r.readTime()
+		expiry, err := r.readTime()
 		if err != nil {
 			return nil, nil, ErrCheckpointCorrupt
 		}
@@ -352,7 +352,7 @@ func decodeSnapshot(data []byte) ([]taskState, map[string]Task, error) {
 		if err != nil {
 			return nil, nil, ErrCheckpointCorrupt
 		}
-				flag, err := r.readByte()
+		flag, err := r.readByte()
 		if err != nil || (flag != 0 && flag != 1) {
 			return nil, nil, ErrCheckpointCorrupt
 		}
@@ -368,13 +368,13 @@ func decodeSnapshot(data []byte) ([]taskState, map[string]Task, error) {
 		if err != nil {
 			return nil, nil, ErrCheckpointCorrupt
 		}
-		if (flag == 1 && visibility.IsZero()) || (flag == 0 && !visibility.IsZero()) {
+		if (flag == 1 && expiry.IsZero()) || (flag == 0 && !expiry.IsZero()) {
 			return nil, nil, ErrCheckpointCorrupt
 		}
 		if (flag == 1 && deliveryID == "") || (flag == 0 && deliveryID != "") {
 			return nil, nil, ErrCheckpointCorrupt
 		}
-		states = append(states, taskState{task: Task{ID: id, Payload: payload, Attempts: attempts, MaxAttempts: maxAttempts, Visibility: visibility, ScheduledAt: scheduled, DeliveryID: deliveryID, Offset: offset, Key: key, Stalled: stalled}, nextAt: nextAt, visibilityTimeout: time.Duration(visibilityTimeout), inFlight: flag == 1})
+		states = append(states, taskState{task: Task{ID: id, Payload: payload, Attempts: attempts, MaxAttempts: maxAttempts, Lease: expiry, ScheduledAt: scheduled, DeliveryID: deliveryID, Offset: offset, Key: key, Stalled: stalled}, nextAt: nextAt, lease: time.Duration(lease), inFlight: flag == 1})
 	}
 
 	dlqCount, err := r.readU32()
@@ -585,7 +585,7 @@ func (q *queue) refreshLocked(ctx context.Context) error {
 		}
 		switch recordKind(msg.Payload) {
 		case recordTask:
-			id, maxAttempts, visibilityTimeout, scheduledAt, key, stalled, payload, err := decodeTaskRecord(msg.Payload)
+			id, maxAttempts, lease, scheduledAt, key, stalled, payload, err := decodeTaskRecord(msg.Payload)
 			if err != nil {
 				return err
 			}
@@ -595,7 +595,7 @@ func (q *queue) refreshLocked(ctx context.Context) error {
 			if _, exists := q.dlq[id]; exists {
 				return ErrInvalidTask
 			}
-			state := &taskState{task: Task{ID: id, Payload: bytes.Clone(payload), MaxAttempts: maxAttempts, ScheduledAt: scheduledAt, Offset: msg.Offset, Key: key, Stalled: stalled}, nextAt: scheduledAt, visibilityTimeout: visibilityTimeout}
+			state := &taskState{task: Task{ID: id, Payload: bytes.Clone(payload), MaxAttempts: maxAttempts, ScheduledAt: scheduledAt, Offset: msg.Offset, Key: key, Stalled: stalled}, nextAt: scheduledAt, lease: lease}
 			q.active[id] = state
 			q.pushScheduleLocked(state)
 		case recordDLQ:

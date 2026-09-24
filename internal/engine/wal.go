@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/dmunish/mikyu/internal/metrics"
+	"github.com/dmunish/mikyu/internal/spec"
 )
 
 // writerHook, when non-nil, runs before every WAL file write so tests can assert the single-writer invariant.
@@ -25,29 +26,34 @@ type asyncEntry struct {
 	offset uint64
 }
 
-// wal manages write-ahead logging using adaptive dual-threshold flusher batching
-// with micro-linger group commits to minimize fsync overhead.
+// wal manages write-ahead logging using byte-budgeted flusher batching with
+// micro-linger group commits to minimize fsync overhead.
 //
 // Single writer: exactly one goroutine (the syncLoop) writes bytes to the WAL
 // segment file. Producers only stage records via push/pushBatch (sync path) or
 // pushAsync (async path); flush and drainAndFlushAsync are the sole callers of
-// writeAt. Async backpressure is bounded: asyncChan holds BatchSize entries,
-// a full channel blocks the producer, and a canceled context yields ctx.Err().
+// writeAt. Sequencing is byte-based: pushedBytes/publishedBytes count staged
+// and flushed bytes, and wait(seq) blocks until publishedBytes reaches the
+// byte offset the push returned. Async backpressure is bounded: asyncChan
+// holds MaxFlushBytes/4096 slots (a byte-to-slot approximation), a full
+// channel blocks the producer, and a canceled context yields ctx.Err().
 type wal struct {
 	cfg  Config
 	file *os.File
 
-	mu          sync.Mutex
-	cond        *sync.Cond
-	buf         []byte
-	pending     []pendingEntry
-	swapBuf     []byte
-	swapPending []pendingEntry
-	pushed      int64
-	published   int64
-	err         error
+	mu             sync.Mutex
+	cond           *sync.Cond
+	buf            []byte
+	pending        []pendingEntry
+	pendingBytes   int64
+	swapBuf        []byte
+	swapPending    []pendingEntry
+	pushedBytes    int64
+	publishedBytes int64
+	asyncNext      uint64
+	err            error
 
-	asyncChan     chan asyncEntry // Lock-free channel for fsync: false fast-path
+	asyncChan     chan asyncEntry // Lock-free channel for the async fast path
 	wake          chan struct{}
 	configChanged chan struct{}
 	shutdown      chan struct{}
@@ -57,19 +63,17 @@ type wal struct {
 	m *walMetrics
 }
 
-func newWAL(f *os.File, cfg Config, startOffset int64, scopes ...*metrics.Scope) *wal {
-	cfg = cfg.withDefaults()
-	initCap := cfg.BatchSize * 1024
+func newWAL(f *os.File, cfg Config, startOffset uint64, scopes ...*metrics.Scope) *wal {
+	flushBytes := max(cfg.MaxFlushBytes, 4096)
 	w := &wal{
 		file:          f,
 		cfg:           cfg,
-		published:     startOffset,
-		pushed:        startOffset,
-		buf:           make([]byte, 0, initCap),
-		pending:       make([]pendingEntry, 0, cfg.BatchSize),
-		swapBuf:       make([]byte, 0, initCap),
-		swapPending:   make([]pendingEntry, 0, cfg.BatchSize),
-		asyncChan:     make(chan asyncEntry, cfg.BatchSize),
+		asyncNext:     startOffset,
+		buf:           make([]byte, 0, flushBytes),
+		pending:       make([]pendingEntry, 0, 64),
+		swapBuf:       make([]byte, 0, flushBytes),
+		swapPending:   make([]pendingEntry, 0, 64),
+		asyncChan:     make(chan asyncEntry, max(1, int(cfg.MaxFlushBytes)/4096)),
 		wake:          make(chan struct{}, 1),
 		configChanged: make(chan struct{}, 1),
 		shutdown:      make(chan struct{}),
@@ -88,8 +92,11 @@ func (w *wal) syncLoop() {
 	defer close(w.done)
 
 	w.mu.Lock()
-	interval := w.cfg.MaxInterval
+	interval := w.cfg.MaxFlushWait
 	w.mu.Unlock()
+	if interval <= 0 {
+		interval = 10 * time.Millisecond
+	}
 
 	ticker := time.NewTicker(interval)
 
@@ -104,8 +111,11 @@ func (w *wal) syncLoop() {
 		case <-w.configChanged:
 			ticker.Stop()
 			w.mu.Lock()
-			interval = w.cfg.MaxInterval
+			interval = w.cfg.MaxFlushWait
 			w.mu.Unlock()
+			if interval <= 0 {
+				interval = 10 * time.Millisecond
+			}
 			ticker = time.NewTicker(interval)
 		case <-w.shutdown:
 			ticker.Stop()
@@ -115,12 +125,12 @@ func (w *wal) syncLoop() {
 	}
 }
 
-// UpdateConfig swaps the WAL's batching and timing parameters.
-func (w *wal) UpdateConfig(batchSize int, maxInterval, minInterval time.Duration) {
+// UpdateConfig swaps the WAL's byte budget and timing parameters.
+func (w *wal) UpdateConfig(maxFlushBytes int64, maxFlushWait, flushLinger time.Duration) {
 	w.mu.Lock()
-	w.cfg.BatchSize = batchSize
-	w.cfg.MaxInterval = maxInterval
-	w.cfg.MinInterval = minInterval
+	w.cfg.MaxFlushBytes = maxFlushBytes
+	w.cfg.MaxFlushWait = maxFlushWait
+	w.cfg.FlushLinger = flushLinger
 	w.mu.Unlock()
 	select {
 	case w.configChanged <- struct{}{}:
@@ -144,13 +154,15 @@ func (w *wal) push(rec []byte, pos int64) (seq int64, wake bool, err error) {
 		return 0, false, w.err
 	}
 
-	seq = w.pushed
-	w.pushed++
+	n := int64(len(rec))
+	seq = w.pushedBytes + n
+	w.pushedBytes = seq
 	w.buf = append(w.buf, rec...)
-	w.pending = append(w.pending, pendingEntry{pos: pos, len: int64(len(rec))})
+	w.pending = append(w.pending, pendingEntry{pos: pos, len: n})
+	w.pendingBytes += n
 	w.m.pending.Set(int64(len(w.pending)))
 
-	wake = len(w.pending) == 1 || len(w.pending) >= w.cfg.BatchSize
+	wake = w.pendingBytes >= w.cfg.MaxFlushBytes
 	return seq, wake, nil
 }
 
@@ -162,16 +174,18 @@ func (w *wal) pushBatch(recs [][]byte, positions []int64) (seq int64, wake bool,
 		return 0, false, w.err
 	}
 
-	seq = w.pushed + int64(len(recs)) - 1
-	w.pushed += int64(len(recs))
-
+	var total int64
 	for i, rec := range recs {
 		w.buf = append(w.buf, rec...)
 		w.pending = append(w.pending, pendingEntry{pos: positions[i], len: int64(len(rec))})
+		total += int64(len(rec))
 	}
+	w.pendingBytes += total
+	w.pushedBytes += total
+	seq = w.pushedBytes
 	w.m.pending.Set(int64(len(w.pending)))
 
-	wake = len(w.pending) >= w.cfg.BatchSize || len(recs) >= w.cfg.BatchSize
+	wake = w.pendingBytes >= w.cfg.MaxFlushBytes
 	return seq, wake, nil
 }
 
@@ -195,11 +209,12 @@ func (w *wal) pushAsync(ctx context.Context, e asyncEntry) error {
 	}
 }
 
+// wait blocks until the flusher has published every byte staged before seq.
 func (w *wal) wait(seq int64) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	for w.published <= seq && w.err == nil {
+	for w.publishedBytes < seq && w.err == nil {
 		w.cond.Wait()
 	}
 	return w.err
@@ -213,17 +228,17 @@ func (w *wal) currentError() error {
 
 func (w *wal) adaptiveFlush() {
 	w.mu.Lock()
-	n := len(w.pending)
-	batchSize := w.cfg.BatchSize
-	minInterval := w.cfg.MinInterval
+	pending := w.pendingBytes
+	maxBytes := w.cfg.MaxFlushBytes
+	linger := w.cfg.FlushLinger
 	w.mu.Unlock()
 
-	if n == 0 {
+	if pending == 0 {
 		return
 	}
 
-	if n < batchSize && minInterval > 0 {
-		time.Sleep(minInterval)
+	if pending < maxBytes && linger > 0 {
+		time.Sleep(linger)
 	}
 
 	w.flush()
@@ -239,10 +254,10 @@ func (w *wal) flush() {
 	// Swap staged buffers with pre-allocated swap buffers
 	data := w.buf
 	entries := w.pending
-	fsync := w.cfg.Fsync
 
 	w.buf = w.swapBuf[:0]
 	w.pending = w.swapPending[:0]
+	w.pendingBytes = 0
 
 	// Drain wake signal associated ONLY with the buffers being flushed
 	select {
@@ -256,7 +271,7 @@ func (w *wal) flush() {
 	var writeErr error
 	if _, err := w.writeAt(data, entries[0].pos); err != nil {
 		writeErr = err
-	} else if fsync {
+	} else if w.cfg.Durability != spec.DurabilityAsync {
 		if err := syncData(w.file); err != nil {
 			writeErr = err
 		}
@@ -268,7 +283,7 @@ func (w *wal) flush() {
 	if writeErr != nil {
 		w.err = writeErr
 	} else {
-		w.published += int64(len(entries))
+		w.publishedBytes += int64(len(data))
 	}
 
 	// Reclaim used buffer capacity for next swap cycle
@@ -282,15 +297,17 @@ func (w *wal) flush() {
 
 func (w *wal) drainAndFlushAsync(first asyncEntry) {
 	w.mu.Lock()
-	batchSize := w.cfg.BatchSize
+	maxBytes := w.cfg.MaxFlushBytes
 	w.mu.Unlock()
 
 	entries := []asyncEntry{first}
+	total := first.recLen
 
-	for len(entries) < batchSize {
+	for total < maxBytes {
 		select {
 		case entry := <-w.asyncChan:
 			entries = append(entries, entry)
+			total += entry.recLen
 		default:
 			goto WRITE
 		}
@@ -299,7 +316,7 @@ func (w *wal) drainAndFlushAsync(first asyncEntry) {
 WRITE:
 	w.mu.Lock()
 	failed := w.err
-	published := uint64(w.published)
+	next := w.asyncNext
 	w.mu.Unlock()
 	if failed != nil {
 		return
@@ -316,16 +333,16 @@ WRITE:
 			w.setError(err)
 			return
 		}
-		if e.offset == published {
-			published++
+		if e.offset == next {
+			next++
 		}
 	}
 	w.m.flushes.Inc()
 	w.m.flushDur.Observe(time.Since(start).Seconds())
 
 	w.mu.Lock()
-	if published > uint64(w.published) {
-		w.published = int64(published)
+	if next > w.asyncNext {
+		w.asyncNext = next
 	}
 	w.cond.Broadcast()
 	w.mu.Unlock()

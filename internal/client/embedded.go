@@ -62,7 +62,7 @@ func (c *embeddedClient) CreateTaskQueue(ctx context.Context, name string, opts 
 
 // rejectCompaction enforces at the SDK boundary that compaction is a log-queue setting.
 func rejectCompaction(s spec.Spec) error {
-	if s.Engine.Compaction != nil && *s.Engine.Compaction {
+	if s.Storage.Compaction != nil && *s.Storage.Compaction != spec.CompactionNone {
 		return fmt.Errorf("%w: compaction is a log-queue setting", spec.ErrInvalidConfig)
 	}
 	return nil

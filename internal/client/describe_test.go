@@ -41,7 +41,7 @@ func newLoopbackServer(t *testing.T) *remoteClient {
 // same sparse spec, so DescribeQueue produces identical JSON.
 func TestDescribeAfterCreateWithFlags(t *testing.T) {
 	ctx := t.Context()
-	opts := []QueueOption{WithSegmentSize(128), WithMaxMessageBytes(128)}
+	opts := []QueueOption{WithMaxSegment(128), WithMaxPayload(64)}
 
 	emb, err := NewEmbedded(t.TempDir())
 	require.NoError(t, err)
@@ -152,7 +152,7 @@ func TestRemoteMinOffsetUsesMetrics(t *testing.T) {
 // value as embedded MinOffset after the same operations.
 func TestOpMinOffsetRoundTrip(t *testing.T) {
 	ctx := t.Context()
-	opts := []QueueOption{WithSegmentSize(128), WithMaxMessageBytes(128)}
+	opts := []QueueOption{WithMaxSegment(128), WithMaxPayload(64)}
 
 	c := newLoopbackServer(t)
 	mustCreateLog(t, c, "q", opts...)

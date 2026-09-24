@@ -87,7 +87,9 @@ func TestManagerCloseCleansUp(t *testing.T) {
 
 func TestManagerCollectConcurrent(t *testing.T) {
 	dir := t.TempDir()
-	mgr, err := OpenManager(dir, Config{BatchSize: 10, MaxInterval: time.Millisecond}, nil)
+	cfg := testConfig()
+	cfg.MaxFlushWait = time.Millisecond
+	mgr, err := OpenManager(dir, cfg, nil)
 	require.NoError(t, err)
 	defer mgr.Close()
 

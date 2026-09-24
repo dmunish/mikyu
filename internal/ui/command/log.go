@@ -11,8 +11,7 @@ import (
 	"golang.org/x/term"
 )
 
-// GetTerminalWidth returns the width of the active terminal window,
-// checking stdout, stderr, and stdin descriptors.
+// GetTerminalWidth returns the width of the active terminal window, checking stdout, stderr, and stdin.
 func GetTerminalWidth() int {
 	for _, fd := range []int{int(os.Stdout.Fd()), int(os.Stderr.Fd()), int(os.Stdin.Fd())} {
 		if term.IsTerminal(fd) {
@@ -25,9 +24,7 @@ func GetTerminalWidth() int {
 	return -1
 }
 
-// FormatSingleLinePayload sanitizes raw payload bytes (escaping control
-// characters, stripping non-printables) and truncates to availableWidth
-// using visual cell count.
+// FormatSingleLinePayload sanitizes payload bytes and truncates to availableWidth using visual cell count.
 func FormatSingleLinePayload(payload []byte, availableWidth int) string {
 	var sb strings.Builder
 	sb.Grow(len(payload))
@@ -71,8 +68,7 @@ func FormatSingleLinePayload(payload []byte, availableWidth int) string {
 	return truncated.String()
 }
 
-// ResolvePayload converts string input, @file paths, or stdin (-) into
-// payload bytes.
+// ResolvePayload converts string input, @file paths, or stdin (-) into payload bytes.
 func ResolvePayload(input string) ([]byte, error) {
 	if input == "-" {
 		return io.ReadAll(os.Stdin)
@@ -83,8 +79,7 @@ func ResolvePayload(input string) ([]byte, error) {
 	return []byte(input), nil
 }
 
-// Append sends payload input to a log queue and returns the appended
-// offset and payload size in bytes.
+// Append sends payload input to a log queue and returns the appended offset and payload size in bytes.
 func Append(ctx context.Context, client mikyu.Client, name, input string, key []byte) (uint64, int, error) {
 	payload, err := ResolvePayload(input)
 	if err != nil {
@@ -114,8 +109,7 @@ func Read(ctx context.Context, client mikyu.Client, name string, offset uint64) 
 	return q.Read(ctx, offset)
 }
 
-// Tail streams records continuously starting from startOffset, calling
-// onMessage for each record.
+// Tail streams records continuously starting from startOffset, calling onMessage for each record.
 func Tail(ctx context.Context, client mikyu.Client, name string, startOffset uint64, onMessage func(msg mikyu.Record) error) error {
 	q, err := client.LogQueue(name)
 	if err != nil {
@@ -134,8 +128,7 @@ func Tail(ctx context.Context, client mikyu.Client, name string, startOffset uin
 	return nil
 }
 
-// Truncate truncates physical log segments below minOffset. If confirmFn
-// is provided, truncation occurs only if confirmFn returns true.
+// Truncate truncates physical log segments below minOffset, gated by confirmFn when provided.
 func Truncate(ctx context.Context, client mikyu.Client, name string, minOffset uint64, confirmFn func() (bool, error)) (reclaimed int64, executed bool, err error) {
 	if confirmFn != nil {
 		ok, err := confirmFn()

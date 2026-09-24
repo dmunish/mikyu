@@ -11,6 +11,7 @@ import (
 	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/enginetest"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
+	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -183,12 +184,14 @@ func TestLogQueueTailBugProof(t *testing.T) {
 func TestStreamSkipsCompactedOffsets(t *testing.T) {
 	dir := t.TempDir()
 	mgr, err := engine.OpenManager(dir, engine.Config{
-		BatchSize:       16,
-		MaxInterval:     10 * time.Millisecond,
-		SegmentSize:     256,
-		MaxMessageBytes: 1024 * 1024,
-		Fsync:           false,
-		Compaction:      true,
+		Durability:    spec.DurabilityAsync,
+		Compaction:    spec.CompactionKeys,
+		MaxSegment:    256,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    1024 * 1024,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  10 * time.Millisecond,
 	}, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = mgr.Close() })

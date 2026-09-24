@@ -34,9 +34,40 @@ func sampleText(p spec.Param) string {
 	case spec.KindDuration:
 		return "2s"
 	case spec.KindBytes:
-		return "1048576"
+		return byteSample(p.Key)
 	case spec.KindBool:
 		return "true"
+	case spec.KindEnum:
+		return p.Allowed[0]
+	default:
+		return stringSample(p.Key)
+	}
+}
+
+// byteSample keeps the explicit pair rules satisfied (payload fits a segment, cache covers it).
+func byteSample(key string) string {
+	switch key {
+	case "max_segment":
+		return "67108864"
+	case "max_payload":
+		return "1048576"
+	case "max_cache":
+		return "33554432"
+	default:
+		return "1048576"
+	}
+}
+
+func stringSample(key string) string {
+	switch key {
+	case "target":
+		return "tcp://127.0.0.1:7420"
+	case "metrics_listen":
+		return "127.0.0.1:9090"
+	case "auth_method":
+		return "none"
+	case "auth_token":
+		return "0123456789abcdef"
 	default:
 		return "sample"
 	}
@@ -75,10 +106,7 @@ func defaultsDoc(t *testing.T) string {
 
 	var b strings.Builder
 	b.WriteString("defaults:\n")
-	for _, group := range []string{"engine", "retention", "task"} {
-		if len(groups[group]) == 0 {
-			continue
-		}
+	for _, group := range slices.Sorted(maps.Keys(groups)) {
 		b.WriteString("  " + group + ":\n")
 		b.WriteString(strings.Join(groups[group], "\n") + "\n")
 	}
@@ -251,7 +279,8 @@ func effectiveJSON(t *testing.T, d mikyu.QueueDescription) string {
 // TestNamingLaw holds the CLI verbs, the public methods, and the option
 // constructors to the vocabulary of spec.Table.
 func TestNamingLaw(t *testing.T) {
-	bannedParts := []string{"Produce", "Publish", "Pop", "Stats", "Info", "TruncateQueue", "FetchOffset", "OriginalOffset", "DequeueNow"}
+	bannedParts := []string{"Produce", "Publish", "Pop", "Stats", "Info", "TruncateQueue", "FetchOffset", "OriginalOffset", "DequeueNow",
+		"Visibility", "BatchSize", "SegmentSize", "MaxMessageBytes", "MaxDLQ", "MaxConns", "Fsync", "Encrypted", "MinInterval", "MaxInterval"}
 
 	for _, v := range command.Verbs {
 		lower := strings.ToLower(v.Name)
@@ -275,8 +304,16 @@ func TestNamingLaw(t *testing.T) {
 	}
 
 	// The option constructors are exactly the table's option names, plus the
-	// one composition helper that carries a whole session spec.
-	compositionHelpers := map[string]bool{"WithSessionSpec": true, "WithAutoStart": true, "WithKey": true, "WithRecordKey": true}
+	// composition helpers that carry a whole session spec or disambiguate the
+	// spec/call lease and max-attempts keys.
+	compositionHelpers := map[string]bool{
+		"WithSessionSpec":      true,
+		"WithAutoStart":        true,
+		"WithKey":              true,
+		"WithRecordKey":        true,
+		"WithTaskLease":        true,
+		"WithTaskMaxAttempts":  true,
+	}
 	have := map[string]bool{}
 	for _, name := range exportedFuncs(t, ".") {
 		if strings.HasPrefix(name, "With") {

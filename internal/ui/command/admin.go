@@ -13,8 +13,7 @@ func Metrics(ctx context.Context, client mikyu.Client) (mikyu.Metrics, error) {
 	return client.Metrics(ctx)
 }
 
-// Shutdown sends an OpShutdown frame to the daemon process. If confirmFn
-// is provided, shutdown occurs only if confirmFn returns true.
+// Shutdown sends an OpShutdown frame to the daemon, gated by confirmFn when provided.
 func Shutdown(target string, sess spec.Session, confirmFn func() (bool, error)) (executed bool, err error) {
 	if confirmFn != nil {
 		ok, err := confirmFn()

@@ -66,14 +66,14 @@ func NewRemote(target string, opts ...Option) (*remoteClient, error) {
 	}
 	if cfg.AutoStart {
 		if err := daemon.EnsureDaemonRunning(daemon.SpawnOptions{
-			Target:          target,
-			DataDir:         cfg.DataDir,
-			TLSEnabled:      cfg.TLSEnabled,
-			TLSCertFile:     cfg.TLSCertFile,
-			TLSKeyFile:      cfg.TLSKeyFile,
-			AuthMethod:      cfg.AuthMethod,
-			AuthTokenFile:   cfg.AuthTokenFile,
-			TLSClientCaFile: cfg.TLSClientCaFile,
+			Target:        target,
+			DataDir:       cfg.DataDir,
+			TLSEnabled:    cfg.TLSEnabled,
+			TLSCert:       cfg.TLSCert,
+			TLSKey:        cfg.TLSKey,
+			AuthMethod:    cfg.AuthMethod,
+			AuthTokenFile: cfg.AuthTokenFile,
+			TLSClientCA:   cfg.TLSClientCA,
 		}); err != nil {
 			return nil, err
 		}
@@ -84,9 +84,9 @@ func NewRemote(target string, opts ...Option) (*remoteClient, error) {
 		addr:     addr,
 		cfg:      cfg,
 		tls:      tlsConfig,
-		pool:     make(chan *clientConn, cfg.MaxConns),
-		maxConns: cfg.MaxConns,
-		connSem:  make(chan struct{}, cfg.MaxConns),
+		pool:     make(chan *clientConn, cfg.MaxConnections),
+		maxConns: cfg.MaxConnections,
+		connSem:  make(chan struct{}, cfg.MaxConnections),
 	}
 	return c, nil
 }
@@ -286,6 +286,9 @@ func (c *remoteClient) exchange(ctx context.Context, op byte, body []byte) ([]by
 func (c *remoteClient) roundTrip(ch *clientConn, op byte, body []byte) (byte, []byte, error) {
 	if err := protocol.WriteFrame(ch.conn, op, body); err != nil {
 		return 0, nil, err
+	}
+	if c.cfg.testFrameSent != nil {
+		c.cfg.testFrameSent(op)
 	}
 	return protocol.ReadFrame(ch.r)
 }

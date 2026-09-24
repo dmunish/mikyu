@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,12 +18,13 @@ func newTaskQueueWithDefaults(t *testing.T, d Defaults) *queue {
 	t.Helper()
 	dir := t.TempDir()
 	mgr, err := engine.OpenManager(dir, engine.Config{
-		BatchSize:       8,
-		MaxInterval:     time.Millisecond,
-		MinInterval:     0,
-		SegmentSize:     16 * 1024,
-		MaxMessageBytes: 2 * 1024 * 1024,
-		Fsync:           false,
+		Durability:    spec.DurabilityAsync,
+		MaxSegment:    16 * 1024,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    2 * 1024 * 1024,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
 	}, nil)
 	require.NoError(t, err)
 	storage, err := mgr.Create("tasks")
@@ -38,7 +40,7 @@ func newTaskQueueWithDefaults(t *testing.T, d Defaults) *queue {
 }
 
 func TestQueueDefaultsApply(t *testing.T) {
-	q := newTaskQueueWithDefaults(t, Defaults{Visibility: time.Minute, MaxAttempts: 3})
+	q := newTaskQueueWithDefaults(t, Defaults{Lease: time.Minute, MaxAttempts: 3})
 	ctx := t.Context()
 
 	_, err := q.Enqueue(ctx, []byte("defaults"))
@@ -46,27 +48,27 @@ func TestQueueDefaultsApply(t *testing.T) {
 	got, err := q.Dequeue(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(3), got.MaxAttempts)
-	left := time.Until(got.Visibility)
+	left := time.Until(got.Lease)
 	assert.GreaterOrEqual(t, left, 55*time.Second, "lease should be ~1m out")
 	assert.LessOrEqual(t, left, time.Minute+5*time.Second)
 }
 
 func TestPerCallOverridesQueueDefault(t *testing.T) {
-	q := newTaskQueueWithDefaults(t, Defaults{Visibility: time.Minute, MaxAttempts: 3})
+	q := newTaskQueueWithDefaults(t, Defaults{Lease: time.Minute, MaxAttempts: 3})
 	ctx := t.Context()
 
-	_, err := q.Enqueue(ctx, []byte("override"), WithVisibility(10*time.Second), WithMaxAttempts(2))
+	_, err := q.Enqueue(ctx, []byte("override"), WithLease(10*time.Second), WithMaxAttempts(2))
 	require.NoError(t, err)
 	got, err := q.Dequeue(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(2), got.MaxAttempts)
-	left := time.Until(got.Visibility)
+	left := time.Until(got.Lease)
 	assert.GreaterOrEqual(t, left, 5*time.Second, "lease should be ~10s out")
 	assert.LessOrEqual(t, left, 15*time.Second)
 }
 
 func TestDefaultsUpdateAfterUpdateQueue(t *testing.T) {
-	q := newTaskQueueWithDefaults(t, Defaults{Visibility: time.Minute, MaxAttempts: 5})
+	q := newTaskQueueWithDefaults(t, Defaults{Lease: time.Minute, MaxAttempts: 5})
 	ctx := t.Context()
 
 	_, err := q.Enqueue(ctx, []byte("before"))
@@ -75,14 +77,14 @@ func TestDefaultsUpdateAfterUpdateQueue(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, uint32(5), before.MaxAttempts)
 
-	q.SetDefaults(Defaults{Visibility: 30 * time.Second, MaxAttempts: 2})
+	q.SetDefaults(Defaults{Lease: 30 * time.Second, MaxAttempts: 2})
 
 	_, err = q.Enqueue(ctx, []byte("after"))
 	require.NoError(t, err)
 	after, err := q.Dequeue(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(2), after.MaxAttempts)
-	left := time.Until(after.Visibility)
+	left := time.Until(after.Lease)
 	assert.GreaterOrEqual(t, left, 25*time.Second, "lease should be ~30s out")
 	assert.LessOrEqual(t, left, 35*time.Second)
 }
@@ -91,7 +93,7 @@ func TestAckViaRef(t *testing.T) {
 	q, _, _ := newTestTaskQueue(t)
 	ctx := t.Context()
 
-	_, err := q.Enqueue(ctx, []byte("ref"), WithVisibility(time.Second), WithMaxAttempts(3))
+	_, err := q.Enqueue(ctx, []byte("ref"), WithLease(time.Second), WithMaxAttempts(3))
 	require.NoError(t, err)
 	got, err := q.Dequeue(ctx)
 	require.NoError(t, err)
@@ -110,7 +112,7 @@ func TestNackViaRef(t *testing.T) {
 	q, _, _ := newTestTaskQueue(t)
 	ctx := t.Context()
 
-	_, err := q.Enqueue(ctx, []byte("nack-ref"), WithVisibility(time.Second), WithMaxAttempts(3))
+	_, err := q.Enqueue(ctx, []byte("nack-ref"), WithLease(time.Second), WithMaxAttempts(3))
 	require.NoError(t, err)
 	got, err := q.Dequeue(ctx)
 	require.NoError(t, err)
@@ -130,7 +132,7 @@ func TestExtendViaRef(t *testing.T) {
 	q, _, _ := newTestTaskQueue(t)
 	ctx := t.Context()
 
-	_, err := q.Enqueue(ctx, []byte("extend-ref"), WithVisibility(50*time.Millisecond), WithMaxAttempts(3))
+	_, err := q.Enqueue(ctx, []byte("extend-ref"), WithLease(50*time.Millisecond), WithMaxAttempts(3))
 	require.NoError(t, err)
 	got, err := q.Dequeue(ctx)
 	require.NoError(t, err)
@@ -149,7 +151,7 @@ func TestDeadLetterAckViaRef(t *testing.T) {
 	q, _, _ := newTestTaskQueue(t)
 	ctx := t.Context()
 
-	created, err := q.Enqueue(ctx, []byte("dl-ref"), WithVisibility(time.Second), WithMaxAttempts(1))
+	created, err := q.Enqueue(ctx, []byte("dl-ref"), WithLease(time.Second), WithMaxAttempts(1))
 	require.NoError(t, err)
 	leased, err := q.Dequeue(ctx)
 	require.NoError(t, err)

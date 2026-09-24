@@ -72,15 +72,15 @@ func Run(args []string) error {
 	}
 
 	var srvOpts []server.ServerOption
-	if cfg.Server.TLSEnabled {
+	if cfg.Server.TLS.Enabled {
 		// TLS only wraps tcp:// listeners (see Server.ListenAndServe).
 		if network, _, perr := protocol.ParseTarget(cfg.Server.Target); perr == nil && network != "tcp" {
 			log.Printf("mikyu daemon: warning: TLS is enabled but target %q is not tcp://; TLS will not apply", cfg.Server.Target)
 		}
-		if cfg.Server.TLSCertFile == "" || cfg.Server.TLSKeyFile == "" {
+		if cfg.Server.TLS.Cert == "" || cfg.Server.TLS.Key == "" {
 			log.Printf("mikyu daemon: warning: TLS enabled without both cert and key files; generating an ephemeral self-signed certificate")
 		}
-		tlsCfg, err := server.DefaultTLSConfig(cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile, cfg.Server.TLSClientCaFile)
+		tlsCfg, err := server.DefaultTLSConfig(cfg.Server.TLS.Cert, cfg.Server.TLS.Key, cfg.Server.TLS.ClientCA)
 		if err != nil {
 			return fmt.Errorf("TLS setup: %w", err)
 		}
@@ -92,15 +92,15 @@ func Run(args []string) error {
 		return fmt.Errorf("auth setup: %w", err)
 	}
 
-	srvOpts = append(srvOpts, server.WithAuth(mode), server.WithMaxConns(cfg.Server.MaxConns))
+	srvOpts = append(srvOpts, server.WithAuth(mode), server.WithMaxConnections(cfg.Server.MaxConnections))
 
 	srv := server.New(n, srvOpts...)
 
 	// Off by default; enabled with --metrics-listen. Started before the wire
 	// server listens so a bind failure below can still stop srv cleanly.
 	var httpSrv *metricsServer
-	if cfg.Server.MetricsListen != "" {
-		s, err := startMetricsHTTP(n, cfg.Server.MetricsPerQueuePrometheus, cfg.Server.MetricsHistograms, cfg.Server.MetricsListen)
+	if cfg.Server.Metrics.Listen != "" {
+		s, err := startMetricsHTTP(n, cfg.Server.Metrics.PerQueuePrometheus, cfg.Server.Metrics.Histograms, cfg.Server.Metrics.Listen)
 		if err != nil {
 			srv.Stop()
 			return fmt.Errorf("metrics http: %w", err)
@@ -175,19 +175,29 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 	target := fs.String("target", "", "Bind target: tcp://, unix://, or pipe://")
 	dataDir := fs.String("data-dir", "", "Data directory for WAL segments and offset store")
 	tlsEnabled := fs.Bool("tls-enabled", false, "Enable TLS on tcp:// listeners")
-	tlsCertFile := fs.String("tls-cert-file", "", "TLS certificate file (PEM)")
-	tlsKeyFile := fs.String("tls-key-file", "", "TLS key file (PEM)")
-	maxConns := fs.Int("max-conns", 0, "Max concurrent client connections")
+	tlsCert := fs.String("tls-cert", "", "TLS certificate file (PEM)")
+	tlsKey := fs.String("tls-key", "", "TLS key file (PEM)")
+	maxConnections := fs.Int("max-connections", 0, "Max concurrent client connections")
 
-	// Session defaults
-	batchSize := fs.Int("batch-size", 0, "Max pending messages before WAL fsync")
-	maxInterval := fs.Duration("max-interval", 0, "Max wait before forcing WAL fsync")
-	minInterval := fs.Duration("min-interval", 0, "Micro-linger window to group concurrent produces")
-	segmentSize := fs.Int64("segment-size", 0, "Max size per log segment before rolling")
-	maxMessageBytes := fs.Int64("max-message-bytes", 0, "Max payload size per produce call")
-	segmentAge := fs.Duration("segment-age", 0, "Max age before rolling an inactive segment")
-	encrypted := fs.Bool("encrypted", false, "Enable OS transparent directory encryption")
-	fsync := fs.Bool("fsync", false, "Physical disk fsync on produce (use --fsync=false for OS page cache)")
+	// Spec defaults
+	durability := newEnumValue("durability")
+	encryption := newEnumValue("encryption")
+	compaction := newEnumValue("compaction")
+	fs.Var(durability, "durability", "Append ack policy: sync|async (create-only)")
+	fs.Var(encryption, "encryption", "At-rest protection: none|os (create-only)")
+	fs.Var(compaction, "compaction", "Compaction mode: none|keys (create-only)")
+	maxSegment := fs.Int64("max-segment", 0, "Bytes per segment file before rolling (create-only)")
+	maxSegmentAge := fs.Duration("max-segment-age", 0, "Max age before rolling the active segment")
+	maxPayload := fs.Int64("max-payload", 0, "Largest payload an append accepts (create-only)")
+	maxCache := fs.Int64("max-cache", 0, "Tail cache budget in bytes")
+	maxFlushBytes := fs.Int64("max-flush-bytes", 0, "Pending WAL size that triggers a flush")
+	maxFlushWait := fs.Duration("max-flush-wait", 0, "Longest a batch waits before flushing")
+	maxRetentionAge := fs.Duration("max-retention-age", 0, "Drop closed segments older than this")
+	maxRetentionBytes := fs.Int64("max-retention-bytes", 0, "Keep at most this many bytes of history")
+	lease := fs.Duration("lease", 0, "Lease length assigned to a dequeued task")
+	maxAttempts := fs.Uint("max-attempts", 0, "Deliveries before a task is dead-lettered")
+	maxInFlight := fs.Uint("max-in-flight", 0, "Concurrent-lease upper bound")
+	maxDeadLetters := fs.Uint("max-dead-letters", 0, "Dead-letter upper bound")
 
 	// Metrics
 	metricsEnabled := fs.Bool("metrics-enabled", false, "Enable the live metrics collector")
@@ -202,7 +212,7 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 	authMethod := fs.String("auth-method", "", "Auth mode: none|none-insecure|token|mtls")
 	authTokenFile := fs.String("auth-token-file", "", "File containing the bearer token")
 	fs.String("auth-token", "", "REJECTED on the daemon; use --auth-token-file")
-	tlsClientCAFile := fs.String("tls-client-ca-file", "", "Client CA bundle for mtls")
+	tlsClientCA := fs.String("tls-client-ca", "", "Client CA bundle for mtls")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -233,8 +243,8 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 
 	// Apply only explicitly-set flags (fs.Visit) so defaults from the config
 	// file and environment are preserved when a flag is omitted. Bool flags
-	// honor explicit false values: "--fsync=false" overrides a true config
-	// value, "--fsync" alone sets it true.
+	// honor explicit false values: "--tls-enabled=false" overrides a true
+	// config value, "--tls-enabled" alone sets it true.
 	var flagErr error
 	fs.Visit(func(f *flag.Flag) {
 		if flagErr != nil {
@@ -258,78 +268,116 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 			}
 			cfg.Server.DataDir = *dataDir
 		case "tls-enabled":
-			cfg.Server.TLSEnabled = *tlsEnabled
-		case "tls-cert-file":
-			cfg.Server.TLSCertFile = *tlsCertFile
-		case "tls-key-file":
-			cfg.Server.TLSKeyFile = *tlsKeyFile
-		case "max-conns":
-			if *maxConns <= 0 {
-				flagErr = fmt.Errorf("--max-conns must be > 0, got %d", *maxConns)
+			cfg.Server.TLS.Enabled = *tlsEnabled
+		case "tls-cert":
+			cfg.Server.TLS.Cert = *tlsCert
+		case "tls-key":
+			cfg.Server.TLS.Key = *tlsKey
+		case "tls-client-ca":
+			cfg.Server.TLS.ClientCA = *tlsClientCA
+		case "max-connections":
+			if *maxConnections <= 0 {
+				flagErr = fmt.Errorf("--max-connections must be > 0, got %d", *maxConnections)
 				return
 			}
-			cfg.Server.MaxConns = *maxConns
-		case "batch-size":
-			if *batchSize <= 0 {
-				flagErr = fmt.Errorf("--batch-size must be > 0, got %d", *batchSize)
+			cfg.Server.MaxConnections = *maxConnections
+		case "durability":
+			cfg.Defaults.Storage.Durability = new(spec.Durability(durability.String()))
+		case "encryption":
+			cfg.Defaults.Storage.Encryption = new(spec.Encryption(encryption.String()))
+		case "compaction":
+			cfg.Defaults.Storage.Compaction = new(spec.Compaction(compaction.String()))
+		case "max-segment":
+			if *maxSegment <= 0 {
+				flagErr = fmt.Errorf("--max-segment must be > 0, got %d", *maxSegment)
 				return
 			}
-			cfg.Defaults.Engine.BatchSize = new(*batchSize)
-		case "max-interval":
-			if *maxInterval <= 0 {
-				flagErr = fmt.Errorf("--max-interval must be > 0, got %s", *maxInterval)
+			cfg.Defaults.Storage.MaxSegment = new(*maxSegment)
+		case "max-segment-age":
+			if *maxSegmentAge <= 0 {
+				flagErr = fmt.Errorf("--max-segment-age must be > 0, got %s", *maxSegmentAge)
 				return
 			}
-			cfg.Defaults.Engine.MaxInterval = new(spec.Duration(*maxInterval))
-		case "min-interval":
-			if *minInterval < 0 {
-				flagErr = fmt.Errorf("--min-interval cannot be negative, got %s", *minInterval)
+			cfg.Defaults.Storage.MaxSegmentAge = new(spec.Duration(*maxSegmentAge))
+		case "max-payload":
+			if *maxPayload <= 0 {
+				flagErr = fmt.Errorf("--max-payload must be > 0, got %d", *maxPayload)
 				return
 			}
-			cfg.Defaults.Engine.MinInterval = new(spec.Duration(*minInterval))
-		case "segment-size":
-			if *segmentSize <= 0 {
-				flagErr = fmt.Errorf("--segment-size must be > 0, got %d", *segmentSize)
+			cfg.Defaults.Storage.MaxPayload = new(*maxPayload)
+		case "max-cache":
+			if *maxCache <= 0 {
+				flagErr = fmt.Errorf("--max-cache must be > 0, got %d", *maxCache)
 				return
 			}
-			cfg.Defaults.Engine.SegmentSize = new(*segmentSize)
-		case "max-message-bytes":
-			if *maxMessageBytes <= 0 {
-				flagErr = fmt.Errorf("--max-message-bytes must be > 0, got %d", *maxMessageBytes)
+			cfg.Defaults.Storage.MaxCache = new(*maxCache)
+		case "max-flush-bytes":
+			if *maxFlushBytes <= 0 {
+				flagErr = fmt.Errorf("--max-flush-bytes must be > 0, got %d", *maxFlushBytes)
 				return
 			}
-			cfg.Defaults.Engine.MaxMessageBytes = new(*maxMessageBytes)
-		case "segment-age":
-			if *segmentAge <= 0 {
-				flagErr = fmt.Errorf("--segment-age must be > 0, got %s", *segmentAge)
+			cfg.Defaults.Flush.MaxBytes = new(*maxFlushBytes)
+		case "max-flush-wait":
+			if *maxFlushWait <= 0 {
+				flagErr = fmt.Errorf("--max-flush-wait must be > 0, got %s", *maxFlushWait)
 				return
 			}
-			cfg.Defaults.Engine.SegmentAge = new(spec.Duration(*segmentAge))
-		case "encrypted":
-			cfg.Defaults.Engine.Encrypted = new(*encrypted)
-		case "fsync":
-			cfg.Defaults.Engine.Fsync = new(*fsync)
+			cfg.Defaults.Flush.MaxWait = new(spec.Duration(*maxFlushWait))
+		case "max-retention-age":
+			if *maxRetentionAge < 0 {
+				flagErr = fmt.Errorf("--max-retention-age cannot be negative, got %s", *maxRetentionAge)
+				return
+			}
+			cfg.Defaults.Retention.MaxAge = new(spec.Duration(*maxRetentionAge))
+		case "max-retention-bytes":
+			if *maxRetentionBytes < 0 {
+				flagErr = fmt.Errorf("--max-retention-bytes cannot be negative, got %d", *maxRetentionBytes)
+				return
+			}
+			cfg.Defaults.Retention.MaxBytes = new(*maxRetentionBytes)
+		case "lease":
+			if *lease <= 0 {
+				flagErr = fmt.Errorf("--lease must be > 0, got %s", *lease)
+				return
+			}
+			cfg.Defaults.Task.Lease = new(spec.Duration(*lease))
+		case "max-attempts":
+			if *maxAttempts <= 0 {
+				flagErr = fmt.Errorf("--max-attempts must be > 0, got %d", *maxAttempts)
+				return
+			}
+			cfg.Defaults.Task.MaxAttempts = new(uint32(*maxAttempts))
+		case "max-in-flight":
+			if *maxInFlight <= 0 {
+				flagErr = fmt.Errorf("--max-in-flight must be > 0, got %d", *maxInFlight)
+				return
+			}
+			cfg.Defaults.Task.MaxInFlight = new(uint32(*maxInFlight))
+		case "max-dead-letters":
+			if *maxDeadLetters <= 0 {
+				flagErr = fmt.Errorf("--max-dead-letters must be > 0, got %d", *maxDeadLetters)
+				return
+			}
+			cfg.Defaults.Task.MaxDeadLetters = new(uint32(*maxDeadLetters))
 		case "metrics-enabled":
-			cfg.Server.MetricsEnabled = *metricsEnabled
+			cfg.Server.Metrics.Enabled = *metricsEnabled
 		case "metrics-interval":
-			cfg.Server.MetricsInterval = spec.Duration(*metricsInterval)
+			cfg.Server.Metrics.Interval = spec.Duration(*metricsInterval)
 		case "metrics-history":
-			cfg.Server.MetricsHistory = *metricsHistory
+			cfg.Server.Metrics.History = *metricsHistory
 		case "metrics-listen":
-			cfg.Server.MetricsListen = *metricsListen
+			cfg.Server.Metrics.Listen = *metricsListen
 		case "metrics-per-queue-prometheus":
-			cfg.Server.MetricsPerQueuePrometheus = *metricsPerQueuePrometheus
+			cfg.Server.Metrics.PerQueuePrometheus = *metricsPerQueuePrometheus
 		case "metrics-histograms":
-			cfg.Server.MetricsHistograms = *metricsHistograms
+			cfg.Server.Metrics.Histograms = *metricsHistograms
 		case "auth-method":
-			cfg.Server.AuthMethod = *authMethod
+			cfg.Server.Auth.Method = *authMethod
 		case "auth-token-file":
-			cfg.Server.AuthTokenFile = *authTokenFile
+			cfg.Server.Auth.TokenFile = *authTokenFile
 		case "auth-token":
 			flagErr = errors.New("--auth-token is rejected on the daemon: a token on argv leaks via ps; use --auth-token-file")
 			return
-		case "tls-client-ca-file":
-			cfg.Server.TLSClientCaFile = *tlsClientCAFile
 		}
 	})
 	if flagErr != nil {
@@ -341,16 +389,20 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 		fmt.Fprintf(stderr, "mikyu daemon: %v\n", err)
 		return nil, "", fmt.Errorf("%w: %v", ErrUsage, err)
 	}
+	if err := spec.ValidateCreate(cfg.Defaults); err != nil {
+		fmt.Fprintf(stderr, "mikyu daemon: %v\n", err)
+		return nil, "", fmt.Errorf("%w: %v", ErrUsage, err)
+	}
 
 	if network, addr, perr := protocol.ParseTarget(cfg.Server.Target); perr == nil && network == "tcp" && !isLoopback(addr) {
-		switch cfg.Server.AuthMethod {
+		switch cfg.Server.Auth.Method {
 		case "token":
-			if !cfg.Server.TLSEnabled {
+			if !cfg.Server.TLS.Enabled {
 				return nil, "", fmt.Errorf("%w: --auth-method token requires --tls-enabled on non-loopback targets", ErrUsage)
 			}
 		case "mtls":
-			if !cfg.Server.TLSEnabled || cfg.Server.TLSClientCaFile == "" {
-				return nil, "", fmt.Errorf("%w: --auth-method mtls requires --tls-enabled and --tls-client-ca-file", ErrUsage)
+			if !cfg.Server.TLS.Enabled || cfg.Server.TLS.ClientCA == "" {
+				return nil, "", fmt.Errorf("%w: --auth-method mtls requires --tls-enabled and --tls-client-ca", ErrUsage)
 			}
 		case "", "none":
 			return nil, "", fmt.Errorf("%w: refusing non-loopback %s without auth; pass --auth-method token|mtls, or --auth-method none-insecure to opt out", ErrUsage, cfg.Server.Target)
@@ -378,8 +430,8 @@ func isLoopback(addr string) bool {
 // which layer (flag, env, file, default) each value came from.
 func logEffectiveConfig(cfg *config.Config, resolvedPath string) {
 	log.Printf("mikyu daemon: config file %s", resolvedPath)
-	log.Printf("mikyu daemon: server target=%s data_dir=%s tls_enabled=%t max_conns=%d queues=%d",
-		cfg.Server.Target, cfg.Server.DataDir, cfg.Server.TLSEnabled, cfg.Server.MaxConns, len(cfg.Queues))
+	log.Printf("mikyu daemon: server target=%s data_dir=%s tls_enabled=%t max_connections=%d queues=%d",
+		cfg.Server.Target, cfg.Server.DataDir, cfg.Server.TLS.Enabled, cfg.Server.MaxConnections, len(cfg.Queues))
 	defaults, err := json.Marshal(cfg.Defaults)
 	if err != nil {
 		defaults = []byte("{}")
@@ -389,15 +441,15 @@ func logEffectiveConfig(cfg *config.Config, resolvedPath string) {
 
 // SpawnOptions carries the session settings a spawned daemon must inherit. AuthToken is deliberately absent: the daemon rejects it.
 type SpawnOptions struct {
-	Target          string
-	DataDir         string
-	TLSEnabled      bool
-	TLSCertFile     string
-	TLSKeyFile      string
-	AuthMethod      string
-	AuthTokenFile   string
-	TLSClientCaFile string
-	ExtraArgs       []string
+	Target        string
+	DataDir       string
+	TLSEnabled    bool
+	TLSCert       string
+	TLSKey        string
+	AuthMethod    string
+	AuthTokenFile string
+	TLSClientCA   string
+	ExtraArgs     []string
 }
 
 // EnsureDaemonRunning spawns a detached daemon with opts when opts.Target is not already serving.
@@ -419,11 +471,11 @@ func EnsureDaemonRunning(opts SpawnOptions) error {
 	if opts.TLSEnabled {
 		args = append(args, "--tls-enabled")
 	}
-	if opts.TLSCertFile != "" {
-		args = append(args, "--tls-cert-file", opts.TLSCertFile)
+	if opts.TLSCert != "" {
+		args = append(args, "--tls-cert", opts.TLSCert)
 	}
-	if opts.TLSKeyFile != "" {
-		args = append(args, "--tls-key-file", opts.TLSKeyFile)
+	if opts.TLSKey != "" {
+		args = append(args, "--tls-key", opts.TLSKey)
 	}
 	if opts.AuthMethod != "" {
 		args = append(args, "--auth-method", opts.AuthMethod)
@@ -431,8 +483,8 @@ func EnsureDaemonRunning(opts SpawnOptions) error {
 	if opts.AuthTokenFile != "" {
 		args = append(args, "--auth-token-file", opts.AuthTokenFile)
 	}
-	if opts.TLSClientCaFile != "" {
-		args = append(args, "--tls-client-ca-file", opts.TLSClientCaFile)
+	if opts.TLSClientCA != "" {
+		args = append(args, "--tls-client-ca", opts.TLSClientCA)
 	}
 	args = append(args, opts.ExtraArgs...)
 	cmd := exec.Command(executable, args...)
@@ -473,7 +525,7 @@ func SendShutdownSignal(target string, sess spec.Session) error {
 	}
 	dialer := &net.Dialer{Timeout: 2 * time.Second}
 	var conn net.Conn
-	if network == "tcp" && sess.TLSEnabled {
+	if network == "tcp" && sess.TLS.Enabled {
 		tlsCfg, err := clientTLSConfig(sess)
 		if err != nil {
 			return err
@@ -512,17 +564,17 @@ func SendShutdownSignal(target string, sess spec.Session) error {
 
 // resolveShutdownCredential picks the credential a shutdown signal presents: token file over token over mTLS over anonymous.
 func resolveShutdownCredential(sess spec.Session) (byte, []byte, error) {
-	if sess.AuthTokenFile != "" {
-		data, err := os.ReadFile(sess.AuthTokenFile)
+	if sess.Auth.TokenFile != "" {
+		data, err := os.ReadFile(sess.Auth.TokenFile)
 		if err != nil {
 			return 0, nil, err
 		}
 		return protocol.AuthMethodToken, []byte(strings.TrimSpace(string(data))), nil
 	}
-	if sess.AuthToken != "" {
-		return protocol.AuthMethodToken, []byte(sess.AuthToken), nil
+	if sess.Auth.Token != "" {
+		return protocol.AuthMethodToken, []byte(sess.Auth.Token), nil
 	}
-	if sess.TLSEnabled {
+	if sess.TLS.Enabled {
 		return protocol.AuthMethodMTLS, nil, nil
 	}
 	return protocol.AuthMethodNone, nil, nil
@@ -530,16 +582,16 @@ func resolveShutdownCredential(sess spec.Session) (byte, []byte, error) {
 
 // clientTLSConfig builds the shutdown dialer's TLS setup: the client cert authenticates against the CA bundle and is trusted as the server's root.
 func clientTLSConfig(sess spec.Session) (*tls.Config, error) {
-	if sess.TLSCertFile == "" || sess.TLSKeyFile == "" {
-		return nil, fmt.Errorf("tls_enabled needs tls_cert_file and tls_key_file")
+	if sess.TLS.Cert == "" || sess.TLS.Key == "" {
+		return nil, fmt.Errorf("tls_enabled needs tls_cert and tls_key")
 	}
-	pair, err := tls.LoadX509KeyPair(sess.TLSCertFile, sess.TLSKeyFile)
+	pair, err := tls.LoadX509KeyPair(sess.TLS.Cert, sess.TLS.Key)
 	if err != nil {
 		return nil, err
 	}
-	caFile := sess.TLSClientCaFile
+	caFile := sess.TLS.ClientCA
 	if caFile == "" {
-		caFile = sess.TLSCertFile
+		caFile = sess.TLS.Cert
 	}
 	pem, err := os.ReadFile(caFile)
 	if err != nil {

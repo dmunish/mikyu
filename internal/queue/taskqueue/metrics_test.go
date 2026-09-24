@@ -7,6 +7,7 @@ import (
 
 	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/metrics"
+	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,7 +15,15 @@ import (
 func TestTaskQueueCounters(t *testing.T) {
 	dir := t.TempDir()
 	reg := metrics.NewRegistry(metrics.Config{Histograms: true})
-	mgr, err := engine.OpenManager(dir, engine.Config{BatchSize: 8, MaxInterval: time.Millisecond}, nil, reg)
+	mgr, err := engine.OpenManager(dir, engine.Config{
+		Durability:    spec.DurabilityAsync,
+		MaxSegment:    64 << 20,
+		MaxSegmentAge: time.Hour,
+		MaxPayload:    1 << 20,
+		MaxCache:      32 << 20,
+		MaxFlushBytes: 1 << 20,
+		MaxFlushWait:  time.Millisecond,
+	}, nil, reg)
 	require.NoError(t, err)
 	defer mgr.Close()
 
