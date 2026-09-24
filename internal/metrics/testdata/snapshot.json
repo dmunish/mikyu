@@ -1,0 +1,278 @@
+{
+  "timestamp": "2023-11-14T22:13:20Z",
+  "build": {
+    "spec_version": 5,
+    "go_version": "go1.27",
+    "os": "linux",
+    "arch": "amd64"
+  },
+  "runtime": {
+    "goroutines": 21,
+    "gomaxprocs": 8,
+    "goroutine_states": {
+      "running": 2,
+      "runnable": 3,
+      "waiting": 16
+    },
+    "heap": {
+      "alloc": 67108864,
+      "sys": 134217728,
+      "inuse": 73400320,
+      "idle": 60817408,
+      "released": 16777216,
+      "objects": 123456,
+      "total_alloc": 4294967296,
+      "total_free": 536870912
+    },
+    "stack": {
+      "inuse": 524288,
+      "sys": 1048576
+    },
+    "metadata": {
+      "inuse": 1179648,
+      "sys": 2097152
+    },
+    "uptime_seconds": 5025.5
+  },
+  "process": {
+    "cpu_percent": 12.4,
+    "cpu_seconds_user": 120.5,
+    "cpu_seconds_sys": 30.25,
+    "rss_bytes": 134217728,
+    "vsz_bytes": 2147483648,
+    "threads": 12,
+    "open_fds": 48
+  },
+  "gc": {
+    "cycles": 42,
+    "pause_total_ms": 1234.5,
+    "next_gc_bytes": 134217728,
+    "mem_limit_bytes": 536870912,
+    "pause": {
+      "p50_ms": 0.3,
+      "p90_ms": 0.9,
+      "p99_ms": 2.1,
+      "max_ms": 4.2
+    }
+  },
+  "scheduler": {
+    "latency": {
+      "p50": 0.000012,
+      "p90": 0.000048,
+      "p99": 0.00022
+    }
+  },
+  "locks": {
+    "global_wait_seconds": 0.42,
+    "observers": [
+      {
+        "name": "node.mu",
+        "waits": 17,
+        "total_wait_ms": 3.5,
+        "max_wait_ms": 1.2,
+        "p50_wait_ms": 0.1,
+        "p99_wait_ms": 1.1,
+        "current_held": 1
+      }
+    ]
+  },
+  "session": {
+    "storage": {
+      "durability": "sync",
+      "encryption": "none",
+      "compaction": "none",
+      "max_segment": 67108864,
+      "max_segment_age": "1h0m0s",
+      "max_payload": 1048576,
+      "max_cache": 33554432
+    },
+    "flush": {
+      "max_bytes": 1048576,
+      "max_wait": "10ms"
+    },
+    "retention": {
+      "max_age": "0s",
+      "max_bytes": 0
+    },
+    "task": {
+      "lease": "30s",
+      "max_attempts": 5,
+      "max_in_flight": 100000,
+      "max_dead_letters": 100000
+    }
+  },
+  "storage": {
+    "data_dir": "/var/lib/mikyu",
+    "queues": 1,
+    "segments": 42,
+    "size_bytes": 1073741824,
+    "cache_bytes": 33554432,
+    "cache_limit": 33554432,
+    "cache_hits": 1200000,
+    "cache_misses": 2300,
+    "committed_bytes": 12300000,
+    "flushed_bytes": 12200000,
+    "pending_bytes": 65536,
+    "offset_store_bytes": 4096
+  },
+  "queues": [
+    {
+      "name": "events",
+      "kind": "log",
+      "spec": {
+        "storage": {
+          "durability": "sync",
+          "encryption": "none",
+          "compaction": "none",
+          "max_segment": 67108864,
+          "max_segment_age": "1h0m0s",
+          "max_payload": 1048576,
+          "max_cache": 33554432
+        },
+        "flush": {
+          "max_bytes": 1048576,
+          "max_wait": "10ms"
+        },
+        "retention": {
+          "max_age": "0s",
+          "max_bytes": 0
+        },
+        "task": {
+          "lease": "30s",
+          "max_attempts": 5,
+          "max_in_flight": 100000,
+          "max_dead_letters": 100000
+        }
+      },
+      "derived": {
+        "storage": {
+          "durability": "sync",
+          "encryption": "none",
+          "compaction": "none",
+          "max_segment": 67108864,
+          "max_segment_age": "1h0m0s",
+          "max_payload": 1048576,
+          "max_cache": 33554432
+        },
+        "flush": {
+          "max_bytes": 1048576,
+          "max_wait": "10ms"
+        },
+        "retention": {
+          "max_age": "0s",
+          "max_bytes": 0
+        },
+        "task": {
+          "lease": "30s",
+          "max_attempts": 5,
+          "max_in_flight": 100000,
+          "max_dead_letters": 100000
+        }
+      },
+      "effective": {
+        "storage": {
+          "durability": "sync",
+          "encryption": "none",
+          "compaction": "none",
+          "max_segment": 67108864,
+          "max_segment_age": "1h0m0s",
+          "max_payload": 1048576,
+          "max_cache": 33554432
+        },
+        "flush": {
+          "max_bytes": 1048576,
+          "max_wait": "10ms"
+        },
+        "retention": {
+          "max_age": "0s",
+          "max_bytes": 0
+        },
+        "task": {
+          "lease": "30s",
+          "max_attempts": 5,
+          "max_in_flight": 100000,
+          "max_dead_letters": 100000
+        }
+      },
+      "counters": {
+        "appends": 1200000,
+        "reads": 800000
+      },
+      "gauges": {
+        "messages": 1200000,
+        "segments": 10,
+        "size_bytes": 209715200
+      },
+      "rates": {
+        "appends_per_sec": 1200,
+        "reads_per_sec": 800,
+        "enqueues_per_sec": 0,
+        "dequeues_per_sec": 0,
+        "bytes_in_per_sec": 12582912,
+        "bytes_out_per_sec": 8388608
+      },
+      "histograms": {
+        "append_duration": {
+          "bounds": [
+            0.0001,
+            0.001,
+            0.01
+          ],
+          "counts": [
+            10,
+            20,
+            30,
+            40
+          ],
+          "sum": 1.5,
+          "total": 100,
+          "p50": 0.0005,
+          "p90": 0.005,
+          "p95": 0.007,
+          "p99": 0.009,
+          "p999": 0.0099,
+          "max": 0.01
+        }
+      },
+      "producers": {
+        "in_flight": 8,
+        "blocked_on_wal": 0,
+        "block_events": 3
+      },
+      "consumers": {
+        "in_flight": 4,
+        "parked_fetch": 2,
+        "parked_dequeue": 0,
+        "fetch_park_events": 42,
+        "dequeue_park_events": 0
+      },
+      "backpressure": {
+        "wal_channel_fill": 0.003,
+        "wal_byte_fill": 0.0006,
+        "queue_full_events": 0,
+        "producer_blocks": 5,
+        "consumer_parks": 42,
+        "retry_budget_drops": 0
+      },
+      "groups": [
+        {
+          "name": "analytics",
+          "committed": 999800,
+          "high_water": 1000000,
+          "lag": 200
+        },
+        {
+          "name": "alerts",
+          "committed": 999950,
+          "high_water": 1000000,
+          "lag": 50
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "queues": 1,
+    "messages": 1200000,
+    "bytes": 209715200
+  }
+}

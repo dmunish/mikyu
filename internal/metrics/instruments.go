@@ -63,6 +63,65 @@ type HistogramSnapshot struct {
 	Total  uint64    `json:"total"`
 }
 
+// Percentile returns the approximate p-th quantile, interpolating within the rank bucket.
+func (h HistogramSnapshot) Percentile(p float64) float64 {
+	if h.Total == 0 || len(h.Counts) == 0 {
+		return 0
+	}
+	p = min(max(p, 0), 1)
+	rank := p * float64(h.Total)
+	var cumulative uint64
+	for i, count := range h.Counts {
+		prev := cumulative
+		cumulative += count
+		if float64(cumulative) < rank {
+			continue
+		}
+		lower, upper := h.interval(i)
+		if count == 0 || upper <= lower {
+			return upper
+		}
+		frac := (rank - float64(prev)) / float64(count)
+		return lower + frac*(upper-lower)
+	}
+	if len(h.Bounds) > 0 {
+		return h.Bounds[len(h.Bounds)-1]
+	}
+	return 0
+}
+
+// interval returns the lower and upper bounds of bucket i.
+func (h HistogramSnapshot) interval(i int) (lower, upper float64) {
+	if i > 0 && i-1 < len(h.Bounds) {
+		lower = h.Bounds[i-1]
+	}
+	upper = lower
+	switch {
+	case i < len(h.Bounds):
+		upper = h.Bounds[i]
+	case len(h.Bounds) > 0:
+		upper = h.Bounds[len(h.Bounds)-1]
+	}
+	return lower, upper
+}
+
+// Max returns the highest bound with a non-zero count, or zero when empty.
+func (h HistogramSnapshot) Max() float64 {
+	for i := len(h.Counts) - 1; i >= 0; i-- {
+		if h.Counts[i] == 0 {
+			continue
+		}
+		if i < len(h.Bounds) {
+			return h.Bounds[i]
+		}
+		if len(h.Bounds) > 0 {
+			return h.Bounds[len(h.Bounds)-1]
+		}
+		return 0
+	}
+	return 0
+}
+
 // viewOf renders a histogram snapshot as its wire view.
 func viewOf(s HistogramSnapshot) HistogramView {
 	return HistogramView{
@@ -70,6 +129,12 @@ func viewOf(s HistogramSnapshot) HistogramView {
 		Counts: s.Counts,
 		Sum:    s.Sum,
 		Total:  s.Total,
+		P50:    s.Percentile(0.50),
+		P90:    s.Percentile(0.90),
+		P95:    s.Percentile(0.95),
+		P99:    s.Percentile(0.99),
+		P999:   s.Percentile(0.999),
+		Max:    s.Max(),
 	}
 }
 
