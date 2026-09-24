@@ -15,7 +15,7 @@ type Task struct {
 	Payload     []byte
 	Attempts    uint32
 	MaxAttempts uint32
-	Visibility  time.Time
+	Lease  time.Time
 	ScheduledAt time.Time
 	DeliveryID  string
 	Offset      uint64
@@ -29,7 +29,7 @@ func EncodeTask(b *Buffer, t Task) {
 	b.WriteBytes(t.Payload)
 	b.WriteU32(t.Attempts)
 	b.WriteU32(t.MaxAttempts)
-	b.WriteU64(encodeTime(t.Visibility))
+	b.WriteU64(encodeTime(t.Lease))
 	b.WriteU64(encodeTime(t.ScheduledAt))
 	b.WriteBytes([]byte(t.DeliveryID))
 	b.WriteU64(t.Offset)
@@ -62,7 +62,7 @@ func DecodeTask(r *Reader) (Task, error) {
 	if err != nil {
 		return Task{}, invalid(err)
 	}
-	visibility, err := r.ReadU64()
+	lease, err := r.ReadU64()
 	if err != nil {
 		return Task{}, invalid(err)
 	}
@@ -89,7 +89,7 @@ func DecodeTask(r *Reader) (Task, error) {
 	if len(id) == 0 || maxAttempts == 0 || attempts > maxAttempts {
 		return Task{}, ErrInvalidTask
 	}
-	if !decodeTime(visibility).IsZero() && len(deliveryID) == 0 {
+	if !decodeTime(lease).IsZero() && len(deliveryID) == 0 {
 		return Task{}, ErrInvalidTask
 	}
 	return Task{
@@ -97,7 +97,7 @@ func DecodeTask(r *Reader) (Task, error) {
 		Payload:     payload,
 		Attempts:    attempts,
 		MaxAttempts: maxAttempts,
-		Visibility:  decodeTime(visibility),
+		Lease:  decodeTime(lease),
 		ScheduledAt: decodeTime(scheduled),
 		DeliveryID:  string(deliveryID),
 		Offset:      offset,

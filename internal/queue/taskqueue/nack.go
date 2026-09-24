@@ -24,7 +24,7 @@ func (q *queue) Nack(ctx context.Context, ref Ref, opts ...NackOption) error {
 	}
 	delay := ResolveNackOptions(state.task, opts...)
 	if state.task.Attempts >= state.task.MaxAttempts {
-		if q.maxDLQ > 0 && uint32(len(q.dlq)) >= q.maxDLQ {
+		if q.maxDeadLetters > 0 && uint32(len(q.dlq)) >= q.maxDeadLetters {
 			// Drop the oldest DLQ entry by offset.
 			var oldestID string
 			var oldestOff uint64 = ^uint64(0)
@@ -53,7 +53,7 @@ func (q *queue) Nack(ctx context.Context, ref Ref, opts ...NackOption) error {
 		return nil
 	}
 	state.inFlight = false
-	state.task.Visibility = time.Time{}
+	state.task.Lease = time.Time{}
 	state.task.DeliveryID = ""
 	state.nextAt = time.Now().Add(delay)
 	state.version++

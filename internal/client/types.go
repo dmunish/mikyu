@@ -14,11 +14,12 @@ import (
 // QueueInfo is a queue's name and its kind.
 type QueueInfo = node.QueueInfo
 
-// QueueDescription is the full truth about one queue: its kind, stored spec, effective spec, and the session defaults it inherits.
+// QueueDescription is the full truth about one queue: its kind, stored spec, derived spec, effective spec, and the session defaults it inherits.
 type QueueDescription struct {
 	Name      string    `json:"name"`
 	Kind      node.Kind `json:"kind"`
 	Spec      spec.Spec `json:"spec"`
+	Derived   spec.Spec `json:"derived"`
 	Effective spec.Spec `json:"effective"`
 	Defaults  spec.Spec `json:"defaults"`
 }
@@ -60,6 +61,7 @@ func toClientDescription(d node.QueueDescription) QueueDescription {
 		Name:      d.Name,
 		Kind:      d.Kind,
 		Spec:      d.Spec,
+		Derived:   d.Derived,
 		Effective: d.Effective,
 		Defaults:  d.Defaults,
 	}

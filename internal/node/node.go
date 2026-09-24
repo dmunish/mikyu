@@ -325,11 +325,12 @@ func (n *Node) UpdateQueue(ctx context.Context, name string, patch spec.Spec) er
 	return nil
 }
 
-// QueueDescription is the full truth about one queue: its kind, stored spec, effective spec, and the session defaults it inherits.
+// QueueDescription is the full truth about one queue: its kind, stored spec, derived spec, effective spec, and the session defaults it inherits.
 type QueueDescription struct {
 	Name      string       `json:"name"`
 	Kind      manager.Kind `json:"kind"`
 	Spec      spec.Spec    `json:"spec"`
+	Derived   spec.Spec    `json:"derived"`
 	Effective spec.Spec    `json:"effective"`
 	Defaults  spec.Spec    `json:"defaults"`
 }
@@ -354,6 +355,7 @@ func (n *Node) DescribeQueue(ctx context.Context, name string) (QueueDescription
 		Name:      name,
 		Kind:      kind,
 		Spec:      stored,
+		Derived:   spec.Resolve(stored),
 		Effective: stored.Effective(n.defaults, builtin),
 		Defaults:  n.defaults,
 	}, nil
@@ -471,10 +473,10 @@ func (n *Node) ListQueues(ctx context.Context) ([]QueueInfo, error) {
 // taskDefaultsFor converts a resolved spec's task block into driver defaults.
 func taskDefaultsFor(s spec.Spec) taskqueue.Defaults {
 	return taskqueue.Defaults{
-		Visibility:  s.Task.Lease.Duration(),
+		Lease:  s.Task.Lease.Duration(),
 		MaxAttempts: deref(s.Task.MaxAttempts, 5),
 		MaxInFlight: deref(s.Task.MaxInFlight, 100_000),
-		MaxDLQ:      deref(s.Task.MaxDeadLetters, 100_000),
+		MaxDeadLetters:      deref(s.Task.MaxDeadLetters, 100_000),
 	}
 }
 

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,24 +86,39 @@ func TestEnvOverrides(t *testing.T) {
 	assert.Equal(t, int64(150), *cfg.Defaults.Flush.MaxBytes)
 }
 
+// TestLegacyEnvVarsHardError walks every entry of legacyEnvVars: setting the
+// old variable must fail the load with a message naming the replacement.
 func TestLegacyEnvVarsHardError(t *testing.T) {
-	t.Setenv("MIKYU_ENGINE_BATCH_SIZE", "150")
+	for legacy, next := range legacyEnvVars {
+		t.Run(legacy, func(t *testing.T) {
+			t.Setenv(legacy, "150")
 
-	cfg := DefaultConfig()
-	err := applyEnvOverrides(&cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "MIKYU_ENGINE_BATCH_SIZE")
-	assert.Contains(t, err.Error(), "MIKYU_MAX_FLUSH_BYTES")
+			cfg := DefaultConfig()
+			err := applyEnvOverrides(&cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), legacy)
+			assert.Contains(t, err.Error(), "no longer supported")
+			assert.Contains(t, err.Error(), strings.Fields(next)[0])
+		})
+	}
 }
 
+// TestConfigOldKeyHardError walks every entry of legacyYAMLKeys: a config file
+// carrying the old key must fail the load with a message naming the replacement.
 func TestConfigOldKeyHardError(t *testing.T) {
-	cfgPath := filepath.Join(t.TempDir(), "mikyu.yaml")
-	require.NoError(t, os.WriteFile(cfgPath, []byte("defaults:\n  storage:\n    batch_size: 1024\n"), 0o644))
+	for old, next := range legacyYAMLKeys {
+		t.Run(old, func(t *testing.T) {
+			cfgPath := filepath.Join(t.TempDir(), "mikyu.yaml")
+			body := "defaults:\n  storage:\n    " + old + ": 1024\n"
+			require.NoError(t, os.WriteFile(cfgPath, []byte(body), 0o644))
 
-	_, _, err := Load(cfgPath)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "batch_size")
-	assert.Contains(t, err.Error(), "max_flush_bytes")
+			_, _, err := Load(cfgPath)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), old)
+			assert.Contains(t, err.Error(), "was renamed to")
+			assert.Contains(t, err.Error(), strings.Fields(next)[0])
+		})
+	}
 }
 
 // Every session-layer parameter in spec.Table must be reachable from its env var.

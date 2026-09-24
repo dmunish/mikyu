@@ -159,7 +159,7 @@ type AppendOption = logqueue.AppendOption
 // Group tracks consumer offsets for a log queue.
 type Group = logqueue.Group
 
-// TaskQueue provides at-least-once delivery, visibility leases, retries,
+// TaskQueue provides at-least-once delivery, lease leases, retries,
 // stale-delivery protection, checkpoint recovery, and a durable per-queue
 // dead-letter queue.
 type TaskQueue = client.TaskQueue

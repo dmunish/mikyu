@@ -26,8 +26,8 @@ func (q *queue) Extend(ctx context.Context, ref Ref, timeout time.Duration) erro
 		return err
 	}
 	deadline := time.Now().Add(timeout)
-	if deadline.After(state.task.Visibility) {
-		state.task.Visibility = deadline
+	if deadline.After(state.task.Lease) {
+		state.task.Lease = deadline
 		state.version++
 		q.pushScheduleLocked(state)
 		q.dirty++

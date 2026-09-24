@@ -38,7 +38,7 @@ func newRemoteClient(tb testing.TB) *remoteClient {
 }
 
 // TestRemoteEnqueueUsesQueueDefaults: a queue created with
-// default_visibility 1m leases tasks dequeued from an optionless Enqueue for
+// lease 1m leases tasks dequeued from an optionless Enqueue for
 // about a minute â€” the zeros on the wire inherit the queue spec, not the
 // client's pre-resolved built-ins.
 func TestRemoteEnqueueUsesQueueDefaults(t *testing.T) {
@@ -70,7 +70,7 @@ func TestRemoteEnqueueUsesQueueDefaults(t *testing.T) {
 	leased, err := tq.Dequeue(t.Context())
 	require.NoError(t, err)
 
-	left := time.Until(leased.Visibility)
+	left := time.Until(leased.Lease)
 	assert.GreaterOrEqual(t, left, 55*time.Second, "lease deadline should be ~1m out, got %v remaining", left)
 	assert.LessOrEqual(t, left, time.Minute+5*time.Second)
 }

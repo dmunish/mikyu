@@ -18,7 +18,7 @@ func (q *queue) resolveLeaseLocked(ref Ref) (*taskState, error) {
 	if !state.inFlight {
 		return nil, ErrTaskNotInflight
 	}
-	if state.task.Visibility.IsZero() || !time.Now().Before(state.task.Visibility) {
+	if state.task.Lease.IsZero() || !time.Now().Before(state.task.Lease) {
 		return nil, ErrTaskStale
 	}
 	if t, strict := ref.(Task); strict {

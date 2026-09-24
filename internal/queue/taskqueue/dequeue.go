@@ -87,7 +87,7 @@ func (q *queue) takeDueLocked(ctx context.Context, now time.Time) (*taskState, t
 		}
 		due := state.nextAt
 		if state.inFlight {
-			due = state.task.Visibility
+			due = state.task.Lease
 		}
 		if due.IsZero() {
 			due = now
@@ -116,7 +116,7 @@ func (q *queue) takeDueLocked(ctx context.Context, now time.Time) (*taskState, t
 		state.inFlight = true
 		state.task.Attempts++
 		state.task.DeliveryID = deliveryID
-		state.task.Visibility = now.Add(state.visibilityTimeout)
+		state.task.Lease = now.Add(state.lease)
 		state.version++
 		q.pushScheduleLocked(state)
 		q.dirty++

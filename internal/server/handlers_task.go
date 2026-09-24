@@ -16,7 +16,7 @@ func toWireTask(t taskqueue.Task) protocol.Task {
 		Payload:     t.Payload,
 		Attempts:    t.Attempts,
 		MaxAttempts: t.MaxAttempts,
-		Visibility:  t.Visibility,
+		Lease:  t.Lease,
 		ScheduledAt: t.ScheduledAt,
 		DeliveryID:  t.DeliveryID,
 		Offset:      t.Offset,
@@ -30,7 +30,7 @@ func toWireTask(t taskqueue.Task) protocol.Task {
 func fromWireTask(t protocol.Task) taskqueue.Task {
 	return taskqueue.NewTaskFromWire(
 		t.ID, t.Payload, t.Attempts, t.MaxAttempts,
-		t.Visibility, t.ScheduledAt, t.DeliveryID, t.Offset,
+		t.Lease, t.ScheduledAt, t.DeliveryID, t.Offset,
 		t.Key, t.Stalled,
 	)
 }
@@ -38,13 +38,13 @@ func fromWireTask(t protocol.Task) taskqueue.Task {
 // queueTaskDefaults reads the queue's stored spec and returns its task
 // defaults when explicitly set. Unset (nil) values fall through to the
 // driver's built-in defaults.
-func (s *Server) queueTaskDefaults(ctx context.Context, name string) (visibility time.Duration, maxAttempts uint32) {
+func (s *Server) queueTaskDefaults(ctx context.Context, name string) (lease time.Duration, maxAttempts uint32) {
 	d, err := s.node.DescribeQueue(ctx, name)
 	if err != nil {
 		return 0, 0
 	}
 	if v := d.Spec.Task.Lease; v != nil {
-		visibility = v.Duration()
+		lease = v.Duration()
 	}
 	if m := d.Spec.Task.MaxAttempts; m != nil {
 		maxAttempts = *m

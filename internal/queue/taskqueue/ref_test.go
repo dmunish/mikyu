@@ -40,7 +40,7 @@ func newTaskQueueWithDefaults(t *testing.T, d Defaults) *queue {
 }
 
 func TestQueueDefaultsApply(t *testing.T) {
-	q := newTaskQueueWithDefaults(t, Defaults{Visibility: time.Minute, MaxAttempts: 3})
+	q := newTaskQueueWithDefaults(t, Defaults{Lease: time.Minute, MaxAttempts: 3})
 	ctx := t.Context()
 
 	_, err := q.Enqueue(ctx, []byte("defaults"))
@@ -48,13 +48,13 @@ func TestQueueDefaultsApply(t *testing.T) {
 	got, err := q.Dequeue(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(3), got.MaxAttempts)
-	left := time.Until(got.Visibility)
+	left := time.Until(got.Lease)
 	assert.GreaterOrEqual(t, left, 55*time.Second, "lease should be ~1m out")
 	assert.LessOrEqual(t, left, time.Minute+5*time.Second)
 }
 
 func TestPerCallOverridesQueueDefault(t *testing.T) {
-	q := newTaskQueueWithDefaults(t, Defaults{Visibility: time.Minute, MaxAttempts: 3})
+	q := newTaskQueueWithDefaults(t, Defaults{Lease: time.Minute, MaxAttempts: 3})
 	ctx := t.Context()
 
 	_, err := q.Enqueue(ctx, []byte("override"), WithLease(10*time.Second), WithMaxAttempts(2))
@@ -62,13 +62,13 @@ func TestPerCallOverridesQueueDefault(t *testing.T) {
 	got, err := q.Dequeue(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(2), got.MaxAttempts)
-	left := time.Until(got.Visibility)
+	left := time.Until(got.Lease)
 	assert.GreaterOrEqual(t, left, 5*time.Second, "lease should be ~10s out")
 	assert.LessOrEqual(t, left, 15*time.Second)
 }
 
 func TestDefaultsUpdateAfterUpdateQueue(t *testing.T) {
-	q := newTaskQueueWithDefaults(t, Defaults{Visibility: time.Minute, MaxAttempts: 5})
+	q := newTaskQueueWithDefaults(t, Defaults{Lease: time.Minute, MaxAttempts: 5})
 	ctx := t.Context()
 
 	_, err := q.Enqueue(ctx, []byte("before"))
@@ -77,14 +77,14 @@ func TestDefaultsUpdateAfterUpdateQueue(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, uint32(5), before.MaxAttempts)
 
-	q.SetDefaults(Defaults{Visibility: 30 * time.Second, MaxAttempts: 2})
+	q.SetDefaults(Defaults{Lease: 30 * time.Second, MaxAttempts: 2})
 
 	_, err = q.Enqueue(ctx, []byte("after"))
 	require.NoError(t, err)
 	after, err := q.Dequeue(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(2), after.MaxAttempts)
-	left := time.Until(after.Visibility)
+	left := time.Until(after.Lease)
 	assert.GreaterOrEqual(t, left, 25*time.Second, "lease should be ~30s out")
 	assert.LessOrEqual(t, left, 35*time.Second)
 }

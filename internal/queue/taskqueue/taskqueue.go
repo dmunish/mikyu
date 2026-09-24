@@ -30,13 +30,13 @@ type queue struct {
 	closing          bool
 	closed           bool
 
-	// defaultVisibility and defaultMaxAttempts fall back for optionless enqueues; SetDefaults updates them live.
-	defaultVisibility  time.Duration
+	// defaultLease and defaultMaxAttempts fall back for optionless enqueues; SetDefaults updates them live.
+	defaultLease  time.Duration
 	defaultMaxAttempts uint32
 
 	// Bounds: 0 means unlimited.
 	maxInFlight uint32
-	maxDLQ      uint32
+	maxDeadLetters      uint32
 
 	// archiveLog creates or returns the archive log queue for source.
 	archiveLog ArchiveLogFor
@@ -46,10 +46,10 @@ type queue struct {
 
 // Defaults carry the queue's task-queue defaults into the driver.
 type Defaults struct {
-	Visibility  time.Duration
+	Lease  time.Duration
 	MaxAttempts uint32
 	MaxInFlight uint32
-	MaxDLQ      uint32
+	MaxDeadLetters      uint32
 }
 
 // ArchiveAppender is the minimal interface for writing archive envelopes.
@@ -74,9 +74,9 @@ func New(name string, storage engine.Storage, defaults Defaults, archiveLog Arch
 	if len(scopes) > 0 {
 		scope = scopes[0]
 	}
-	visibility := defaults.Visibility
-	if visibility <= 0 {
-		visibility = defaultVisibilityTimeout
+	lease := defaults.Lease
+	if lease <= 0 {
+		lease = defaultLease
 	}
 	maxAttempts := defaults.MaxAttempts
 	if maxAttempts == 0 {
@@ -90,10 +90,10 @@ func New(name string, storage engine.Storage, defaults Defaults, archiveLog Arch
 		dlqUncheckpointed:  make(map[string]struct{}),
 		notify:             make(chan struct{}),
 		stopCh:             make(chan struct{}),
-		defaultVisibility:  visibility,
+		defaultLease:  lease,
 		defaultMaxAttempts: maxAttempts,
 		maxInFlight:        defaults.MaxInFlight,
-		maxDLQ:             defaults.MaxDLQ,
+		maxDeadLetters:             defaults.MaxDeadLetters,
 		m:                  newTaskMetrics(scope),
 	}
 	if archiveLog != nil {
@@ -116,18 +116,18 @@ func New(name string, storage engine.Storage, defaults Defaults, archiveLog Arch
 	return q, nil
 }
 
-// SetDefaults changes the fallback visibility, attempts, and bounds for future enqueues.
+// SetDefaults changes the fallback lease, attempts, and bounds for future enqueues.
 func (q *queue) SetDefaults(d Defaults) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if d.Visibility > 0 {
-		q.defaultVisibility = d.Visibility
+	if d.Lease > 0 {
+		q.defaultLease = d.Lease
 	}
 	if d.MaxAttempts > 0 {
 		q.defaultMaxAttempts = d.MaxAttempts
 	}
 	q.maxInFlight = d.MaxInFlight
-	q.maxDLQ = d.MaxDLQ
+	q.maxDeadLetters = d.MaxDeadLetters
 }
 
 func (q *queue) Close() error {

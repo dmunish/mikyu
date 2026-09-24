@@ -186,7 +186,7 @@ func paramsFor(v Verb) []spec.Param {
 	case FlagsQueuePatch:
 		return spec.Updatable()
 	case FlagsEnqueue:
-		return pickCallParams("visibility", "max_attempts", "scheduled_at")
+		return pickCallParams("lease", "max_attempts", "scheduled_at")
 	case FlagsNack:
 		return pickCallParams("retry_after")
 	default:

@@ -31,8 +31,8 @@ func (a logArchiveAppender) Append(ctx context.Context, payload []byte) (uint64,
 	return a.l.Append(ctx, payload)
 }
 
-// newTestQueueWithBounds creates a queue with maxInFlight and maxDLQ bounds.
-func newTestQueueWithBounds(t *testing.T, maxInFlight, maxDLQ uint32) (*queue, *engine.Manager, engine.Storage) {
+// newTestQueueWithBounds creates a queue with maxInFlight and maxDeadLetters bounds.
+func newTestQueueWithBounds(t *testing.T, maxInFlight, maxDeadLetters uint32) (*queue, *engine.Manager, engine.Storage) {
 	t.Helper()
 	dir := t.TempDir()
 	mgr, err := engine.OpenManager(dir, engine.Config{
@@ -47,7 +47,7 @@ func newTestQueueWithBounds(t *testing.T, maxInFlight, maxDLQ uint32) (*queue, *
 	require.NoError(t, err)
 	storage, err := mgr.Create("tasks")
 	require.NoError(t, err)
-	d := Defaults{MaxInFlight: maxInFlight, MaxDLQ: maxDLQ}
+	d := Defaults{MaxInFlight: maxInFlight, MaxDeadLetters: maxDeadLetters}
 	queueIface, err := New("tasks", storage, d, func(ctx context.Context, source string) (ArchiveAppender, error) { return nil, nil })
 	require.NoError(t, err)
 	q := queueIface.(*queue)
@@ -86,7 +86,7 @@ func newTestQueueWithArchive(t *testing.T, appender ArchiveAppender) (*queue, *e
 	return q, mgr, storage
 }
 
-func TestStalledIncrementsOnVisibilityExpiry(t *testing.T) {
+func TestStalledIncrementsOnLeaseExpiry(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		q := newMemTaskQueue(t, "stalled")
 		ctx := t.Context()
@@ -135,7 +135,7 @@ func TestMaxInFlightRefuses(t *testing.T) {
 	assert.ErrorIs(t, err, ErrQueueFull)
 }
 
-func TestMaxDLQDropsOldest(t *testing.T) {
+func TestMaxDeadLettersDropsOldest(t *testing.T) {
 	q, _, _ := newTestQueueWithBounds(t, 100_000, 2)
 	ctx := t.Context()
 
@@ -426,8 +426,8 @@ func TestMaxInFlightZeroMeansUnlimited(t *testing.T) {
 	}
 }
 
-// TestMaxDLQZeroMeansUnlimited verifies that maxDLQ=0 allows unlimited DLQ entries.
-func TestMaxDLQZeroMeansUnlimited(t *testing.T) {
+// TestMaxDeadLettersZeroMeansUnlimited verifies that maxDeadLetters=0 allows unlimited DLQ entries.
+func TestMaxDeadLettersZeroMeansUnlimited(t *testing.T) {
 	q, _, _ := newTestQueueWithBounds(t, 100_000, 0)
 	ctx := t.Context()
 

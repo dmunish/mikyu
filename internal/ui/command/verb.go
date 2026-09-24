@@ -263,7 +263,7 @@ var Verbs = []Verb{
 	{
 		Name: "extend", Args: "<queue> <task>", Kind: KindTask, Modes: ModeCLI | ModeREPL,
 		Summary: "Extend a task lease forward",
-		Long: "Only extends visibility forward, never shortens it, and never " +
+		Long: "Only extends lease forward, never shortens it, and never " +
 			"increments the attempt count.",
 		Usage: []string{"extend <queue> <task|json|id> <timeout>"},
 		Examples: []Example{

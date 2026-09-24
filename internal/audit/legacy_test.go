@@ -27,6 +27,10 @@ var bannedIdentifiers = []string{
 	// split-era names: the old concrete types and manager verbs must not leak.
 	"LogQueue", "TaskQueue", "TaskRef", "TaskID", "Message",
 	"MIKYUTQ", "GetQueue", "CreateQueue", "DeleteQueue", "ListQueues",
+	// config-redesign retirements: the old cap vocabulary is gone for good.
+	"EngineSpec", "RetentionAge", "RetentionBytes", "DefaultVisibility", "DefaultMaxAttempts",
+	"MaxDLQ", "MaxConns", "BatchSize", "MaxInterval", "MinInterval",
+	"SegmentSize", "SegmentAge", "MaxMessageBytes", "VisibilityTimeout",
 }
 
 // sdkSurfaceNames stay legal as Client interface methods, driver method names,
@@ -37,7 +41,7 @@ var sdkSurfaceNames = map[string]bool{
 	"DeleteQueue": true, "ListQueues": true,
 }
 
-var bannedOpPattern = regexp.MustCompile(`^OpTask[A-Za-z]*ByID$`)
+var bannedOpPattern = regexp.MustCompile(`^Op(?:Task[A-Za-z]*ByID|Stats|Info)$`)
 
 func isBanned(name string) bool {
 	if slices.Contains(bannedIdentifiers, name) {

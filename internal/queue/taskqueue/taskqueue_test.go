@@ -78,7 +78,7 @@ func TestTaskQueueBasicLifecycle(t *testing.T) {
 	assert.Equal(t, uint32(0), task.Attempts)
 	assert.Equal(t, uint32(3), task.MaxAttempts)
 	assert.False(t, task.ScheduledAt.IsZero())
-	assert.Empty(t, task.Visibility)
+	assert.Empty(t, task.Lease)
 
 	got, err := q.Dequeue(ctx)
 	require.NoError(t, err)
@@ -86,7 +86,7 @@ func TestTaskQueueBasicLifecycle(t *testing.T) {
 	assert.Equal(t, []byte("hello"), got.Payload)
 	assert.Equal(t, uint32(1), got.Attempts)
 	assert.NotEmpty(t, got.DeliveryID)
-	assert.WithinDuration(t, time.Now().Add(time.Second), got.Visibility, 250*time.Millisecond)
+	assert.WithinDuration(t, time.Now().Add(time.Second), got.Lease, 250*time.Millisecond)
 
 	require.NoError(t, q.Ack(ctx, got))
 	_, err = dequeueWithTimeout(t, q, 50*time.Millisecond)
@@ -111,7 +111,7 @@ func TestTaskQueueScheduleAndContextCancellation(t *testing.T) {
 	assert.Equal(t, "future", string(got.Payload))
 }
 
-func TestTaskQueueVisibilityAndStaleLeaseProtection(t *testing.T) {
+func TestTaskQueueLeaseAndStaleLeaseProtection(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		q := newMemTaskQueue(t, "tasks")
 		ctx := t.Context()
@@ -164,7 +164,7 @@ func TestTaskQueueDeliveryIDAndLeaseExtension(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotEmpty(t, first.DeliveryID)
 
-		before := first.Visibility
+		before := first.Lease
 		require.NoError(t, q.Extend(ctx, first, 250*time.Millisecond))
 		secondView := first
 		q.mu.Lock()
@@ -175,13 +175,13 @@ func TestTaskQueueDeliveryIDAndLeaseExtension(t *testing.T) {
 
 		assert.Equal(t, first.DeliveryID, secondView.DeliveryID)
 		assert.Equal(t, first.Attempts, secondView.Attempts)
-		assert.True(t, secondView.Visibility.After(before))
+		assert.True(t, secondView.Lease.After(before))
 
 		stale := first
 		stale.DeliveryID = "stale-delivery"
 		assert.ErrorIs(t, q.Extend(ctx, stale, time.Second), ErrTaskStale)
 
-		deadline := secondView.Visibility
+		deadline := secondView.Lease
 		synctest.Sleep(time.Until(deadline) + 10*time.Millisecond)
 		redelivered, err := q.Dequeue(ctx)
 		require.NoError(t, err)

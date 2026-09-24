@@ -320,9 +320,11 @@ func (s *replSession) handleDescribe(args []string) {
 		return
 	}
 	stored, _ := json.Marshal(d.Spec)
+	derived, _ := json.Marshal(d.Derived)
 	effective, _ := json.Marshal(d.Effective)
 	fmt.Println(infoStyle.Render(fmt.Sprintf("Queue %q", rest[0])))
 	fmt.Printf("  stored:    %s\n", stored)
+	fmt.Printf("  derived:   %s\n", derived)
 	fmt.Printf("  effective: %s\n", effective)
 }
 

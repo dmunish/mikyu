@@ -182,12 +182,12 @@ func TestQueueDefaultUpdateAffectsFutureEnqueues(t *testing.T) {
 	require.NoError(t, err)
 
 	// The materialized handle carries the spec default (1m), not the built-in.
-	// Visibility is the lease granted at dequeue time, so dequeue to observe it.
+	// Lease is the lease granted at dequeue time, so dequeue to observe it.
 	_, err = tq.Enqueue(ctx, []byte("first"))
 	require.NoError(t, err)
 	first, err := tq.Dequeue(ctx)
 	require.NoError(t, err)
-	assert.InDelta(t, time.Minute.Seconds(), time.Until(first.Visibility).Seconds(), 5)
+	assert.InDelta(t, time.Minute.Seconds(), time.Until(first.Lease).Seconds(), 5)
 	assert.Equal(t, uint32(5), first.MaxAttempts)
 
 	two := spec.Duration(2 * time.Minute)
@@ -198,8 +198,8 @@ func TestQueueDefaultUpdateAffectsFutureEnqueues(t *testing.T) {
 	require.NoError(t, err)
 	second, err := tq.Dequeue(ctx)
 	require.NoError(t, err)
-	assert.InDelta(t, (2 * time.Minute).Seconds(), time.Until(second.Visibility).Seconds(), 5)
-	assert.InDelta(t, time.Minute.Seconds(), time.Until(first.Visibility).Seconds(), 5)
+	assert.InDelta(t, (2 * time.Minute).Seconds(), time.Until(second.Lease).Seconds(), 5)
+	assert.InDelta(t, time.Minute.Seconds(), time.Until(first.Lease).Seconds(), 5)
 }
 
 func TestQueueDefaultUpdateSurvivesRestart(t *testing.T) {
@@ -221,7 +221,7 @@ func TestQueueDefaultUpdateSurvivesRestart(t *testing.T) {
 	require.NoError(t, err)
 	first, err := tq.Dequeue(ctx)
 	require.NoError(t, err)
-	assert.InDelta(t, time.Minute.Seconds(), time.Until(first.Visibility).Seconds(), 5)
+	assert.InDelta(t, time.Minute.Seconds(), time.Until(first.Lease).Seconds(), 5)
 
 	two := spec.Duration(2 * time.Minute)
 	require.NoError(t, n2.UpdateQueue(ctx, "q", spec.Spec{Task: spec.TaskSpec{Lease: &two}}))
@@ -229,7 +229,7 @@ func TestQueueDefaultUpdateSurvivesRestart(t *testing.T) {
 	require.NoError(t, err)
 	second, err := tq.Dequeue(ctx)
 	require.NoError(t, err)
-	assert.InDelta(t, (2 * time.Minute).Seconds(), time.Until(second.Visibility).Seconds(), 5)
+	assert.InDelta(t, (2 * time.Minute).Seconds(), time.Until(second.Lease).Seconds(), 5)
 }
 
 func TestNodeCollectorLifecycle(t *testing.T) {

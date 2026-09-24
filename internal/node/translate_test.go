@@ -52,10 +52,10 @@ func TestEngineConfigFromSparseSpec(t *testing.T) {
 // TestTaskDefaultsFromSpec pins the task block translation.
 func TestTaskDefaultsFromSpec(t *testing.T) {
 	d := taskDefaultsFor(spec.Builtin())
-	assert.Equal(t, 30*time.Second, d.Visibility)
+	assert.Equal(t, 30*time.Second, d.Lease)
 	assert.Equal(t, uint32(5), d.MaxAttempts)
 	assert.Equal(t, uint32(100_000), d.MaxInFlight)
-	assert.Equal(t, uint32(100_000), d.MaxDLQ)
+	assert.Equal(t, uint32(100_000), d.MaxDeadLetters)
 }
 
 // TestPolicyFromSpec pins the retention translation.

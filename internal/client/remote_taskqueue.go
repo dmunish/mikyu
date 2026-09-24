@@ -16,7 +16,7 @@ func toWireTask(t taskqueue.Task) protocol.Task {
 		Payload:     t.Payload,
 		Attempts:    t.Attempts,
 		MaxAttempts: t.MaxAttempts,
-		Visibility:  t.Visibility,
+		Lease:  t.Lease,
 		ScheduledAt: t.ScheduledAt,
 		DeliveryID:  t.DeliveryID,
 		Offset:      t.Offset,
@@ -29,7 +29,7 @@ func toWireTask(t taskqueue.Task) protocol.Task {
 func fromWireTask(t protocol.Task) taskqueue.Task {
 	return taskqueue.NewTaskFromWire(
 		t.ID, t.Payload, t.Attempts, t.MaxAttempts,
-		t.Visibility, t.ScheduledAt, t.DeliveryID, t.Offset,
+		t.Lease, t.ScheduledAt, t.DeliveryID, t.Offset,
 		t.Key, t.Stalled,
 	)
 }
@@ -84,11 +84,11 @@ func (q *remoteTaskQueue) Name() string { return q.name }
 
 // Enqueue sends unset zeros where the caller set no option, letting the server resolve queue defaults and built-ins instead of pre-resolving them.
 func (q *remoteTaskQueue) Enqueue(ctx context.Context, payload []byte, opts ...taskqueue.EnqueueOption) (taskqueue.Task, error) {
-	visibility, maxAttempts, scheduled := taskqueue.ResolveWireEnqueueOptions(opts...)
+	lease, maxAttempts, scheduled := taskqueue.ResolveWireEnqueueOptions(opts...)
 	var b protocol.Buffer
 	b.WriteBytes([]byte(q.name))
 	b.WriteBytes(payload)
-	b.WriteU64(uint64(int64(visibility))) // 0 = inherit
+	b.WriteU64(uint64(int64(lease))) // 0 = inherit
 	b.WriteU32(maxAttempts)               // 0 = inherit
 	if scheduled.IsZero() {
 		b.WriteU64(0)

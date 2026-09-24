@@ -11,7 +11,7 @@ import (
 
 // EnqueueOptions carries the per-call values for enqueue.
 type EnqueueOptions struct {
-	Visibility  time.Duration
+	Lease  time.Duration
 	MaxAttempts uint32
 	ScheduledAt time.Time
 	Key         []byte
@@ -29,8 +29,8 @@ func Enqueue(ctx context.Context, client mikyu.Client, queue, input string, opts
 	}
 
 	var taskOpts []mikyu.EnqueueOption
-	if opts.Visibility > 0 {
-		taskOpts = append(taskOpts, mikyu.WithTaskLease(opts.Visibility))
+	if opts.Lease > 0 {
+		taskOpts = append(taskOpts, mikyu.WithTaskLease(opts.Lease))
 	}
 	if opts.MaxAttempts > 0 {
 		taskOpts = append(taskOpts, mikyu.WithTaskMaxAttempts(opts.MaxAttempts))
@@ -137,7 +137,7 @@ type TaskRecord struct {
 	ID          string    `json:"id"`
 	Attempts    uint32    `json:"attempts"`
 	MaxAttempts uint32    `json:"max_attempts"`
-	Visibility  time.Time `json:"visibility"`
+	Lease  time.Time `json:"lease"`
 	ScheduledAt time.Time `json:"scheduled_at"`
 	DeliveryID  string    `json:"delivery_id"`
 	Offset      uint64    `json:"offset"`
@@ -152,7 +152,7 @@ func Record(t mikyu.Task) TaskRecord {
 		ID:          t.ID,
 		Attempts:    t.Attempts,
 		MaxAttempts: t.MaxAttempts,
-		Visibility:  t.Visibility,
+		Lease:  t.Lease,
 		ScheduledAt: t.ScheduledAt,
 		DeliveryID:  t.DeliveryID,
 		Offset:      t.Offset,
@@ -171,7 +171,7 @@ func ParseTaskRef(arg string) (mikyu.TaskRef, string) {
 			Payload:     []byte(rec.Payload),
 			Attempts:    rec.Attempts,
 			MaxAttempts: rec.MaxAttempts,
-			Visibility:  rec.Visibility,
+			Lease:  rec.Lease,
 			ScheduledAt: rec.ScheduledAt,
 			DeliveryID:  rec.DeliveryID,
 			Offset:      rec.Offset,

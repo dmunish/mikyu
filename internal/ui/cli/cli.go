@@ -290,6 +290,7 @@ func (in *invocation) handleDescribe(args []string) error {
 		return nil
 	}
 	stored, _ := json.Marshal(d.Spec)
+	derived, _ := json.Marshal(d.Derived)
 	effective, _ := json.Marshal(d.Effective)
 	defaults, _ := json.Marshal(d.Defaults)
 	compaction := "off"
@@ -299,6 +300,7 @@ func (in *invocation) handleDescribe(args []string) error {
 	fmt.Fprintf(in.app.Stdout, "queue:      %s (%s)\n", rest[0], d.Kind)
 	fmt.Fprintf(in.app.Stdout, "compaction: %s\n", compaction)
 	fmt.Fprintf(in.app.Stdout, "stored:     %s\n", stored)
+	fmt.Fprintf(in.app.Stdout, "derived:    %s\n", derived)
 	fmt.Fprintf(in.app.Stdout, "effective:  %s\n", effective)
 	fmt.Fprintf(in.app.Stdout, "defaults:   %s\n", defaults)
 	return nil

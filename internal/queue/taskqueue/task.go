@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	defaultVisibilityTimeout  = 30 * time.Second
+	defaultLease  = 30 * time.Second
 	defaultMaxAttempts        = 5
 	defaultRetryDelay         = time.Second
 	defaultMaxRetryDelay      = 5 * time.Minute
@@ -35,7 +35,7 @@ type Task struct {
 	Payload     []byte
 	Attempts    uint32
 	MaxAttempts uint32
-	Visibility  time.Time
+	Lease  time.Time
 	ScheduledAt time.Time
 	DeliveryID  string
 	Offset      uint64
@@ -96,16 +96,16 @@ func Close(q Queue) error {
 type EnqueueOption func(*enqueueOptions)
 
 type enqueueOptions struct {
-	visibilityTimeout time.Duration
+	lease time.Duration
 	maxAttempts       uint32
 	scheduledAt       time.Time
 	key               []byte
 }
 
 // resolveEnqueueOptionsLocked applies opts over this queue's live defaults.
-func (q *queue) resolveEnqueueOptionsLocked(opts ...EnqueueOption) (visibilityTimeout time.Duration, maxAttempts uint32, scheduledAt time.Time, key []byte) {
+func (q *queue) resolveEnqueueOptionsLocked(opts ...EnqueueOption) (lease time.Duration, maxAttempts uint32, scheduledAt time.Time, key []byte) {
 	o := enqueueOptions{
-		visibilityTimeout: q.defaultVisibility,
+		lease: q.defaultLease,
 		maxAttempts:       q.defaultMaxAttempts,
 		scheduledAt:       time.Now(),
 	}
@@ -114,25 +114,25 @@ func (q *queue) resolveEnqueueOptionsLocked(opts ...EnqueueOption) (visibilityTi
 			opt(&o)
 		}
 	}
-	return o.visibilityTimeout, o.maxAttempts, o.scheduledAt, o.key
+	return o.lease, o.maxAttempts, o.scheduledAt, o.key
 }
 
 // ResolveWireEnqueueOptions applies opts over unset zeros so wire clients send "inherit" for unset values.
-func ResolveWireEnqueueOptions(opts ...EnqueueOption) (visibilityTimeout time.Duration, maxAttempts uint32, scheduledAt time.Time) {
+func ResolveWireEnqueueOptions(opts ...EnqueueOption) (lease time.Duration, maxAttempts uint32, scheduledAt time.Time) {
 	var o enqueueOptions
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&o)
 		}
 	}
-	return o.visibilityTimeout, o.maxAttempts, o.scheduledAt
+	return o.lease, o.maxAttempts, o.scheduledAt
 }
 
 // WithLease controls how long a dequeued task stays leased.
 func WithLease(timeout time.Duration) EnqueueOption {
 	return func(o *enqueueOptions) {
 		if timeout > 0 {
-			o.visibilityTimeout = timeout
+			o.lease = timeout
 		}
 	}
 }
@@ -163,10 +163,10 @@ func WithScheduledAt(at time.Time) EnqueueOption {
 }
 
 // NewTaskFromWire reconstructs a task from wire values, copying the payload so the driver owns its bytes.
-func NewTaskFromWire(id string, payload []byte, attempts, maxAttempts uint32, visibility, scheduledAt time.Time, deliveryID string, offset uint64, key []byte, stalled uint32) Task {
+func NewTaskFromWire(id string, payload []byte, attempts, maxAttempts uint32, lease, scheduledAt time.Time, deliveryID string, offset uint64, key []byte, stalled uint32) Task {
 	return Task{
 		ID: id, Payload: append([]byte(nil), payload...), Attempts: attempts,
-		MaxAttempts: maxAttempts, Visibility: visibility, ScheduledAt: scheduledAt, DeliveryID: deliveryID, Offset: offset,
+		MaxAttempts: maxAttempts, Lease: lease, ScheduledAt: scheduledAt, DeliveryID: deliveryID, Offset: offset,
 		Key: append([]byte(nil), key...), Stalled: stalled,
 	}
 }

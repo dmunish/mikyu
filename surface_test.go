@@ -279,7 +279,8 @@ func effectiveJSON(t *testing.T, d mikyu.QueueDescription) string {
 // TestNamingLaw holds the CLI verbs, the public methods, and the option
 // constructors to the vocabulary of spec.Table.
 func TestNamingLaw(t *testing.T) {
-	bannedParts := []string{"Produce", "Publish", "Pop", "Stats", "Info", "TruncateQueue", "FetchOffset", "OriginalOffset", "DequeueNow"}
+	bannedParts := []string{"Produce", "Publish", "Pop", "Stats", "Info", "TruncateQueue", "FetchOffset", "OriginalOffset", "DequeueNow",
+		"Visibility", "BatchSize", "SegmentSize", "MaxMessageBytes", "MaxDLQ", "MaxConns", "Fsync", "Encrypted", "MinInterval", "MaxInterval"}
 
 	for _, v := range command.Verbs {
 		lower := strings.ToLower(v.Name)

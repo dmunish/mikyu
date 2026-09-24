@@ -180,8 +180,8 @@ func EnqueueFlagSet(name string, o *EnqueueOptions) *flag.FlagSet {
 		case "lease":
 			fs.Var(&valueFunc{
 				kind: p.Kind,
-				str:  func() string { return o.Visibility.String() },
-				set:  func(v spec.Value) { o.Visibility = v.Duration() },
+				str:  func() string { return o.Lease.String() },
+				set:  func(v spec.Value) { o.Lease = v.Duration() },
 			}, p.FlagName, p.Doc)
 		case "max_attempts":
 			fs.Var(&valueFunc{
