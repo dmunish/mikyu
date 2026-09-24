@@ -16,8 +16,8 @@ func TestRuntimeSourceShape(t *testing.T) {
 	src.Collect(t.Context(), &snap)
 
 	require.Greater(t, snap.Runtime.Goroutines, 0)
-	require.Greater(t, snap.Runtime.HeapAlloc, int64(0))
-	require.Greater(t, snap.Runtime.HeapInuse, int64(0))
+	require.Greater(t, snap.Runtime.Heap.Alloc, int64(0))
+	require.Greater(t, snap.Runtime.Heap.Inuse, int64(0))
 	require.Greater(t, snap.Runtime.UptimeSec, 0.0)
-	require.GreaterOrEqual(t, snap.Runtime.GCCount, int64(0))
+	require.GreaterOrEqual(t, snap.GC.Cycles, int64(0))
 }

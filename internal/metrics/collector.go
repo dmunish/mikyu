@@ -243,14 +243,16 @@ func mergeInt64(dst *map[string]int64, src map[string]int64) {
 	maps.Copy((*dst), src)
 }
 
-func mergeHistograms(dst *map[string]HistogramSnapshot, src map[string]HistogramSnapshot) {
+func mergeHistograms(dst *map[string]HistogramView, src map[string]HistogramSnapshot) {
 	if len(src) == 0 {
 		return
 	}
 	if *dst == nil {
-		*dst = make(map[string]HistogramSnapshot, len(src))
+		*dst = make(map[string]HistogramView, len(src))
 	}
-	maps.Copy((*dst), src)
+	for name, snap := range src {
+		(*dst)[name] = viewOf(snap)
+	}
 }
 
 func computeRates(prev *Snapshot, next *Snapshot) {

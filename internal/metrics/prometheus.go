@@ -54,9 +54,9 @@ func (e *encoder) sample(name, queue, extra string, value float64) {
 
 func (e *encoder) global(s Snapshot) {
 	e.metric("mikyu_goroutines", "Number of goroutines.", "gauge", float64(s.Runtime.Goroutines))
-	e.metric("mikyu_heap_alloc_bytes", "Bytes of allocated heap objects.", "gauge", float64(s.Runtime.HeapAlloc))
-	e.metric("mikyu_heap_inuse_bytes", "Bytes in in-use heap spans.", "gauge", float64(s.Runtime.HeapInuse))
-	e.metric("mikyu_gc_count_total", "Completed garbage collection cycles.", "counter", float64(s.Runtime.GCCount))
+	e.metric("mikyu_heap_alloc_bytes", "Bytes of allocated heap objects.", "gauge", float64(s.Runtime.Heap.Alloc))
+	e.metric("mikyu_heap_inuse_bytes", "Bytes in in-use heap spans.", "gauge", float64(s.Runtime.Heap.Inuse))
+	e.metric("mikyu_gc_count_total", "Completed garbage collection cycles.", "counter", float64(s.GC.Cycles))
 	e.metric("mikyu_uptime_seconds", "Process uptime in seconds.", "gauge", s.Runtime.UptimeSec)
 	e.metric("mikyu_process_cpu_percent", "Process CPU utilization percent.", "gauge", s.Process.CPUPercent)
 	e.metric("mikyu_process_rss_bytes", "Resident set size in bytes.", "gauge", float64(s.Process.RSSBytes))
@@ -108,7 +108,7 @@ func (e *encoder) perQueue(s Snapshot, opts EncodeOptions) {
 	}
 }
 
-func (e *encoder) histogramSamples(name, queue string, h HistogramSnapshot) {
+func (e *encoder) histogramSamples(name, queue string, h HistogramView) {
 	cumulative := uint64(0)
 	for i, bound := range h.Bounds {
 		if i < len(h.Counts) {

@@ -253,7 +253,7 @@ func TestNodeCollectorLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, snap.Disabled)
 	require.Greater(t, snap.Runtime.Goroutines, 0)
-	require.Greater(t, snap.Runtime.HeapAlloc, int64(0))
+	require.Greater(t, snap.Runtime.Heap.Alloc, int64(0))
 
 	require.NoError(t, release())
 	// Stop joins the ticker goroutine and closes every subscriber channel. Drain

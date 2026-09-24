@@ -63,6 +63,16 @@ type HistogramSnapshot struct {
 	Total  uint64    `json:"total"`
 }
 
+// viewOf renders a histogram snapshot as its wire view.
+func viewOf(s HistogramSnapshot) HistogramView {
+	return HistogramView{
+		Bounds: s.Bounds,
+		Counts: s.Counts,
+		Sum:    s.Sum,
+		Total:  s.Total,
+	}
+}
+
 // Histogram records the distribution of float64 observations into fixed buckets.
 type Histogram struct {
 	bounds []float64

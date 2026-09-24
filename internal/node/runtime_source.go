@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -22,10 +23,23 @@ func (s *RuntimeSource) Collect(_ context.Context, dst *metrics.Snapshot) {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	dst.Runtime.Goroutines = runtime.NumGoroutine()
-	dst.Runtime.HeapAlloc = int64(m.HeapAlloc)
-	dst.Runtime.HeapInuse = int64(m.HeapInuse)
-	dst.Runtime.GCCount = int64(m.NumGC)
+	dst.Runtime.GOMAXPROCS = runtime.GOMAXPROCS(0)
+	dst.Runtime.Heap = metrics.HeapView{
+		Alloc:      int64(m.HeapAlloc),
+		Sys:        int64(m.HeapSys),
+		Inuse:      int64(m.HeapInuse),
+		Idle:       int64(m.HeapIdle),
+		Released:   int64(m.HeapReleased),
+		Objects:    int64(m.HeapObjects),
+		TotalAlloc: int64(m.TotalAlloc),
+	}
+	dst.Runtime.Stack = metrics.MemoryClassView{Inuse: int64(m.StackInuse), Sys: int64(m.StackSys)}
+	dst.Runtime.Metadata = metrics.MemoryClassView{Inuse: int64(m.MSpanInuse + m.MCacheInuse), Sys: int64(m.MSpanSys + m.MCacheSys)}
 	dst.Runtime.UptimeSec = time.Since(s.start).Seconds()
+	dst.GC.Cycles = int64(m.NumGC)
+	dst.GC.PauseTotalMs = float64(m.PauseTotalNs) / 1e6
+	dst.GC.NextGCBytes = int64(m.NextGC)
+	dst.GC.MemLimitBytes = debug.SetMemoryLimit(-1)
 	dst.Process.CPUPercent = readProcessCPU()
 	dst.Process.RSSBytes = readProcessRSS()
 }

@@ -430,13 +430,13 @@ func TestLayerKindAndParamNames(t *testing.T) {
 
 // The wire carries the spec schema number, not a protocol version.
 func TestCheckSpecVersion(t *testing.T) {
-	require.Equal(t, uint16(4), CurrentSpecVersion)
+	require.Equal(t, uint16(5), CurrentSpecVersion)
 	require.NoError(t, CheckSpecVersion(0))
 	require.NoError(t, CheckSpecVersion(CurrentSpecVersion))
 
 	err := CheckSpecVersion(CurrentSpecVersion + 1)
 	require.ErrorIs(t, err, ErrSpecTooNew)
-	require.Contains(t, err.Error(), "4")
+	require.Contains(t, err.Error(), "5")
 }
 
 // Equal is presence-aware: a field set to zero differs from a field left unset.

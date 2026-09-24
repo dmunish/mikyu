@@ -20,11 +20,10 @@ func goldenSnapshot() Snapshot {
 		Timestamp: time.Unix(0, 0).UTC(),
 		Runtime: RuntimeView{
 			Goroutines: 7,
-			HeapAlloc:  1024,
-			HeapInuse:  2048,
-			GCCount:    3,
+			Heap:       HeapView{Alloc: 1024, Inuse: 2048},
 			UptimeSec:  12.5,
 		},
+		GC:      GCView{Cycles: 3},
 		Process: ProcessView{CPUPercent: 1.25, RSSBytes: 4096},
 		Totals:  TotalsView{Queues: 1, Messages: 10, Bytes: 2048},
 		Queues: []QueueView{{
@@ -32,7 +31,7 @@ func goldenSnapshot() Snapshot {
 			Kind:     "internal",
 			Counters: map[string]int64{"appends": 10, "reads": 4},
 			Gauges:   map[string]int64{"messages": 10, "size_bytes": 2048, "segments": 1},
-			Histograms: map[string]HistogramSnapshot{
+			Histograms: map[string]HistogramView{
 				"append_duration": {Bounds: []float64{0.001, 0.01}, Counts: []uint64{5, 3, 2}, Sum: 0.5, Total: 10},
 			},
 		}},
