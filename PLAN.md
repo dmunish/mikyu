@@ -464,7 +464,361 @@ Edge cases:
 - Snapshot called on a closed queue returns zero-value view, no panic. Cover with `TestTaskSnapshotClosed`.
 - Snapshot while `refreshLocked` is mid-scan (simulate by holding `mu` from a test goroutine) — must wait, not deadlock.
 
-### Phase 5 — Lock observers
+## Phase 5 — Resident queue catalog
+
+The node's catalog is the runtime image of the directory. A queue that exists on disk is installed at open. Lookups are pure reads. State is published to the registry; the collector never pulls.
+
+Two defects motivate this phase.
+
+**The observer mutates the observed system.** `Node.Collect` materializes every task queue it sees, which loads checkpoints, replays WALs, takes `n.mu`, and spawns a `checkpointLoop` goroutine per queue. A scrape is no longer idempotent or O(1).
+
+**A task queue's correctness depends on whether a client has called it.** Every driver-side guarantee — retention target registration, retention policy, checkpointing, in-flight bounds — is created on first access (`Node.LogQueue`, `Node.TaskQueue`). An untouched task queue has no retention enforcement at all. Retention is meant to be a server-side guarantee; today it is a side effect of client traffic.
+
+Both have the same root cause. The fix installs every queue at open, publishes occupancy from the driver's own mutators, and lets `mergeScopes` read gauges without pulling.
+
+### Module 1 — Task driver publishes occupancy
+
+The driver maintains its occupancy in its existing metrics scope, mutated in O(1) at every state transition. No walk of `active`, no map iteration, no extra method on `Queue`.
+
+Files: `internal/queue/taskqueue/metrics.go`, every mutator in the package.
+
+Add nine gauges to `taskMetrics`:
+
+```go
+type taskMetrics struct {
+    // existing...
+    active         *metrics.Gauge
+    inFlight       *metrics.Gauge
+    scheduled      *metrics.Gauge
+    deadLetters    *metrics.Gauge
+    uncheckpointed *metrics.Gauge
+    scheduleHeap   *metrics.Gauge
+    checkpointLSN  *metrics.Gauge
+    dirtyRecords   *metrics.Gauge
+    checkpointLag  *metrics.Gauge
+}
+```
+
+Add one plain field to `queue`, maintained alongside `state.inFlight`:
+
+```go
+inFlightCount int64
+```
+
+Every place that flips `state.inFlight` adjusts it. Every place that deletes from `q.active` decrements it if the task was in flight. Wrap both in helpers:
+
+```go
+func (q *queue) markInFlightLocked(state *taskState) {
+    if !state.inFlight {
+        state.inFlight = true
+        q.inFlightCount++
+    }
+}
+
+func (q *queue) removeActiveLocked(id string) {
+    if state, ok := q.active[id]; ok {
+        if state.inFlight {
+            q.inFlightCount--
+        }
+        delete(q.active, id)
+    }
+}
+```
+
+The publisher:
+
+```go
+// publishLocked mirrors driver state into the queue scope. Callers hold q.mu.
+func (q *queue) publishLocked() {
+    q.m.active.Set(int64(len(q.active)))
+    q.m.inFlight.Set(q.inFlightCount)
+    q.m.scheduled.Set(int64(len(q.active)) - q.inFlightCount)
+    q.m.deadLetters.Set(int64(len(q.dlq)))
+    q.m.uncheckpointed.Set(int64(len(q.dlqUncheckpointed)))
+    q.m.scheduleHeap.Set(int64(len(q.schedule)))
+    q.m.checkpointLSN.Set(int64(q.checkpointOffset))
+    q.m.dirtyRecords.Set(int64(q.dirty))
+    q.m.checkpointLag.Set(int64(q.scanNext - q.checkpointCovered))
+}
+```
+
+Wire it into every top-level mutator with a defer ordered *after* the unlock defer:
+
+```go
+q.mu.Lock()
+defer q.mu.Unlock()
+defer q.publishLocked()
+```
+
+Mutators to cover:
+
+- `Enqueue`
+- `takeDueLocked` — delivery, stall, and final-attempt dead-letter
+- `Nack` — re-queue and dead-letter branches, plus DLQ overflow
+- `Ack`
+- `Archive`
+- `AckDeadLetter`
+- `loadCheckpointLocked` — replaces both maps
+- `refreshLocked` — appends to active or moves to dlq
+
+`Extend` does not change occupancy; one `publishLocked()` after the state write is enough.
+
+Delete `TaskSnapshot()` and the `taskViewer` interface from the package. The node and the collector no longer call them.
+
+Tests, in `internal/queue/taskqueue/metrics_test.go`:
+
+- `TestTaskGaugesAtRest` — enqueue N, no dequeue; `active == N`, `in_flight == 0`, `scheduled == N`.
+- `TestTaskGaugesInFlight` — dequeue K of M; `in_flight == K`, `active == M`, `scheduled == M-K`.
+- `TestTaskGaugesDeadLetters` — dead-letter a task; `dead_letters` matches `DeadLetters()`.
+- `TestTaskGaugesCheckpointLag` — force a checkpoint; `checkpoint_lag == 0`. Enqueue; `checkpoint_lag > 0`.
+- `TestTaskGaugesClosed` — after `Close()`, gauges read zero rather than panic.
+- `TestTaskGaugeInFlightCount` — directly assert `q.inFlightCount` matches the number of `state.inFlight` entries after a scripted sequence.
+- `TestTaskGaugeDrift` — property test: run N random ops from a fixed seed (enqueue, dequeue, ack, nack, extend, archive, dlq-ack), then assert published gauges equal `len(q.active)`, `q.inFlightCount`, `len(q.dlq)`, `len(q.dlqUncheckpointed)`, `len(q.schedule)` under the lock. Drift becomes a failing test, not a stale dashboard.
+
+### Module 2 — mergeScopes maps task gauges
+
+`internal/metrics/collector.go` is the only place that knows task-gauge names. Teach it the mapping once.
+
+```go
+// taskGaugeFields names the task-scope gauges and the TaskView field each
+// one fills. Names appear here or in QueueView.Gauges, never both.
+var taskGaugeFields = map[string]func(*TaskView, int64){
+    "active":         func(v *TaskView, n int64) { v.Active = n },
+    "in_flight":      func(v *TaskView, n int64) { v.InFlight = n },
+    "scheduled":      func(v *TaskView, n int64) { v.Scheduled = n },
+    "dead_letters":   func(v *TaskView, n int64) { v.DeadLetters = n },
+    "uncheckpointed": func(v *TaskView, n int64) { v.Uncheckpointed = n },
+    "schedule_heap":  func(v *TaskView, n int64) { v.ScheduleHeap = n },
+    "checkpoint_lsn": func(v *TaskView, n int64) { v.CheckpointLSN = n },
+    "dirty":          func(v *TaskView, n int64) { v.Dirty = n },
+    "checkpoint_lag": func(v *TaskView, n int64) { v.CheckpointLag = n },
+}
+```
+
+In `mergeScopes`, before folding `gauges` into `qv.Gauges`, route the task names into `qv.Tasks` and drop them from the generic map:
+
+```go
+for name, value := range gauges {
+    if setter, ok := taskGaugeFields[name]; ok {
+        setter(&qv.Tasks, value)
+        continue
+    }
+    qv.Gauges[name] = value
+}
+```
+
+One representation in JSON. A task queue with zero active tasks still has `Tasks` populated, because the scope exists.
+
+Delete `Node.Collect` and the `n` argument it received at collector construction. Sources are now `newRuntimeSource()` and the manager; task state arrives through scopes like every other instrument.
+
+Tests, in `internal/metrics/collector_test.go`:
+
+- `TestMergeScopesTaskGauges` — a scope with `active=3`, `in_flight=1`, `dead_letters=2` produces `QueueView.Tasks` with those values and no `active` / `in_flight` / `dead_letters` keys in `QueueView.Gauges`.
+- `TestMergeScopesPartialTaskGauges` — a scope with only `active` leaves the other `TaskView` fields zero; JSON has one representation.
+- `TestCollectorNoTaskMaterialization` — start a node with N installed task queues, tick; assert the number of `taskqueue.New` calls is unchanged across ticks (spy with a counter).
+
+### Module 3 — Eager install catalog
+
+`internal/node/node.go` and a new `internal/node/catalog.go`.
+
+Replace:
+
+```go
+logQueues  map[string]logqueue.Log
+taskQueues map[string]taskqueue.Queue
+```
+
+with a catalog that mirrors the filesystem:
+
+```go
+type taskEntry struct {
+    ready chan struct{}
+    q     taskqueue.Queue
+    err   error
+}
+
+type logEntry struct {
+    ready chan struct{}
+    q     logqueue.Log
+    err   error
+}
+```
+
+Node fields:
+
+```go
+logCatalog  map[string]*logEntry
+taskCatalog map[string]*taskEntry
+installWG   sync.WaitGroup
+faults      *metrics.Counter   // "queue_faults", on the server scope
+```
+
+`openNode` installs every queue from `infos` before the collector starts.
+
+Install must not hold `n.mu` across `taskqueue.New`; replay is unbounded I/O. The pattern:
+
+1. `n.mu.Lock()` — insert a placeholder entry with an open `ready` channel — `n.mu.Unlock()`.
+2. Build the driver (checkpoint load + replay for task queues) outside the lock.
+3. Fill `q` or `err`, close `ready`, register the retention target on success, and set the retention policy.
+
+Concurrent callers that find a placeholder wait on `<-e.ready` and receive the same driver. No duplicate construction, no global lock held across I/O.
+
+```go
+func (n *Node) installTask(ctx context.Context, name string, eff spec.Spec) *taskEntry {
+    e := &taskEntry{ready: make(chan struct{})}
+    n.mu.Lock()
+    n.taskCatalog[name] = e
+    n.mu.Unlock()
+
+    n.installWG.Add(1)
+    go func() {
+        defer n.installWG.Done()
+        storage, err := n.mgr.GetOf(name, manager.KindTask)
+        if err == nil {
+            var q taskqueue.Queue
+            q, err = taskqueue.New(name, storage,
+                taskDefaultsFor(eff), n.archiveLogFor(),
+                n.metrics.Registry().Scope(name))
+            if err == nil {
+                n.retention.RegisterTarget(&retention.Target{Name: name, Storage: storage, Driver: q})
+                n.retention.SetPolicy(name, policyFor(eff))
+                e.q = q
+            }
+        }
+        if err != nil {
+            n.faults.Inc()
+            e.err = err
+        }
+        close(e.ready)
+    }()
+    return e
+}
+```
+
+Log entries follow the same pattern. `logqueue.New` is O(1), but the rule is one rule: install is uniform, lookups are pure.
+
+Fault tolerance: a corrupt checkpoint on one queue must not fail `Open`. The entry stores the error, the node logs it once and counts `queue_faults`, and access returns the error.
+
+Register `queue_faults` in `preregisterServerMetrics` alongside `connections_rejected`.
+
+`LogQueue` and `TaskQueue` collapse to five lines each:
+
+```go
+func (n *Node) TaskQueue(name string) (taskqueue.Queue, error) {
+    n.mu.RLock()
+    e, ok := n.taskCatalog[name]
+    closed := n.closed
+    n.mu.RUnlock()
+    if closed {
+        return nil, engine.ErrQueueClosed
+    }
+    if !ok {
+        return nil, engine.ErrQueueNotFound
+    }
+    <-e.ready
+    return e.q, e.err
+}
+```
+
+No `mgr.Get`, no `taskqueue.New`, no retention registration, no `archiveLogFor` re-entrancy hazard on the lookup path.
+
+`closeInternal` waits on `n.installWG` before closing queues so shutdown cannot race an in-flight install.
+
+`archiveLogFor`'s closure calls a pure lookup (`n.LogQueue(name)` or `n.CreateLogQueue`) and can never deadlock against node state.
+
+Set the retention policy for every installed queue, log or task. `CreateTaskQueue` currently registers a retention target but never calls `SetPolicy`; installing at open without calling `SetPolicy` leaves task retention silently off.
+
+Tests, in `internal/node/catalog_test.go`:
+
+- `TestCatalogCompleteness` — after `Acquire`, every queue in `Manager.List` has a catalog entry, and every catalog entry resolves to a driver.
+- `TestLookupIsPure` — call `LogQueue` and `TaskQueue` 1000 times; `runtime.NumGoroutine` and a spy on `taskqueue.New` both show no work.
+- `TestConcurrentInstall` — 32 goroutines call `TaskQueue(name)` at once; exactly one `taskqueue.New` runs, all 32 receive the same handle.
+- `TestCorruptCheckpointOpensNode` — write garbage into a checkpoint file, `Acquire` the directory; the node opens, `TaskQueue` returns the error, `queue_faults` is 1.
+- `TestUntouchedQueueRetention` — create a log queue with `max_retention_age`, never call `LogQueue`, wait for the sweep; the queue's `MinOffset` advanced.
+- `TestUntouchedTaskQueueRetention` — same for a task queue.
+- `TestTaskQueueSpecPolicy` — create a task queue with a retention bound; assert `Coordinator` has the policy without any client call.
+
+### Module 4 — Shared maintenance loop
+
+`checkpointLoop` is a 5s ticker plus a goroutine per task queue. Ten thousand task queues means ten thousand tickers waking every five seconds to mostly do nothing. Replace with a single node-level loop that sweeps installed queues every 5s and checkpoints only dirty ones.
+
+Add a `Checkpoint` seam mirroring the existing `Close` free function:
+
+```go
+// Checkpoint flushes the driver's pending checkpoint when it is dirty.
+func Checkpoint(q Queue) error {
+    if c, ok := q.(interface{ Checkpoint(context.Context) error }); ok {
+        return c.Checkpoint(context.Background())
+    }
+    return nil
+}
+```
+
+On the driver:
+
+```go
+func (q *queue) Checkpoint(ctx context.Context) error {
+    q.mu.Lock()
+    defer q.mu.Unlock()
+    if q.closed || q.closing {
+        return nil
+    }
+    if q.dirty == 0 && q.checkpointOffset > 0 {
+        return nil
+    }
+    return q.checkpointLocked(ctx)
+}
+```
+
+Delete `stopCh`, `wg`, `checkpointLoop`, and the goroutine start in `taskqueue.New`. `Close` still writes a final checkpoint directly.
+
+On the node:
+
+```go
+func (n *Node) sweepCheckpoints(ctx context.Context) {
+    n.mu.RLock()
+    entries := make([]*taskEntry, 0, len(n.taskCatalog))
+    for _, e := range n.taskCatalog {
+        entries = append(entries, e)
+    }
+    n.mu.RUnlock()
+
+    for _, e := range entries {
+        select {
+        case <-e.ready:
+        default:
+            continue // install still in flight
+        }
+        if e.err == nil && e.q != nil {
+            _ = taskqueue.Checkpoint(e.q)
+        }
+    }
+}
+```
+
+`openNode` starts one `maintenanceLoop(ctx)` goroutine alongside the retention loop. Same interval: 5s.
+
+Delivery semantics do not change. Lease expiry and dead-lettering still happen in `takeDueLocked` at delivery time. The sweep checkpoints only.
+
+Tests, in `internal/node/catalog_test.go` and `internal/queue/taskqueue/taskqueue_test.go`:
+
+- `TestSharedCheckpointLoop` — N task queues with pending writes; one sweep checkpoints all dirty queues; exactly one ticker goroutine exists.
+- `TestSweepSkipsCleanQueues` — clean queues pay one lock and no I/O per sweep.
+- `TestSweepSkipsUninstalledQueues` — queues still installing are skipped without blocking the sweep.
+- `TestCheckpointDirtyAfterEnqueue` — one enqueue marks the queue dirty; the sweep clears it.
+- `TestGoroutineCountStable` — open 100 task queues, snapshot; call `Metrics` 100 times; goroutine count is unchanged.
+
+### Acceptance criteria
+
+- `go test -race ./internal/node/... ./internal/queue/taskqueue/... ./internal/metrics/...` passes.
+- `runtime.NumGoroutine` at steady state is O(1) in queue count.
+- A queue that no client touches has retention enforced, a checkpoint written within one sweep interval, and visible occupancy in `Metrics`.
+- `Metrics` never takes `n.mu.Lock()`; the catalog read is `RLock` only and never runs I/O.
+- `queue_faults` appears in the snapshot for any failed install.
+
+---
+
+## Phase 6 — Lock observers
 
 New file `internal/metrics/lock.go`:
 
@@ -482,23 +836,48 @@ func (l *LockObserver) Unlock()
 func (l *LockObserver) Snapshot() LockView
 ```
 
-`Lock()` uses `TryLock` first; only on contention does it time. **Never wraps `engine.Queue.mu` or `taskqueue.queue.mu`.**
+`Lock()` uses `TryLock` first; only on contention does it time. **Never wrap `engine.Queue.mu` or `taskqueue.queue.mu`.**
 
-Register observers in a process-wide slice in `internal/metrics` and expose `RegisterLockObserver` / `SnapshotLockObservers`. Apply to:
-- `internal/node/node.go` — the `Node.mu`.
-- `internal/manager/manager.go` — the `Manager.mu`.
-- `internal/engine/offsets.go` — the `OffsetStore.mu`.
-- `internal/queue/retention/coordinator.go` — the `Coordinator.mu`.
+`Node.mu` is an `sync.RWMutex`. The observer needs an RWMutex variant that also implements `RLock` / `RUnlock` and reports read and write contention separately:
 
-Tests (`internal/metrics/lock_test.go`):
-- `TestLockObserverUncontended` — 10k locks from one goroutine, `Waits == 0`, `TotalWaitMs < 1`.
-- `TestLockObserverContended` — two goroutines fight for 1000 lock cycles; `Waits > 0`, `P99WaitMs > 0`, `MaxWaitMs >= P99WaitMs`.
+```go
+type RWLockObserver struct {
+    name string
+    mu   sync.RWMutex
+    rwaits, rtotalNs, rmaxNs atomic.Int64
+    wwaits, wtotalNs, wmaxNs atomic.Int64
+    ...
+}
+
+func (l *RWLockObserver) Lock()
+func (l *RWLockObserver) Unlock()
+func (l *RWLockObserver) RLock()
+func (l *RWLockObserver) RUnlock()
+```
+
+`Snapshot()` reports write contention under the observer's name and read contention under `<name>.read`, or merges them into one row with a `mode` field. Either shape is fine; pick one and encode it in the golden.
+
+Register observers in a process-wide slice in `internal/metrics`; expose `RegisterLockObserver` / `SnapshotLockObservers`. Apply to:
+
+- `internal/node/node.go` — `Node.mu`, as the RWMutex variant. This observer is now more interesting than it was: Phase 5 splits the write path into two short windows (placeholder insert, entry fill) and routes lookups through `RLock`. Watch `Waits` and `TotalWaitMs` after the refactor to confirm the write windows are actually short and reads dominate.
+- `internal/manager/manager.go` — `Manager.mu`.
+- `internal/engine/offsets.go` — `OffsetStore.mu`.
+- `internal/queue/retention/coordinator.go` — `Coordinator.mu`.
+
+Do not instrument any per-entry lock introduced by the catalog. Those are cold.
+
+Tests, in `internal/metrics/lock_test.go`:
+
+- `TestLockObserverUncontended` — 10k locks from one goroutine; `Waits == 0`, `TotalWaitMs < 1`.
+- `TestLockObserverContended` — two goroutines fight for 1000 cycles; `Waits > 0`, `P99WaitMs > 0`, `MaxWaitMs >= P99WaitMs`.
 - `TestLockObserverHeld` — lock, snapshot from another goroutine, `CurrentHeld == 1`; unlock, snapshot, `CurrentHeld == 0`.
-- `TestLockObserverConcurrentSnapshot` — 8 goroutines lock/unlock while 1 goroutine snapshots 500 times; no race, no panic.
+- `TestLockObserverConcurrentSnapshot` — 8 goroutines lock/unlock while 1 snapshots 500 times; `-race` clean.
 - `TestLockObserverMaxMonotonic` — `MaxWaitMs` never decreases.
-- `TestLockObserverNilSafe` — a nil `*LockObserver` does not panic (defensive, since packages may register nothing).
+- `TestLockObserverNilSafe` — a nil `*LockObserver` does not panic.
+- `TestRWLockObserver` — one writer blocks one reader; `wwaits >= 1` and `rwaits >= 1`; `Snapshot()` reports both.
+- `TestNodeLockObserverUnderSweep` — the shared checkpoint sweep from Phase 5 does not starve readers; `rwaits` grows but `rtotalNs / rwaits` stays small.
 
-### Phase 6 — Rendering package
+## Phase 7 — Rendering package
 
 New package `internal/ui/render`:
 
@@ -507,119 +886,86 @@ func Metrics(w io.Writer, snap mikyu.Metrics, opts Options) error
 func MetricsJSON(w io.Writer, snap mikyu.Metrics) error
 
 type Options struct {
-    Color    bool
-    Width    int
-    Queue    string // optional filter
-    Verbose  bool   // include per-observer lock rows
+    Color   bool
+    Width   int
+    Queue   string // optional filter
+    Verbose bool   // include per-observer lock rows
 }
 ```
 
-CLI handler `handleMetrics` and REPL handler `handleMetrics` both call `render.Metrics`. The `--json` path calls `render.MetricsJSON`.
+CLI handler `handleMetrics` and REPL handler `handleMetrics` both call `render.Metrics`. `--json` calls `render.MetricsJSON`.
 
-Layout target (see §8 of the original design for the exact text). Ship the same output from both surfaces; the only difference is the prompt line the REPL adds after it.
+Layout target: see §8. Ship the same output from both surfaces; the REPL adds only its prompt line.
 
-Tests (`internal/ui/render/metrics_test.go`):
-- `TestMetricsEmptySnapshot` — a snapshot with no queues and zero values renders without panicking, no `NaN%`, no `-0s`.
-- `TestMetricsDisabled` — `Disabled: true` renders a single line, no per-queue section.
+Add a faults line. When `queue_faults > 0`, print one line per faulted queue with the stored error. When the counter is zero, print nothing (or a single-word `faults 0` under the process block — pick one and encode it in the golden).
+
+Tests, in `internal/ui/render/metrics_test.go`:
+
+- `TestMetricsEmptySnapshot` — no queues, zero values; no panic, no `NaN%`, no `-0s`.
+- `TestMetricsDisabled` — `Disabled: true` renders one line, no per-queue section.
 - `TestMetricsQueueFilter` — `Options{Queue: "events"}` shows only `events`.
-- `TestMetricsQueueFilterMissing` — filter for an absent queue prints "no queue named X" and exits 0.
-- `TestMetricsColorOffNoEscape` — with `Color: false`, output contains no `\x1b[`.
-- `TestMetricsWidthNarrow` — `Width: 40` produces output that wraps without truncating numbers.
-- `TestMetricsDeterministic` — same snapshot, two calls, byte-identical output.
-- Golden files: `testdata/metrics_full.txt`, `metrics_disabled.txt`, `metrics_filtered.txt`, regenerated with `-update`.
+- `TestMetricsQueueFilterMissing` — filter for an absent queue prints `no queue named X` and exits 0.
+- `TestMetricsColorOffNoEscape` — `Color: false` output contains no `\x1b[`.
+- `TestMetricsWidthNarrow` — `Width: 40` wraps without truncating numbers.
+- `TestMetricsDeterministic` — same snapshot, two calls, byte-identical.
+- `TestMetricsFaults` — a snapshot with `queue_faults=1` renders a fault row; zero does not.
+- `TestMetricsTaskView` — a task queue renders `active`, `in-flight`, `scheduled`, `dead` from `QueueView.Tasks` and does not read them from `Gauges`.
+- Golden files: `testdata/metrics_full.txt`, `metrics_disabled.txt`, `metrics_filtered.txt`, `metrics_faults.txt`, regenerated with `-update`.
 - `TestMetricsJSONMatchesWire` — `MetricsJSON(w, snap)` unmarshals back to `snap` exactly.
 
-### Phase 7 — Prometheus encoder
+## Phase 8 — Prometheus encoder
 
-Extend `internal/metrics/prometheus.go`. Add mappings from §9 of the original design. Keep the `mikyu_` prefix, `_total` suffix for counters, `_seconds` for time histograms.
+Extend `internal/metrics/prometheus.go`. Keep the `mikyu_` prefix, `_total` for counters, `_seconds` for time histograms.
 
-Tests (`prometheus_test.go`):
-- Extend `goldenSnapshot()` in the test to populate every new field.
-- `TestPrometheusPercentileQuantiles` — histograms emit `{quantile="0.5"}`, `{quantile="0.9"}`, `{quantile="0.99"}`, `{quantile="+Inf"}` with monotone values.
-- `TestPrometheusInfoDials` — `mikyu_queue_info{queue,kind,durability,...} 1` appears exactly once per queue, with stable label ordering (sort keys, use `strings.Builder`).
-- `TestPrometheusNoNaNOrInf` — walk output, fail on literal `NaN`, `+Inf`, `-Inf` in value position (not label position).
-- `TestPrometheusCounterSuffixInvariant` — every line whose name does not end in `_total`, `_seconds`, `_bytes`, `_ratio`, or `_count` and whose `# TYPE` is counter must end in `_total`.
-- Golden file regenerated via `-update`.
-- `TestPrometheusNilMapsSkipped` — a queue with nil histograms/counters emits only its gauge lines, no empty label sets.
+Add:
 
----
-
-## 5. The two-step select pattern (needed in three places)
-
-Do **not** rewrite the existing single-select; the current code is correct, just does not count. Insert the fast-path check first:
-
-```go
-// Before:
-select {
-case ch <- x:
-case <-ctx.Done():
-case <-shutdown:
-}
-
-// After:
-select {
-case ch <- x:
-    return nil
-default:
-}
-c.blockEvents.Inc()
-c.blocked.Add(1)
-defer c.blocked.Add(-1)
-select {
-case ch <- x:
-    return nil
-case <-ctx.Done():
-    return ctx.Err()
-case <-shutdown:
-    return ErrQueueClosed
-}
+```
+mikyu_queue_faults_total{queue="..."} N
 ```
 
-This is faster (no runtime park setup on the fast path) *and* gives the counter for free. Apply in:
-- `internal/engine/wal.go` — `pushAsync`.
-- `internal/engine/fetch.go` — the `select { ctx / notify / timer }` on parked fetch.
-- `internal/queue/taskqueue/dequeue.go` — the `select { ctx / notify }` and `{ ctx / notify / timer }` on parked dequeue.
+for any queue with a faulted install. Emit it once per queue, stable label ordering, and skip when N is zero.
 
-### Tests for the pattern (each location)
+Tests, in `internal/metrics/prometheus_test.go`:
 
-- Fast path: value goes through, no event counter increment.
-- Slow path: channel full / no data, event counter increments exactly once.
-- Cancel while blocked: event counter incremented, gauge returns to zero, correct error returned.
-- Shutdown while blocked: same, correct error returned.
-- Race: `go test -race ./internal/engine/... ./internal/queue/taskqueue/...` clean.
+- Extend `goldenSnapshot()` to populate every new field, including `QueueView.Tasks` and a `queue_faults` counter.
+- `TestPrometheusPercentileQuantiles` — histograms emit `{quantile="0.5"}`, `{quantile="0.9"}`, `{quantile="0.99"}`, `{quantile="+Inf"}` with monotone values.
+- `TestPrometheusInfoDials` — `mikyu_queue_info{queue,kind,durability,...} 1` appears exactly once per queue, with stable label ordering.
+- `TestPrometheusNoNaNOrInf` — walk output, fail on literal `NaN`, `+Inf`, `-Inf` in value position.
+- `TestPrometheusCounterSuffixInvariant` — every `# TYPE counter` line ends in `_total`.
+- `TestPrometheusFaultsSeries` — a faulted queue emits `mikyu_queue_faults_total{queue="..."}` with the correct value; a clean queue emits nothing.
+- `TestPrometheusNilMapsSkipped` — a queue with nil histograms/counters emits only gauge lines.
+- Golden file regenerated with `-update`.
 
 ---
 
 ## 6. Cross-cutting tests every phase must add
 
-These run on CI and catch problems that unit tests miss.
-
-- `TestParityEmbeddedRemote` — in `internal/client/parity_test.go`, already exists. Extend `runOpScript` so it also reads `Metrics` and asserts `jsonKeys` match between embedded and remote. Both must include the same top-level fields and the same per-queue fields. Machine-local values (`Timestamp`, `RSSBytes`, `CPUPercent`, `UptimeSec`, `Locks`) are zeroed before comparison.
-- `TestGoleak` — every package already has `goleak.VerifyTestMain`. Confirm new goroutines (WAL flusher, checkpoint loop, lock observer) drain on `Close`. If you add a goroutine, add a test that closes the owner and asserts goleak is quiet.
-- `TestSnapshotJSONStable` — marshal a fixed snapshot 100 times, assert byte-identical output. Catches map-ordering non-determinism (Go maps randomize iteration order; use `slices.Sorted(maps.Keys(...))` where you walk them).
-- `TestSnapshotMarshalsUnderLoad` — 32 goroutines append/read while one goroutine calls `Snapshot` 1000 times; `-race` clean, no panics, no `-Inf`/`NaN` in JSON.
-- `TestMetricsEndpointUnderLoad` — start the daemon, hammer it with 8 clients, scrape `/api/metrics` 200 times concurrently; every response is valid JSON, no 5xx.
-- `TestSSEBackpressure` — a stalled SSE subscriber does not block the ticker (already exists as `TestMetricsHTTPSSESlowClientDoesNotBlock`; keep it).
-- `TestCollectorTickDeterministicUnderSynctest` — using `testing/synctest`, advance virtual time by 10 ticks, assert exactly 10 snapshots in history.
-- `TestCollectorSubscribeDropUnderLoad` — 100 subscribers, one is never read; after 50 ticks, it has buffered at most 1 snapshot and no other subscriber was delayed.
-- `TestMetricsDisabledZeroCost` — start an embedded client with `WithMetricsEnabled(false)`; `Metrics(ctx)` returns `Snapshot{Disabled: true}`; the collector's `Subscribe` returns a closed channel immediately.
-
----
+- `TestParityEmbeddedRemote` — in `internal/client/parity_test.go`. Extend `runOpScript` so it also reads `Metrics` and asserts `jsonKeys` match between embedded and remote. Both must include the same top-level fields and the same per-queue fields, including `tasks` for task queues. Machine-local values (`Timestamp`, `RSSBytes`, `CPUPercent`, `UptimeSec`, `Locks`) are zeroed before comparison.
+- `TestCatalogCompleteness` — after `openNode`, every queue in `Manager.List` has a catalog entry.
+- `TestUntouchedQueueRetention` — a queue with retention, never touched, is truncated by the sweep.
+- `TestCorruptCheckpointOpensNode` — a corrupt checkpoint on one queue does not fail `Open`; the queue reports a fault.
+- `TestGoroutineStabilityAcrossScrapes` — count goroutines, scrape `Metrics` 100 times, count again; delta is zero.
+- `TestSharedCheckpointLoop` — N task queues, one sweep goroutine, dirty queues checkpointed within one tick.
+- `TestTaskGaugeDrift` — randomized ops, then gauges match `len(active)`, `inFlightCount`, `len(dlq)`, `len(schedule)`.
+- `TestGoleak` — every package still verifies with `goleak.VerifyTestMain`. If install is asynchronous, `TestGoleak` in `internal/node` must confirm the install goroutines drain on `release`. `TestGoroutineStabilityAcrossScrapes` covers the scrape side.
+- `TestSnapshotJSONStable` — marshal a fixed snapshot 100 times, assert byte-identical output. Task-gauge map iteration must be sorted.
+- `TestSnapshotMarshalsUnderLoad` — 32 goroutines append/read while one goroutine calls `Snapshot` 1000 times; `-race` clean, no `NaN`/`-Inf`.
+- `TestMetricsEndpointUnderLoad` — start the daemon, hammer with 8 clients, scrape `/api/metrics` 200 times concurrently; every response is valid JSON, no 5xx.
+- `TestSSEBackpressure` — a stalled SSE subscriber does not block the ticker (already exists as `TestMetricsHTTPSSESlowClientDoesNotBlock`).
+- `TestCollectorTickDeterministicUnderSynctest` — `testing/synctest`, advance virtual time by 10 ticks, assert exactly 10 snapshots in history.
+- `TestCollectorSubscribeDropUnderLoad` — 100 subscribers, one never read; after 50 ticks, it buffered at most 1 snapshot, no other subscriber delayed.
+- `TestMetricsDisabledZeroCost` — `WithMetricsEnabled(false)`; `Metrics(ctx)` returns `Snapshot{Disabled: true}`; the collector's `Subscribe` returns a closed channel immediately.
 
 ## 7. Benchmark gates (must pass before merge)
 
-Add to `internal/metrics/bench_test.go` and `internal/engine/stress_bench_test.go`:
-
 - `BenchmarkAppendWithMetrics` vs `BenchmarkAppendWithoutMetrics` — delta < 30 ns/op.
-- `BenchmarkDequeueWithMetrics` vs `BenchmarkDequeueWithoutMetrics` — delta < 50 ns/op (taskqueue also has a checkpoint loop).
-- `BenchmarkCollectorSnapshot` — allocate < 1 MiB per snapshot (existing benchmark; set a threshold).
+- `BenchmarkDequeueWithMetrics` vs `BenchmarkDequeueWithoutMetrics` — delta < 50 ns/op.
+- `BenchmarkCollectorSnapshot` — allocate < 1 MiB per snapshot.
 - `BenchmarkRuntimeSource` — `AllocsPerRun < 5`.
 - `BenchmarkLockObserverUncontended` — < 5 ns/op.
 - `BenchmarkLockObserverContended` — < 200 ns/op.
-
-Commit these as failing tests if the numbers regress. The Go test harness can compare against a threshold via `testing.B.ReportMetric` and a `-benchtime=1s` gate in CI; if you'd rather not wire that now, at minimum keep them in the file so a reviewer can run them manually.
-
----
+- `BenchmarkSharedCheckpointSweep` — N=10,000 clean task queues; assert the sweep is O(N) atomic loads under `RLock`, not O(N) mutex acquisitions. Target < 5 ms per sweep on a modern laptop.
+- `BenchmarkLookupTaskQueue` — `TaskQueue(name)` on an installed entry; target < 100 ns/op after warm-up. Guards against the lookup path regressing into any I/O.
 
 ## 8. Rendering target (put this in the CLI/REPL golden test)
 
@@ -630,10 +976,11 @@ process    cpu 12.4%  rss 128MiB  threads 12  fds 48
 gc         cycles 42  pause p50 0.3ms p90 0.9ms p99 2.1ms
 heap       64MiB / 128MiB (50%)  stack 512KiB  metadata 1.1MiB
 scheduler  latency p50 12µs  p90 48µs  p99 220µs
-locks      global wait 0.42s
+locks      global wait 0.42s   node.mu writes 42  reads 1200  p99 write 0.8ms
 storage    dir /var/lib/mikyu   queues 4  segments 42  size 1.2GiB
            cache 32MiB / 32MiB   hits 1.2M   misses 2.3K (0.19%)
            wal committed 12.3MiB  flushed 12.2MiB  pending 64KiB
+faults     none
 
 events  (log)
   messages 1.2M   segments 10   size 200MiB   offsets 1000000..1200000
@@ -657,38 +1004,39 @@ jobs  (task)
 ```
 
 Rules the renderer must obey:
+
 - Never print `NaN`, `+Inf`, `-Inf`, or `-0s`.
-- Zero values collapse to a single word (`0`, `off`, `none`) rather than the raw zero struct.
+- Zero values collapse to a single word (`0`, `off`, `none`, `no faults`) rather than the raw zero struct.
 - Every number is human-scaled (`1.2K`, `64MiB`, `1.2ms`).
 - `Color: false` output has zero ANSI bytes.
 - Column widths adapt to the terminal; a narrow terminal wraps a section rather than truncating a number.
 
----
+## 9. Order of work
 
-## 9. Order of work for a junior dev
+Phases 0–4 are complete. Phase 4's `TaskSnapshot` and `taskViewer` are removed as part of Phase 5; the counters it added remain.
 
-1. Read `internal/metrics/snapshot.go`, `collector.go`, `instruments.go`, `registry.go` end-to-end. Run `go test ./internal/metrics/...`.
-2. Land Phase 1 (shape only, no new signals). Get `TestSnapshotJSONRoundTrip` and the JSON golden passing.
-3. Land Phase 2 (runtime source). The only package you touch is `internal/node`.
-4. Land Phase 3 (engine counters + WAL). Add one instrument at a time, one test at a time.
-5. Land Phase 4 (task queue).
-6. Land Phase 5 (lock observers). Register them one at a time; each new observer is a one-line change.
-7. Land Phase 6 (renderer). Write the golden output file once; every subsequent test compares against it.
-8. Land Phase 7 (Prometheus). Regenerate the golden file last.
+1. Land Phase 5, Module 1 (task gauges + `publishLocked`). Delete `TaskSnapshot` and `taskViewer`. Green the drift property test.
+2. Land Phase 5, Module 2 (`mergeScopes` task-gauge mapping). Confirm `Metrics` no longer materializes.
+3. Land Phase 5, Modules 3 and 4 together. Eager install without a shared sweep spawns one goroutine per queue. Do not split them.
+4. Land Phase 5, Module 3's retention `SetPolicy` for every installed queue. This is the retention-bug fix; it is not optional and does not ship separately from install.
+5. Land Phase 6 (lock observers). Verify `Node.mu` read/write split after Phase 5 gives sensible numbers.
+6. Land Phase 7 (renderer), including the faults line.
+7. Land Phase 8 (Prometheus), including `mikyu_queue_faults_total`.
+8. Regenerate goldens. Run `go test -race ./...`, `go test ./internal/audit/...`, and every benchmark gate.
 
-At the end of every phase: `go test -race ./...` must be clean, `go test ./internal/audit/...` must be clean (comment-style rules are enforced by CI), and `goleak` must be quiet in every package you touched.
-
----
+At the end of every phase: `go test -race ./...` clean, `go test ./internal/audit/...` clean, `goleak` quiet in every package touched.
 
 ## 10. What to check before calling it done
 
 - `mikyu metrics` in CLI and REPL produce byte-identical output for the same snapshot.
 - `mikyu metrics --json` round-trips through `internal/metrics.Snapshot` with `require.Equal`.
-- `mikyu.Open(dir).Metrics(ctx)` and `mikyu.Dial(target).Metrics(ctx)` return the same JSON keys, same queue set, same kinds.
+- `mikyu.Open(dir).Metrics(ctx)` and `mikyu.Dial(target).Metrics(ctx)` return the same JSON keys, same queue set, same kinds, same `Tasks` block.
 - `GET /api/metrics` returns the same bytes as `mikyu metrics --json`.
-- `GET /metrics` emits every new series with no `NaN` and monotone quantiles.
+- `GET /metrics` emits every new series with no `NaN`, monotone quantiles, and `mikyu_queue_faults_total` only for faulted queues.
+- A queue that no client touches has retention enforced, a checkpoint within one sweep interval, and visible `Tasks` occupancy.
+- `runtime.NumGoroutine` at steady state does not grow with queue count or scrape count.
+- `Metrics` calls never take `n.mu.Lock()`; a scrape never runs I/O.
 - `go test -race ./...` passes on Linux, macOS, and Windows.
 - `BenchmarkAppendWithMetrics - BenchmarkAppendWithoutMetrics < 30 ns/op`.
+- `BenchmarkSharedCheckpointSweep` at N=10,000 stays under 5 ms.
 - A GC cycle during a snapshot does not corrupt any value (run `TestSnapshotMarshalsUnderLoad` with `GOGC=10`).
-
-That's the model implementation.
