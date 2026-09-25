@@ -47,6 +47,7 @@ func (q *queue) Nack(ctx context.Context, ref Ref, opts ...NackOption) error {
 		q.dlqUncheckpointed[state.task.ID] = struct{}{}
 		delete(q.active, state.task.ID)
 		q.dirty++
+		q.m.retryBudgetDrops.Inc()
 		q.broadcastLocked()
 		q.pruneScheduleLocked()
 		q.m.nacks.Inc()

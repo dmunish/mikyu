@@ -23,6 +23,7 @@ type queue struct {
 	scanNext          uint64
 
 	checkpointOffset uint64
+	checkpointCovered uint64
 	dirty            uint64
 	notify           chan struct{}
 	stopCh           chan struct{}

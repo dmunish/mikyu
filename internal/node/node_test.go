@@ -306,6 +306,33 @@ func TestNodeSnapshotIncludesQueueInstruments(t *testing.T) {
 	tqv, ok := snap.Queue("tasks")
 	require.True(t, ok)
 	assert.Positive(t, tqv.Counters["enqueues"])
+	assert.EqualValues(t, 1, tqv.Tasks.Active)
+	assert.Zero(t, tqv.Tasks.InFlight)
+}
+
+func TestNodeSnapshotMaterializesTaskView(t *testing.T) {
+	dir := t.TempDir()
+	mc := WithMetrics(MetricsConfig{Enabled: true, Interval: time.Hour, History: 4})
+
+	n1, release1, err := Acquire(dir, spec.Spec{}, mc)
+	require.NoError(t, err)
+	createTask(t, n1, "jobs", spec.Spec{})
+	tq, err := n1.TaskQueue("jobs")
+	require.NoError(t, err)
+	_, err = tq.Enqueue(t.Context(), []byte("work"))
+	require.NoError(t, err)
+	require.NoError(t, release1())
+
+	// Reopen without materializing the driver by hand: the collector must do it.
+	n2, release2, err := Acquire(dir, spec.Spec{}, mc)
+	require.NoError(t, err)
+	defer func() { _ = release2() }()
+
+	snap, err := n2.Metrics(t.Context())
+	require.NoError(t, err)
+	qv, ok := snap.Queue("jobs")
+	require.True(t, ok)
+	assert.EqualValues(t, 1, qv.Tasks.Active)
 }
 
 func TestNodeCollectorDisabled(t *testing.T) {

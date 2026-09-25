@@ -7,11 +7,12 @@ import (
 	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/dmunish/mikyu/internal/spec"
 )
 
 func BenchmarkTaskQueueEnqueue(b *testing.B) {
-	q, mgr, _ := newBenchTaskQueue(b)
+	q, mgr, _ := newBenchTaskQueue(b, false)
 	defer q.Close()
 	defer mgr.Close()
 	ctx := b.Context()
@@ -24,7 +25,7 @@ func BenchmarkTaskQueueEnqueue(b *testing.B) {
 }
 
 func BenchmarkTaskQueueDequeueAck(b *testing.B) {
-	q, mgr, _ := newBenchTaskQueue(b)
+	q, mgr, _ := newBenchTaskQueue(b, false)
 	defer q.Close()
 	defer mgr.Close()
 	ctx := b.Context()
@@ -42,10 +43,29 @@ func BenchmarkTaskQueueDequeueAck(b *testing.B) {
 	}
 }
 
-func newBenchTaskQueue(b *testing.B) (*queue, *engine.Manager, engine.Storage) {
+func BenchmarkTaskQueueDequeueWithMetrics(b *testing.B)    { benchmarkTaskQueueDequeue(b, true) }
+func BenchmarkTaskQueueDequeueWithoutMetrics(b *testing.B) { benchmarkTaskQueueDequeue(b, false) }
+
+func benchmarkTaskQueueDequeue(b *testing.B, withMetrics bool) {
+	q, mgr, _ := newBenchTaskQueue(b, withMetrics)
+	defer q.Close()
+	defer mgr.Close()
+	ctx := b.Context()
+	for b.Loop() {
+		if _, err := q.Enqueue(ctx, []byte("benchmark-payload")); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := q.Dequeue(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// newBenchTaskQueue opens a bench queue, optionally instrumented.
+func newBenchTaskQueue(b *testing.B, withMetrics bool) (*queue, *engine.Manager, engine.Storage) {
 	b.Helper()
 	dir := b.TempDir()
-	mgr, err := engine.OpenManager(dir, engine.Config{
+	cfg := engine.Config{
 		Durability:    spec.DurabilityAsync,
 		MaxSegment:    64 * 1024,
 		MaxSegmentAge: time.Hour,
@@ -53,7 +73,19 @@ func newBenchTaskQueue(b *testing.B) (*queue, *engine.Manager, engine.Storage) {
 		MaxCache:      32 << 20,
 		MaxFlushBytes: 1 << 20,
 		MaxFlushWait:  time.Millisecond,
-	}, nil)
+	}
+	var (
+		mgr    *engine.Manager
+		err    error
+		scopes []*metrics.Scope
+	)
+	if withMetrics {
+		reg := metrics.NewRegistry(metrics.Config{})
+		mgr, err = engine.OpenManager(dir, cfg, nil, reg)
+		scopes = append(scopes, reg.Scope("tasks"))
+	} else {
+		mgr, err = engine.OpenManager(dir, cfg, nil)
+	}
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -61,7 +93,7 @@ func newBenchTaskQueue(b *testing.B) (*queue, *engine.Manager, engine.Storage) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	queueIface, err := New("tasks", storage, Defaults{})
+	queueIface, err := New("tasks", storage, Defaults{}, nil, scopes...)
 	if err != nil {
 		b.Fatal(err)
 	}

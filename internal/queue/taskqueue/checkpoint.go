@@ -482,6 +482,7 @@ func (q *queue) checkpointLocked(ctx context.Context) error {
 	}
 	q.checkpointOffset = startOffset
 	q.scanNext = commitOffset + 1
+	q.checkpointCovered = q.scanNext
 	for id := range q.dlqUncheckpointed {
 		delete(q.dlqUncheckpointed, id)
 	}
@@ -568,6 +569,7 @@ func (q *queue) loadCheckpointLocked(ctx context.Context) (bool, error) {
 		clear(q.dlqUncheckpointed)
 		q.checkpointOffset = commit.startOffset
 		q.scanNext = off + 1
+		q.checkpointCovered = q.scanNext
 		return true, nil
 	}
 	return false, nil

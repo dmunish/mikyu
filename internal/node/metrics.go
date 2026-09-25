@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/manager"
 	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/dmunish/mikyu/internal/spec"
 )
@@ -108,6 +109,41 @@ func newCollector(reg *metrics.Registry, mc MetricsConfig, sources ...metrics.So
 
 // Collector returns the node's metrics collector.
 func (n *Node) Collector() *metrics.Collector { return n.metrics }
+
+// taskViewer is the pull-side occupancy view a task driver exposes to the collector.
+type taskViewer interface {
+	Name() string
+	TaskSnapshot() metrics.TaskView
+}
+
+// Collect fills each live task driver's occupancy view into the snapshot.
+func (n *Node) Collect(_ context.Context, dst *metrics.Snapshot) {
+	// Task drivers are lazy; materialize them so their occupancy is observable.
+	for i := range dst.Queues {
+		if dst.Queues[i].Kind == manager.KindTask.String() {
+			_, _ = n.TaskQueue(dst.Queues[i].Name)
+		}
+	}
+
+	n.mu.RLock()
+	views := make([]taskViewer, 0, len(n.taskQueues))
+	for _, tq := range n.taskQueues {
+		if viewer, ok := tq.(taskViewer); ok {
+			views = append(views, viewer)
+		}
+	}
+	n.mu.RUnlock()
+
+	for _, viewer := range views {
+		name := viewer.Name()
+		for i := range dst.Queues {
+			if dst.Queues[i].Name == name {
+				dst.Queues[i].Tasks = viewer.TaskSnapshot()
+				break
+			}
+		}
+	}
+}
 
 // Metrics returns the node's current live snapshot.
 func (n *Node) Metrics(ctx context.Context) (metrics.Snapshot, error) {
