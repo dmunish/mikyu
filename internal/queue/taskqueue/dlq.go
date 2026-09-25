@@ -36,6 +36,7 @@ func (q *queue) AckDeadLetter(ctx context.Context, ref Ref) error {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	defer q.publishLocked()
 	if q.closed || q.closing {
 		return ErrTaskClosed
 	}

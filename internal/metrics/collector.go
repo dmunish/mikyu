@@ -226,10 +226,39 @@ func (c *Collector) mergeScopes(snap *Snapshot) {
 		// Sources and scopes both contribute instruments to the same queue view,
 		// so merge rather than replace: a source's gauges must survive.
 		mergeInt64(&qv.Counters, counters)
-		mergeInt64(&qv.Gauges, gauges)
+		mergeGauges(qv, gauges)
 		if c.cfg.Histograms {
 			mergeHistograms(&qv.Histograms, histograms)
 		}
+	}
+}
+
+// taskGaugeFields names the task-scope gauges and the TaskView field each one
+// fills. A name routed here appears only in QueueView.Tasks, never in Gauges.
+var taskGaugeFields = map[string]func(*TaskView, int64){
+	"active":         func(v *TaskView, n int64) { v.Active = n },
+	"in_flight":      func(v *TaskView, n int64) { v.InFlight = n },
+	"scheduled":      func(v *TaskView, n int64) { v.Scheduled = n },
+	"dead_letters":   func(v *TaskView, n int64) { v.DeadLetters = n },
+	"uncheckpointed": func(v *TaskView, n int64) { v.Uncheckpointed = n },
+	"schedule_heap":  func(v *TaskView, n int64) { v.ScheduleHeap = n },
+	"checkpoint_lsn": func(v *TaskView, n int64) { v.CheckpointLSN = n },
+	"dirty":          func(v *TaskView, n int64) { v.Dirty = n },
+	"checkpoint_lag": func(v *TaskView, n int64) { v.CheckpointLag = n },
+}
+
+// mergeGauges folds scope gauges into the queue view, routing task occupancy
+// into Tasks so the snapshot carries one representation of each value.
+func mergeGauges(qv *QueueView, gauges map[string]int64) {
+	for name, value := range gauges {
+		if setter, ok := taskGaugeFields[name]; ok {
+			setter(&qv.Tasks, value)
+			continue
+		}
+		if qv.Gauges == nil {
+			qv.Gauges = make(map[string]int64, len(gauges))
+		}
+		qv.Gauges[name] = value
 	}
 }
 

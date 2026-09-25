@@ -28,6 +28,15 @@ type taskMetrics struct {
 	dequeueWait       *metrics.Histogram
 	inFlightEnq       *metrics.Gauge
 	parkedDeq         *metrics.Gauge
+	active            *metrics.Gauge
+	inFlight          *metrics.Gauge
+	scheduled         *metrics.Gauge
+	deadLetters       *metrics.Gauge
+	uncheckpointed    *metrics.Gauge
+	scheduleHeap      *metrics.Gauge
+	checkpointLSN     *metrics.Gauge
+	dirtyRecords      *metrics.Gauge
+	checkpointLag     *metrics.Gauge
 }
 
 func newTaskMetrics(scope *metrics.Scope) *taskMetrics {
@@ -47,34 +56,54 @@ func newTaskMetrics(scope *metrics.Scope) *taskMetrics {
 		dequeueWait:       scope.Histogram("dequeue_wait", taskDurationBounds),
 		inFlightEnq:       scope.Gauge("in_flight_enqueue"),
 		parkedDeq:         scope.Gauge("parked_dequeue"),
+		active:            scope.Gauge("active"),
+		inFlight:          scope.Gauge("in_flight"),
+		scheduled:         scope.Gauge("scheduled"),
+		deadLetters:       scope.Gauge("dead_letters"),
+		uncheckpointed:    scope.Gauge("uncheckpointed"),
+		scheduleHeap:      scope.Gauge("schedule_heap"),
+		checkpointLSN:     scope.Gauge("checkpoint_lsn"),
+		dirtyRecords:      scope.Gauge("dirty"),
+		checkpointLag:     scope.Gauge("checkpoint_lag"),
 	}
 }
 
-// TaskSnapshot returns a fixed-shape view of the queue's task occupancy.
-func (q *queue) TaskSnapshot() metrics.TaskView {
-	q.mu.Lock()
-	defer q.mu.Unlock()
+// publish writes the occupancy view into the queue scope.
+func (m *taskMetrics) publish(v metrics.TaskView) {
+	m.active.Set(v.Active)
+	m.inFlight.Set(v.InFlight)
+	m.scheduled.Set(v.Scheduled)
+	m.deadLetters.Set(v.DeadLetters)
+	m.uncheckpointed.Set(v.Uncheckpointed)
+	m.scheduleHeap.Set(v.ScheduleHeap)
+	m.checkpointLSN.Set(v.CheckpointLSN)
+	m.dirtyRecords.Set(v.Dirty)
+	m.checkpointLag.Set(v.CheckpointLag)
+}
+
+// viewLocked returns the queue's current occupancy. Callers hold q.mu.
+func (q *queue) viewLocked() metrics.TaskView {
 	if q.closed {
 		return metrics.TaskView{}
 	}
-	view := metrics.TaskView{
+	// checkpointCovered is only ever set to a value at or below scanNext,
+	// so the lag subtraction cannot underflow.
+	return metrics.TaskView{
 		Active:         int64(len(q.active)),
+		InFlight:       q.inFlightCount,
+		Scheduled:      int64(len(q.active)) - q.inFlightCount,
 		DeadLetters:    int64(len(q.dlq)),
 		Uncheckpointed: int64(len(q.dlqUncheckpointed)),
 		ScheduleHeap:   int64(len(q.schedule)),
 		CheckpointLSN:  int64(q.checkpointOffset),
 		Dirty:          int64(q.dirty),
+		CheckpointLag:  int64(q.scanNext - q.checkpointCovered),
 	}
-	for _, state := range q.active {
-		if state.inFlight {
-			view.InFlight++
-		}
-	}
-	view.Scheduled = view.Active - view.InFlight
-	if q.scanNext >= q.checkpointCovered {
-		view.CheckpointLag = int64(q.scanNext - q.checkpointCovered)
-	}
-	return view
+}
+
+// publishLocked mirrors driver state into the queue scope. Callers hold q.mu.
+func (q *queue) publishLocked() {
+	q.m.publish(q.viewLocked())
 }
 
 // recordEnqueue updates the enqueue counters and latency histogram.

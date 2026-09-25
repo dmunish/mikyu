@@ -7,13 +7,12 @@ import (
 )
 
 const (
-	defaultLease  = 30 * time.Second
-	defaultMaxAttempts        = 5
-	defaultRetryDelay         = time.Second
-	defaultMaxRetryDelay      = 5 * time.Minute
-	defaultCheckpointInterval = 5 * time.Second
-	checkpointEvery           = 128
-	checkpointChunkBytes      = 64 * 1024
+	defaultLease         = 30 * time.Second
+	defaultMaxAttempts   = 5
+	defaultRetryDelay    = time.Second
+	defaultMaxRetryDelay = 5 * time.Minute
+	checkpointEvery      = 128
+	checkpointChunkBytes = 64 * 1024
 )
 
 var (
@@ -84,10 +83,18 @@ type Queue interface {
 	TruncateFloor(ctx context.Context) (uint64, bool, error)
 }
 
-// Close stops a driver's checkpoint loop and writes a final checkpoint when dirty.
+// Close stops a driver and writes a final checkpoint when dirty.
 func Close(q Queue) error {
 	if c, ok := q.(interface{ Close() error }); ok {
 		return c.Close()
+	}
+	return nil
+}
+
+// Checkpoint writes a driver's pending checkpoint when it has unwritten state.
+func Checkpoint(q Queue) error {
+	if c, ok := q.(interface{ Checkpoint(context.Context) error }); ok {
+		return c.Checkpoint(context.Background())
 	}
 	return nil
 }

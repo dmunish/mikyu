@@ -100,6 +100,7 @@ func (q *queue) Dequeue(ctx context.Context) (Task, error) {
 }
 
 func (q *queue) takeDueLocked(ctx context.Context, now time.Time) (*taskState, time.Time, bool, error) {
+	defer q.publishLocked()
 	for len(q.schedule) > 0 {
 		item := q.schedule[0]
 		state, ok := q.active[item.id]
@@ -124,7 +125,7 @@ func (q *queue) takeDueLocked(ctx context.Context, now time.Time) (*taskState, t
 			}
 			q.dlq[state.task.ID] = cloneTask(state.task)
 			q.dlqUncheckpointed[state.task.ID] = struct{}{}
-			delete(q.active, state.task.ID)
+			q.removeActiveLocked(state.task.ID)
 			q.dirty++
 			q.m.retryBudgetDrops.Inc()
 			q.broadcastLocked()
@@ -136,7 +137,7 @@ func (q *queue) takeDueLocked(ctx context.Context, now time.Time) (*taskState, t
 			q.recordStall()
 		}
 		deliveryID := newID()
-		state.inFlight = true
+		q.markInFlightLocked(state)
 		state.task.Attempts++
 		state.task.DeliveryID = deliveryID
 		state.task.Lease = now.Add(state.lease)

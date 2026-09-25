@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
 	"github.com/dmunish/mikyu/internal/manager"
+	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/dmunish/mikyu/internal/node"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
 	"github.com/dmunish/mikyu/internal/queue/taskqueue"
@@ -39,6 +41,8 @@ type opScriptResults struct {
 	schemaJSON       string
 	metricsNames     []string
 	metricsKinds     map[string]string
+	metricsKeys      []string
+	metricsQueueKeys map[string][]string
 }
 
 // runOpScript drives every user-facing opcode once against c: OpCreate for
@@ -160,7 +164,38 @@ func runOpScript(t *testing.T, c Client) opScriptResults {
 		r.metricsNames = append(r.metricsNames, qv.Name)
 		r.metricsKinds[qv.Name] = qv.Kind
 	}
+	r.metricsKeys, r.metricsQueueKeys = snapshotShape(t, snap)
 	return r
+}
+
+// snapshotShape returns the sorted JSON key set of a snapshot and of each queue view.
+func snapshotShape(t *testing.T, snap metrics.Snapshot) ([]string, map[string][]string) {
+	t.Helper()
+	data, err := json.Marshal(snap)
+	require.NoError(t, err)
+	var top map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &top))
+	var queues []map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(top["queues"], &queues))
+
+	perQueue := make(map[string][]string, len(queues))
+	for _, qv := range queues {
+		var name string
+		require.NoError(t, json.Unmarshal(qv["name"], &name))
+		perQueue[name] = sortedKeys(t, qv)
+	}
+	return sortedKeys(t, top), perQueue
+}
+
+// sortedKeys returns an object's JSON keys in a stable order.
+func sortedKeys(t *testing.T, obj map[string]json.RawMessage) []string {
+	t.Helper()
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 func marshalJSON(t *testing.T, v any) string {
@@ -199,6 +234,8 @@ func TestParityEveryOp(t *testing.T) {
 	assert.JSONEq(t, embRes.schemaJSON, remRes.schemaJSON, "OpSchema")
 	assert.Equal(t, embRes.metricsNames, remRes.metricsNames, "OpMetrics queue names")
 	assert.Equal(t, embRes.metricsKinds, remRes.metricsKinds, "OpMetrics queue kinds")
+	assert.Equal(t, embRes.metricsKeys, remRes.metricsKeys, "OpMetrics snapshot keys")
+	assert.Equal(t, embRes.metricsQueueKeys, remRes.metricsQueueKeys, "OpMetrics per-queue keys")
 }
 
 // TestParityMixedKinds: a directory holding both kinds reports the right kind
@@ -238,9 +275,12 @@ func TestParityMixedKinds(t *testing.T) {
 		ev, ok := snap.Queue("events")
 		require.True(t, ok, name+" Metrics events")
 		assert.Equal(t, "log", ev.Kind, name+" Metrics events")
+		assert.NotContains(t, ev.Gauges, "active", name+" task gauges leak into a log queue")
 		jb, ok := snap.Queue("jobs")
 		require.True(t, ok, name+" Metrics jobs")
 		assert.Equal(t, "task", jb.Kind, name+" Metrics jobs")
+		assert.Contains(t, jb.Gauges, "parked_dequeue", name+" task queue keeps its own gauges")
+		assert.NotContains(t, jb.Gauges, "active", name+" task occupancy is a Tasks field, not a Gauges key")
 	}
 }
 

@@ -27,6 +27,7 @@ func (q *queue) Enqueue(ctx context.Context, payload []byte, opts ...EnqueueOpti
 	id := newID()
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	defer q.publishLocked()
 	if q.closed || q.closing {
 		return Task{}, ErrTaskClosed
 	}
