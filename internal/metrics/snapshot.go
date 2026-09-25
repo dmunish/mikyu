@@ -123,7 +123,6 @@ type LockView struct {
 	MaxWaitMs   float64 `json:"max_wait_ms"`
 	P50WaitMs   float64 `json:"p50_wait_ms"`
 	P99WaitMs   float64 `json:"p99_wait_ms"`
-	CurrentHeld int64   `json:"current_held"`
 }
 
 // StorageView reports aggregate on-disk and cache storage gauges.

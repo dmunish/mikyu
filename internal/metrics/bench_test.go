@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -28,5 +29,48 @@ func BenchmarkCollectorSnapshot(b *testing.B) {
 	ctx := b.Context()
 	for b.Loop() {
 		_, _ = c.Snapshot(ctx)
+	}
+}
+
+// BenchmarkMutexUncontended is the baseline the observers are measured against.
+func BenchmarkMutexUncontended(b *testing.B) {
+	var mu sync.Mutex
+	for b.Loop() {
+		mu.Lock()
+		mu.Unlock()
+	}
+}
+
+func BenchmarkLockObserverUncontended(b *testing.B) {
+	l := NewLockObserver("bench.mu", nil)
+	for b.Loop() {
+		l.Lock()
+		l.Unlock()
+	}
+}
+
+func BenchmarkLockObserverContended(b *testing.B) {
+	l := NewLockObserver("bench.mu", nil)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			l.Lock()
+			l.Unlock()
+			select {
+			case <-stop:
+				return
+			default:
+			}
+		}
+	}()
+	b.Cleanup(func() {
+		close(stop)
+		<-done
+	})
+	for b.Loop() {
+		l.Lock()
+		l.Unlock()
 	}
 }

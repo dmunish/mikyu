@@ -299,3 +299,31 @@ func TestGoroutineStabilityAcrossScrapes(t *testing.T) {
 func (n *Node) gauge(name, instrument string) int64 {
 	return n.metrics.Registry().Scope(name).Gauge(instrument).Load()
 }
+
+// TestNodeLockObserverRecordsContention: a writer holding Node.mu charges the read row.
+func TestNodeLockObserverRecordsContention(t *testing.T) {
+	dir := t.TempDir()
+	n, release, err := Acquire(dir, spec.Spec{})
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+	createTask(t, n, "jobs", spec.Spec{})
+
+	before := n.mu.ReadView()
+	n.mu.Lock()
+	looked := make(chan struct{})
+	go func() {
+		defer close(looked)
+		_, err := n.TaskQueue("jobs")
+		assert.NoError(t, err)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	n.mu.Unlock()
+	<-looked
+
+	write, read := n.mu.WriteView(), n.mu.ReadView()
+	assert.Equal(t, "node.mu", write.Name)
+	assert.Equal(t, "node.mu.read", read.Name)
+	assert.Equal(t, before.Waits+1, read.Waits)
+	assert.Positive(t, read.MaxWaitMs)
+	assert.Less(t, read.MaxWaitMs, float64(5*time.Second/time.Millisecond), "reads must not starve behind a writer")
+}

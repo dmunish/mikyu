@@ -63,7 +63,6 @@ func fullSnapshot() Snapshot {
 				MaxWaitMs:   1.2,
 				P50WaitMs:   0.1,
 				P99WaitMs:   1.1,
-				CurrentHeld: 1,
 			}},
 		},
 		Session: builtin,

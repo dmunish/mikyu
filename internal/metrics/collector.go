@@ -186,6 +186,7 @@ func (c *Collector) fanout(snap Snapshot) {
 
 func (c *Collector) build(ctx context.Context) Snapshot {
 	snap := Snapshot{Disabled: c.cfg.Disabled, Timestamp: time.Now()}
+	snap.Locks.Observers = SnapshotLockObservers()
 	for _, src := range c.sources {
 		src.Collect(ctx, &snap)
 	}

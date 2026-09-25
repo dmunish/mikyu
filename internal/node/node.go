@@ -32,7 +32,7 @@ type Node struct {
 	logCatalog  map[string]*logEntry
 	taskCatalog map[string]*taskEntry
 	installWG   sync.WaitGroup
-	mu          sync.RWMutex
+	mu          *metrics.RWLockObserver
 
 	retentionCtx    context.Context
 	retentionCancel context.CancelFunc
@@ -93,11 +93,14 @@ func openNode(dir string, defaults spec.Spec, mc MetricsConfig) (*Node, error) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	nodeLock := metrics.NewRWLockObserver("node.mu", nil)
+	metrics.RegisterLockObserver(nodeLock)
 	n := &Node{
 		mgr:             mgr,
 		retention:       retention.NewCoordinator(0),
 		logCatalog:      make(map[string]*logEntry),
 		taskCatalog:     make(map[string]*taskEntry),
+		mu:              nodeLock,
 		retentionCtx:    ctx,
 		retentionCancel: cancel,
 		dir:             dir,

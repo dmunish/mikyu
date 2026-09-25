@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/metrics"
 )
 
 // FloorProvider defines the interface required from consumption drivers.
@@ -52,7 +53,7 @@ type Target struct {
 
 // Coordinator arbitrates retention truncation across queues and drivers.
 type Coordinator struct {
-	mu       sync.RWMutex
+	mu       *metrics.RWLockObserver
 	targets  map[string]*Target
 	interval time.Duration
 }
@@ -62,7 +63,10 @@ func NewCoordinator(interval time.Duration) *Coordinator {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
+	mu := metrics.NewRWLockObserver("retention.coordinator", nil)
+	metrics.RegisterLockObserver(mu)
 	return &Coordinator{
+		mu:       mu,
 		targets:  make(map[string]*Target),
 		interval: interval,
 	}
