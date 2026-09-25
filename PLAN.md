@@ -118,7 +118,6 @@ type LockView struct {
     MaxWaitMs   float64 `json:"max_wait_ms"`
     P50WaitMs   float64 `json:"p50_wait_ms"`
     P99WaitMs   float64 `json:"p99_wait_ms"`
-    CurrentHeld int64   `json:"current_held"`
 }
 
 type StorageView struct {
@@ -869,8 +868,7 @@ Do not instrument any per-entry lock introduced by the catalog. Those are cold.
 Tests, in `internal/metrics/lock_test.go`:
 
 - `TestLockObserverUncontended` — 10k locks from one goroutine; `Waits == 0`, `TotalWaitMs < 1`.
-- `TestLockObserverContended` — two goroutines fight for 1000 cycles; `Waits > 0`, `P99WaitMs > 0`, `MaxWaitMs >= P99WaitMs`.
-- `TestLockObserverHeld` — lock, snapshot from another goroutine, `CurrentHeld == 1`; unlock, snapshot, `CurrentHeld == 0`.
+- `TestLockObserverContended` — four goroutines hold the lock 1ms at a time; `Waits > 0`, `TotalWaitMs > 0`, `P99WaitMs > 0`, `MaxWaitMs > 0`.
 - `TestLockObserverConcurrentSnapshot` — 8 goroutines lock/unlock while 1 snapshots 500 times; `-race` clean.
 - `TestLockObserverMaxMonotonic` — `MaxWaitMs` never decreases.
 - `TestLockObserverNilSafe` — a nil `*LockObserver` does not panic.

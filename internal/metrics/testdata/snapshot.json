@@ -71,8 +71,7 @@
         "total_wait_ms": 3.5,
         "max_wait_ms": 1.2,
         "p50_wait_ms": 0.1,
-        "p99_wait_ms": 1.1,
-        "current_held": 1
+        "p99_wait_ms": 1.1
       }
     ]
   },
