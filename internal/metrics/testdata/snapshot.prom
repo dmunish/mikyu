@@ -28,21 +28,103 @@ mikyu_messages 10
 # HELP mikyu_bytes Total on-disk bytes across queues.
 # TYPE mikyu_bytes gauge
 mikyu_bytes 2048
+# HELP mikyu_queue_info Static configuration of the queue.
+# TYPE mikyu_queue_info gauge
+mikyu_queue_info{queue="events",kind="log",compaction="none",durability="sync",encryption="none",lease="30s",max_attempts="5",max_cache="33554432",max_dead_letters="100000",max_in_flight="100000",max_payload="1048576",max_segment="67108864",max_segment_age="1h0m0s",retention_age="24h0m0s",retention_bytes="0"} 1
+mikyu_queue_info{queue="jobs",kind="task",compaction="none",durability="sync",encryption="none",lease="30s",max_attempts="5",max_cache="33554432",max_dead_letters="100000",max_in_flight="100000",max_payload="1048576",max_segment="67108864",max_segment_age="1h0m0s",retention_age="0s",retention_bytes="0"} 1
 # HELP mikyu_queue_messages Messages stored in the queue.
 # TYPE mikyu_queue_messages gauge
 mikyu_queue_messages{queue="events"} 10
+mikyu_queue_messages{queue="jobs"} 2
 # HELP mikyu_queue_segments Number of segments in the queue.
 # TYPE mikyu_queue_segments gauge
 mikyu_queue_segments{queue="events"} 1
+mikyu_queue_segments{queue="jobs"} 1
 # HELP mikyu_queue_bytes On-disk bytes used by the queue.
 # TYPE mikyu_queue_bytes gauge
 mikyu_queue_bytes{queue="events"} 2048
+mikyu_queue_bytes{queue="jobs"} 1024
 # HELP mikyu_append_total Log appends.
 # TYPE mikyu_append_total counter
 mikyu_append_total{queue="events"} 10
+# HELP mikyu_enqueue_total Tasks enqueued.
+# TYPE mikyu_enqueue_total counter
+mikyu_enqueue_total{queue="jobs"} 5
 # HELP mikyu_read_total Log reads.
 # TYPE mikyu_read_total counter
 mikyu_read_total{queue="events"} 4
+# HELP mikyu_queue_faults_total Queues whose driver failed to install.
+# TYPE mikyu_queue_faults_total counter
+mikyu_queue_faults_total{queue="events"} 1
+# HELP mikyu_queue_backpressure_consumer_parks Backpressure signals for the queue.
+# TYPE mikyu_queue_backpressure_consumer_parks gauge
+mikyu_queue_backpressure_consumer_parks{queue="events"} 0
+# HELP mikyu_queue_backpressure_producer_blocks Backpressure signals for the queue.
+# TYPE mikyu_queue_backpressure_producer_blocks gauge
+mikyu_queue_backpressure_producer_blocks{queue="events"} 0
+# HELP mikyu_queue_backpressure_queue_full_events Backpressure signals for the queue.
+# TYPE mikyu_queue_backpressure_queue_full_events gauge
+mikyu_queue_backpressure_queue_full_events{queue="events"} 1
+# HELP mikyu_queue_backpressure_retry_budget_drops Backpressure signals for the queue.
+# TYPE mikyu_queue_backpressure_retry_budget_drops gauge
+mikyu_queue_backpressure_retry_budget_drops{queue="events"} 0
+# HELP mikyu_queue_backpressure_wal_byte_fill Backpressure signals for the queue.
+# TYPE mikyu_queue_backpressure_wal_byte_fill gauge
+mikyu_queue_backpressure_wal_byte_fill{queue="events"} 0.0006
+# HELP mikyu_queue_backpressure_wal_channel_fill Backpressure signals for the queue.
+# TYPE mikyu_queue_backpressure_wal_channel_fill gauge
+mikyu_queue_backpressure_wal_channel_fill{queue="events"} 0.003
+# HELP mikyu_queue_consumers_dequeue_park_events Consumer-side pressure on the queue.
+# TYPE mikyu_queue_consumers_dequeue_park_events gauge
+mikyu_queue_consumers_dequeue_park_events{queue="events"} 0
+# HELP mikyu_queue_consumers_fetch_park_events Consumer-side pressure on the queue.
+# TYPE mikyu_queue_consumers_fetch_park_events gauge
+mikyu_queue_consumers_fetch_park_events{queue="events"} 42
+# HELP mikyu_queue_consumers_in_flight Consumer-side pressure on the queue.
+# TYPE mikyu_queue_consumers_in_flight gauge
+mikyu_queue_consumers_in_flight{queue="events"} 4
+# HELP mikyu_queue_consumers_parked_dequeue Consumer-side pressure on the queue.
+# TYPE mikyu_queue_consumers_parked_dequeue gauge
+mikyu_queue_consumers_parked_dequeue{queue="events"} 0
+# HELP mikyu_queue_consumers_parked_fetch Consumer-side pressure on the queue.
+# TYPE mikyu_queue_consumers_parked_fetch gauge
+mikyu_queue_consumers_parked_fetch{queue="events"} 2
+# HELP mikyu_queue_producers_block_events Producer-side pressure on the queue.
+# TYPE mikyu_queue_producers_block_events gauge
+mikyu_queue_producers_block_events{queue="events"} 3
+# HELP mikyu_queue_producers_blocked_on_wal Producer-side pressure on the queue.
+# TYPE mikyu_queue_producers_blocked_on_wal gauge
+mikyu_queue_producers_blocked_on_wal{queue="events"} 2
+# HELP mikyu_queue_producers_in_flight Producer-side pressure on the queue.
+# TYPE mikyu_queue_producers_in_flight gauge
+mikyu_queue_producers_in_flight{queue="events"} 8
+# HELP mikyu_queue_tasks_active Task occupancy and checkpoint health for the queue.
+# TYPE mikyu_queue_tasks_active gauge
+mikyu_queue_tasks_active{queue="jobs"} 42
+# HELP mikyu_queue_tasks_checkpoint_lag Task occupancy and checkpoint health for the queue.
+# TYPE mikyu_queue_tasks_checkpoint_lag gauge
+mikyu_queue_tasks_checkpoint_lag{queue="jobs"} 3
+# HELP mikyu_queue_tasks_checkpoint_lsn Task occupancy and checkpoint health for the queue.
+# TYPE mikyu_queue_tasks_checkpoint_lsn gauge
+mikyu_queue_tasks_checkpoint_lsn{queue="jobs"} 0
+# HELP mikyu_queue_tasks_dead_letters Task occupancy and checkpoint health for the queue.
+# TYPE mikyu_queue_tasks_dead_letters gauge
+mikyu_queue_tasks_dead_letters{queue="jobs"} 2
+# HELP mikyu_queue_tasks_dirty Task occupancy and checkpoint health for the queue.
+# TYPE mikyu_queue_tasks_dirty gauge
+mikyu_queue_tasks_dirty{queue="jobs"} 0
+# HELP mikyu_queue_tasks_in_flight Task occupancy and checkpoint health for the queue.
+# TYPE mikyu_queue_tasks_in_flight gauge
+mikyu_queue_tasks_in_flight{queue="jobs"} 8
+# HELP mikyu_queue_tasks_schedule_heap Task occupancy and checkpoint health for the queue.
+# TYPE mikyu_queue_tasks_schedule_heap gauge
+mikyu_queue_tasks_schedule_heap{queue="jobs"} 0
+# HELP mikyu_queue_tasks_scheduled Task occupancy and checkpoint health for the queue.
+# TYPE mikyu_queue_tasks_scheduled gauge
+mikyu_queue_tasks_scheduled{queue="jobs"} 34
+# HELP mikyu_queue_tasks_uncheckpointed Task occupancy and checkpoint health for the queue.
+# TYPE mikyu_queue_tasks_uncheckpointed gauge
+mikyu_queue_tasks_uncheckpointed{queue="jobs"} 0
 # HELP mikyu_append_duration_seconds Append latency in seconds.
 # TYPE mikyu_append_duration_seconds histogram
 mikyu_append_duration_seconds_bucket{queue="events",le="0.001"} 5
@@ -50,3 +132,9 @@ mikyu_append_duration_seconds_bucket{queue="events",le="0.01"} 8
 mikyu_append_duration_seconds_bucket{queue="events",le="+Inf"} 10
 mikyu_append_duration_seconds_sum{queue="events"} 0.5
 mikyu_append_duration_seconds_count{queue="events"} 10
+# HELP mikyu_append_duration_quantiles_seconds Append latency in seconds.
+# TYPE mikyu_append_duration_quantiles_seconds summary
+mikyu_append_duration_quantiles_seconds{queue="events",quantile="0.5"} 0.001
+mikyu_append_duration_quantiles_seconds{queue="events",quantile="0.9"} 0.01
+mikyu_append_duration_quantiles_seconds{queue="events",quantile="0.99"} 0.01
+mikyu_append_duration_quantiles_seconds{queue="events",quantile="+Inf"} 0.01
