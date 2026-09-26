@@ -38,6 +38,9 @@ components:
   mikyu:      { in: "." }          # root facade package
   audit:      { in: internal/audit }
   command:    { in: internal/ui/command }
+  style:      { in: internal/ui/style }
+  human:      { in: internal/ui/human }
+  metricsview: { in: internal/ui/metricsview }
   cli:        { in: internal/ui/cli }
   repl:       { in: internal/ui/repl }
   cmd:        { in: cmd/mikyu }    # the CLI binary main
@@ -72,7 +75,7 @@ deps:
   taskqueue:
     mayDependOn: [engine, metrics]
   retention:
-    mayDependOn: [engine]
+    mayDependOn: [engine, metrics]
 
   # ---- node: registry, pool, driver cache, retention wiring ----
   node:
@@ -99,11 +102,18 @@ deps:
     mayDependOn: [spec, client, engine, node, logqueue, taskqueue, metrics, protocol]
   audit:
     anyVendorDeps: true
+  # ---- presentation: leaf tokens, value formatters, then the views ----
+  style:
+    anyVendorDeps: true            # lipgloss only; knows nothing of the domain
+  human:
+    anyVendorDeps: true            # formatting only; no domain types
+  metricsview:
+    mayDependOn: [metrics, human, style, spec]
   command:
-    mayDependOn: [mikyu, client, daemon, spec]
+    mayDependOn: [mikyu, client, daemon, spec, style, metricsview]
   cli:
-    mayDependOn: [mikyu, client, daemon, command, spec]
+    mayDependOn: [mikyu, client, daemon, command, spec, metricsview]
   repl:
-    mayDependOn: [mikyu, client, daemon, command, spec]
+    mayDependOn: [mikyu, client, daemon, command, spec, style, metricsview]
   cmd:
     mayDependOn: [mikyu, daemon, cli, repl]
