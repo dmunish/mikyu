@@ -93,28 +93,43 @@ func TestStatBand(t *testing.T) {
 	theme := PlainTheme()
 	assert.Equal(t, "", theme.StatBand(nil))
 
-	one := strings.Split(stripANSI(theme.StatBand([][2]string{{"1.2M", "messages"}})), "\n")
+	one := strings.Split(stripANSI(theme.StatBand([]Stat{{Value: "1.2M", Label: "messages"}})), "\n")
 	require.Len(t, one, 2)
 	assert.Equal(t, "1.2M", strings.TrimSpace(one[0]))
 	assert.Equal(t, "MESSAGES", strings.TrimSpace(one[1]))
 
-	three := stripANSI(theme.StatBand([][2]string{{"3", "queues"}, {"1.2M", "messages"}, {"9.0 GiB", "on disk"}}))
-	lines := strings.Split(three, "\n")
-	require.Len(t, lines, 2, "values share one line, labels share the next")
+	three := strings.Split(stripANSI(theme.StatBand([]Stat{
+		{Value: "3", Label: "queues"}, {Value: "1.2M", Label: "messages"}, {Value: "9.0 GiB", Label: "on disk"},
+	})), "\n")
+	require.Len(t, three, 2, "values share one line, labels share the next")
 	for _, want := range []string{"3", "1.2M", "9.0 GiB"} {
-		assert.Contains(t, lines[0], want)
+		assert.Contains(t, three[0], want)
 	}
 	for _, want := range []string{"QUEUES", "MESSAGES", "ON DISK"} {
-		assert.Contains(t, lines[1], want)
+		assert.Contains(t, three[1], want)
 	}
 }
 
 // TestStatBandSingleLine: one stat renders value over label, not beside.
 func TestStatBandSingleLine(t *testing.T) {
-	lines := strings.Split(stripANSI(PlainTheme().StatBand([][2]string{{"42", "queues"}})), "\n")
+	lines := strings.Split(stripANSI(PlainTheme().StatBand([]Stat{{Value: "42", Label: "queues"}})), "\n")
 	require.Len(t, lines, 2)
 	assert.Equal(t, "42", strings.TrimSpace(lines[0]))
 	assert.Equal(t, "QUEUES", strings.TrimSpace(lines[1]))
+}
+
+// TestStatBandPerStatColor: a colored value differs from an uncolored one.
+func TestStatBandPerStatColor(t *testing.T) {
+	theme := NewTheme(true)
+	valueColor := func(stats []Stat) string { return sgr(strings.Split(theme.StatBand(stats), "\n")[0]) }
+	base := valueColor([]Stat{{Value: "1", Label: "a"}})
+	ok := valueColor([]Stat{{Value: "1", Label: "a", Color: theme.Ok}})
+	danger := valueColor([]Stat{{Value: "1", Label: "a", Color: theme.Danger}})
+	assert.NotEqual(t, base, ok, "a nil color falls back to the default")
+	assert.NotEqual(t, ok, danger, "each stat carries its own color")
+	assert.NotEmpty(t, base)
+	assert.Empty(t, sgr(strings.Split(PlainTheme().StatBand(
+		[]Stat{{Value: "1", Label: "a", Color: theme.Ok}}), "\n")[0]), "plain mode ignores it")
 }
 
 // TestKVSectionRightAlignsValues is the invariant I1 check: labels left, values right.
@@ -298,7 +313,7 @@ func TestThemePlainEmitsNoEscapes(t *testing.T) {
 	theme := PlainTheme()
 	rendered := theme.TitledBox("T", "body", 30, theme.Accent) +
 		theme.GradientHeader("t", "a", "b", 30) +
-		theme.StatBand([][2]string{{"1", "x"}}) +
+		theme.StatBand([]Stat{{Value: "1", Label: "x"}}) +
 		theme.KVSection("s", [][2]string{{"a", "1"}}, 6, 4, false) +
 		theme.DataTable([]string{"A"}, [][]string{{"1"}}, nil) +
 		theme.Gauge(0.5, 8, false) +
@@ -321,7 +336,7 @@ func TestComponentsPlainProfile(t *testing.T) {
 	parts := []string{
 		theme.TitledBox("LOG QUEUES", "events  ok", 46, theme.Accent),
 		theme.GradientHeader("mikyu", "go1.27 linux/amd64", "up 1h 23m", 46),
-		theme.StatBand([][2]string{{"3", "queues"}, {"1.2M", "messages"}}),
+		theme.StatBand([]Stat{{Value: "3", Label: "queues"}, {Value: "1.2M", Label: "messages"}}),
 		theme.KVSection("throughput", [][2]string{{"appends", "12"}, {"reads", "340"}}, 8, 6, false),
 		theme.DataTable([]string{"NAME", "MESSAGES", "STATE"},
 			[][]string{{"events", "1000000", "●"}, {"audit", "0", "○"}},

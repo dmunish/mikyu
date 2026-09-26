@@ -134,6 +134,17 @@ func (q QueueView) LagRatio() float64 {
 	return worst
 }
 
+// MaxLag is the largest absolute consumer-group lag across the queue's groups.
+func (q QueueView) MaxLag() uint64 {
+	var max uint64
+	for _, g := range q.Groups {
+		if g.Lag > max {
+			max = g.Lag
+		}
+	}
+	return max
+}
+
 // QueueHealth derives one queue's state from a single snapshot, with no history and no wall clock.
 func QueueHealth(q QueueView) Health {
 	h := atOrAbove(q.Backpressure.WALChannelFill, walFillWarn, walFillCrit)
@@ -208,8 +219,7 @@ func present(events int64) Health {
 	return HealthOK
 }
 
-// finite rejects a non-finite reading so a broken instrument reads as absent
-// rather than as an outage caused by our own metrics code.
+// finite rejects a non-finite reading, so a broken instrument reads as absent rather than as an outage.
 func finite(v float64) bool {
 	return !math.IsNaN(v) && !math.IsInf(v, 0)
 }

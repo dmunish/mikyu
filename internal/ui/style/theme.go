@@ -7,7 +7,8 @@ import (
 
 // Theme holds the colors one render needs, resolved by the caller.
 type Theme struct {
-	Plain   bool
+	Plain bool
+	// Accent and Accent2 extend the fire ramp the rest of the UI already uses; the rest are the semantic colors I2 reserves for state.
 	Accent  color.Color
 	Accent2 color.Color
 	Label   color.Color
@@ -19,9 +20,6 @@ type Theme struct {
 
 // NewTheme returns the shipped palette for a light or dark background.
 func NewTheme(dark bool) Theme {
-	// The brand roles extend the fire ramp the rest of the UI already uses; the
-	// state roles are the semantic red/amber/green that invariant I2 reserves
-	// for state.
 	ld := lipgloss.LightDark(dark)
 	return Theme{
 		Accent:  ld(lipgloss.Color("#B45309"), lipgloss.Color("#ffca86")),
@@ -41,10 +39,8 @@ func PlainTheme() Theme {
 	return theme
 }
 
-// paint returns a style carrying only the theme's color, or a bare style in
-// plain mode. Primitives build every attribute through paint or emph so a
-// piped render cannot leak a bold or faint escape (invariant I3).
-func (t Theme) paint(c color.Color) lipgloss.Style {
+// Paint returns a style carrying only the given color, or a bare style in plain mode.
+func (t Theme) Paint(c color.Color) lipgloss.Style {
 	if t.Plain {
 		return lipgloss.NewStyle()
 	}

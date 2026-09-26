@@ -201,3 +201,12 @@ func TestLagRatio(t *testing.T) {
 	assert.InDelta(t, 0.9, logQueue(withLag(900, 1000)).LagRatio(), 1e-9)
 	assert.Zero(t, logQueue(withLag(10, 0)).LagRatio(), "absent high water yields no ratio")
 }
+
+func TestMaxLag(t *testing.T) {
+	assert.Zero(t, QueueView{}.MaxLag())
+	assert.Equal(t, uint64(42), logQueue(withLag(42, 1000)).MaxLag())
+	assert.Equal(t, uint64(900), logQueue(
+		withLag(42, 1000),
+		func(q *QueueView) { q.Groups = append(q.Groups, GroupView{Lag: 900, HighWater: 1000}) },
+	).MaxLag(), "the largest absolute lag wins, not the largest ratio")
+}

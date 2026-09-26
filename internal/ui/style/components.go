@@ -10,6 +10,13 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// Three lipgloss behaviours the primitives below rely on, each verified by
+// probe rather than assumed. A Style's Width already counts its border, so a
+// bordered block is exactly as wide as the Width it is given and must not be
+// reduced by two. Text is measured with lipgloss.Width, never len, or an
+// ANSI-styled cell skews the layout. And table.New defaults to a full grid, so
+// both render modes state the borders they want explicitly.
+
 // Gauges are drawn with a fixed-width lane so a column of them lines up, and
 // the caller prints the number separately in its own right-aligned lane.
 const (
@@ -26,18 +33,10 @@ const titledBoxChrome = 6
 
 // TitledBox draws a card with its title set into the top edge, the btop form.
 func (t Theme) TitledBox(title, body string, width int, titleColor color.Color) string {
-	// Lipgloss cannot set a title inside a border, so the top edge is drawn by
-	// hand and the other three sides come from lipgloss. Measure the title with
-	// lipgloss.Width, never len, or an ANSI-styled title skews the edge. A
-	// Style's Width already counts its border, so width passes through unchanged
-	// to keep the drawn edge and the boxed body the same size.
 	if t.Plain {
 		return joinNonEmpty(title, body)
 	}
 	edge := lipgloss.NewStyle().Foreground(titleColor)
-	// The drawn edge is "╭─ " + title + " " + fill + "╮", so the title must fit
-	// width minus that chrome, or the card would grow past the caller's width.
-	// Truncating is what keeps a narrow terminal from wrapping the header.
 	titled := edge.Render("╭─ ") + ansi.Truncate(title, max(1, width-titledBoxChrome), "…") + edge.Render(" ")
 	gap := width - lipgloss.Width(titled) - 1
 	if gap < 1 {
@@ -67,27 +66,37 @@ func (t Theme) GradientHeader(title, subtitle1, subtitle2 string, width int) str
 		Render(body)
 }
 
+// Stat is one value-and-label pair in a StatBand, carrying the color of its value.
+type Stat struct {
+	Value string
+	Label string
+	Color color.Color
+}
+
 // StatBand renders big values over dim labels, separated by a two-space gutter.
-func (t Theme) StatBand(stats [][2]string) string {
+func (t Theme) StatBand(stats []Stat) string {
 	if len(stats) == 0 {
 		return ""
 	}
 	value := t.emph(t.Text)
-	label := t.paint(t.Label).Transform(strings.ToUpper)
+	label := t.Paint(t.Label).Transform(strings.ToUpper)
 	blocks := make([]string, 0, len(stats)*2-1)
 	for i, stat := range stats {
 		if i > 0 {
 			blocks = append(blocks, "  ")
 		}
-		blocks = append(blocks, lipgloss.JoinVertical(lipgloss.Center, value.Render(stat[0]), label.Render(stat[1])))
+		painted := value
+		if stat.Color != nil {
+			painted = t.emph(stat.Color)
+		}
+		blocks = append(blocks, lipgloss.JoinVertical(lipgloss.Center,
+			painted.Render(stat.Value), label.Render(stat.Label)))
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Bottom, blocks...)
 }
 
-// KVSection renders label/value rows with every value in its own right-aligned lane.
+// KVSection renders label/value rows, every value in its own right-aligned lane, which is where invariant I1 is enforced.
 func (t Theme) KVSection(title string, rows [][2]string, labelWidth, valueWidth int, twoCol bool) string {
-	// That lane is where invariant I1 is enforced, and it holds in plain mode
-	// too, so a piped render keeps the alignment a rich one has.
 	if len(rows) == 0 {
 		return ""
 	}
@@ -105,7 +114,7 @@ func (t Theme) KVSection(title string, rows [][2]string, labelWidth, valueWidth 
 	return joinNonEmpty(t.sectionTitle(title), body)
 }
 
-// DataTable lays out a table, right-aligning the columns the caller marks numeric.
+// DataTable lays out a table, right-aligning the columns the caller marks numeric and never transforming the headers.
 func (t Theme) DataTable(headers []string, rows [][]string, numeric map[int]bool) string {
 	if len(headers) == 0 {
 		return ""
@@ -124,24 +133,20 @@ func (t Theme) DataTable(headers []string, rows [][]string, numeric map[int]bool
 		}).
 		Headers(headers...).
 		Rows(rows...)
-	// New defaults to a full grid, so both modes state what they want. A pipe
-	// gets no rule at all; a terminal keeps the header rule and the bottom rule
-	// but no line between data rows, since a table is read down a column. With
-	// no rows the two rules would land on top of each other, so keep one.
+	// A pipe gets no rule; a terminal gets these two and no row rules, and with
+	// no rows the two would land on top of each other, so keep only one.
 	headerRule := !t.Plain && len(rows) > 0
 	tbl = tbl.
 		BorderTop(false).BorderLeft(false).BorderRight(false).BorderColumn(false).
 		BorderRow(false).BorderHeader(headerRule).BorderBottom(!t.Plain)
 	if !t.Plain {
-		tbl = tbl.BorderStyle(t.paint(t.Label))
+		tbl = tbl.BorderStyle(t.Paint(t.Label))
 	}
 	return tbl.String()
 }
 
-// Gauge renders frac as a fixed-width bar, trusting ok over the fullness grading.
+// Gauge renders frac as a fixed-width bar, where ok marks a legitimately full bar such as a hot cache.
 func (t Theme) Gauge(frac float64, width int, ok bool) string {
-	// ok marks a bar that is legitimately full, such as a hot read cache, so
-	// fullness reads as health rather than risk.
 	if width < 1 {
 		return ""
 	}
@@ -153,7 +158,7 @@ func (t Theme) Gauge(frac float64, width int, ok bool) string {
 	}
 	filled := int(frac*float64(width) + 0.5)
 	bar := strings.Repeat(gaugeFull, filled) + strings.Repeat(gaugeEmpty, width-filled)
-	return t.paint(t.gaugeColor(frac, ok)).Render(gaugeTick + bar)
+	return t.Paint(t.gaugeColor(frac, ok)).Render(gaugeTick + bar)
 }
 
 // Footer renders dim prose with accent command spans, or nothing in plain mode.
@@ -161,7 +166,7 @@ func (t Theme) Footer(hints ...[2]string) string {
 	if t.Plain || len(hints) == 0 {
 		return ""
 	}
-	dim := t.paint(t.Label)
+	dim := t.Paint(t.Label)
 	parts := make([]string, 0, len(hints))
 	for _, hint := range hints {
 		parts = append(parts, t.emph(t.Accent).Render(hint[0])+" "+dim.Render(hint[1]))
@@ -185,7 +190,7 @@ func (t Theme) gaugeColor(frac float64, ok bool) color.Color {
 
 // kvBlock renders one column of a key-value section, title optional.
 func (t Theme) kvBlock(title string, rows [][2]string, labelWidth, valueWidth int) string {
-	labelStyle := t.paint(t.Label)
+	labelStyle := t.Paint(t.Label)
 	valueStyle := lipgloss.NewStyle()
 	lines := make([]string, 0, len(rows)+1)
 	if title != "" {
