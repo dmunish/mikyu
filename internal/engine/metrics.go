@@ -115,13 +115,6 @@ func (m *Manager) Collect(_ context.Context, dst *metrics.Snapshot) {
 	}
 }
 
-// StorageSnapshot returns a fixed-shape view of the queue's on-disk state.
-func (q *Queue) StorageSnapshot() metrics.StorageQueueView {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-	return q.storageSnapshotLocked()
-}
-
 // queueViewLocked builds one queue's instrument view. The caller must hold q.mu.
 func (q *Queue) queueViewLocked() metrics.QueueView {
 	qv := metrics.QueueView{

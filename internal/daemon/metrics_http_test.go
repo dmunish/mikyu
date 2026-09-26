@@ -54,8 +54,8 @@ func TestMetricsHTTPPrometheus(t *testing.T) {
 
 	body, err := io.ReadAll(res.Body)
 	require.NoError(t, err)
-	assert.Contains(t, string(body), "mikyu_uptime_seconds")
-	assert.Contains(t, string(body), "mikyu_queues")
+	assert.Contains(t, string(body), "mikyu_runtime_uptime_seconds")
+	assert.Contains(t, string(body), "mikyu_totals_queues")
 }
 
 // The preregistered server scope yields a queue view, so per-queue mode must

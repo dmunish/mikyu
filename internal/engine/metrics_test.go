@@ -350,30 +350,6 @@ func TestStorageSnapshotShape(t *testing.T) {
 	require.GreaterOrEqual(t, st.FlushedBytes, st.PendingBytes)
 	require.Zero(t, st.PendingBytes)
 	require.GreaterOrEqual(t, st.OffsetStoreBytes, int64(0))
-
-	q := storage.(*Queue)
-	view := q.StorageSnapshot()
-	require.Equal(t, st.Segments, view.Segments)
-	require.Equal(t, st.SizeBytes, view.SizeBytes)
-	require.Equal(t, st.FlushedBytes, view.FlushedBytes)
-}
-
-func TestStorageSnapshotClosed(t *testing.T) {
-	dir := t.TempDir()
-	mgr, err := OpenManager(dir, testConfig(), nil)
-	require.NoError(t, err)
-	defer mgr.Close()
-
-	storage, err := mgr.Create("q")
-	require.NoError(t, err)
-	q := storage.(*Queue)
-	require.NoError(t, q.Close())
-
-	require.NotPanics(t, func() {
-		view := q.StorageSnapshot()
-		require.GreaterOrEqual(t, view.Segments, int64(0))
-		require.GreaterOrEqual(t, view.CommittedBytes, int64(0))
-	})
 }
 
 func TestFetchParkEvents(t *testing.T) {
