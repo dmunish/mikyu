@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/table"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Gauges are drawn with a fixed-width lane so a column of them lines up, and
@@ -18,6 +20,10 @@ const (
 	gaugeDangerA = 0.85
 )
 
+// titledBoxChrome is the width a TitledBox spends on its own top edge: the
+// "╭─ " opener, the space before the fill, the corner, and one fill dash.
+const titledBoxChrome = 6
+
 // TitledBox draws a card with its title set into the top edge, the btop form.
 func (t Theme) TitledBox(title, body string, width int, titleColor color.Color) string {
 	// Lipgloss cannot set a title inside a border, so the top edge is drawn by
@@ -29,7 +35,10 @@ func (t Theme) TitledBox(title, body string, width int, titleColor color.Color) 
 		return joinNonEmpty(title, body)
 	}
 	edge := lipgloss.NewStyle().Foreground(titleColor)
-	titled := edge.Render("╭─ ") + title + edge.Render(" ")
+	// The drawn edge is "╭─ " + title + " " + fill + "╮", so the title must fit
+	// width minus that chrome, or the card would grow past the caller's width.
+	// Truncating is what keeps a narrow terminal from wrapping the header.
+	titled := edge.Render("╭─ ") + ansi.Truncate(title, max(1, width-titledBoxChrome), "…") + edge.Render(" ")
 	gap := width - lipgloss.Width(titled) - 1
 	if gap < 1 {
 		gap = 1
@@ -98,27 +107,35 @@ func (t Theme) KVSection(title string, rows [][2]string, labelWidth, valueWidth 
 
 // DataTable lays out a table, right-aligning the columns the caller marks numeric.
 func (t Theme) DataTable(headers []string, rows [][]string, numeric map[int]bool) string {
-	// Headers render as the caller's literal strings, never transformed, so a
-	// script can grep them (invariant I5).
 	if len(headers) == 0 {
 		return ""
 	}
-	widths := columnWidths(headers, rows)
-	var b strings.Builder
-	b.WriteString(t.headerRow(headers, widths, numeric))
+	tbl := table.New().
+		StyleFunc(func(row, col int) lipgloss.Style {
+			cell := lipgloss.NewStyle().Padding(0, 1).TabWidth(0)
+			switch {
+			case row == table.HeaderRow:
+				return t.emph(t.Accent).Padding(0, 1).TabWidth(0)
+			case numeric[col]:
+				return cell.Align(lipgloss.Right)
+			default:
+				return cell
+			}
+		}).
+		Headers(headers...).
+		Rows(rows...)
+	// New defaults to a full grid, so both modes state what they want. A pipe
+	// gets no rule at all; a terminal keeps the header rule and the bottom rule
+	// but no line between data rows, since a table is read down a column. With
+	// no rows the two rules would land on top of each other, so keep one.
+	headerRule := !t.Plain && len(rows) > 0
+	tbl = tbl.
+		BorderTop(false).BorderLeft(false).BorderRight(false).BorderColumn(false).
+		BorderRow(false).BorderHeader(headerRule).BorderBottom(!t.Plain)
 	if !t.Plain {
-		b.WriteString("\n")
-		b.WriteString(t.rule(widths))
+		tbl = tbl.BorderStyle(t.paint(t.Label))
 	}
-	for _, row := range rows {
-		b.WriteString("\n")
-		b.WriteString(t.dataRow(row, widths, numeric))
-	}
-	if !t.Plain && len(rows) > 0 {
-		b.WriteString("\n")
-		b.WriteString(t.rule(widths))
-	}
-	return b.String()
+	return tbl.String()
 }
 
 // Gauge renders frac as a fixed-width bar, trusting ok over the fullness grading.
@@ -184,71 +201,6 @@ func (t Theme) kvBlock(title string, rows [][2]string, labelWidth, valueWidth in
 // sectionTitle renders an uppercase accent heading.
 func (t Theme) sectionTitle(title string) string {
 	return t.emph(t.Accent).Transform(strings.ToUpper).Render(title)
-}
-
-// headerRow renders the caller-supplied column headers verbatim, styled once
-// for the whole row so a table costs two escapes per row rather than per cell.
-func (t Theme) headerRow(headers []string, widths []int, numeric map[int]bool) string {
-	cells := make([]string, len(headers))
-	for i, header := range headers {
-		cells[i] = padCell(header, widths[i], false)
-	}
-	return t.emph(t.Accent).Render(strings.Join(cells, " "))
-}
-
-// dataRow renders one row, honoring the caller's per-column alignment.
-func (t Theme) dataRow(row []string, widths []int, numeric map[int]bool) string {
-	cells := make([]string, len(widths))
-	for i := range widths {
-		cell := ""
-		if i < len(row) {
-			cell = row[i]
-		}
-		cells[i] = padCell(cell, widths[i], numeric[i])
-	}
-	return strings.Join(cells, " ")
-}
-
-// rule renders a horizontal separator spanning the table.
-func (t Theme) rule(widths []int) string {
-	total := 0
-	for i, width := range widths {
-		if i > 0 {
-			total++
-		}
-		total += width
-	}
-	return t.paint(t.Label).Render(strings.Repeat("─", total))
-}
-
-// columnWidths measures the widest cell in each column, header included.
-func columnWidths(headers []string, rows [][]string) []int {
-	widths := make([]int, len(headers))
-	for i, header := range headers {
-		widths[i] = lipgloss.Width(header)
-	}
-	for _, row := range rows {
-		for i, cell := range row {
-			if i < len(widths) {
-				if width := lipgloss.Width(cell); width > widths[i] {
-					widths[i] = width
-				}
-			}
-		}
-	}
-	return widths
-}
-
-// padCell pads text to width, on the right when rightAlign is set.
-func padCell(text string, width int, rightAlign bool) string {
-	gap := width - lipgloss.Width(text)
-	if gap <= 0 {
-		return text
-	}
-	if rightAlign {
-		return strings.Repeat(" ", gap) + text
-	}
-	return text + strings.Repeat(" ", gap)
 }
 
 // joinNonEmpty joins the non-empty parts with newlines.

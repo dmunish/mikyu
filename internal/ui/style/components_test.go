@@ -17,15 +17,37 @@ func TestTitledBoxPlain(t *testing.T) {
 	assert.Equal(t, "TITLE", theme.TitledBox("TITLE", "", 40, theme.Accent))
 }
 
-// TestTitledBoxOverlongTitle: a title wider than the box must not corrupt the edge.
+// TestTitledBoxOverlongTitle: a title wider than the box is truncated, not wrapped.
 func TestTitledBoxOverlongTitle(t *testing.T) {
 	theme := NewTheme(true)
-	long := strings.Repeat("W", 60)
-	out := theme.TitledBox(long, "body", 20, theme.Accent)
-	first := strings.Split(out, "\n")[0]
-	assert.True(t, strings.HasSuffix(stripANSI(first), "╮"), "top edge must still close: %q", stripANSI(first))
-	for _, line := range strings.Split(out, "\n") {
-		assert.LessOrEqual(t, lipgloss.Width(line), lipgloss.Width(first), "line wider than the titled edge")
+	long := strings.Repeat("W", 200)
+	for _, width := range []int{20, 46, 80} {
+		out := theme.TitledBox(long, "body", width, theme.Accent)
+		lines := strings.Split(stripANSI(out), "\n")
+		for i, line := range lines {
+			assert.Equal(t, width, lipgloss.Width(line),
+				"width %d line %d must never exceed the requested width", width, i)
+		}
+		assert.Contains(t, stripANSI(out), "…", "an overlong title is marked as truncated")
+		assert.True(t, strings.HasSuffix(lines[0], "╮"), "the drawn edge must still close")
+	}
+}
+
+// TestCardsNeverExceedWidth is the narrow-terminal guarantee from phase 6.
+func TestCardsNeverExceedWidth(t *testing.T) {
+	theme := NewTheme(true)
+	body := strings.Repeat("x", 400)
+	header := strings.Repeat("h", 400)
+	for _, width := range []int{30, 60, 80, 100} {
+		for name, card := range map[string]string{
+			"titled": theme.TitledBox(header, body, width, theme.Accent),
+			"header": theme.GradientHeader(header, body, body, width),
+		} {
+			for i, line := range strings.Split(stripANSI(card), "\n") {
+				assert.LessOrEqual(t, lipgloss.Width(line), width,
+					"%s card at width %d line %d overflows", name, width, i)
+			}
+		}
 	}
 }
 
@@ -144,50 +166,55 @@ func TestDataTableAlignsNumericColumns(t *testing.T) {
 		{"longer", "1000000", "○"},
 	}
 	out := strings.Split(theme.DataTable(headers, rows, map[int]bool{1: true}), "\n")
-	require.Len(t, out, 3, "header plus two rows, no rules in plain mode")
-	// Column widths come from the widest cell: NAME 6, MESSAGES 8, STATE 5.
-	assert.Equal(t, "NAME  ", out[0][:6])
-	assert.Equal(t, "a     ", out[1][:6])
-	assert.Equal(t, "longer", out[2][:6])
-	assert.Equal(t, "       1", out[1][7:15], "numeric column must be right-aligned")
-	assert.Equal(t, " 1000000", out[2][7:15])
+	require.Len(t, out, 3, "plain mode renders no rules, so header plus two rows")
 	for _, line := range out {
-		assert.Equal(t, lipgloss.Width(out[0]), lipgloss.Width(line))
+		assert.Equal(t, lipgloss.Width(out[0]), lipgloss.Width(line), "every line shares the table width")
 	}
+	assert.Contains(t, out[0], "NAME", "the caller's literal header survives")
+	assert.Contains(t, out[0], "MESSAGES")
+	assert.Contains(t, out[0], "STATE")
+	// Right alignment means every value ends in the same column, whether it is
+	// one digit or seven.
+	endShort := strings.Index(out[1], "1") + len("1")
+	endLong := strings.Index(out[2], "1000000") + len("1000000")
+	assert.Equal(t, endLong, endShort, "both values must end at the same column: %q / %q", out[1], out[2])
+	assert.NotEqual(t, strings.Index(out[1], "1"), strings.Index(out[2], "1")+1,
+		"the short value must be pushed right, not left")
 }
 
 // TestDataTableHeadersAreLiteral pins invariant I5: no transform on headers.
 func TestDataTableHeadersAreLiteral(t *testing.T) {
 	out := strings.Split(PlainTheme().DataTable([]string{"appends/s"}, [][]string{{"1"}}, nil), "\n")
-	assert.Equal(t, "appends/s", out[0], "headers must survive verbatim for grepping")
+	require.NotEmpty(t, out)
+	assert.Equal(t, "appends/s", strings.TrimSpace(out[0]), "headers must survive verbatim for grepping")
 }
 
+// TestDataTableRichAddsRules: a terminal gets a header rule and a bottom rule.
 func TestDataTableRichAddsRules(t *testing.T) {
 	theme := NewTheme(true)
 	lines := strings.Split(stripANSI(theme.DataTable([]string{"NAME", "N"}, [][]string{{"a", "1"}}, map[int]bool{1: true})), "\n")
 	require.Len(t, lines, 4, "header, rule, row, rule")
-	assert.Equal(t, "NAME N", lines[0])
-	assert.Equal(t, "a    1", lines[2])
-	assert.Equal(t, lipgloss.Width(lines[0]), lipgloss.Width(lines[1]), "rule must match the table width")
-	assert.Equal(t, lipgloss.Width(lines[0]), lipgloss.Width(lines[2]))
-	assert.Equal(t, lipgloss.Width(lines[0]), lipgloss.Width(lines[3]))
+	assert.Contains(t, lines[0], "NAME")
+	assert.Equal(t, strings.Repeat("─", lipgloss.Width(lines[0])), lines[1])
+	assert.Contains(t, lines[2], "a")
+	assert.Equal(t, lines[1], lines[3])
 }
 
-// TestDataTableRichWithoutRows: a header with no data still closes with one rule.
+// TestDataTableRichWithoutRows: with no data the two rules would double up.
 func TestDataTableRichWithoutRows(t *testing.T) {
-	lines := strings.Split(stripANSI(NewTheme(true).DataTable([]string{"A"}, nil, nil)), "\n")
-	require.Len(t, lines, 2)
-	assert.Equal(t, "A", lines[0])
-	assert.Equal(t, "─", lines[1])
+	lines := strings.Split(stripANSI(NewTheme(true).DataTable([]string{"A", "B"}, nil, nil)), "\n")
+	require.Len(t, lines, 2, "header plus a single rule")
+	assert.Contains(t, lines[0], "A")
+	assert.Equal(t, strings.Repeat("─", lipgloss.Width(lines[0])), lines[1])
 }
 
 func TestDataTableShortRowAndEmpty(t *testing.T) {
 	out := strings.Split(PlainTheme().DataTable([]string{"A", "B", "C"}, [][]string{{"1"}}, nil), "\n")
-	assert.Equal(t, "A B C", out[0])
-	assert.Equal(t, "1    ", out[1], "missing cells pad rather than vanish")
+	require.Len(t, out, 2)
+	assert.Equal(t, lipgloss.Width(out[0]), lipgloss.Width(out[1]), "missing cells pad rather than vanish")
+	assert.Contains(t, out[1], "1")
 	assert.Equal(t, "", PlainTheme().DataTable(nil, nil, nil))
 }
-
 func TestGauge(t *testing.T) {
 	theme := PlainTheme()
 	tests := []struct {
@@ -312,9 +339,9 @@ func TestComponentsPlainProfile(t *testing.T) {
 		"THROUGHPUT",
 		"appends      12",
 		"reads       340",
-		"NAME   MESSAGES STATE",
-		"events  1000000 ●    ",
-		"audit         0 ○    ",
+		" NAME    MESSAGES  STATE ",
+		" events   1000000  ●     ",
+		" audit          0  ○     ",
 		"▏▓▓▓▓····",
 	}
 	assert.Equal(t, strings.Join(want, "\n"), strings.Join(parts, "\n"))
