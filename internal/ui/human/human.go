@@ -134,8 +134,7 @@ func splitSign(n int64) (sign string, size uint64) {
 	return "", uint64(n)
 }
 
-// fixed1 renders v with exactly one decimal, so values in a column line up on
-// the decimal point. Very large magnitudes fall back to shortest round-trip.
+// fixed1 renders v with exactly one decimal so a column lines up on the decimal point.
 func fixed1(v float64) string {
 	if math.Abs(v) >= 1e15 {
 		return strconv.FormatFloat(v, 'f', -1, 64)
@@ -143,8 +142,7 @@ func fixed1(v float64) string {
 	return strconv.FormatFloat(v, 'f', 1, 64)
 }
 
-// trim1 renders v with one decimal only when the value has a fraction, so 10
-// reads as 10 and 10.5 as 10.5.
+// trim1 renders v with a decimal only when it has a fraction, so 10 reads as 10 and 10.5 as 10.5.
 func trim1(v float64) string {
 	return strings.TrimSuffix(fixed1(v), ".0")
 }
