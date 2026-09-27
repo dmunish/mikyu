@@ -119,7 +119,7 @@ func (s *RuntimeSource) read(dst *metrics.Snapshot) {
 		case "/gc/heap/goal:bytes":
 			dst.GC.NextGCBytes = int64(sampleUint(sample))
 		case "/gc/gomemlimit:bytes":
-			dst.GC.MemLimitBytes = int64(sampleUint(sample))
+			dst.GC.MemLimitBytes = memLimitBytes(sampleUint(sample))
 		case "/gc/heap/allocs:bytes":
 			dst.Runtime.Heap.TotalAlloc = int64(sampleUint(sample))
 		case "/gc/heap/frees:bytes":
@@ -201,6 +201,14 @@ func sampleUint(s runtime_metrics.Sample) uint64 {
 		return 0
 	}
 	return s.Value.Uint64()
+}
+
+// memLimitBytes normalizes GOMEMLIMIT: the runtime reports MaxInt64 when unset, and 0 means unlimited in a snapshot.
+func memLimitBytes(raw uint64) int64 {
+	if raw == math.MaxInt64 {
+		return 0
+	}
+	return int64(raw)
 }
 
 // sampleFloat returns a sample's float value, or zero for a non-float kind.

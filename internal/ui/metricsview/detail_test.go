@@ -68,6 +68,16 @@ func TestDetailQueueFilter(t *testing.T) {
 		"one effective-spec card per selected queue")
 }
 
+// TestDetailMemLimit: an unset GOMEMLIMIT reads as "none", a set one as bytes.
+func TestDetailMemLimit(t *testing.T) {
+	snap := fixtureSnapshot()
+	snap.GC.MemLimitBytes = 0
+	assert.Contains(t, renderDetail(t, snap, nil), "mem limit   none")
+
+	snap.GC.MemLimitBytes = 512 << 20
+	assert.Contains(t, renderDetail(t, snap, nil), "mem limit   512.0 MiB")
+}
+
 // TestDetailSkipsInternalScopes: a non-queue instrument scope is not a queue card.
 func TestDetailSkipsInternalScopes(t *testing.T) {
 	snap := fixtureSnapshot()

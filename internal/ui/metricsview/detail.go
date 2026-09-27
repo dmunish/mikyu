@@ -182,7 +182,7 @@ func gcBlock(snap metrics.Snapshot, t style.Theme, f human.Formatter, width int)
 	return block
 }
 
-// memLimit renders the soft memory limit, or "none" when unset.
+// memLimit renders the soft memory limit, or "none" when unbounded or not yet normalized.
 func memLimit(limit int64, f human.Formatter) string {
 	if limit <= 0 {
 		return "none"
