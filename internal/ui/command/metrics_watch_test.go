@@ -16,7 +16,6 @@ import (
 	"github.com/dmunish/mikyu"
 	"github.com/dmunish/mikyu/internal/daemon"
 	"github.com/dmunish/mikyu/internal/metrics"
-	"github.com/dmunish/mikyu/internal/ui/style"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -87,11 +86,11 @@ func newTestHarness(t *testing.T, mode watchMode, opts MetricsOptions, results .
 	}
 	h.src = &scriptedSource{results: results}
 	h.watcher = &watcher{
-		src:   h.src,
-		w:     h.out,
-		opts:  opts,
-		theme: style.PlainTheme(),
-		mode:  mode,
+		src:  h.src,
+		w:    h.out,
+		opts: opts,
+		pres: presentationFor(h.out, opts.Width),
+		mode: mode,
 		clock: watchClock{
 			interval:  time.Second,
 			now:       time.Now,
@@ -104,6 +103,11 @@ func newTestHarness(t *testing.T, mode watchMode, opts MetricsOptions, results .
 		h.err = h.watcher.run(ctx)
 		close(h.done)
 	}()
+	// The loop paints one frame before its first tick; wait for it so tests that
+	// inspect the first frame cannot race the goroutine.
+	h.settle(t, 1)
+	require.Eventually(t, func() bool { return h.out.Len() > 0 },
+		5*time.Second, time.Millisecond, "the first frame must be written")
 	t.Cleanup(func() {
 		cancel()
 		<-h.done
@@ -118,8 +122,20 @@ func (h *testHarness) settle(t *testing.T, want int) {
 		5*time.Second, time.Millisecond, "the loop must consume the tick")
 }
 
-// step advances the loop by one frame and waits until it is served.
+// step advances the loop by one frame and waits until that frame is written.
 func (h *testHarness) step(t *testing.T) {
+	t.Helper()
+	want := h.src.callCount() + 1
+	before := h.out.Len()
+	h.tick.ch <- time.Time{}
+	h.settle(t, want)
+	require.Eventually(t, func() bool { return h.out.Len() > before },
+		5*time.Second, time.Millisecond, "the frame must be written")
+}
+
+// stepAbort advances the loop one tick that is expected to end the watch without
+// writing, so it only waits for the tick to be consumed.
+func (h *testHarness) stepAbort(t *testing.T) {
 	t.Helper()
 	want := h.src.callCount() + 1
 	h.tick.ch <- time.Time{}
@@ -139,50 +155,65 @@ func (h *testHarness) awaitExit(t *testing.T) error {
 	}
 }
 
-// TestWatchRepaintsInPlace: on a terminal each frame erases the previous one in place.
+// TestWatchRepaintsInPlace: on a terminal each frame after the first erases the
+// previous one in place, moving up exactly the lines it printed.
 func TestWatchRepaintsInPlace(t *testing.T) {
 	h := newTestHarness(t, watchRich, MetricsOptions{Detail: true},
 		scriptedResult{snap: testFrame(1)}, scriptedResult{snap: testFrame(2)})
 
-	h.step(t)
-	first := h.out.String()
-	assert.Empty(t, repaintRe.FindAllString(first, -1), "the first frame has nothing to erase")
-	firstLines := strings.Count(first, "\n")
+	// The loop paints one frame before any tick, so the harness has it already.
+	assert.Empty(t, repaintRe.FindString(h.out.String()), "the first frame has nothing to erase")
+	firstLines := strings.Count(h.out.String(), "\n")
 
 	h.step(t)
-	erases := repaintRe.FindAllString(h.out.String(), -1)
-	require.Len(t, erases, 1, "exactly one repaint per subsequent frame")
-	assert.Equal(t, firstLines, watcherEraseLines(t, erases[0]),
+	all := repaintRe.FindAllString(h.out.String(), -1)
+	require.Len(t, all, 1, "exactly one repaint per subsequent frame")
+	assert.Equal(t, firstLines, watcherEraseLines(t, all[0]),
 		"the repaint must move up exactly the previous frame's printed lines")
-	assert.NotContains(t, h.out.String(), "\x1b[0J\nwatched", "the closing sequence comes only at the end")
+	assert.NotContains(t, h.out.String(), "watched", "the summary only appears when the watch ends")
 }
 
-// TestWatchAppendsBannersWhenPiped: a pipe appends frames, each headed by a banner, with no escapes.
-func TestWatchAppendsBannersWhenPiped(t *testing.T) {
+// TestWatchFrameMatchesOneShot is the core guarantee: a watched frame is
+// byte-identical to what the same snapshot prints without --watch. Watch adds
+// only the cursor control that repaints it.
+func TestWatchFrameMatchesOneShot(t *testing.T) {
+	snap := testFrame(1)
+	for _, tt := range []struct {
+		name string
+		opts MetricsOptions
+		mode watchMode
+	}{
+		{"summary", MetricsOptions{}, watchPlain},
+		{"detail", MetricsOptions{Detail: true}, watchPlain},
+		{"queue", MetricsOptions{Queues: []string{"events"}}, watchPlain},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var oneShot syncBuffer
+			require.NoError(t, renderMetrics(&oneShot, snap, tt.opts))
+
+			// The harness has already painted the first frame; no tick needed.
+			h := newTestHarness(t, tt.mode, tt.opts, scriptedResult{snap: snap})
+			assert.Equal(t, oneShot.String(), h.out.String(),
+				"a watched frame must match the one-shot output exactly")
+		})
+	}
+}
+
+// TestWatchAppendsWithoutEscapesWhenPiped: a pipe gets plain frames and no
+// cursor control, so a log file stays greppable.
+func TestWatchAppendsWithoutEscapesWhenPiped(t *testing.T) {
 	h := newTestHarness(t, watchPlain, MetricsOptions{},
-		scriptedResult{snap: testFrame(1)}, scriptedResult{snap: testFrame(2)})
+		scriptedResult{snap: testFrame(1)}, scriptedResult{snap: testFrame(2)},
+		scriptedResult{snap: testFrame(3)})
 
 	h.step(t)
 	h.step(t)
 	out := h.out.String()
 	assert.NotContains(t, out, "\x1b", "plain mode never emits escapes")
-	banners := bannerRe.FindAllString(out, -1)
-	assert.Len(t, banners, 2, "one banner per frame")
-	assert.Equal(t, "── 2026-09-27T12:00:01Z · detail=false · queues=1 ──", banners[0])
-}
-
-// TestWatchBannerReportsDetailAndQueueCount: the banner states the view's shape.
-func TestWatchBannerReportsDetailAndQueueCount(t *testing.T) {
-	snap := testFrame(1)
-	snap.Queues = append(snap.Queues, metrics.QueueView{Name: "jobs", Kind: "task"},
-		metrics.QueueView{Name: "server", Kind: "internal"})
-	h := newTestHarness(t, watchPlain, MetricsOptions{Detail: true, Queues: []string{"events"}},
-		scriptedResult{snap: snap})
-
-	h.step(t)
-	banner := bannerRe.FindString(h.out.String())
-	assert.Contains(t, banner, "detail=true", "an explicit selection counts as detail")
-	assert.Contains(t, banner, "queues=2", "instrument scopes are not queues")
+	for _, n := range []int{1, 2, 3} {
+		assert.Contains(t, out, time.Date(2026, 9, 27, 12, 0, n, 0, time.UTC).Format("15:04:05Z"),
+			"frame %d is appended whole", n)
+	}
 }
 
 // TestWatchJSONIsNewlineDelimited: json mode emits NDJSON, no banner, no prose.
@@ -247,9 +278,10 @@ func TestWatchAbortsAfterThreeFailures(t *testing.T) {
 	h := newTestHarness(t, watchPlain, MetricsOptions{},
 		scriptedResult{err: boom}, scriptedResult{err: boom}, scriptedResult{err: boom})
 
-	// The loop paints the first failure before any tick; two more reach the limit.
-	h.step(t)
-	h.step(t)
+	// The eager first paint is failure 1 (noted); two more ticks reach the limit,
+	// and the third aborts without writing.
+	h.stepAbort(t)
+	h.stepAbort(t)
 	err := h.awaitAbort(t)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, boom, "the unrecoverable cause is returned")
@@ -305,27 +337,19 @@ func TestWatchModeFor(t *testing.T) {
 
 // TestWatchPropagatesWriteErrors keeps a broken pipe from looking like a healthy watch.
 func TestWatchPropagatesWriteErrors(t *testing.T) {
+	w := brokenWriter{}
 	v := &watcher{
-		src:   &scriptedSource{results: []scriptedResult{{snap: testFrame(1)}, {snap: testFrame(1)}}},
-		w:     brokenWriter{},
-		opts:  MetricsOptions{},
-		theme: style.PlainTheme(),
-		mode:  watchPlain,
+		src:  &scriptedSource{results: []scriptedResult{{snap: testFrame(1)}, {snap: testFrame(1)}}},
+		w:    w,
+		opts: MetricsOptions{},
+		pres: presentationFor(w, 0),
+		mode: watchPlain,
 		clock: watchClock{interval: time.Second, now: time.Now,
 			newTicker: func(time.Duration) ticker { return &fakeTicker{ch: make(chan time.Time)} }},
 	}
 	err := v.run(t.Context())
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errWatchClosed)
-}
-
-// TestQueueCountLeavesOutInstrumentScopes: a non-queue scope is not a queue in the banner.
-func TestQueueCountLeavesOutInstrumentScopes(t *testing.T) {
-	snap := testFrame(1)
-	snap.Queues = append(snap.Queues,
-		metrics.QueueView{Name: "server", Kind: "internal"},
-		metrics.QueueView{Name: "jobs", Kind: "task"})
-	assert.Equal(t, 2, queueCount(snap))
 }
 
 var (

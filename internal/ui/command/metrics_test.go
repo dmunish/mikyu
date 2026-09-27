@@ -171,6 +171,18 @@ func TestMetricsPresentationPlainInAPipe(t *testing.T) {
 	assert.Equal(t, 42, explicit, "an explicit width wins")
 }
 
+// TestPresentationIsSharedByBothPaths pins that a watch and a one-shot resolve
+// the identical presentation from the same destination, which is what makes a
+// watched frame byte-identical to a one-shot render.
+func TestPresentationIsSharedByBothPaths(t *testing.T) {
+	var w bytes.Buffer
+	oneShot := presentationFor(&w, 0)
+	watched := presentationFor(&w, 0)
+	assert.Equal(t, oneShot, watched)
+	assert.Equal(t, oneShot, (&watcher{w: &w, pres: watched}).pres,
+		"the watcher must carry the destination's presentation, not a buffer's")
+}
+
 // TestIsTerminalWriterFalseForFiles: a regular file is not a terminal.
 func TestIsTerminalWriterFalseForFiles(t *testing.T) {
 	f, err := os.CreateTemp(t.TempDir(), "out")

@@ -67,13 +67,20 @@ func RunMetrics(ctx context.Context, c mikyu.Client, w io.Writer, opts MetricsOp
 	return renderMetrics(w, snap, opts)
 }
 
-// renderMetrics writes one snapshot in the selected output mode.
-func renderMetrics(w io.Writer, snap mikyu.Metrics, opts MetricsOptions) error {
-	return renderMetricsIndent(w, snap, opts, "  ")
+// presentation is the resolved output style for one destination writer.
+type presentation struct {
+	theme     style.Theme
+	formatter human.Formatter
+	width     int
 }
 
-// renderMetricsIndent writes one snapshot, indenting json by the given prefix; a watch passes "" for one line per object.
-func renderMetricsIndent(w io.Writer, snap mikyu.Metrics, opts MetricsOptions, indent string) error {
+// renderMetrics writes one snapshot in the selected output mode.
+func renderMetrics(w io.Writer, snap mikyu.Metrics, opts MetricsOptions) error {
+	return renderFrame(w, snap, opts, presentationFor(w, opts.Width), "  ")
+}
+
+// renderFrame writes one snapshot with an explicit presentation and json indent, so a watch and a one-shot share the exact same bytes.
+func renderFrame(w io.Writer, snap mikyu.Metrics, opts MetricsOptions, p presentation, indent string) error {
 	if opts.JSON {
 		if err := requireQueues(snap, opts.Queues); err != nil {
 			return err
@@ -82,11 +89,16 @@ func renderMetricsIndent(w io.Writer, snap mikyu.Metrics, opts MetricsOptions, i
 		enc.SetIndent("", indent)
 		return enc.Encode(snap)
 	}
-	theme, formatter, width := metricsPresentation(w, opts.Width)
 	if opts.Detail || len(opts.Queues) > 0 {
-		return metricsview.Detail(w, snap, opts.Queues, theme, formatter, width)
+		return metricsview.Detail(w, snap, opts.Queues, p.theme, p.formatter, p.width)
 	}
-	return metricsview.Summary(w, snap, theme, formatter, width)
+	return metricsview.Summary(w, snap, p.theme, p.formatter, p.width)
+}
+
+// presentationFor picks the theme, formatter, and width for the destination writer.
+func presentationFor(w io.Writer, width int) presentation {
+	theme, formatter, resolved := metricsPresentation(w, width)
+	return presentation{theme: theme, formatter: formatter, width: resolved}
 }
 
 // requireQueues fails on a --queue name no queue matches, so a typo exits 1 even in json mode.

@@ -7,15 +7,12 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/dmunish/mikyu"
 	"github.com/dmunish/mikyu/internal/daemon"
-	"github.com/dmunish/mikyu/internal/ui/human"
-	"github.com/dmunish/mikyu/internal/ui/style"
 )
 
 // watchEnv overrides the watch period; there is no flag for it by design.
@@ -77,13 +74,12 @@ func watchMetrics(ctx context.Context, src metricsSource, w io.Writer, opts Metr
 	if err != nil {
 		return err
 	}
-	theme, _, _ := metricsPresentation(w, opts.Width)
 	return (&watcher{
-		src:   src,
-		w:     w,
-		opts:  opts,
-		theme: theme,
-		mode:  watchModeFor(w, opts.JSON),
+		src:  src,
+		w:    w,
+		opts: opts,
+		pres: presentationFor(w, opts.Width),
+		mode: watchModeFor(w, opts.JSON),
 		clock: watchClock{
 			interval:  interval,
 			now:       time.Now,
@@ -113,7 +109,7 @@ type watcher struct {
 	src   metricsSource
 	w     io.Writer
 	opts  MetricsOptions
-	theme style.Theme
+	pres  presentation
 	mode  watchMode
 	clock watchClock
 
@@ -163,58 +159,48 @@ func (v *watcher) run(ctx context.Context) error {
 	}
 }
 
-// paint renders one snapshot into a buffer, then emits it the way the mode dictates.
+// paint renders one snapshot straight to the destination, counting the lines it wrote for the next repaint.
 func (v *watcher) paint(snap mikyu.Metrics) error {
-	var buf bytes.Buffer
 	// A watched json stream is newline-delimited, so each object must be one line.
 	indent := "  "
 	if v.mode == watchJSON {
 		indent = ""
 	}
-	if err := renderMetricsIndent(&buf, snap, v.opts, indent); err != nil {
-		return err
-	}
-	frame := buf.String()
-	if v.mode != watchRich {
-		return v.append(frame, snap)
-	}
-	// The repaint distance is the newline count, not lipgloss.Height: a frame
-	// ends in a newline, and Height counts that trailing empty line, which would
-	// erase the line below the frame too.
-	if v.region > 0 {
+	if v.mode == watchRich && v.region > 0 {
 		// Cursor movement is terminal control, not styled output, so it bypasses lipgloss.
 		if _, err := fmt.Fprintf(v.w, "\x1b[%dA\x1b[0J", v.region); err != nil {
 			return err
 		}
 	}
-	if _, err := lipgloss.Fprint(v.w, frame); err != nil {
+	// The frame is written directly, so it keeps the destination's color and scale
+	// exactly as the one-shot path renders it. The wrapper only tallies newlines:
+	// the repaint distance is the newline count, not lipgloss.Height, which counts
+	// the trailing newline this frame does not print.
+	tally := &lineCounter{w: v.w}
+	if err := renderFrame(tally, snap, v.opts, v.pres, indent); err != nil {
 		return err
 	}
-	v.region = strings.Count(frame, "\n")
+	v.region = tally.lines
 	return nil
 }
 
-// append writes a frame below the previous one, headed by a banner in text mode.
-func (v *watcher) append(frame string, snap mikyu.Metrics) error {
-	if v.mode == watchPlain {
-		if _, err := lipgloss.Fprintln(v.w, v.banner(snap)); err != nil {
-			return err
-		}
-	}
-	_, err := lipgloss.Fprint(v.w, frame)
-	return err
+// lineCounter forwards to a writer while counting the newlines written.
+type lineCounter struct {
+	w     io.Writer
+	lines int
 }
 
-// banner heads each appended frame with its timestamp and shape, the vmstat discipline.
-func (v *watcher) banner(snap mikyu.Metrics) string {
-	return fmt.Sprintf("── %s · detail=%t · queues=%d ──",
-		snap.Timestamp.UTC().Format(time.RFC3339), v.opts.Detail || len(v.opts.Queues) > 0, queueCount(snap))
+// Write forwards p and tallies its newlines.
+func (c *lineCounter) Write(p []byte) (int, error) {
+	c.lines += bytes.Count(p, []byte("\n"))
+	return c.w.Write(p)
 }
 
 // stale notes a failed tick under the last good frame without disturbing it.
 func (v *watcher) stale(err error) error {
 	line := fmt.Sprintf("last snapshot %s · %v", v.last.UTC().Format(time.RFC3339), err)
-	if _, err := lipgloss.Fprintln(v.w, v.theme.Paint(v.theme.Label).Render(line)); err != nil {
+	dim := v.pres.theme.Paint(v.pres.theme.Label)
+	if _, err := lipgloss.Fprintln(v.w, dim.Render(line)); err != nil {
 		return err
 	}
 	v.region++
@@ -232,18 +218,8 @@ func (v *watcher) finish(start time.Time) error {
 		}
 	}
 	summary := fmt.Sprintf("watched for %s · %d snapshots",
-		human.Formatter{}.Duration(v.clock.now().Sub(start)), v.frames)
-	_, err := lipgloss.Fprintln(v.w, v.theme.Paint(v.theme.Label).Render(summary))
+		v.pres.formatter.Duration(v.clock.now().Sub(start)), v.frames)
+	dim := v.pres.theme.Paint(v.pres.theme.Label)
+	_, err := lipgloss.Fprintln(v.w, dim.Render(summary))
 	return err
-}
-
-// queueCount counts the renderable queues, leaving out non-queue instrument scopes.
-func queueCount(snap mikyu.Metrics) int {
-	n := 0
-	for q := range snap.ResolveQueues() {
-		if !q.IsInternal() {
-			n++
-		}
-	}
-	return n
 }
