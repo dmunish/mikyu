@@ -17,6 +17,8 @@ import (
 	"github.com/dmunish/mikyu/internal/daemon"
 	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/stretchr/testify/assert"
+	"golang.org/x/term"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -173,63 +175,75 @@ func TestWatchRepaintsInPlace(t *testing.T) {
 	assert.NotContains(t, h.out.String(), "watched", "the summary only appears when the watch ends")
 }
 
-// recordingTerminal captures writes and reports a descriptor, standing in for a
-// terminal-shaped destination.
-type recordingTerminal struct {
-	fd  uintptr
+// consoleWriter is a real console file: it is the one destination this test host
+// offers that lipgloss resolves as a color terminal, which is what makes the
+// watch color contract observable at all.
+type consoleWriter struct {
+	*os.File
 	buf bytes.Buffer
 }
 
-func (r *recordingTerminal) Write(b []byte) (int, error) { return r.buf.Write(b) }
+func (c *consoleWriter) Write(p []byte) (int, error) { return c.buf.Write(p) }
 
-func (r *recordingTerminal) Fd() uintptr { return r.fd }
+func (c *consoleWriter) String() string { return c.buf.String() }
 
-func (r *recordingTerminal) String() string { return r.buf.String() }
+// newConsoleWriter opens the console output device, skipping the test where none exists.
+func newConsoleWriter(t *testing.T) *consoleWriter {
+	t.Helper()
+	for _, name := range []string{"CONOUT$", "/dev/tty"} {
+		f, err := os.OpenFile(name, os.O_RDWR, 0)
+		if err != nil {
+			continue
+		}
+		if !term.IsTerminal(int(f.Fd())) {
+			_ = f.Close()
+			continue
+		}
+		t.Cleanup(func() { _ = f.Close() })
+		return &consoleWriter{File: f}
+	}
+	t.Skip("no console device available")
+	return nil
+}
 
-// TestWatchWritesFrameDirectlyToDestination guards the invariant behind the
-// unstyled-watch bug: lipgloss resolves a color profile from the writer it is
-// handed, and strips every escape for anything that is not a terminal file. A
-// frame that is rendered into a buffer, or through any writer wrapper, and then
-// forwarded loses its color, so the view must be given the very writer that will
-// receive the frame. This asserts the frame reaches the destination whole and
-// that the measured repaint region matches the lines actually written.
-//
-// The color itself is only observable on a real terminal, which a ConPTY test
-// host cannot provide; the plain path is covered byte-for-byte by
-// TestWatchFrameMatchesOneShot.
-func TestWatchWritesFrameDirectlyToDestination(t *testing.T) {
-	forceColor(t)
+// TestWatchKeepsColorOnAConsole is the regression test for the unstyled-watch
+// bug. lipgloss strips every escape when the writer it is handed is not a
+// terminal file, so a frame rendered anywhere other than the destination arrives
+// colorless. On a real console the watched frame must carry the same escapes as
+// the one-shot render, differing only by the repaint sequence.
+func TestWatchKeepsColorOnAConsole(t *testing.T) {
 	snap := testFrame(1)
-	term := &recordingTerminal{}
+
+	oneShot := newConsoleWriter(t)
+	require.NoError(t, renderMetrics(oneShot, snap, MetricsOptions{}))
+	require.NotEmpty(t, escapesIn(oneShot.String()),
+		"the one-shot render on a console must be colored")
+
+	watched := newConsoleWriter(t)
+	require.True(t, isTerminalWriter(watched), "the console must be taken for a terminal")
 	v := &watcher{
-		src:  &scriptedSource{results: []scriptedResult{{snap: snap}, {snap: testFrame(2)}}},
-		w:    term,
+		src:  &scriptedSource{results: []scriptedResult{{snap: snap}, {snap: snap}}},
+		w:    watched,
 		opts: MetricsOptions{},
-		pres: presentationFor(term, 0),
-		mode: watchRich,
+		pres: presentationFor(watched, 0),
+		mode: watchModeFor(watched, false),
 		clock: watchClock{interval: time.Second, now: time.Now,
 			newTicker: func(time.Duration) ticker { return &fakeTicker{ch: make(chan time.Time)} }},
 	}
+	require.Equal(t, watchRich, v.mode, "a console repaints in place")
+
 	require.NoError(t, v.paint(snap))
+	assert.Equal(t, oneShot.String(), watched.String(),
+		"the first watched frame is byte-identical to the one-shot render")
 
-	first := term.String()
-	assert.Contains(t, first, "events", "the whole frame reaches the destination")
-	assert.Empty(t, repaintRe.FindString(first), "the first frame has nothing to erase")
-	firstRegion := v.region
-	require.NoError(t, v.paint(testFrame(2)))
-
-	out := term.String()
+	require.NoError(t, v.paint(snap))
+	out := watched.String()
 	assert.Equal(t, 1, len(repaintRe.FindAllString(out, -1)),
-		"the second frame erases exactly the first")
-	assert.Equal(t, strings.Count(first, "\n"), firstRegion,
-		"the region measured for the first frame is the lines it printed")
-	assert.Equal(t, strings.Count(out, "\n")-strings.Count(first, "\n"), v.region,
-		"the region after the second frame is the lines that frame printed")
-	assert.Contains(t, out, "12:00:02Z", "the second frame reaches the destination whole")
+		"only the repaint separates the frames")
+	assert.Equal(t, oneShot.String()+repaintRe.FindString(out)+oneShot.String(), out,
+		"the second frame is the same bytes, preceded by the erase")
 }
 
-// TestWatchFrameMatchesOneShot is the core guarantee: a watched frame is
-// byte-identical to what the same snapshot prints without --watch. Watch adds
 // only the cursor control that repaints it.
 func TestWatchFrameMatchesOneShot(t *testing.T) {
 	snap := testFrame(1)
