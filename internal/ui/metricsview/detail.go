@@ -67,6 +67,9 @@ func selectQueues(snap metrics.Snapshot, selected []string) ([]metrics.QueueView
 	if len(selected) == 0 {
 		var out []metrics.QueueView
 		for q := range snap.IterQueues() {
+			if q.IsInternal() {
+				continue
+			}
 			out = append(out, q)
 		}
 		return out, nil

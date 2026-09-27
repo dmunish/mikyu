@@ -19,8 +19,9 @@ const (
 
 // Queue kind labels as they appear in QueueView.Kind.
 const (
-	kindLog  = "log"
-	kindTask = "task"
+	kindLog      = "log"
+	kindTask     = "task"
+	kindInternal = "internal"
 )
 
 // Storage gauge names the engine publishes into QueueView.Gauges. Task occupancy
@@ -90,6 +91,9 @@ func (q QueueView) IsLog() bool { return q.Kind == kindLog }
 
 // IsTask reports whether the queue is a task queue.
 func (q QueueView) IsTask() bool { return q.Kind == kindTask }
+
+// IsInternal reports whether the view is a non-queue instrument scope, not a queue.
+func (q QueueView) IsInternal() bool { return q.Kind == kindInternal }
 
 // Messages is the queue's published record count.
 func (q QueueView) Messages() int64 { return q.Gauges[gaugeMessages] }

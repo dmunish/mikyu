@@ -172,6 +172,8 @@ func TestQueueAccessors(t *testing.T) {
 	q := logQueue()
 	assert.True(t, q.IsLog())
 	assert.False(t, q.IsTask())
+	assert.False(t, q.IsInternal())
+	assert.True(t, QueueView{Kind: kindInternal}.IsInternal())
 	assert.Equal(t, int64(1000), q.Messages())
 	assert.Equal(t, int64(4096), q.SizeBytes())
 	assert.Equal(t, int64(3), q.Segments())

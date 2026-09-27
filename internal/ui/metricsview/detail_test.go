@@ -68,6 +68,15 @@ func TestDetailQueueFilter(t *testing.T) {
 		"only queues with a resolved effective spec render a card")
 }
 
+// TestDetailSkipsInternalScopes: a non-queue instrument scope is not a queue card.
+func TestDetailSkipsInternalScopes(t *testing.T) {
+	snap := fixtureSnapshot()
+	snap.Queues = append(snap.Queues, metrics.QueueView{Name: "server", Kind: "internal"})
+	out := renderDetail(t, snap, nil)
+	assert.NotContains(t, out, "server · internal", "the server scope is not a queue")
+	assert.Contains(t, out, "events · log", "real queues still render")
+}
+
 // TestDetailUnknownQueue: a missed name prints the teaching state and fails
 // with ErrUnknownQueue for the command layer to map to its exit code.
 func TestDetailUnknownQueue(t *testing.T) {
