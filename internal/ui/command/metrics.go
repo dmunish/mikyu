@@ -8,9 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
-	"syscall"
-	"time"
 
 	"golang.org/x/term"
 
@@ -58,9 +55,6 @@ func MetricsFlagSet(opts *MetricsOptions) *flag.FlagSet {
 // defaultMetricsWidth is the fallback render width when no terminal is present.
 const defaultMetricsWidth = 80
 
-// metricsWatchInterval is the period between watch frames.
-var metricsWatchInterval = 2 * time.Second
-
 // RunMetrics writes a telemetry snapshot to w: a colored view on a terminal, raw text in a pipe, json on request.
 func RunMetrics(ctx context.Context, c mikyu.Client, w io.Writer, opts MetricsOptions) error {
 	if opts.Watch {
@@ -75,12 +69,17 @@ func RunMetrics(ctx context.Context, c mikyu.Client, w io.Writer, opts MetricsOp
 
 // renderMetrics writes one snapshot in the selected output mode.
 func renderMetrics(w io.Writer, snap mikyu.Metrics, opts MetricsOptions) error {
+	return renderMetricsIndent(w, snap, opts, "  ")
+}
+
+// renderMetricsIndent writes one snapshot, indenting json by the given prefix; a watch passes "" for one line per object.
+func renderMetricsIndent(w io.Writer, snap mikyu.Metrics, opts MetricsOptions, indent string) error {
 	if opts.JSON {
 		if err := requireQueues(snap, opts.Queues); err != nil {
 			return err
 		}
 		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
+		enc.SetIndent("", indent)
 		return enc.Encode(snap)
 	}
 	theme, formatter, width := metricsPresentation(w, opts.Width)
@@ -118,37 +117,4 @@ func metricsPresentation(w io.Writer, width int) (style.Theme, human.Formatter, 
 func isTerminalWriter(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	return ok && term.IsTerminal(int(f.Fd())) && os.Getenv("TERM") != "dumb"
-}
-
-// watchMetrics redraws the snapshot every interval until the context is cancelled.
-func watchMetrics(ctx context.Context, c mikyu.Client, w io.Writer, opts MetricsOptions) error {
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	timeout := max(metricsWatchInterval/2, 100*time.Millisecond)
-	draw := func() error {
-		tick, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		snap, err := c.Metrics(tick)
-		if err != nil {
-			return err
-		}
-		return renderMetrics(w, snap, opts)
-	}
-
-	ticker := time.NewTicker(metricsWatchInterval)
-	defer ticker.Stop()
-	for {
-		if err := draw(); err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-		}
-	}
 }

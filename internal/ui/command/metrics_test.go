@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -179,19 +180,18 @@ func TestIsTerminalWriterFalseForFiles(t *testing.T) {
 	assert.False(t, isTerminalWriter(&bytes.Buffer{}))
 }
 
-// TestWatchStopsOnCancelledContext pins invariant I10: a cancelled watch exits clean.
+// TestWatchStopsOnCancelledContext pins invariant I10 against a live client: a cancelled watch exits clean.
 func TestWatchStopsOnCancelledContext(t *testing.T) {
-	old := metricsWatchInterval
-	metricsWatchInterval = 5 * time.Millisecond
-	t.Cleanup(func() { metricsWatchInterval = old })
+	t.Setenv(watchEnv, "10ms")
 
 	c := metricsClient(t)
 	ctx, cancel := context.WithCancel(t.Context())
-	var buf bytes.Buffer
+	var buf syncBuffer
 	done := make(chan error, 1)
 	go func() { done <- RunMetrics(ctx, c, &buf, MetricsOptions{Watch: true, JSON: true}) }()
 
-	time.Sleep(60 * time.Millisecond)
+	assert.Eventually(t, func() bool { return buf.Len() > 0 }, 5*time.Second, 5*time.Millisecond,
+		"frames must be rendered before cancellation")
 	cancel()
 	select {
 	case err := <-done:
@@ -199,7 +199,30 @@ func TestWatchStopsOnCancelledContext(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("watch did not stop after cancellation")
 	}
-	assert.NotEmpty(t, buf.String(), "frames were rendered before cancellation")
+}
+
+// syncBuffer is a bytes.Buffer safe to read while a watch writes to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // TestMetricsVerbDocumentsPlumbing pins the user-visible porcelain/plumbing rule.
