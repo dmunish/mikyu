@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
+
 	"charm.land/lipgloss/v2"
 	"github.com/dmunish/mikyu"
 	"github.com/dmunish/mikyu/internal/daemon"
@@ -80,7 +82,15 @@ func watchMetrics(ctx context.Context, src metricsSource, w io.Writer, opts Metr
 		w:       w,
 		opts:    opts,
 		present: func() presentation { return presentationFor(w, opts.Width) },
-		mode:    watchModeFor(w, opts.JSON),
+		viewport: func() int {
+			if w, ok := w.(fdWriter); ok {
+				if width, _, err := term.GetSize(int(w.Fd())); err == nil {
+					return width
+				}
+			}
+			return GetTerminalWidth()
+		},
+		mode: watchModeFor(w, opts.JSON),
 		clock: watchClock{
 			interval:  interval,
 			now:       time.Now,
@@ -113,11 +123,16 @@ type watcher struct {
 	mode    watchMode
 	clock   watchClock
 	present func() presentation
+	// viewport reports the columns the destination actually wraps at, which is
+	// not always the width the frame was rendered for: a caller may pass an
+	// explicit --width, and a frame wider than the window wraps. A nil viewport
+	// means the frame is no wider than its render width and cannot wrap.
+	viewport func() int
 
 	frames   int
 	failures int
 	last     time.Time
-	region   int // lines the next repaint must erase
+	region   int // screen rows the next repaint must erase
 }
 
 // run paints a frame per tick until the context is cancelled, the node is lost, or a write fails.
@@ -162,12 +177,6 @@ func (v *watcher) run(ctx context.Context) error {
 
 // paint writes one frame, erasing the previous region first on a terminal.
 func (v *watcher) paint(snap mikyu.Metrics) error {
-	if v.mode == watchRich && v.region > 0 {
-		// Cursor movement is terminal control, not styled output, so it bypasses lipgloss.
-		if _, err := fmt.Fprintf(v.w, "\x1b[%dA\x1b[0J", v.region); err != nil {
-			return err
-		}
-	}
 	// Width is resolved per frame so a terminal resized between ticks is measured
 	// again on the next one.
 	pres := v.present()
@@ -180,6 +189,12 @@ func (v *watcher) paint(snap mikyu.Metrics) error {
 	if err != nil {
 		return err
 	}
+	if v.mode == watchRich && v.region > 0 {
+		// Cursor movement is terminal control, not styled output, so it bypasses lipgloss.
+		if _, err := fmt.Fprintf(v.w, "\x1b[%dA\x1b[0J", v.region); err != nil {
+			return err
+		}
+	}
 	if err := renderFrame(v.w, snap, v.opts, pres, v.indent()); err != nil {
 		return err
 	}
@@ -187,13 +202,52 @@ func (v *watcher) paint(snap mikyu.Metrics) error {
 	return nil
 }
 
-// measure renders one frame to a throwaway buffer and counts the lines it prints.
+// measure renders one frame to a throwaway buffer and counts the screen rows it
+// occupies. Newlines are not enough: a line wider than the window wraps, and every
+// wrap consumes another visual row that the frame's own newline count knows nothing
+// about. Erasing by newline count then moves the cursor up far less than the frame is
+// tall, so each tick leaves most of the previous frame on screen and the frames pile
+// up — a flicker.
 func (v *watcher) measure(snap mikyu.Metrics, pres presentation) (int, error) {
 	var probe bytes.Buffer
 	if err := renderFrame(&probe, snap, v.opts, pres, v.indent()); err != nil {
 		return 0, err
 	}
-	return strings.Count(probe.String(), "\n"), nil
+	return screenRows(probe.String(), v.wrapWidth(pres)), nil
+}
+
+// wrapWidth is the column the destination actually wraps at: the narrower of the
+// frame's render width and the window's real width.
+func (v *watcher) wrapWidth(pres presentation) int {
+	if v.viewport == nil {
+		return pres.width
+	}
+	win := v.viewport()
+	if win <= 0 {
+		return pres.width
+	}
+	if pres.width > 0 && pres.width < win {
+		return pres.width
+	}
+	return win
+}
+
+// screenRows counts the visual rows a rendered frame occupies at the given width.
+func screenRows(frame string, width int) int {
+	lines := strings.Split(strings.TrimSuffix(frame, "\n"), "\n")
+	rows := 0
+	for _, line := range lines {
+		w := lipgloss.Width(line)
+		switch {
+		case width <= 0 || w <= width:
+			rows++
+		default:
+			// A line that does not fit wraps: it needs one row per width, and a
+			// line that lands exactly on the edge still spills onto the next row.
+			rows += (w + width - 1) / width
+		}
+	}
+	return rows
 }
 
 // indent keeps a watched json stream newline-delimited: one object per line.
