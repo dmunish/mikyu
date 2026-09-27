@@ -35,7 +35,7 @@ func logQueueView(mutate ...func(*metrics.QueueView)) metrics.QueueView {
 	return mutateQueue(q, mutate...)
 }
 
-// taskQueueView builds a task queue with occupancy and a policy.
+// taskQueueView builds a task queue with occupancy and a stored policy spec; the effective spec is derived.
 func taskQueueView(mutate ...func(*metrics.QueueView)) metrics.QueueView {
 	maxInFlight, maxDead := uint32(1000), uint32(10_000)
 	q := metrics.QueueView{
@@ -44,9 +44,9 @@ func taskQueueView(mutate ...func(*metrics.QueueView)) metrics.QueueView {
 		Gauges: map[string]int64{
 			"messages": 5000, "segments": 2, "size_bytes": 8192,
 		},
-		Rates:     metrics.Rates{EnqueuesPerSec: 7, DequeuesPerSec: 6.6},
-		Tasks:     metrics.TaskView{Active: 120, InFlight: 30, Scheduled: 90, DeadLetters: 2},
-		Effective: spec.Spec{Task: spec.TaskSpec{MaxInFlight: &maxInFlight, MaxDeadLetters: &maxDead}},
+		Rates: metrics.Rates{EnqueuesPerSec: 7, DequeuesPerSec: 6.6},
+		Tasks: metrics.TaskView{Active: 120, InFlight: 30, Scheduled: 90, DeadLetters: 2},
+		Spec:  spec.Spec{Task: spec.TaskSpec{MaxInFlight: &maxInFlight, MaxDeadLetters: &maxDead}},
 	}
 	return mutateQueue(q, mutate...)
 }

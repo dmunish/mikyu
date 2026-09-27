@@ -24,14 +24,14 @@ LEASES
 active        120    scheduled      90
 in flight      30    schedule heap   0
 DEAD LETTERS
-dead letters  2
+dead letters  ▏··········  0.0 %  2 / 100,000
 CHECKPOINT
 checkpoint lsn 0
 dirty records  0
 checkpoint lag 0
 POLICY
-lease            30s    max in flight      0
-max attempts       0    max dead letters   0
+lease                30s    max in flight    100,000
+max attempts           5    max dead letters 100,000
 RUNTIME
 goroutines      0
 gomaxprocs      0
@@ -75,8 +75,40 @@ TASK
 lease 30s
 EFFECTIVE SPEC — events
 STORAGE
-durability     sync
-max-cache  16.0 MiB  ← override (session: 32.0 MiB)
-EFFECTIVE SPEC — jobs
+durability          sync
+encryption          none
+compaction          none
+max-segment     64.0 MiB
+max-segment-age       1h
+max-payload      1.0 MiB
+max-cache       16.0 MiB  ← override (session: 32.0 MiB)
+FLUSH
+max-bytes 1.0 MiB
+max-wait     10ms
+RETENTION
+max-age   unlimited
+max-bytes unlimited
 TASK
-lease 30s  · session
+lease                30s
+max-attempts           5
+max-in-flight    100,000
+max-dead-letters 100,000
+EFFECTIVE SPEC — jobs
+STORAGE
+durability          sync
+encryption          none
+max-segment     64.0 MiB
+max-segment-age       1h
+max-payload      1.0 MiB
+max-cache       32.0 MiB
+FLUSH
+max-bytes 1.0 MiB
+max-wait     10ms
+RETENTION
+max-age   unlimited
+max-bytes unlimited
+TASK
+lease                30s  · session
+max-attempts           5
+max-in-flight    100,000
+max-dead-letters 100,000

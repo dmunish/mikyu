@@ -3,6 +3,8 @@ package metrics
 import (
 	"math"
 	"time"
+
+	"github.com/dmunish/mikyu/internal/spec"
 )
 
 // Health is the derived operational state of a node or queue, not a UI concern.
@@ -109,6 +111,11 @@ func (q QueueView) LastOffset() int64 { return q.Gauges[gaugeLastOffset] }
 
 // MinOffset is the oldest offset the queue still retains.
 func (q QueueView) MinOffset() int64 { return q.Gauges[gaugeMinOffset] }
+
+// EffectiveSpec resolves the queue's stored spec over the session and built-in layers.
+func (q QueueView) EffectiveSpec(session spec.Spec) spec.Spec {
+	return q.Spec.Effective(session, spec.Builtin())
+}
 
 // MaxInFlight is the task queue's concurrency bound, or 0 when unset.
 func (q QueueView) MaxInFlight() int64 { return uint32OrZero(q.Effective.Task.MaxInFlight) }

@@ -156,8 +156,10 @@ type StorageQueueView struct {
 
 // QueueView is a queue's spec, instrument readings, and derived views.
 type QueueView struct {
-	Name       string                   `json:"name"`
-	Kind       string                   `json:"kind"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	// Spec is the queue's stored spec, sparse; Derived and Effective are derived
+	// from it over the session and built-in layers, never published as facts.
 	Spec       spec.Spec                `json:"spec,omitzero"`
 	Derived    spec.Spec                `json:"derived,omitzero"`
 	Effective  spec.Spec                `json:"effective,omitzero"`
@@ -268,4 +270,26 @@ func (s Snapshot) Queue(name string) (QueueView, bool) {
 		}
 	}
 	return QueueView{}, false
+}
+
+// ResolveQueue returns the named queue view with its effective spec derived.
+func (s Snapshot) ResolveQueue(name string) (QueueView, bool) {
+	q, ok := s.Queue(name)
+	if !ok {
+		return QueueView{}, false
+	}
+	q.Effective = q.EffectiveSpec(s.Session)
+	return q, true
+}
+
+// ResolveQueues yields every queue view with its effective spec derived, in name order.
+func (s Snapshot) ResolveQueues() iter.Seq[QueueView] {
+	return func(yield func(QueueView) bool) {
+		for q := range s.IterQueues() {
+			q.Effective = q.EffectiveSpec(s.Session)
+			if !yield(q) {
+				return
+			}
+		}
+	}
 }

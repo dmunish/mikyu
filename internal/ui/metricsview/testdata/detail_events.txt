@@ -52,3 +52,23 @@ size         4.0 GiB
 offset store     0 B
 cache         ▏··········  0.0 %  0 B / 32.0 MiB
 wal pending   ▏··········  0.0 %  no wal traffic
+EFFECTIVE SPEC — events
+STORAGE
+durability          sync
+encryption          none
+compaction          none
+max-segment     64.0 MiB
+max-segment-age       1h
+max-payload      1.0 MiB
+max-cache       32.0 MiB
+FLUSH
+max-bytes 1.0 MiB
+max-wait     10ms
+RETENTION
+max-age   unlimited
+max-bytes unlimited
+TASK
+lease                30s
+max-attempts           5
+max-in-flight    100,000
+max-dead-letters 100,000

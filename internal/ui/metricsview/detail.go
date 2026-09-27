@@ -66,7 +66,7 @@ func Detail(w io.Writer, snap metrics.Snapshot, selected []string, t style.Theme
 func selectQueues(snap metrics.Snapshot, selected []string) ([]metrics.QueueView, error) {
 	if len(selected) == 0 {
 		var out []metrics.QueueView
-		for q := range snap.IterQueues() {
+		for q := range snap.ResolveQueues() {
 			if q.IsInternal() {
 				continue
 			}
@@ -80,7 +80,7 @@ func selectQueues(snap metrics.Snapshot, selected []string) ([]metrics.QueueView
 		if seen[name] {
 			continue
 		}
-		q, ok := snap.Queue(name)
+		q, ok := snap.ResolveQueue(name)
 		if !ok {
 			return nil, unknownQueueError{name: name}
 		}

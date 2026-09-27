@@ -64,8 +64,8 @@ func TestDetailQueueFilter(t *testing.T) {
 	assert.Less(t, jobs, events, "the selection order is preserved")
 	assert.Equal(t, 1, strings.Count(out, "jobs · task"), "duplicates collapse")
 	assert.NotContains(t, out, "audit · log", "unselected queues stay out")
-	assert.Equal(t, 1, strings.Count(out, "EFFECTIVE SPEC — "),
-		"only queues with a resolved effective spec render a card")
+	assert.Equal(t, 2, strings.Count(out, "EFFECTIVE SPEC — "),
+		"one effective-spec card per selected queue")
 }
 
 // TestDetailSkipsInternalScopes: a non-queue instrument scope is not a queue card.
@@ -102,10 +102,13 @@ func TestDetailSpecDiff(t *testing.T) {
 	out := renderDetail(t, snap, []string{"events", "jobs"})
 
 	assert.Contains(t, out, "16.0 MiB  ← override (session: 32.0 MiB)")
-	assert.Contains(t, out, "lease 30s  · session")
+	assert.Contains(t, out, "30s  · session")
 	// The queue left durability unset, so its row carries no marker at all.
 	assert.Regexp(t, `(?m)^durability\s+sync$`, out)
-	assert.NotContains(t, out, "compaction", "a task queue renders no compaction row")
+	// The task queue renders no compaction row; the log queue's card does.
+	taskSection := out[strings.Index(out, "EFFECTIVE SPEC — jobs"):]
+	assert.NotContains(t, taskSection, "compaction", "a task queue renders no compaction row")
+	assert.Contains(t, out, "compaction", "a log queue renders the compaction row")
 }
 
 // TestDetailTaskCardSections: a task card speaks leases and policy, and never
@@ -254,12 +257,11 @@ func specDiffSnapshot() metrics.Snapshot {
 		Task:    spec.TaskSpec{Lease: &lease},
 	}
 	events := logQueueView(func(q *metrics.QueueView) {
+		// durability unset (no marker); max-cache overrides the session.
 		q.Spec = spec.Spec{Storage: spec.StorageSpec{MaxCache: &cache16}}
-		q.Effective = spec.Spec{Storage: spec.StorageSpec{Durability: &syncDur, MaxCache: &cache16}}
 	})
 	jobs := taskQueueView(func(q *metrics.QueueView) {
 		q.Spec = spec.Spec{Task: spec.TaskSpec{Lease: &lease}}
-		q.Effective = spec.Spec{Task: spec.TaskSpec{Lease: &lease}}
 	})
 	snap := fixtureSnapshot()
 	snap.Session = session

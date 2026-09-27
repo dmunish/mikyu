@@ -190,7 +190,7 @@ func (k queueKind) matches(q metrics.QueueView) bool {
 // queuesOfKind returns the queues of one kind in name order.
 func queuesOfKind(snap metrics.Snapshot, kind queueKind) []metrics.QueueView {
 	var out []metrics.QueueView
-	for q := range snap.IterQueues() {
+	for q := range snap.ResolveQueues() {
 		if kind.matches(q) {
 			out = append(out, q)
 		}
