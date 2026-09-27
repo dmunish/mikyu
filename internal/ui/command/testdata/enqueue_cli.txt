@@ -1,0 +1,20 @@
+
+  enqueue <queue> <payload>
+    Enqueue a task
+
+    The payload may be a literal string, `@path` to read a file, or `-` to read
+    stdin. Per-call flags override the queue's defaults.
+
+  USAGE
+    enqueue [flags] <queue> <payload|@file|->
+
+  FLAGS
+    --lease         <duration>   Lease length for this task only
+    --max-attempts  <uint32>     Attempt budget for this task only
+    --scheduled-at  <timestamp>  Delay the first delivery until this RFC3339 time
+    --key           <string>     Subject key this task belongs to
+
+  EXAMPLES
+    > mikyu enqueue jobs "send email"
+    > mikyu enqueue jobs @job.json --scheduled-at 2030-01-01T00:00:00Z
+

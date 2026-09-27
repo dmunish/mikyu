@@ -1,0 +1,37 @@
+
+  update <queue>
+    Change a mutable queue parameter
+
+    Only mutable parameters may change after create. Create-only parameters —
+    durability, encryption, compaction, max_segment, max_payload — are
+    rejected. Shrinking retention prompts before applying.
+
+  USAGE
+    update [flags] <queue>
+
+  FLAGS
+    STORAGE
+      --max-segment-age      <duration>  Maximum age before a segment rolls (default 1h0m0s)
+      --max-cache            <bytes>     Tail cache budget in bytes (default 32 MiB)
+
+    FLUSH
+      --max-flush-bytes      <bytes>     Flush once the pending WAL reaches this many bytes (default 1 MiB)
+      --max-flush-wait       <duration>  Longest a batch waits before flushing (default 10ms)
+
+    RETENTION
+      --max-retention-age    <duration>  Drop closed segments older than this; 0 keeps forever (default unlimited)
+      --max-retention-bytes  <bytes>     Keep at most this many bytes of history; 0 keeps forever (default unlimited)
+
+    TASK
+      --lease                <duration>  Lease length assigned to a dequeued task (default 30s)
+      --max-attempts         <uint32>    Deliveries before a task is dead-lettered (default 5)
+      --max-in-flight        <uint32>    Concurrent-lease upper bound (default 100000)
+      --max-dead-letters     <uint32>    Dead-letter upper bound (default 100000)
+
+    OPTIONS
+      --yes                  <bool>      Skip the retention-shrink confirmation
+
+  EXAMPLES
+    > mikyu update events --max-retention-age 24h
+    > mikyu update events --max-retention-age 1h --yes
+

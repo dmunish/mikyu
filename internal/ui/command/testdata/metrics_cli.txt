@@ -1,0 +1,24 @@
+
+  metrics [flags]
+    Show a live telemetry snapshot
+
+    On a terminal the text view is colored and human-scaled; in a pipe it is
+    plain and machine-scaled. `--output json` emits the snapshot verbatim for
+    scripts, while the text view may change between releases. Works the same
+    against an embedded data directory and a remote daemon.
+
+  USAGE
+    metrics [--detail] [--queue <name>]... [--watch] [--output text|json]
+
+  FLAGS
+    --detail  <bool>    Render the node grid and one card per queue
+    --queue   <string>  Focus the text view on a queue; repeatable
+    --watch   <bool>    Refresh the view until interrupted
+    --output  <string>  json emits the snapshot verbatim (for scripts); the text view may change between releases (default text)
+
+  EXAMPLES
+    > mikyu metrics
+    > mikyu metrics --detail
+    > mikyu metrics --queue events
+    > mikyu metrics --output json | jq .totals
+
