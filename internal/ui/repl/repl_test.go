@@ -60,6 +60,9 @@ func TestDispatchHelpOnlyViaFlag(t *testing.T) {
 	assert.NotContains(t, out, "--scheduled-at")
 }
 
+// captureStdout redirects os.Stdout to a pipe for the call and returns what it
+// wrote. The reader drains concurrently: a large frame would otherwise fill the
+// pipe buffer and block the writer before the function returns.
 func captureStdout(fn func()) string {
 	old := os.Stdout
 	r, w, err := os.Pipe()
@@ -67,13 +70,20 @@ func captureStdout(fn func()) string {
 		return ""
 	}
 	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		var out bytes.Buffer
+		_, _ = out.ReadFrom(r)
+		done <- out.String()
+	}()
+
 	fn()
 	w.Close()
 	os.Stdout = old
-	var out bytes.Buffer
-	_, _ = out.ReadFrom(r)
+
+	out := <-done
 	r.Close()
-	return out.String()
+	return out
 }
 
 func TestKindInference(t *testing.T) {

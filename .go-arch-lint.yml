@@ -110,7 +110,7 @@ deps:
   metricsview:
     mayDependOn: [metrics, human, style, spec]
   command:
-    mayDependOn: [mikyu, client, daemon, spec, style, metricsview]
+    mayDependOn: [mikyu, client, daemon, spec, style, human, metricsview]
   cli:
     mayDependOn: [mikyu, client, daemon, command, spec, metricsview]
   repl:

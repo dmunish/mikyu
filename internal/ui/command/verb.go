@@ -302,17 +302,24 @@ var Verbs = []Verb{
 
 	// admin
 	{
-		Name: "metrics", Args: "", Kind: KindAdmin, Modes: ModeCLI | ModeREPL,
+		Name: "metrics", Args: "[flags]", Kind: KindAdmin, Modes: ModeCLI | ModeREPL,
 		Summary: "Show a live telemetry snapshot",
-		Long: "Prints a point-in-time view of the process and storage: goroutines and " +
-			"heap, CPU and resident memory, segment count and size, and per-queue " +
-			"message rates, depth, and consumer lag. Works the same against an " +
-			"embedded data directory and a remote daemon.",
-		Usage: []string{"metrics [--json] [--watch] [--queue name]"},
+		Long: "On a terminal the text view is colored and human-scaled; in a pipe it " +
+			"is plain and machine-scaled. `--output json` emits the snapshot " +
+			"verbatim for scripts, while the text view may change between releases. " +
+			"Works the same against an embedded data directory and a remote daemon.",
+		Usage: []string{"metrics [--detail] [--queue <name>]... [--watch] [--output text|json]"},
+		Examples: []Example{
+			{Invocation: "metrics"},
+			{Invocation: "metrics --detail"},
+			{Invocation: "metrics --queue events"},
+			{Invocation: "metrics --output json | jq .totals"},
+		},
 		ExtraFlags: []FlagDoc{
-			{Name: "json", Kind: "bool", Doc: "Emit the snapshot as JSON"},
-			{Name: "watch", Kind: "bool", Doc: "Stream snapshots until interrupted"},
-			{Name: "queue", Kind: "string", Doc: "Restrict output to one queue"},
+			{Name: "detail", Kind: "bool", Doc: "Render the node grid and one card per queue"},
+			{Name: "queue", Kind: "string", Doc: "Focus the text view on a queue; repeatable"},
+			{Name: "watch", Kind: "bool", Doc: "Refresh the view until interrupted"},
+			{Name: "output", Kind: "string", Doc: "json emits the snapshot verbatim (for scripts); the text view may change between releases", Default: "text"},
 		},
 	},
 	{
