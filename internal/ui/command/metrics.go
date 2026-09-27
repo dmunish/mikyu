@@ -125,8 +125,12 @@ func metricsPresentation(w io.Writer, width int) (style.Theme, human.Formatter, 
 	return style.PlainTheme(), human.Formatter{Raw: true}, width
 }
 
+// fdWriter is a writer that can report a file descriptor, so a terminal is
+// recognized through any wrapper rather than only a bare *os.File.
+type fdWriter interface{ Fd() uintptr }
+
 // isTerminalWriter reports whether w is a terminal that can draw box-drawing and color.
 func isTerminalWriter(w io.Writer) bool {
-	f, ok := w.(*os.File)
+	f, ok := w.(fdWriter)
 	return ok && term.IsTerminal(int(f.Fd())) && os.Getenv("TERM") != "dumb"
 }

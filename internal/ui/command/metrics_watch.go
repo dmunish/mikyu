@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -159,41 +160,45 @@ func (v *watcher) run(ctx context.Context) error {
 	}
 }
 
-// paint renders one snapshot straight to the destination, counting the lines it wrote for the next repaint.
+// paint writes one frame, erasing the previous region first on a terminal.
 func (v *watcher) paint(snap mikyu.Metrics) error {
-	// A watched json stream is newline-delimited, so each object must be one line.
-	indent := "  "
-	if v.mode == watchJSON {
-		indent = ""
-	}
 	if v.mode == watchRich && v.region > 0 {
 		// Cursor movement is terminal control, not styled output, so it bypasses lipgloss.
 		if _, err := fmt.Fprintf(v.w, "\x1b[%dA\x1b[0J", v.region); err != nil {
 			return err
 		}
 	}
-	// The frame is written directly, so it keeps the destination's color and scale
-	// exactly as the one-shot path renders it. The wrapper only tallies newlines:
-	// the repaint distance is the newline count, not lipgloss.Height, which counts
-	// the trailing newline this frame does not print.
-	tally := &lineCounter{w: v.w}
-	if err := renderFrame(tally, snap, v.opts, v.pres, indent); err != nil {
+	// The frame goes straight to the destination. It must not pass through a
+	// buffer or a wrapper first: lipgloss resolves the color profile from the
+	// writer, and anything that is not a terminal file is resolved as NoTTY,
+	// which strips every escape. The width of a frame is therefore measured
+	// separately — stripping escapes does not change how many lines it occupies.
+	lines, err := v.measure(snap)
+	if err != nil {
 		return err
 	}
-	v.region = tally.lines
+	if err := renderFrame(v.w, snap, v.opts, v.pres, v.indent()); err != nil {
+		return err
+	}
+	v.region = lines
 	return nil
 }
 
-// lineCounter forwards to a writer while counting the newlines written.
-type lineCounter struct {
-	w     io.Writer
-	lines int
+// measure renders one frame to a throwaway buffer and counts the lines it prints.
+func (v *watcher) measure(snap mikyu.Metrics) (int, error) {
+	var probe bytes.Buffer
+	if err := renderFrame(&probe, snap, v.opts, v.pres, v.indent()); err != nil {
+		return 0, err
+	}
+	return strings.Count(probe.String(), "\n"), nil
 }
 
-// Write forwards p and tallies its newlines.
-func (c *lineCounter) Write(p []byte) (int, error) {
-	c.lines += bytes.Count(p, []byte("\n"))
-	return c.w.Write(p)
+// indent keeps a watched json stream newline-delimited: one object per line.
+func (v *watcher) indent() string {
+	if v.mode == watchJSON {
+		return ""
+	}
+	return "  "
 }
 
 // stale notes a failed tick under the last good frame without disturbing it.

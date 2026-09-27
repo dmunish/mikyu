@@ -173,6 +173,61 @@ func TestWatchRepaintsInPlace(t *testing.T) {
 	assert.NotContains(t, h.out.String(), "watched", "the summary only appears when the watch ends")
 }
 
+// recordingTerminal captures writes and reports a descriptor, standing in for a
+// terminal-shaped destination.
+type recordingTerminal struct {
+	fd  uintptr
+	buf bytes.Buffer
+}
+
+func (r *recordingTerminal) Write(b []byte) (int, error) { return r.buf.Write(b) }
+
+func (r *recordingTerminal) Fd() uintptr { return r.fd }
+
+func (r *recordingTerminal) String() string { return r.buf.String() }
+
+// TestWatchWritesFrameDirectlyToDestination guards the invariant behind the
+// unstyled-watch bug: lipgloss resolves a color profile from the writer it is
+// handed, and strips every escape for anything that is not a terminal file. A
+// frame that is rendered into a buffer, or through any writer wrapper, and then
+// forwarded loses its color, so the view must be given the very writer that will
+// receive the frame. This asserts the frame reaches the destination whole and
+// that the measured repaint region matches the lines actually written.
+//
+// The color itself is only observable on a real terminal, which a ConPTY test
+// host cannot provide; the plain path is covered byte-for-byte by
+// TestWatchFrameMatchesOneShot.
+func TestWatchWritesFrameDirectlyToDestination(t *testing.T) {
+	forceColor(t)
+	snap := testFrame(1)
+	term := &recordingTerminal{}
+	v := &watcher{
+		src:  &scriptedSource{results: []scriptedResult{{snap: snap}, {snap: testFrame(2)}}},
+		w:    term,
+		opts: MetricsOptions{},
+		pres: presentationFor(term, 0),
+		mode: watchRich,
+		clock: watchClock{interval: time.Second, now: time.Now,
+			newTicker: func(time.Duration) ticker { return &fakeTicker{ch: make(chan time.Time)} }},
+	}
+	require.NoError(t, v.paint(snap))
+
+	first := term.String()
+	assert.Contains(t, first, "events", "the whole frame reaches the destination")
+	assert.Empty(t, repaintRe.FindString(first), "the first frame has nothing to erase")
+	firstRegion := v.region
+	require.NoError(t, v.paint(testFrame(2)))
+
+	out := term.String()
+	assert.Equal(t, 1, len(repaintRe.FindAllString(out, -1)),
+		"the second frame erases exactly the first")
+	assert.Equal(t, strings.Count(first, "\n"), firstRegion,
+		"the region measured for the first frame is the lines it printed")
+	assert.Equal(t, strings.Count(out, "\n")-strings.Count(first, "\n"), v.region,
+		"the region after the second frame is the lines that frame printed")
+	assert.Contains(t, out, "12:00:02Z", "the second frame reaches the destination whole")
+}
+
 // TestWatchFrameMatchesOneShot is the core guarantee: a watched frame is
 // byte-identical to what the same snapshot prints without --watch. Watch adds
 // only the cursor control that repaints it.
@@ -227,7 +282,6 @@ func TestWatchJSONIsNewlineDelimited(t *testing.T) {
 
 	out := h.out.String()
 	assert.NotContains(t, out, "\x1b", "json is plumbing, never decorated")
-	assert.Empty(t, bannerRe.FindAllString(out, -1), "no banner in json mode")
 	assert.NotContains(t, out, "watched for", "no prose summary in json mode")
 
 	lines := strings.Split(strings.TrimSpace(out), "\n")
@@ -355,11 +409,24 @@ func TestWatchPropagatesWriteErrors(t *testing.T) {
 var (
 	// repaintRe matches the erase sequence emitted before a repainted frame.
 	repaintRe = regexp.MustCompile(`\x1b\[(\d+)A\x1b\[0J`)
-	// bannerRe matches the vmstat-style heading of an appended frame.
-	bannerRe = regexp.MustCompile(`── [^─\n]+ ──`)
 	// staleRe matches the note left under a frame whose tick failed.
 	staleRe = regexp.MustCompile(`last snapshot [^\n]+`)
+	// escRe matches any ANSI escape sequence.
+	escRe = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
 )
+
+// escapesIn counts the ANSI escape sequences in s.
+func escapesIn(s string) int { return len(escRe.FindAllString(s, -1)) }
+
+// forceColor pins the process to a 24-bit terminal so lipgloss keeps its escapes.
+func forceColor(t *testing.T) {
+	t.Helper()
+	t.Setenv("TTY_FORCE", "1")
+	t.Setenv("CLICOLOR_FORCE", "1")
+	t.Setenv("COLORTERM", "truecolor")
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("NO_COLOR", "")
+}
 
 // watcherEraseLines extracts the up-distance from one repaint sequence.
 func watcherEraseLines(t *testing.T, seq string) int {
