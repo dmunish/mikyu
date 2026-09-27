@@ -76,11 +76,11 @@ func watchMetrics(ctx context.Context, src metricsSource, w io.Writer, opts Metr
 		return err
 	}
 	return (&watcher{
-		src:  src,
-		w:    w,
-		opts: opts,
-		pres: presentationFor(w, opts.Width),
-		mode: watchModeFor(w, opts.JSON),
+		src:     src,
+		w:       w,
+		opts:    opts,
+		present: func() presentation { return presentationFor(w, opts.Width) },
+		mode:    watchModeFor(w, opts.JSON),
 		clock: watchClock{
 			interval:  interval,
 			now:       time.Now,
@@ -107,12 +107,12 @@ func watchInterval() (time.Duration, error) {
 
 // watcher runs one metrics --watch session.
 type watcher struct {
-	src   metricsSource
-	w     io.Writer
-	opts  MetricsOptions
-	pres  presentation
-	mode  watchMode
-	clock watchClock
+	src     metricsSource
+	w       io.Writer
+	opts    MetricsOptions
+	mode    watchMode
+	clock   watchClock
+	present func() presentation
 
 	frames   int
 	failures int
@@ -168,16 +168,19 @@ func (v *watcher) paint(snap mikyu.Metrics) error {
 			return err
 		}
 	}
+	// Width is resolved per frame so a terminal resized between ticks is measured
+	// again on the next one.
+	pres := v.present()
 	// The frame goes straight to the destination. It must not pass through a
 	// buffer or a wrapper first: lipgloss resolves the color profile from the
 	// writer, and anything that is not a terminal file is resolved as NoTTY,
 	// which strips every escape. The width of a frame is therefore measured
 	// separately — stripping escapes does not change how many lines it occupies.
-	lines, err := v.measure(snap)
+	lines, err := v.measure(snap, pres)
 	if err != nil {
 		return err
 	}
-	if err := renderFrame(v.w, snap, v.opts, v.pres, v.indent()); err != nil {
+	if err := renderFrame(v.w, snap, v.opts, pres, v.indent()); err != nil {
 		return err
 	}
 	v.region = lines
@@ -185,9 +188,9 @@ func (v *watcher) paint(snap mikyu.Metrics) error {
 }
 
 // measure renders one frame to a throwaway buffer and counts the lines it prints.
-func (v *watcher) measure(snap mikyu.Metrics) (int, error) {
+func (v *watcher) measure(snap mikyu.Metrics, pres presentation) (int, error) {
 	var probe bytes.Buffer
-	if err := renderFrame(&probe, snap, v.opts, v.pres, v.indent()); err != nil {
+	if err := renderFrame(&probe, snap, v.opts, pres, v.indent()); err != nil {
 		return 0, err
 	}
 	return strings.Count(probe.String(), "\n"), nil
@@ -204,7 +207,8 @@ func (v *watcher) indent() string {
 // stale notes a failed tick under the last good frame without disturbing it.
 func (v *watcher) stale(err error) error {
 	line := fmt.Sprintf("last snapshot %s · %v", v.last.UTC().Format(time.RFC3339), err)
-	dim := v.pres.theme.Paint(v.pres.theme.Label)
+	theme := v.present().theme
+	dim := theme.Paint(theme.Label)
 	if _, err := lipgloss.Fprintln(v.w, dim.Render(line)); err != nil {
 		return err
 	}
@@ -223,8 +227,9 @@ func (v *watcher) finish(start time.Time) error {
 		}
 	}
 	summary := fmt.Sprintf("watched for %s · %d snapshots",
-		v.pres.formatter.Duration(v.clock.now().Sub(start)), v.frames)
-	dim := v.pres.theme.Paint(v.pres.theme.Label)
+		v.present().formatter.Duration(v.clock.now().Sub(start)), v.frames)
+	theme := v.present().theme
+	dim := theme.Paint(theme.Label)
 	_, err := lipgloss.Fprintln(v.w, dim.Render(summary))
 	return err
 }

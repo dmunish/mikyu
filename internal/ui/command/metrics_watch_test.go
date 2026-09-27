@@ -91,7 +91,9 @@ func newTestHarness(t *testing.T, mode watchMode, opts MetricsOptions, results .
 		src:  h.src,
 		w:    h.out,
 		opts: opts,
-		pres: presentationFor(h.out, opts.Width),
+		present: func() presentation {
+			return presentationFor(h.out, opts.Width)
+		},
 		mode: mode,
 		clock: watchClock{
 			interval:  time.Second,
@@ -222,11 +224,11 @@ func TestWatchKeepsColorOnAConsole(t *testing.T) {
 	watched := newConsoleWriter(t)
 	require.True(t, isTerminalWriter(watched), "the console must be taken for a terminal")
 	v := &watcher{
-		src:  &scriptedSource{results: []scriptedResult{{snap: snap}, {snap: snap}}},
-		w:    watched,
-		opts: MetricsOptions{},
-		pres: presentationFor(watched, 0),
-		mode: watchModeFor(watched, false),
+		src:     &scriptedSource{results: []scriptedResult{{snap: snap}, {snap: snap}}},
+		w:       watched,
+		opts:    MetricsOptions{},
+		present: func() presentation { return presentationFor(watched, 0) },
+		mode:    watchModeFor(watched, false),
 		clock: watchClock{interval: time.Second, now: time.Now,
 			newTicker: func(time.Duration) ticker { return &fakeTicker{ch: make(chan time.Time)} }},
 	}
@@ -410,7 +412,9 @@ func TestWatchPropagatesWriteErrors(t *testing.T) {
 		src:  &scriptedSource{results: []scriptedResult{{snap: testFrame(1)}, {snap: testFrame(1)}}},
 		w:    w,
 		opts: MetricsOptions{},
-		pres: presentationFor(w, 0),
+		present: func() presentation {
+			return presentationFor(w, 0)
+		},
 		mode: watchPlain,
 		clock: watchClock{interval: time.Second, now: time.Now,
 			newTicker: func(time.Duration) ticker { return &fakeTicker{ch: make(chan time.Time)} }},

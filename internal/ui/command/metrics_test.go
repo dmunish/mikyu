@@ -177,10 +177,35 @@ func TestMetricsPresentationPlainInAPipe(t *testing.T) {
 func TestPresentationIsSharedByBothPaths(t *testing.T) {
 	var w bytes.Buffer
 	oneShot := presentationFor(&w, 0)
-	watched := presentationFor(&w, 0)
-	assert.Equal(t, oneShot, watched)
-	assert.Equal(t, oneShot, (&watcher{w: &w, pres: watched}).pres,
-		"the watcher must carry the destination's presentation, not a buffer's")
+	v := &watcher{w: &w, present: func() presentation { return presentationFor(&w, 0) }}
+	assert.Equal(t, oneShot, v.present(),
+		"the watcher must resolve the destination's presentation, not a buffer's")
+}
+
+// TestWatchPresentationIsResolvedPerFrame pins terminal.md: a watch re-measures
+// width every tick, so a terminal resized between frames renders correctly on
+// the next one instead of keeping the width it resolved at startup.
+func TestWatchPresentationIsResolvedPerFrame(t *testing.T) {
+	out := &syncBuffer{}
+	calls := 0
+	seen := []int{}
+	v := &watcher{
+		w:    out,
+		mode: watchPlain,
+		present: func() presentation {
+			widths := []int{120, 60}
+			p := presentationFor(out, 0)
+			p.width = widths[min(calls, len(widths)-1)]
+			calls++
+			seen = append(seen, p.width)
+			return p
+		},
+	}
+	require.NoError(t, v.paint(testFrame(1)))
+	require.NoError(t, v.paint(testFrame(2)))
+	require.NoError(t, v.paint(testFrame(3)))
+	assert.Equal(t, []int{120, 60, 60}, seen,
+		"each frame re-resolves the presentation, so a resize lands on the next frame")
 }
 
 // TestIsTerminalWriterFalseForFiles: a regular file is not a terminal.
