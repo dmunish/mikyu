@@ -117,6 +117,7 @@ func TestPercent(t *testing.T) {
 		{1, "100", "100.0 %"},
 		{0.5, "50", "50.0 %"},
 		{-0.25, "-25", "-25.0 %"},
+		{0.0017, "0.17", "0.2 %"},
 	}
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, Formatter{}.Percent(tt.in))

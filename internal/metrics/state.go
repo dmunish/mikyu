@@ -145,6 +145,11 @@ func (q QueueView) MaxLag() uint64 {
 	return max
 }
 
+// GroupHealth derives one consumer group's state from its lag against its high-water mark.
+func GroupHealth(g GroupView) Health {
+	return above(fraction(float64(g.Lag), float64(g.HighWater)), lagWarn, lagCrit)
+}
+
 // QueueHealth derives one queue's state from a single snapshot, with no history and no wall clock.
 func QueueHealth(q QueueView) Health {
 	h := atOrAbove(q.Backpressure.WALChannelFill, walFillWarn, walFillCrit)
@@ -157,7 +162,10 @@ func QueueHealth(q QueueView) Health {
 		return worst(h, atOrAbove(
 			fraction(float64(q.Tasks.InFlight), float64(q.MaxInFlight())), inFlightWarn, inFlightCrit))
 	}
-	return worst(h, above(q.LagRatio(), lagWarn, lagCrit))
+	for _, g := range q.Groups {
+		h = worst(h, GroupHealth(g))
+	}
+	return h
 }
 
 // NodeHealth derives the node's state from its own signals, then from its worst queue's.

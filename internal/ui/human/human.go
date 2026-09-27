@@ -79,7 +79,7 @@ func (f Formatter) Count(n int64) string {
 // Duration renders d in its most significant unit, adding a second part only above a minute.
 func (f Formatter) Duration(d time.Duration) string {
 	if f.Raw {
-		return strconv.FormatFloat(d.Seconds(), 'f', -1, 64)
+		return rawFloat(d.Seconds())
 	}
 	if d == 0 {
 		return "0s"
@@ -110,7 +110,7 @@ func (f Formatter) Duration(d time.Duration) string {
 // Percent renders a fraction as a percentage, dropping the unit when Raw.
 func (f Formatter) Percent(frac float64) string {
 	if f.Raw {
-		return strconv.FormatFloat(frac*100, 'f', -1, 64)
+		return rawFloat(frac * 100)
 	}
 	return fixed1(frac*100) + " %"
 }
@@ -118,12 +118,18 @@ func (f Formatter) Percent(frac float64) string {
 // Rate renders a bytes-per-second rate, abbreviated in human mode.
 func (f Formatter) Rate(bytesPerSec float64) string {
 	if f.Raw {
-		return strconv.FormatFloat(bytesPerSec, 'f', -1, 64)
+		return rawFloat(bytesPerSec)
 	}
 	if bytesPerSec < 0 {
 		return "-" + f.Bytes(int64(-bytesPerSec)) + "/s"
 	}
 	return f.Bytes(int64(bytesPerSec)) + "/s"
+}
+
+// rawFloat renders v for a pipe, rounded past float noise so 0.17 never
+// prints as 0.16999999999999998 while nanosecond readings survive.
+func rawFloat(v float64) string {
+	return strconv.FormatFloat(math.Round(v*1e9)/1e9, 'f', -1, 64)
 }
 
 // splitSign returns the sign of n and its magnitude without overflowing.

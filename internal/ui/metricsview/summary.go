@@ -39,15 +39,14 @@ var (
 // Summary writes the node summary: header, stat band, and a card per queue kind that exists, skipping the rest (invariant I8).
 func Summary(w io.Writer, snap metrics.Snapshot, t style.Theme, f human.Formatter, width int) error {
 	if snap.Disabled {
-		_, err := lipgloss.Fprintln(w, t.Paint(t.Danger).
-			Render(style.HealthGlyph(int(metrics.HealthCritical)))+" mikyu · metrics are disabled on this node")
+		_, err := lipgloss.Fprintln(w, disabledNote(t))
 		return err
 	}
 	parts := []string{
 		header(snap, t, f, width),
 		statBand(snap, t, f),
-		queueCard(snap, t, f, width, kindLog),
-		queueCard(snap, t, f, width, kindTask),
+		summaryQueueCard(snap, t, f, width, kindLog),
+		summaryQueueCard(snap, t, f, width, kindTask),
 		footer(t),
 	}
 	_, err := lipgloss.Fprintln(w, strings.Join(nonEmpty(parts), "\n"))
@@ -86,7 +85,7 @@ func statBand(snap metrics.Snapshot, t style.Theme, f human.Formatter) string {
 }
 
 // queueCard renders one queue kind's table, or a teaching empty state (I8).
-func queueCard(snap metrics.Snapshot, t style.Theme, f human.Formatter, width int, kind queueKind) string {
+func summaryQueueCard(snap metrics.Snapshot, t style.Theme, f human.Formatter, width int, kind queueKind) string {
 	queues := queuesOfKind(snap, kind)
 	if len(queues) == 0 {
 		return emptyState(t, kind)
@@ -95,7 +94,7 @@ func queueCard(snap metrics.Snapshot, t style.Theme, f human.Formatter, width in
 	for _, q := range queues {
 		rows = append(rows, queueRow(q, t, f, kind))
 	}
-	return t.TitledBox(kind.title(), t.DataTable(kind.headers(), rows, kind.numeric()), width, t.Accent)
+	return t.TitledBox(kind.title(), "", t.DataTable(kind.headers(), rows, kind.numeric()), width, t.Accent)
 }
 
 // queueRow renders one queue as a table row, colored only by its state.

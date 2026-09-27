@@ -31,18 +31,36 @@ const (
 // "╭─ " opener, the space before the fill, the corner, and one fill dash.
 const titledBoxChrome = 6
 
-// TitledBox draws a card with its title set into the top edge, the btop form.
-func (t Theme) TitledBox(title, body string, width int, titleColor color.Color) string {
+// TitledBox draws a card with its title set into the top edge, right title at the corner.
+func (t Theme) TitledBox(title, right, body string, width int, titleColor color.Color) string {
 	if t.Plain {
-		return joinNonEmpty(title, body)
+		head := title
+		if right != "" {
+			head = title + " · " + right
+		}
+		return joinNonEmpty(head, body)
 	}
 	edge := lipgloss.NewStyle().Foreground(titleColor)
-	titled := edge.Render("╭─ ") + ansi.Truncate(title, max(1, width-titledBoxChrome), "…") + edge.Render(" ")
-	gap := width - lipgloss.Width(titled) - 1
+	rightW := 0
+	if right != "" {
+		right = ansi.Truncate(right, max(1, width-titledBoxChrome-3), "…")
+		rightW = lipgloss.Width(right)
+	}
+	budget := max(1, width-titledBoxChrome-rightW-1)
+	shown := ansi.Truncate(title, budget, "…")
+	head := edge.Render("╭─ ") + shown + edge.Render(" ")
+	gap := width - (titledBoxChrome - 2) - lipgloss.Width(shown) - 1
+	if right != "" {
+		gap -= rightW + 1
+	}
 	if gap < 1 {
 		gap = 1
 	}
-	top := titled + edge.Render(strings.Repeat("─", gap)+"╮")
+	top := head + edge.Render(strings.Repeat("─", gap))
+	if right != "" {
+		top += right + edge.Render(" ")
+	}
+	top += edge.Render("╮")
 	rest := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder(), false, true, true, true).
 		BorderForeground(titleColor).
@@ -207,6 +225,9 @@ func (t Theme) kvBlock(title string, rows [][2]string, labelWidth, valueWidth in
 func (t Theme) sectionTitle(title string) string {
 	return t.emph(t.Accent).Transform(strings.ToUpper).Render(title)
 }
+
+// SectionTitle renders an uppercase accent heading for a standalone section.
+func (t Theme) SectionTitle(title string) string { return t.sectionTitle(title) }
 
 // joinNonEmpty joins the non-empty parts with newlines.
 func joinNonEmpty(parts ...string) string {

@@ -13,8 +13,8 @@ import (
 
 func TestTitledBoxPlain(t *testing.T) {
 	theme := PlainTheme()
-	assert.Equal(t, "TITLE\nbody line", theme.TitledBox("TITLE", "body line", 40, theme.Accent))
-	assert.Equal(t, "TITLE", theme.TitledBox("TITLE", "", 40, theme.Accent))
+	assert.Equal(t, "TITLE\nbody line", theme.TitledBox("TITLE", "", "body line", 40, theme.Accent))
+	assert.Equal(t, "TITLE", theme.TitledBox("TITLE", "", "", 40, theme.Accent))
 }
 
 // TestTitledBoxOverlongTitle: a title wider than the box is truncated, not wrapped.
@@ -22,7 +22,7 @@ func TestTitledBoxOverlongTitle(t *testing.T) {
 	theme := NewTheme(true)
 	long := strings.Repeat("W", 200)
 	for _, width := range []int{20, 46, 80} {
-		out := theme.TitledBox(long, "body", width, theme.Accent)
+		out := theme.TitledBox(long, "", "body", width, theme.Accent)
 		lines := strings.Split(stripANSI(out), "\n")
 		for i, line := range lines {
 			assert.Equal(t, width, lipgloss.Width(line),
@@ -40,7 +40,7 @@ func TestCardsNeverExceedWidth(t *testing.T) {
 	header := strings.Repeat("h", 400)
 	for _, width := range []int{30, 60, 80, 100} {
 		for name, card := range map[string]string{
-			"titled": theme.TitledBox(header, body, width, theme.Accent),
+			"titled": theme.TitledBox(header, "", body, width, theme.Accent),
 			"header": theme.GradientHeader(header, body, body, width),
 		} {
 			for i, line := range strings.Split(stripANSI(card), "\n") {
@@ -54,7 +54,7 @@ func TestCardsNeverExceedWidth(t *testing.T) {
 // TestTitledBoxRichBorders: rich mode draws an edge title and a full box.
 func TestTitledBoxRichBorders(t *testing.T) {
 	theme := NewTheme(true)
-	plain := stripANSI(theme.TitledBox("LOG QUEUES", "a  1", 30, theme.Accent))
+	plain := stripANSI(theme.TitledBox("LOG QUEUES", "", "a  1", 30, theme.Accent))
 	lines := strings.Split(plain, "\n")
 	require.Len(t, lines, 3)
 	assert.True(t, strings.HasPrefix(lines[0], "╭─ LOG QUEUES "), "got %q", lines[0])
@@ -64,6 +64,27 @@ func TestTitledBoxRichBorders(t *testing.T) {
 	assert.True(t, strings.HasSuffix(lines[2], "╯"), "got %q", lines[2])
 	for i, line := range lines {
 		assert.Equal(t, 30, lipgloss.Width(line), "line %d must be exactly the declared width", i)
+	}
+}
+
+// TestTitledBoxRightTitle: a right title sits against the closing corner and
+// the edge still closes at exactly the declared width.
+func TestTitledBoxRightTitle(t *testing.T) {
+	theme := NewTheme(true)
+	out := stripANSI(theme.TitledBox("events", "log · healthy", "body", 30, theme.Accent))
+	lines := strings.Split(out, "\n")
+	require.Len(t, lines, 3)
+	assert.Contains(t, lines[0], "╭─ events ")
+	assert.Contains(t, lines[0], "log · healthy ╮")
+	for i, line := range lines {
+		assert.Equal(t, 30, lipgloss.Width(line), "line %d must be exactly the declared width", i)
+	}
+	plain := PlainTheme().TitledBox("events", "log · healthy", "body", 30, theme.Accent)
+	assert.Equal(t, "events · log · healthy\nbody", plain)
+	// An overlong right title shrinks the left one rather than overflowing.
+	long := theme.TitledBox("events", strings.Repeat("W", 60), "body", 30, theme.Accent)
+	for i, line := range strings.Split(stripANSI(long), "\n") {
+		assert.LessOrEqual(t, lipgloss.Width(line), 30, "line %d overflows", i)
 	}
 }
 
@@ -311,7 +332,7 @@ func TestHealthGlyphs(t *testing.T) {
 
 func TestThemePlainEmitsNoEscapes(t *testing.T) {
 	theme := PlainTheme()
-	rendered := theme.TitledBox("T", "body", 30, theme.Accent) +
+	rendered := theme.TitledBox("T", "", "body", 30, theme.Accent) +
 		theme.GradientHeader("t", "a", "b", 30) +
 		theme.StatBand([]Stat{{Value: "1", Label: "x"}}) +
 		theme.KVSection("s", [][2]string{{"a", "1"}}, 6, 4, false) +
@@ -334,7 +355,7 @@ func TestThemePlainKeepsAlignment(t *testing.T) {
 func TestComponentsPlainProfile(t *testing.T) {
 	theme := PlainTheme()
 	parts := []string{
-		theme.TitledBox("LOG QUEUES", "events  ok", 46, theme.Accent),
+		theme.TitledBox("LOG QUEUES", "", "events  ok", 46, theme.Accent),
 		theme.GradientHeader("mikyu", "go1.27 linux/amd64", "up 1h 23m", 46),
 		theme.StatBand([]Stat{{Value: "3", Label: "queues"}, {Value: "1.2M", Label: "messages"}}),
 		theme.KVSection("throughput", [][2]string{{"appends", "12"}, {"reads", "340"}}, 8, 6, false),
