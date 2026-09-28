@@ -288,7 +288,7 @@ func locksSection(snap metrics.Snapshot, t style.Theme, f human.Formatter) strin
 func detailFooter(t style.Theme) string {
 	return t.Footer(
 		[2]string{"--queue <name>", "focuses one queue"},
-		[2]string{"--output json", "for tools"})
+		[2]string{"--json", "for tools"})
 }
 
 // disabledNote is the single line a node with metrics off renders.

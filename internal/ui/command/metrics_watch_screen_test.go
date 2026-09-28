@@ -1,6 +1,8 @@
 package command
 
 import (
+	"bytes"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
@@ -39,12 +41,22 @@ func (s *screen) write(b []byte) {
 		case '\n':
 			s.row++
 			s.col = 0
+			s.clamp()
 		case '\r':
 			s.col = 0
 		default:
 			s.put(r)
 		}
 		str = string([]rune(str)[1:])
+	}
+}
+
+// clamp scrolls the screen when the cursor has moved past the last row.
+func (s *screen) clamp() {
+	for s.row >= len(s.rows) {
+		s.rows = s.rows[1:]
+		s.rows = append(s.rows, []rune{})
+		s.row = len(s.rows) - 1
 	}
 }
 
@@ -75,7 +87,18 @@ func (s *screen) applyCSI(seq string) {
 	switch verb {
 	case 'A':
 		s.row = max(s.row-n, 0)
+	case 'H':
+		s.row, s.col = 0, 0
 	case 'J':
+		// ED 2 erases the whole screen and homes the cursor; ED 0 erases from
+		// the cursor down. A parameter of 0 is written bare.
+		if body == "2" {
+			for i := range s.rows {
+				s.rows[i] = []rune{}
+			}
+			s.row, s.col = 0, 0
+			return
+		}
 		s.eraseBelow()
 	}
 }
@@ -87,8 +110,11 @@ func (s *screen) put(r rune) {
 		s.row++
 		s.col = 0
 	}
-	if s.row >= len(s.rows) {
-		return
+	// A real terminal scrolls: writing past the last row pushes the screen up.
+	for s.row >= len(s.rows) {
+		s.rows = s.rows[1:]
+		s.rows = append(s.rows, []rune{})
+		s.row = len(s.rows) - 1
 	}
 	for len(s.rows[s.row]) <= s.col {
 		s.rows[s.row] = append(s.rows[s.row], ' ')
@@ -167,16 +193,24 @@ func queues(n int, msgs uint64) metrics.Snapshot {
 // newScreenWatcher wires a watcher to a real console and a screen model of the
 // given width, so the production write path is what the assertions observe.
 func newScreenWatcher(t *testing.T, opts MetricsOptions, winWidth int) (*watcher, *screen) {
+	return screenWatcher(t, opts, winWidth, 400)
+}
+
+// screenWatcher is newScreenWatcher with an explicit model size, so a frame
+// taller than the screen scrolls the way a real terminal scrolls.
+func screenWatcher(t *testing.T, opts MetricsOptions, winWidth, rows int) (*watcher, *screen) {
 	t.Helper()
 	con := newConsoleWriter(t)
-	scr := newScreen(400, winWidth)
+	scr := newScreen(rows, winWidth)
 	w := &mirrorWriter{to: con, scr: scr}
 	v := &watcher{
-		w:        w,
-		opts:     opts,
-		present:  func() presentation { return presentationFor(w, opts.Width) },
-		viewport: func() int { return winWidth },
-		mode:     watchRich,
+		w:       w,
+		opts:    opts,
+		present: func() presentation { return presentationFor(w, opts.Width) },
+		viewport: func() (int, int) {
+			return winWidth, rows
+		},
+		mode: watchRich,
 	}
 	return v, scr
 }
@@ -215,4 +249,68 @@ func TestWatchRepaintFollowsAChangingFrameHeight(t *testing.T) {
 		require.Equal(t, v.region, rows,
 			"tick %d: the screen must hold exactly the current frame", i)
 	}
+}
+
+// TestWatchRedrawsAFrameTallerThanTheWindow: a --detail frame is far taller than
+// the summary, and taller than a normal terminal. Repainting it in place cannot
+// work: writing it scrolls the screen, so a cursor-up by its own height lands
+// clamped at the top and the head of the previous frame survives, which reads as
+// a fresh set printed every tick. A frame that does not fit is redrawn whole.
+func TestWatchRedrawsAFrameTallerThanTheWindow(t *testing.T) {
+	v, scr := screenWatcher(t, MetricsOptions{Width: 80, Detail: true}, 80, 24)
+	height, err := v.measure(queues(1, 100), v.present())
+	require.NoError(t, err)
+	require.Greater(t, height, 24, "this test needs a frame taller than the window")
+	for i := range 4 {
+		require.NoError(t, v.paint(queues(1, uint64(100*(i+1)))))
+	}
+	t.Logf("frame=%d rows, window=24, filled=%d cursorRow=%d", height, scr.filledRows(), scr.row)
+	// The frame is redrawn whole, so the window ends holding only the current
+	// frame: the cursor sits at the bottom, not part-way up where a cursor-up
+	// sized for a 78-row frame would have clamped.
+	require.Equal(t, 23, scr.row,
+		"a frame taller than the window must be redrawn to the bottom of the window")
+}
+
+// TestWatchClearsTheScreenOnlyForATallFrame pins the boundary: a summary frame is
+// repainted in place, while a --detail frame on a short terminal is redrawn.
+func TestWatchClearsTheScreenOnlyForATallFrame(t *testing.T) {
+	clear := func(t *testing.T, opts MetricsOptions, rows int) string {
+		t.Helper()
+		con := newConsoleWriter(t)
+		var log bytes.Buffer
+		w := &tallyWriter{sink: con, log: &log}
+		v := &watcher{
+			w:        w,
+			opts:     opts,
+			present:  func() presentation { return presentationFor(w, 80) },
+			viewport: func() (int, int) { return 80, rows },
+			mode:     watchRich,
+		}
+		require.NoError(t, v.paint(queues(1, 100)))
+		require.NoError(t, v.paint(queues(1, 200)))
+		return log.String()
+	}
+	require.Contains(t, clear(t, MetricsOptions{Width: 80, Detail: true}, 24), "\x1b[2J",
+		"a frame taller than the window must be redrawn")
+	require.NotContains(t, clear(t, MetricsOptions{Width: 80}, 60), "\x1b[2J",
+		"a frame that fits must repaint in place and never clear the screen")
+}
+
+// tallyWriter mirrors writes into a log so escape sequences can be asserted.
+type tallyWriter struct {
+	sink io.Writer
+	log  *bytes.Buffer
+}
+
+func (t *tallyWriter) Write(p []byte) (int, error) {
+	t.log.Write(p)
+	return t.sink.Write(p)
+}
+
+func (t *tallyWriter) Fd() uintptr {
+	if f, ok := t.sink.(fdWriter); ok {
+		return f.Fd()
+	}
+	return 0
 }

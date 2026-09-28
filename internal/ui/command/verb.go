@@ -305,21 +305,21 @@ var Verbs = []Verb{
 		Name: "metrics", Args: "[flags]", Kind: KindAdmin, Modes: ModeCLI | ModeREPL,
 		Summary: "Show a live telemetry snapshot",
 		Long: "On a terminal the text view is colored and human-scaled; in a pipe it " +
-			"is plain and machine-scaled. `--output json` emits the snapshot " +
-			"verbatim for scripts, while the text view may change between releases. " +
+			"is plain and machine-scaled. `--json` emits the snapshot verbatim for " +
+			"scripts, while the text view may change between releases. " +
 			"Works the same against an embedded data directory and a remote daemon.",
-		Usage: []string{"metrics [--detail] [--queue <name>]... [--watch] [--output text|json]"},
+		Usage: []string{"metrics [--detail] [--queue <name>]... [--watch] [--json]"},
 		Examples: []Example{
 			{Invocation: "metrics"},
 			{Invocation: "metrics --detail"},
 			{Invocation: "metrics --queue events"},
-			{Invocation: "metrics --output json | jq .totals"},
+			{Invocation: "metrics --json | jq .totals"},
 		},
 		ExtraFlags: []FlagDoc{
 			{Name: "detail", Kind: "bool", Doc: "Render the node grid and one card per queue"},
 			{Name: "queue", Kind: "string", Doc: "Focus the text view on a queue; repeatable"},
 			{Name: "watch", Kind: "bool", Doc: "Refresh the view until interrupted"},
-			{Name: "output", Kind: "string", Doc: "json emits the snapshot verbatim (for scripts); the text view may change between releases", Default: "text"},
+			{Name: "json", Kind: "bool", Doc: "Emit the snapshot verbatim (for scripts); the text view may change between releases"},
 		},
 	},
 	{

@@ -82,13 +82,13 @@ func watchMetrics(ctx context.Context, src metricsSource, w io.Writer, opts Metr
 		w:       w,
 		opts:    opts,
 		present: func() presentation { return presentationFor(w, opts.Width) },
-		viewport: func() int {
-			if w, ok := w.(fdWriter); ok {
-				if width, _, err := term.GetSize(int(w.Fd())); err == nil {
-					return width
+		viewport: func() (int, int) {
+			if f, ok := w.(fdWriter); ok {
+				if width, height, err := term.GetSize(int(f.Fd())); err == nil {
+					return width, height
 				}
 			}
-			return GetTerminalWidth()
+			return GetTerminalWidth(), 0
 		},
 		mode: watchModeFor(w, opts.JSON),
 		clock: watchClock{
@@ -123,11 +123,12 @@ type watcher struct {
 	mode    watchMode
 	clock   watchClock
 	present func() presentation
-	// viewport reports the columns the destination actually wraps at, which is
-	// not always the width the frame was rendered for: a caller may pass an
-	// explicit --width, and a frame wider than the window wraps. A nil viewport
-	// means the frame is no wider than its render width and cannot wrap.
-	viewport func() int
+	// viewport reports the columns the destination actually wraps at and how many
+	// rows it has, which is not always the shape the frame was rendered for: a
+	// caller may pass an explicit --width, and a frame wider than the window wraps.
+	// A nil viewport means the frame is no wider than its render width, fits, and
+	// cannot wrap.
+	viewport func() (width, height int)
 
 	frames   int
 	failures int
@@ -190,8 +191,18 @@ func (v *watcher) paint(snap mikyu.Metrics) error {
 		return err
 	}
 	if v.mode == watchRich && v.region > 0 {
-		// Cursor movement is terminal control, not styled output, so it bypasses lipgloss.
-		if _, err := fmt.Fprintf(v.w, "\x1b[%dA\x1b[0J", v.region); err != nil {
+		// A frame taller than the window cannot be repainted in place: writing it
+		// scrolls the screen, so a cursor-up by its own height lands clamped at the
+		// top and the head of the previous frame is never cleared. Every tick then
+		// reprints over a scrolled screen, which reads as a new set each time.
+		// Such a frame is redrawn whole instead, clearing to the top of the
+		// window first; --detail is tall enough to hit this on a normal terminal.
+		if v.taller(v.region, lines) {
+			// Cursor control is terminal control, not styled output, so it bypasses lipgloss.
+			if _, err := fmt.Fprint(v.w, "\x1b[2J\x1b[H"); err != nil {
+				return err
+			}
+		} else if _, err := fmt.Fprintf(v.w, "\x1b[%dA\x1b[0J", v.region); err != nil {
 			return err
 		}
 	}
@@ -200,6 +211,24 @@ func (v *watcher) paint(snap mikyu.Metrics) error {
 	}
 	v.region = lines
 	return nil
+}
+
+// taller reports whether a frame of the given rows will not fit the window, so it
+// has to be redrawn whole rather than repainted in place.
+func (v *watcher) taller(heights ...int) bool {
+	if v.viewport == nil {
+		return false
+	}
+	_, win := v.viewport()
+	if win <= 0 {
+		return false
+	}
+	for _, h := range heights {
+		if h > win {
+			return true
+		}
+	}
+	return false
 }
 
 // measure renders one frame to a throwaway buffer and counts the screen rows it
@@ -222,7 +251,7 @@ func (v *watcher) wrapWidth(pres presentation) int {
 	if v.viewport == nil {
 		return pres.width
 	}
-	win := v.viewport()
+	win, _ := v.viewport()
 	if win <= 0 {
 		return pres.width
 	}

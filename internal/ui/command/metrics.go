@@ -26,7 +26,7 @@ type MetricsOptions struct {
 	Width  int
 }
 
-// MetricsFlagSet binds the metrics flags to opts: --detail, --queue, --watch, --output.
+// MetricsFlagSet binds the metrics flags to opts: --detail, --queue, --watch, --json.
 func MetricsFlagSet(opts *MetricsOptions) *flag.FlagSet {
 	fs := NewFlagSet("metrics")
 	fs.BoolVar(&opts.Detail, "detail", false, "render the node grid and one card per queue")
@@ -38,17 +38,7 @@ func MetricsFlagSet(opts *MetricsOptions) *flag.FlagSet {
 		return nil
 	})
 	fs.BoolVar(&opts.Watch, "watch", false, "refresh the view until interrupted")
-	fs.Func("output", "json emits the snapshot verbatim; text renders it for people", func(value string) error {
-		switch value {
-		case "text":
-			opts.JSON = false
-		case "json":
-			opts.JSON = true
-		default:
-			return fmt.Errorf("unknown output %q: want text or json", value)
-		}
-		return nil
-	})
+	fs.BoolVar(&opts.JSON, "json", false, "emit the snapshot verbatim for scripts")
 	return fs
 }
 

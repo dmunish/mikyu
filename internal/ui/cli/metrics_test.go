@@ -18,7 +18,7 @@ func TestMetricsJSON(t *testing.T) {
 	app.run(t, "append", "events", "hello")
 
 	var got mikyu.Metrics
-	require.NoError(t, json.Unmarshal([]byte(app.run(t, "metrics", "--output", "json")), &got))
+	require.NoError(t, json.Unmarshal([]byte(app.run(t, "metrics", "--json")), &got))
 	_, ok := got.Queue("events")
 	assert.True(t, ok)
 }
@@ -52,10 +52,10 @@ func TestMetricsUnknownQueueIsARegularError(t *testing.T) {
 	assert.Contains(t, app.out.String(), `no queue named "nope"`)
 }
 
-// TestMetricsBadOutputIsUsage: an invalid --output value exits 2.
-func TestMetricsBadOutputIsUsage(t *testing.T) {
+// TestMetricsRemovedOutputFlagIsUsage: the old --output flag is gone and exits 2.
+func TestMetricsRemovedOutputFlagIsUsage(t *testing.T) {
 	app := newTestApp(t)
-	err := app.runErr(t, "metrics", "--output", "yaml")
+	err := app.runErr(t, "metrics", "--output", "json")
 	require.ErrorIs(t, err, daemon.ErrUsage)
 }
 

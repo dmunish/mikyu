@@ -16,7 +16,7 @@ func (s *replSession) handleMetrics(args []string) {
 		return
 	}
 	if len(rest) > 0 {
-		s.usage("metrics [--detail] [--queue <name>]... [--watch] [--output text|json]")
+		s.usage("metrics [--detail] [--queue <name>]... [--watch] [--json]")
 		return
 	}
 	opts.Width = command.GetTerminalWidth()

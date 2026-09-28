@@ -25,7 +25,7 @@ func metricsSession(t *testing.T) *replSession {
 // TestREPLMetricsJSON parses the REPL's json output back into a snapshot.
 func TestREPLMetricsJSON(t *testing.T) {
 	s := metricsSession(t)
-	out := captureStdout(func() { s.handleMetrics([]string{"--output", "json"}) })
+	out := captureStdout(func() { s.handleMetrics([]string{"--json"}) })
 
 	var got mikyu.Metrics
 	require.NoError(t, json.Unmarshal([]byte(out), &got))
@@ -58,7 +58,7 @@ func TestREPLMetricsUnknownQueue(t *testing.T) {
 func TestREPLMetricsUsageErrors(t *testing.T) {
 	s := metricsSession(t)
 	assert.Contains(t, captureStdout(func() {
-		s.handleMetrics([]string{"--output", "yaml"})
+		s.handleMetrics([]string{"--output", "json"})
 	}), "Usage:")
 	assert.Contains(t, captureStdout(func() {
 		s.handleMetrics([]string{"positional"})

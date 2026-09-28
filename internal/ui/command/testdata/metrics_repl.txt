@@ -3,22 +3,22 @@
     Show a live telemetry snapshot
 
     On a terminal the text view is colored and human-scaled; in a pipe it is
-    plain and machine-scaled. `--output json` emits the snapshot verbatim for
-    scripts, while the text view may change between releases. Works the same
-    against an embedded data directory and a remote daemon.
+    plain and machine-scaled. `--json` emits the snapshot verbatim for scripts,
+    while the text view may change between releases. Works the same against an
+    embedded data directory and a remote daemon.
 
   USAGE
-    metrics [--detail] [--queue <name>]... [--watch] [--output text|json]
+    metrics [--detail] [--queue <name>]... [--watch] [--json]
 
   FLAGS
     --detail  <bool>    Render the node grid and one card per queue
     --queue   <string>  Focus the text view on a queue; repeatable
     --watch   <bool>    Refresh the view until interrupted
-    --output  <string>  json emits the snapshot verbatim (for scripts); the text view may change between releases (default text)
+    --json    <bool>    Emit the snapshot verbatim (for scripts); the text view may change between releases
 
   EXAMPLES
     > metrics
     > metrics --detail
     > metrics --queue events
-    > metrics --output json | jq .totals
+    > metrics --json | jq .totals
 

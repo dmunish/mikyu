@@ -140,11 +140,11 @@ func TestMetricsUnknownQueue(t *testing.T) {
 	assert.Empty(t, buf.String(), "json mode writes no porcelain prose")
 }
 
-// TestMetricsFlagSet covers the flag surface, including the output enum.
+// TestMetricsFlagSet covers the flag surface.
 func TestMetricsFlagSet(t *testing.T) {
 	var opts MetricsOptions
 	rest, err := ParseAnywhere(MetricsFlagSet(&opts),
-		[]string{"--detail", "--queue", "a", "--queue=b", "--watch", "--output", "json"})
+		[]string{"--detail", "--queue", "a", "--queue=b", "--watch", "--json"})
 	require.NoError(t, err)
 	assert.Empty(t, rest)
 	assert.True(t, opts.Detail)
@@ -152,9 +152,9 @@ func TestMetricsFlagSet(t *testing.T) {
 	assert.True(t, opts.Watch)
 	assert.True(t, opts.JSON)
 
-	_, err = ParseAnywhere(MetricsFlagSet(&MetricsOptions{}), []string{"--output", "yaml"})
+	// --output is gone: json is a boolean, and an old-style value is a usage error.
+	_, err = ParseAnywhere(MetricsFlagSet(&MetricsOptions{}), []string{"--output", "json"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "text or json")
 
 	_, err = ParseAnywhere(MetricsFlagSet(&MetricsOptions{}), []string{"--queue="})
 	require.Error(t, err, "an empty queue name is rejected")
@@ -266,19 +266,19 @@ func (b *syncBuffer) String() string {
 func TestMetricsVerbDocumentsPlumbing(t *testing.T) {
 	v, ok := LookupVerb("metrics")
 	require.True(t, ok)
-	for _, name := range []string{"detail", "queue", "watch", "output"} {
+	for _, name := range []string{"detail", "queue", "watch", "json"} {
 		assert.True(t, hasExtraFlag(v, name), "metrics must document --%s", name)
 	}
-	assert.False(t, hasExtraFlag(v, "json"), "the old --json flag is gone")
+	assert.False(t, hasExtraFlag(v, "output"), "the --output flag is gone")
 
-	var output string
+	var doc string
 	for _, f := range v.ExtraFlags {
-		if f.Name == "output" {
-			output = f.Doc
+		if f.Name == "json" {
+			doc = f.Doc
 		}
 	}
-	assert.Contains(t, output, "verbatim")
-	assert.Contains(t, output, "may change between releases")
+	assert.Contains(t, doc, "verbatim")
+	assert.Contains(t, doc, "may change between releases")
 }
 
 // hasExtraFlag reports whether a verb documents a presentation flag.
