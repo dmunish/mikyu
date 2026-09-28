@@ -107,8 +107,11 @@ func defaultsDoc(t *testing.T) string {
 	var b strings.Builder
 	b.WriteString("defaults:\n")
 	for _, group := range slices.Sorted(maps.Keys(groups)) {
-		b.WriteString("  " + group + ":\n")
-		b.WriteString(strings.Join(groups[group], "\n") + "\n")
+		b.WriteString("  ")
+		b.WriteString(group)
+		b.WriteString(":\n")
+		b.WriteString(strings.Join(groups[group], "\n"))
+		b.WriteString("\n")
 	}
 	return b.String()
 }
@@ -307,12 +310,12 @@ func TestNamingLaw(t *testing.T) {
 	// composition helpers that carry a whole session spec or disambiguate the
 	// spec/call lease and max-attempts keys.
 	compositionHelpers := map[string]bool{
-		"WithSessionSpec":      true,
-		"WithAutoStart":        true,
-		"WithKey":              true,
-		"WithRecordKey":        true,
-		"WithTaskLease":        true,
-		"WithTaskMaxAttempts":  true,
+		"WithSessionSpec":     true,
+		"WithAutoStart":       true,
+		"WithKey":             true,
+		"WithRecordKey":       true,
+		"WithTaskLease":       true,
+		"WithTaskMaxAttempts": true,
 	}
 	have := map[string]bool{}
 	for _, name := range exportedFuncs(t, ".") {
@@ -434,7 +437,7 @@ func TestSentinelUniqueness(t *testing.T) {
 		"ErrCheckpointCorrupt":       mikyu.ErrCheckpointCorrupt,
 		"ErrDeadLetterNotFound":      mikyu.ErrDeadLetterNotFound,
 		"ErrDeadLetterStale":         mikyu.ErrDeadLetterStale,
-		"ErrArchiveFailed":            mikyu.ErrArchiveFailed,
+		"ErrArchiveFailed":           mikyu.ErrArchiveFailed,
 		"ErrNoData":                  mikyu.ErrNoData,
 		"ErrRecordTooLarge":          mikyu.ErrRecordTooLarge,
 		"ErrRecordCompacted":         mikyu.ErrRecordCompacted,

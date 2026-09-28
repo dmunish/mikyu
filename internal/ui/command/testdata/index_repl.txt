@@ -1,0 +1,34 @@
+
+  SESSION
+    help                  Show the command index
+    use       <queue>     Set the active queue for this session
+    exit                  Close the interactive shell
+
+  LOG
+    list                         List every queue
+    create    <queue>            Create a log or task queue
+    update    <queue>            Change a mutable queue parameter
+    describe  <queue>            Show a queue's stored, effective, and default specs
+    delete    <queue>            Delete a queue and its directory
+    append    <queue> <payload>  Append one record to a log queue
+    read      <queue> <offset>   Read the record at one offset
+    tail      <queue>            Follow a log queue from an offset
+    truncate  <queue>            Drop closed log segments below an offset
+
+  TASK
+    enqueue   <queue> <payload>  Enqueue a task
+    dequeue   <queue>            Lease the next due task
+    ack       <queue> <task>     Acknowledge a task
+    nack      <queue> <task>     Return a task for redelivery
+    extend    <queue> <task>     Extend a task lease forward
+    dlq       <queue>            List dead-lettered tasks
+    dlq-ack   <queue> <task>     Remove a dead-lettered task
+    archive   <task>             Move a task to its archive log
+
+  ADMIN
+    metrics   [flags]     Show a live telemetry snapshot
+    shutdown              Stop the running daemon
+    login                 Store a token for a target
+    logout                Forget a stored token
+
+  Run `<verb> --help` for flags and examples.

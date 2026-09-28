@@ -1,0 +1,292 @@
+package command
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/dmunish/mikyu"
+	"github.com/dmunish/mikyu/internal/metrics"
+	"github.com/dmunish/mikyu/internal/spec"
+	"github.com/dmunish/mikyu/internal/ui/metricsview"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// metricsClient opens an embedded node holding one log queue with one record.
+func metricsClient(t *testing.T) mikyu.Client {
+	t.Helper()
+	c, err := mikyu.Open(t.TempDir(), mikyu.WithMetricsEnabled(true))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	ctx := t.Context()
+	_, err = c.CreateLogQueue(ctx, "events")
+	require.NoError(t, err)
+	q, err := c.LogQueue("events")
+	require.NoError(t, err)
+	_, err = q.Append(ctx, []byte("hello"))
+	require.NoError(t, err)
+	return c
+}
+
+// fixedMetricsSnapshot is a hand-built snapshot for deterministic render tests.
+func fixedMetricsSnapshot() mikyu.Metrics {
+	maxSegment := int64(64 << 20)
+	return mikyu.Metrics{
+		Timestamp: time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC),
+		Build:     metrics.BuildView{SpecVersion: 5, GoVersion: "go1.27", OS: "linux", Arch: "amd64"},
+		Runtime:   metrics.RuntimeView{UptimeSec: 60},
+		Storage:   metrics.StorageView{DataDir: "./data", Queues: 1, Segments: 1, SizeBytes: 1024},
+		Queues: []metrics.QueueView{{
+			Name:      "events",
+			Kind:      "log",
+			Gauges:    map[string]int64{"messages": 3, "segments": 1, "size_bytes": 1024},
+			Rates:     metrics.Rates{AppendsPerSec: 2},
+			Effective: spec.Spec{Storage: spec.StorageSpec{MaxSegment: &maxSegment}},
+		}},
+		Totals: metrics.TotalsView{Queues: 1, Messages: 3, Bytes: 1024},
+	}
+}
+
+// TestRenderMetricsJSONIsVerbatim pins invariant I4: json is the snapshot, no wrapper.
+func TestRenderMetricsJSONIsVerbatim(t *testing.T) {
+	snap := fixedMetricsSnapshot()
+	var buf bytes.Buffer
+	require.NoError(t, renderMetrics(&buf, snap, MetricsOptions{JSON: true}))
+
+	var got mikyu.Metrics
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
+	assert.Equal(t, snap, got)
+}
+
+// TestRenderMetricsTextIsDeterministic pins that two renders of one snapshot agree byte for byte.
+func TestRenderMetricsTextIsDeterministic(t *testing.T) {
+	snap := fixedMetricsSnapshot()
+	render := func(opts MetricsOptions) string {
+		var buf bytes.Buffer
+		require.NoError(t, renderMetrics(&buf, snap, opts))
+		return buf.String()
+	}
+
+	summary := render(MetricsOptions{})
+	assert.Contains(t, summary, "LOG QUEUES")
+	assert.Contains(t, summary, "events")
+	assert.NotContains(t, summary, "\x1b")
+	assert.Equal(t, summary, render(MetricsOptions{}))
+
+	detail := render(MetricsOptions{Detail: true})
+	assert.Contains(t, detail, "RUNTIME")
+	assert.Contains(t, detail, "PROCESS")
+	assert.Equal(t, detail, render(MetricsOptions{Detail: true}))
+}
+
+// TestMetricsJSONRoundTrip fetches a real snapshot and reads it back.
+func TestMetricsJSONRoundTrip(t *testing.T) {
+	c := metricsClient(t)
+	var buf bytes.Buffer
+	require.NoError(t, RunMetrics(t.Context(), c, &buf, MetricsOptions{JSON: true}))
+
+	var got mikyu.Metrics
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
+	assert.GreaterOrEqual(t, got.Totals.Queues, 1)
+	_, ok := got.Queue("events")
+	assert.True(t, ok)
+}
+
+// TestMetricsTextInAPipeIsPlain pins invariant I3 for the CLI's buffer writer.
+func TestMetricsTextInAPipeIsPlain(t *testing.T) {
+	c := metricsClient(t)
+	var buf bytes.Buffer
+	require.NoError(t, RunMetrics(t.Context(), c, &buf, MetricsOptions{}))
+	out := buf.String()
+	assert.NotContains(t, out, "\x1b", "a pipe never gets color")
+	assert.Contains(t, out, "LOG QUEUES")
+	assert.Contains(t, out, "events")
+	assert.NotContains(t, out, "MiB", "raw mode uses bare byte counts")
+}
+
+// TestMetricsDetailAndQueueSelection exercise the two detail triggers.
+func TestMetricsDetailAndQueueSelection(t *testing.T) {
+	c := metricsClient(t)
+
+	var detail bytes.Buffer
+	require.NoError(t, RunMetrics(t.Context(), c, &detail, MetricsOptions{Detail: true}))
+	assert.Contains(t, detail.String(), "RUNTIME")
+
+	var selected bytes.Buffer
+	require.NoError(t, RunMetrics(t.Context(), c, &selected, MetricsOptions{Queues: []string{"events"}}))
+	assert.Contains(t, selected.String(), "THROUGHPUT")
+}
+
+// TestMetricsUnknownQueue: a --queue typo teaches and fails in both output modes.
+func TestMetricsUnknownQueue(t *testing.T) {
+	c := metricsClient(t)
+
+	var buf bytes.Buffer
+	err := RunMetrics(t.Context(), c, &buf, MetricsOptions{Queues: []string{"nope"}})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, metricsview.ErrUnknownQueue)
+	assert.Contains(t, buf.String(), `no queue named "nope"`)
+
+	buf.Reset()
+	err = RunMetrics(t.Context(), c, &buf, MetricsOptions{JSON: true, Queues: []string{"nope"}})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, metricsview.ErrUnknownQueue)
+	assert.Empty(t, buf.String(), "json mode writes no porcelain prose")
+}
+
+// TestMetricsFlagSet covers the flag surface.
+func TestMetricsFlagSet(t *testing.T) {
+	var opts MetricsOptions
+	rest, err := ParseAnywhere(MetricsFlagSet(&opts),
+		[]string{"--detail", "--queue", "a", "--queue=b", "--watch", "--json"})
+	require.NoError(t, err)
+	assert.Empty(t, rest)
+	assert.True(t, opts.Detail)
+	assert.Equal(t, []string{"a", "b"}, opts.Queues)
+	assert.True(t, opts.Watch)
+	assert.True(t, opts.JSON)
+
+	// --output is gone: json is a boolean, and an old-style value is a usage error.
+	_, err = ParseAnywhere(MetricsFlagSet(&MetricsOptions{}), []string{"--output", "json"})
+	require.Error(t, err)
+
+	_, err = ParseAnywhere(MetricsFlagSet(&MetricsOptions{}), []string{"--queue="})
+	require.Error(t, err, "an empty queue name is rejected")
+}
+
+// TestMetricsPresentationPlainInAPipe pins the writer-driven theme and width choice.
+func TestMetricsPresentationPlainInAPipe(t *testing.T) {
+	theme, formatter, width := metricsPresentation(&bytes.Buffer{}, 0)
+	assert.True(t, theme.Plain)
+	assert.True(t, formatter.Raw)
+	assert.Equal(t, defaultMetricsWidth, width)
+
+	_, _, explicit := metricsPresentation(&bytes.Buffer{}, 42)
+	assert.Equal(t, 42, explicit, "an explicit width wins")
+}
+
+// TestPresentationIsSharedByBothPaths pins that a watch and a one-shot resolve
+// the identical presentation from the same destination, which is what makes a
+// watched frame byte-identical to a one-shot render.
+func TestPresentationIsSharedByBothPaths(t *testing.T) {
+	var w bytes.Buffer
+	oneShot := presentationFor(&w, 0)
+	v := &watcher{w: &w, present: func() presentation { return presentationFor(&w, 0) }}
+	assert.Equal(t, oneShot, v.present(),
+		"the watcher must resolve the destination's presentation, not a buffer's")
+}
+
+// TestWatchPresentationIsResolvedPerFrame pins terminal.md: a watch re-measures
+// width every tick, so a terminal resized between frames renders correctly on
+// the next one instead of keeping the width it resolved at startup.
+func TestWatchPresentationIsResolvedPerFrame(t *testing.T) {
+	out := &syncBuffer{}
+	calls := 0
+	seen := []int{}
+	v := &watcher{
+		w:    out,
+		mode: watchPlain,
+		present: func() presentation {
+			widths := []int{120, 60}
+			p := presentationFor(out, 0)
+			p.width = widths[min(calls, len(widths)-1)]
+			calls++
+			seen = append(seen, p.width)
+			return p
+		},
+	}
+	require.NoError(t, v.paint(testFrame(1)))
+	require.NoError(t, v.paint(testFrame(2)))
+	require.NoError(t, v.paint(testFrame(3)))
+	assert.Equal(t, []int{120, 60, 60}, seen,
+		"each frame re-resolves the presentation, so a resize lands on the next frame")
+}
+
+// TestIsTerminalWriterFalseForFiles: a regular file is not a terminal.
+func TestIsTerminalWriterFalseForFiles(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "out")
+	require.NoError(t, err)
+	defer f.Close()
+	assert.False(t, isTerminalWriter(f))
+	assert.False(t, isTerminalWriter(&bytes.Buffer{}))
+}
+
+// TestWatchStopsOnCancelledContext pins invariant I10 against a live client: a cancelled watch exits clean.
+func TestWatchStopsOnCancelledContext(t *testing.T) {
+	t.Setenv(watchEnv, "10ms")
+
+	c := metricsClient(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	var buf syncBuffer
+	done := make(chan error, 1)
+	go func() { done <- RunMetrics(ctx, c, &buf, MetricsOptions{Watch: true, JSON: true}) }()
+
+	assert.Eventually(t, func() bool { return buf.Len() > 0 }, 5*time.Second, 5*time.Millisecond,
+		"frames must be rendered before cancellation")
+	cancel()
+	select {
+	case err := <-done:
+		require.NoError(t, err, "a cancelled watch exits 0")
+	case <-time.After(5 * time.Second):
+		t.Fatal("watch did not stop after cancellation")
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe to read while a watch writes to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestMetricsVerbDocumentsPlumbing pins the user-visible porcelain/plumbing rule.
+func TestMetricsVerbDocumentsPlumbing(t *testing.T) {
+	v, ok := LookupVerb("metrics")
+	require.True(t, ok)
+	for _, name := range []string{"detail", "queue", "watch", "json"} {
+		assert.True(t, hasExtraFlag(v, name), "metrics must document --%s", name)
+	}
+	assert.False(t, hasExtraFlag(v, "output"), "the --output flag is gone")
+
+	var doc string
+	for _, f := range v.ExtraFlags {
+		if f.Name == "json" {
+			doc = f.Doc
+		}
+	}
+	assert.Contains(t, doc, "verbatim")
+	assert.Contains(t, doc, "may change between releases")
+}
+
+// hasExtraFlag reports whether a verb documents a presentation flag.
+func hasExtraFlag(v Verb, name string) bool {
+	for _, f := range v.ExtraFlags {
+		if f.Name == name {
+			return true
+		}
+	}
+	return false
+}

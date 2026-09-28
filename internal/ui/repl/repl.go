@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/dmunish/mikyu"
@@ -457,61 +456,6 @@ func (s *replSession) handleTruncate(args []string) {
 }
 
 // ---- admin verbs ----
-
-func (s *replSession) handleMetrics(args []string) {
-	var watch bool
-	fs := command.NewFlagSet("metrics")
-	fs.BoolVar(&watch, "watch", false, "stream snapshots until interrupted")
-	rest, err := command.ParseAnywhere(fs, args)
-	if err != nil {
-		s.usage("metrics [--watch] (" + err.Error() + ")")
-		return
-	}
-	if len(rest) > 0 {
-		s.usage("metrics [--watch]")
-		return
-	}
-
-	render := func(snap mikyu.Metrics) {
-		uptime := time.Duration(snap.Runtime.UptimeSec * float64(time.Second))
-		queueCount := 0
-		for _, qv := range snap.Queues {
-			if qv.Name != "server" {
-				queueCount++
-			}
-		}
-		fmt.Printf("Uptime: %s | Data Dir: %s\n", uptime.Round(time.Second), snap.Storage.DataDir)
-		fmt.Printf("Queues: %d | Total Storage: %d Bytes\n", queueCount, snap.Totals.Bytes)
-	}
-
-	if watch {
-		sigCtx, stopSig := signal.NotifyContext(s.ctx, os.Interrupt, syscall.SIGTERM)
-		defer stopSig()
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-sigCtx.Done():
-				fmt.Println(infoStyle.Render("Watch stopped."))
-				return
-			case <-ticker.C:
-				snap, err := command.Metrics(sigCtx, s.client)
-				if err != nil {
-					s.fail(err)
-					return
-				}
-				render(snap)
-			}
-		}
-	}
-
-	snap, err := command.Metrics(s.ctx, s.client)
-	if err != nil {
-		s.fail(err)
-		return
-	}
-	render(snap)
-}
 
 func (s *replSession) handleLogin(args []string) {
 	target := s.target

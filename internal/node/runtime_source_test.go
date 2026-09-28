@@ -13,6 +13,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestMemLimitBytesNormalizesUnset: the runtime's MaxInt64 sentinel becomes the 0-means-unlimited contract.
+func TestMemLimitBytesNormalizesUnset(t *testing.T) {
+	assert.EqualValues(t, 0, memLimitBytes(math.MaxInt64), "unset reads as unlimited")
+	assert.EqualValues(t, 512<<20, memLimitBytes(512<<20), "a set limit passes through")
+	assert.EqualValues(t, 0, memLimitBytes(0))
+}
+
+// TestRuntimeSourceMemLimitNeverSentinels: a real tick never publishes the MaxInt64 sentinel.
+func TestRuntimeSourceMemLimitNeverSentinels(t *testing.T) {
+	src := newRuntimeSource()
+	var snap metrics.Snapshot
+	src.Collect(t.Context(), &snap)
+	assert.NotEqual(t, int64(math.MaxInt64), snap.GC.MemLimitBytes,
+		"an unset GOMEMLIMIT must not surface as a petabyte-scale limit")
+	assert.GreaterOrEqual(t, snap.GC.MemLimitBytes, int64(0))
+}
+
 func TestRuntimeSourceShape(t *testing.T) {
 	src := newRuntimeSource()
 	time.Sleep(time.Millisecond)

@@ -109,7 +109,7 @@ func openNode(dir string, defaults spec.Spec, mc MetricsConfig) (*Node, error) {
 		lock:            lock,
 		openedAt:        time.Now(),
 	}
-	n.metrics = newCollector(mreg, mc, newRuntimeSource(), mgr)
+	n.metrics = newCollector(mreg, mc, newRuntimeSource(), mgr, configSource{n})
 	preregisterServerMetrics(mreg)
 	n.installAll(infos)
 	n.retentionWG.Go(func() { n.retention.Start(ctx) })

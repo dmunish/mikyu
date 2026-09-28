@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/manager"
 	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/dmunish/mikyu/internal/spec"
 )
@@ -108,6 +109,31 @@ func newCollector(reg *metrics.Registry, mc MetricsConfig, sources ...metrics.So
 
 // Collector returns the node's metrics collector.
 func (n *Node) Collector() *metrics.Collector { return n.metrics }
+
+// configSource stamps configuration facts into a snapshot: the session layer once, then each queue's sparse stored spec.
+type configSource struct{ n *Node }
+
+// Collect publishes the session defaults and every queue's stored spec, so consumers derive effective values themselves.
+func (s configSource) Collect(_ context.Context, dst *metrics.Snapshot) {
+	s.n.mu.RLock()
+	defer s.n.mu.RUnlock()
+	dst.Session = s.n.defaults
+	for i := range dst.Queues {
+		q := &dst.Queues[i]
+		var kind manager.Kind
+		switch {
+		case q.IsLog():
+			kind = manager.KindLog
+		case q.IsTask():
+			kind = manager.KindTask
+		default:
+			continue
+		}
+		if entry, ok := s.n.registry.Queues[registryKey(kind, q.Name)]; ok {
+			q.Spec = entry.Spec
+		}
+	}
+}
 
 // Metrics returns the node's current live snapshot.
 func (n *Node) Metrics(ctx context.Context) (metrics.Snapshot, error) {
