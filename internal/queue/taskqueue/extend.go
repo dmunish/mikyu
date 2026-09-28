@@ -15,6 +15,7 @@ func (q *queue) Extend(ctx context.Context, ref Ref, timeout time.Duration) erro
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	defer q.publishLocked()
 	if q.closed || q.closing {
 		return ErrTaskClosed
 	}

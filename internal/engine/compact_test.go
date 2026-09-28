@@ -282,7 +282,10 @@ func TestCompact_CrashRecoveryAfterTruncation(t *testing.T) {
 
 // 6. High-Throughput Concurrent Stress Test (-race safe)
 func TestCompact_ConcurrentAppendsReadsTruncates(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	// The context is a hang guard, not the stop mechanism: stopSignal ends the
+	// run. A deadline near the 2.5s budget would fire while blocked appends and
+	// reads were still draining, reporting cancellations as failures.
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
 	q, _ := newTestQueue(t, 512) // Frequent rolling

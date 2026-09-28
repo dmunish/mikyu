@@ -17,6 +17,7 @@ var ErrArchiveFailed = errors.New("archive append failed")
 func (q *queue) Archive(ctx context.Context, ref Ref) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	defer q.publishLocked()
 	if q.closed || q.closing {
 		return ErrTaskClosed
 	}
@@ -48,7 +49,7 @@ func (q *queue) archiveActiveLocked(ctx context.Context, state *taskState, from 
 	if _, err := appender.Append(ctx, env); err != nil {
 		return fmt.Errorf("%w: %v", ErrArchiveFailed, err)
 	}
-	delete(q.active, state.task.ID)
+	q.removeActiveLocked(state.task.ID)
 	q.dirty++
 	q.broadcastLocked()
 	q.pruneScheduleLocked()

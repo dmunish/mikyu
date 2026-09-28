@@ -54,12 +54,14 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Record, error) {
 
 	// 1. Fast Path: Check in-memory ring cache first (~10 ns)
 	if msg, ok := q.cache.Get(offset); ok {
+		q.m.cacheHits.Inc()
 		if q.superseded(msg.Group, offset) {
 			return Record{}, ErrRecordCompacted
 		}
 		q.recordRead(1, int64(len(msg.Payload)), start)
 		return msg, nil
 	}
+	q.m.cacheMisses.Inc()
 
 	// 2. Disk / MMap Path: Fall back to historical log segments
 	seg, err := q.locateSegment(offset)
@@ -80,6 +82,9 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Record, error) {
 
 // ReadBatch implements Storage.ReadBatch.
 func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Record, error) {
+	q.m.inFlightRead.Add(1)
+	defer q.m.inFlightRead.Add(-1)
+
 	if n <= 0 {
 		return nil, nil
 	}
@@ -115,11 +120,13 @@ func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Record, e
 	for off := start; off < end; off++ {
 		// 2. Fast Path: Check in-memory ring cache first (~10 ns)
 		if msg, ok := q.cache.Get(off); ok {
+			q.m.cacheHits.Inc()
 			if !q.superseded(msg.Group, off) {
 				msgs = append(msgs, msg)
 			}
 			continue
 		}
+		q.m.cacheMisses.Inc()
 
 		// 3. Disk / MMap Path: Fall back to historical log segments
 		if currentSeg == nil || off < currentSeg.baseOff {

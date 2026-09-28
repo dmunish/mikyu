@@ -12,6 +12,7 @@ func (q *queue) Nack(ctx context.Context, ref Ref, opts ...NackOption) error {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	defer q.publishLocked()
 	if q.closed || q.closing {
 		return ErrTaskClosed
 	}
@@ -45,14 +46,15 @@ func (q *queue) Nack(ctx context.Context, ref Ref, opts ...NackOption) error {
 		}
 		q.dlq[state.task.ID] = cloneTask(state.task)
 		q.dlqUncheckpointed[state.task.ID] = struct{}{}
-		delete(q.active, state.task.ID)
+		q.removeActiveLocked(state.task.ID)
 		q.dirty++
+		q.m.retryBudgetDrops.Inc()
 		q.broadcastLocked()
 		q.pruneScheduleLocked()
 		q.m.nacks.Inc()
 		return nil
 	}
-	state.inFlight = false
+	q.markScheduledLocked(state)
 	state.task.Lease = time.Time{}
 	state.task.DeliveryID = ""
 	state.nextAt = time.Now().Add(delay)

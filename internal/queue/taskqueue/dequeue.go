@@ -54,30 +54,53 @@ func (q *queue) Dequeue(ctx context.Context) (Task, error) {
 		q.mu.Unlock()
 		if waitUntil.IsZero() {
 			select {
+			case <-notify:
+				continue
+			default:
+			}
+			q.m.dequeueParkEvents.Inc()
+			q.m.parkedDeq.Add(1)
+			select {
 			case <-ctx.Done():
+				q.m.parkedDeq.Add(-1)
 				return Task{}, ctx.Err()
 			case <-notify:
+				q.m.parkedDeq.Add(-1)
 			}
 			continue
 		}
 		d := max(time.Until(waitUntil), 0)
 		timer := time.NewTimer(d)
 		select {
+		case <-notify:
+			if !timer.Stop() {
+				drainTimer(timer)
+			}
+			continue
+		default:
+		}
+		q.m.dequeueParkEvents.Inc()
+		q.m.parkedDeq.Add(1)
+		select {
 		case <-ctx.Done():
+			q.m.parkedDeq.Add(-1)
 			if !timer.Stop() {
 				drainTimer(timer)
 			}
 			return Task{}, ctx.Err()
 		case <-notify:
+			q.m.parkedDeq.Add(-1)
 			if !timer.Stop() {
 				drainTimer(timer)
 			}
 		case <-timer.C:
+			q.m.parkedDeq.Add(-1)
 		}
 	}
 }
 
 func (q *queue) takeDueLocked(ctx context.Context, now time.Time) (*taskState, time.Time, bool, error) {
+	defer q.publishLocked()
 	for len(q.schedule) > 0 {
 		item := q.schedule[0]
 		state, ok := q.active[item.id]
@@ -102,8 +125,9 @@ func (q *queue) takeDueLocked(ctx context.Context, now time.Time) (*taskState, t
 			}
 			q.dlq[state.task.ID] = cloneTask(state.task)
 			q.dlqUncheckpointed[state.task.ID] = struct{}{}
-			delete(q.active, state.task.ID)
+			q.removeActiveLocked(state.task.ID)
 			q.dirty++
+			q.m.retryBudgetDrops.Inc()
 			q.broadcastLocked()
 			q.pruneScheduleLocked()
 			continue
@@ -113,7 +137,7 @@ func (q *queue) takeDueLocked(ctx context.Context, now time.Time) (*taskState, t
 			q.recordStall()
 		}
 		deliveryID := newID()
-		state.inFlight = true
+		q.markInFlightLocked(state)
 		state.task.Attempts++
 		state.task.DeliveryID = deliveryID
 		state.task.Lease = now.Add(state.lease)

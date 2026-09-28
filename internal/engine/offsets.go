@@ -5,7 +5,8 @@ import (
 	"encoding/binary"
 	"io"
 	"os"
-	"sync"
+
+	"github.com/dmunish/mikyu/internal/metrics"
 )
 
 const (
@@ -16,7 +17,7 @@ const (
 
 // OffsetStore is a manager-level offset persistence store.
 type OffsetStore struct {
-	mu                  sync.RWMutex
+	mu                  *metrics.RWLockObserver
 	root                *os.Root
 	file                *os.File
 	w                   *bufio.Writer
@@ -35,11 +36,13 @@ func openOffsetStore(dir string) (*OffsetStore, error) {
 		return nil, err
 	}
 	s := &OffsetStore{
+		mu:      metrics.NewRWLockObserver("engine.offsets", nil),
 		root:    root,
 		file:    f,
 		w:       bufio.NewWriter(f),
 		offsets: make(map[string]uint64),
 	}
+	metrics.RegisterLockObserver(s.mu)
 	if err := s.recover(); err != nil {
 		_ = f.Close()
 		_ = root.Close()
@@ -167,6 +170,21 @@ func (s *OffsetStore) Commit(queueName, group string, offset uint64) error {
 	return nil
 }
 
+// Size returns the offset store file size in bytes.
+func (s *OffsetStore) Size() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.file == nil {
+		return 0
+	}
+	info, err := s.file.Stat()
+	if err != nil {
+		return 0
+	}
+	return info.Size()
+}
+
+// Fetch returns the committed offset for a queue/group pair.
 func (s *OffsetStore) Fetch(queueName, group string) uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

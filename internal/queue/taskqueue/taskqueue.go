@@ -16,27 +16,27 @@ type queue struct {
 
 	mu                sync.Mutex
 	active            map[string]*taskState
+	inFlightCount     int64
 	dlq               map[string]Task
 	dlqUncheckpointed map[string]struct{}
 	schedule          scheduleHeap
 	sequence          uint64
 	scanNext          uint64
 
-	checkpointOffset uint64
-	dirty            uint64
-	notify           chan struct{}
-	stopCh           chan struct{}
-	wg               sync.WaitGroup
-	closing          bool
-	closed           bool
+	checkpointOffset  uint64
+	checkpointCovered uint64
+	dirty             uint64
+	notify            chan struct{}
+	closing           bool
+	closed            bool
 
 	// defaultLease and defaultMaxAttempts fall back for optionless enqueues; SetDefaults updates them live.
-	defaultLease  time.Duration
+	defaultLease       time.Duration
 	defaultMaxAttempts uint32
 
 	// Bounds: 0 means unlimited.
-	maxInFlight uint32
-	maxDeadLetters      uint32
+	maxInFlight    uint32
+	maxDeadLetters uint32
 
 	// archiveLog creates or returns the archive log queue for source.
 	archiveLog ArchiveLogFor
@@ -46,10 +46,10 @@ type queue struct {
 
 // Defaults carry the queue's task-queue defaults into the driver.
 type Defaults struct {
-	Lease  time.Duration
-	MaxAttempts uint32
-	MaxInFlight uint32
-	MaxDeadLetters      uint32
+	Lease          time.Duration
+	MaxAttempts    uint32
+	MaxInFlight    uint32
+	MaxDeadLetters uint32
 }
 
 // ArchiveAppender is the minimal interface for writing archive envelopes.
@@ -64,6 +64,36 @@ var _ Queue = (*queue)(nil)
 
 // Name returns the queue's name.
 func (q *queue) Name() string { return q.name }
+
+// markInFlightLocked flags a task as delivered and counts it. Callers hold q.mu.
+func (q *queue) markInFlightLocked(state *taskState) {
+	if state.inFlight {
+		return
+	}
+	state.inFlight = true
+	q.inFlightCount++
+}
+
+// markScheduledLocked returns a delivered task to the schedule. Callers hold q.mu.
+func (q *queue) markScheduledLocked(state *taskState) {
+	if !state.inFlight {
+		return
+	}
+	state.inFlight = false
+	q.inFlightCount--
+}
+
+// removeActiveLocked drops a task from the active set. Callers hold q.mu.
+func (q *queue) removeActiveLocked(id string) {
+	state, ok := q.active[id]
+	if !ok {
+		return
+	}
+	if state.inFlight {
+		q.inFlightCount--
+	}
+	delete(q.active, id)
+}
 
 // New opens a task driver over existing engine storage with optional metrics scope.
 func New(name string, storage engine.Storage, defaults Defaults, archiveLog ArchiveLogFor, scopes ...*metrics.Scope) (Queue, error) {
@@ -89,11 +119,10 @@ func New(name string, storage engine.Storage, defaults Defaults, archiveLog Arch
 		dlq:                make(map[string]Task),
 		dlqUncheckpointed:  make(map[string]struct{}),
 		notify:             make(chan struct{}),
-		stopCh:             make(chan struct{}),
-		defaultLease:  lease,
+		defaultLease:       lease,
 		defaultMaxAttempts: maxAttempts,
 		maxInFlight:        defaults.MaxInFlight,
-		maxDeadLetters:             defaults.MaxDeadLetters,
+		maxDeadLetters:     defaults.MaxDeadLetters,
 		m:                  newTaskMetrics(scope),
 	}
 	if archiveLog != nil {
@@ -111,8 +140,6 @@ func New(name string, storage engine.Storage, defaults Defaults, archiveLog Arch
 	if err := q.refreshLocked(context.Background()); err != nil {
 		return nil, err
 	}
-	q.wg.Add(1)
-	go q.checkpointLoop()
 	return q, nil
 }
 
@@ -136,14 +163,11 @@ func (q *queue) Close() error {
 		q.mu.Unlock()
 		return nil
 	}
-	if !q.closing {
-		q.closing = true
-		close(q.stopCh)
-	}
+	q.closing = true
 	q.mu.Unlock()
-	q.wg.Wait()
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	defer q.publishLocked()
 	if q.closed {
 		return nil
 	}
@@ -156,20 +180,15 @@ func (q *queue) Close() error {
 	return err
 }
 
-func (q *queue) checkpointLoop() {
-	defer q.wg.Done()
-	t := time.NewTicker(defaultCheckpointInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-q.stopCh:
-			return
-		case <-t.C:
-			q.mu.Lock()
-			if !q.closed && !q.closing && q.dirty > 0 {
-				_ = q.checkpointLocked(context.Background())
-			}
-			q.mu.Unlock()
-		}
+// Checkpoint writes a checkpoint when the driver has unwritten state.
+func (q *queue) Checkpoint(ctx context.Context) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed || q.closing {
+		return nil
 	}
+	if q.dirty == 0 && q.checkpointOffset > 0 {
+		return nil
+	}
+	return q.checkpointLocked(ctx)
 }

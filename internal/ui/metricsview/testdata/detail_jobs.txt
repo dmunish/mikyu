@@ -1,0 +1,72 @@
+○ mikyu
+go1.27 · linux/amd64 · spec v5 · up 1h 23m
+./data · 11 segments · 2026-09-26 12:00:00Z
+◐ jobs · task · degraded
+THROUGHPUT
+enqueues/s 7    dequeues/s 7
+LEASES
+active        120    scheduled      90
+in flight      30    schedule heap   0
+DEAD LETTERS
+dead letters  ▏··········  0.0 %  2 / 10,000
+CHECKPOINT
+checkpoint lsn 0
+dirty records  0
+checkpoint lag 0
+POLICY
+lease               30s    max in flight     1,000
+max attempts          5    max dead letters 10,000
+RUNTIME
+goroutines      0
+gomaxprocs      0
+heap in-use   0 B
+heap sys      0 B
+heap idle     0 B
+heap released 0 B
+objects         0
+stack         0 B
+metadata      0 B
+0 running · 0 runnable · 0 waiting
+PROCESS
+cpu      0.0 %
+rss        0 B
+vsz        0 B
+threads      0
+open fds     0
+0.0 u · 0.0 s
+GC
+cycles         0
+pause p50     0s
+pause p90     0s
+pause p99     0s
+next gc      0 B
+mem limit   none
+total alloc  0 B
+total free   0 B
+STORAGE
+dir           ./data
+queues             4
+segments          11
+size         4.0 GiB
+offset store     0 B
+cache         ▏··········  0.0 %  0 B / 32.0 MiB
+wal pending   ▏··········  0.0 %  no wal traffic
+EFFECTIVE SPEC — jobs
+STORAGE
+durability          sync
+encryption          none
+max-segment     64.0 MiB
+max-segment-age       1h
+max-payload      1.0 MiB
+max-cache       32.0 MiB
+FLUSH
+max-bytes 1.0 MiB
+max-wait     10ms
+RETENTION
+max-age   unlimited
+max-bytes unlimited
+TASK
+lease               30s
+max-attempts          5
+max-in-flight     1,000  ← override
+max-dead-letters 10,000  ← override

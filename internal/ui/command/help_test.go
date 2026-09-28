@@ -184,6 +184,8 @@ func TestGoldenHelpPages(t *testing.T) {
 		{"create_cli", "create", command.ModeCLI},
 		{"enqueue_cli", "enqueue", command.ModeCLI},
 		{"update_cli", "update", command.ModeCLI},
+		{"metrics_cli", "metrics", command.ModeCLI},
+		{"metrics_repl", "metrics", command.ModeREPL},
 	}
 	for _, tc := range cases {
 		tc := tc

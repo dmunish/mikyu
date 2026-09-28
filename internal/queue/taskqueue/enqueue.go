@@ -7,12 +7,16 @@ import (
 )
 
 func (q *queue) Enqueue(ctx context.Context, payload []byte, opts ...EnqueueOption) (Task, error) {
+	q.m.inFlightEnq.Add(1)
+	defer q.m.inFlightEnq.Add(-1)
+
 	if err := ctx.Err(); err != nil {
 		return Task{}, err
 	}
 	q.mu.Lock()
 	if q.maxInFlight > 0 && uint32(len(q.active)) >= q.maxInFlight {
 		q.mu.Unlock()
+		q.m.queueFullEvents.Inc()
 		return Task{}, ErrQueueFull
 	}
 	lease, maxAttempts, scheduledAt, key := q.resolveEnqueueOptionsLocked(opts...)
@@ -23,6 +27,7 @@ func (q *queue) Enqueue(ctx context.Context, payload []byte, opts ...EnqueueOpti
 	id := newID()
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	defer q.publishLocked()
 	if q.closed || q.closing {
 		return Task{}, ErrTaskClosed
 	}

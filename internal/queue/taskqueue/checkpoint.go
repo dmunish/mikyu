@@ -430,6 +430,7 @@ func decodeSnapshot(data []byte) ([]taskState, map[string]Task, error) {
 }
 
 func (q *queue) checkpointLocked(ctx context.Context) error {
+	defer q.publishLocked()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -482,6 +483,7 @@ func (q *queue) checkpointLocked(ctx context.Context) error {
 	}
 	q.checkpointOffset = startOffset
 	q.scanNext = commitOffset + 1
+	q.checkpointCovered = q.scanNext
 	for id := range q.dlqUncheckpointed {
 		delete(q.dlqUncheckpointed, id)
 	}
@@ -490,6 +492,7 @@ func (q *queue) checkpointLocked(ctx context.Context) error {
 }
 
 func (q *queue) loadCheckpointLocked(ctx context.Context) (bool, error) {
+	defer q.publishLocked()
 	last, min := q.storage.LastOffset(), q.storage.MinOffset()
 	if last <= min {
 		return false, nil
@@ -559,21 +562,27 @@ func (q *queue) loadCheckpointLocked(ctx context.Context) (bool, error) {
 		for id := range q.dlq {
 			delete(q.dlq, id)
 		}
+		q.inFlightCount = 0
 		for i := range states {
 			state := &states[i]
 			q.active[state.task.ID] = state
 			q.pushScheduleLocked(state)
+			if state.inFlight {
+				q.inFlightCount++
+			}
 		}
 		maps.Copy(q.dlq, dlq)
 		clear(q.dlqUncheckpointed)
 		q.checkpointOffset = commit.startOffset
 		q.scanNext = off + 1
+		q.checkpointCovered = q.scanNext
 		return true, nil
 	}
 	return false, nil
 }
 
 func (q *queue) refreshLocked(ctx context.Context) error {
+	defer q.publishLocked()
 	last := q.storage.LastOffset()
 	for q.scanNext < last {
 		if err := ctx.Err(); err != nil {
@@ -603,7 +612,7 @@ func (q *queue) refreshLocked(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			delete(q.active, task.ID)
+			q.removeActiveLocked(task.ID)
 			q.dlq[task.ID] = task
 		case recordDLQAck:
 			id, off, attempts, err := decodeDeadLetterAck(msg.Payload)

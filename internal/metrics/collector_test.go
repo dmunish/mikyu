@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -113,4 +114,47 @@ func TestCollectorRates(t *testing.T) {
 		require.True(t, ok)
 		assert.InDelta(t, 10, q.Rates.AppendsPerSec, 1e-9)
 	})
+}
+
+func TestMergeScopesTaskGauges(t *testing.T) {
+	reg := NewRegistry(Config{})
+	scope := reg.Scope("jobs")
+	scope.Gauge("active").Set(3)
+	scope.Gauge("in_flight").Set(1)
+	scope.Gauge("scheduled").Set(2)
+	scope.Gauge("dead_letters").Set(2)
+	scope.Gauge("parked_dequeue").Set(1)
+
+	c := New(reg, Config{Interval: time.Hour})
+	snap, err := c.Snapshot(t.Context())
+	require.NoError(t, err)
+	qv, ok := snap.Queue("jobs")
+	require.True(t, ok)
+	assert.EqualValues(t, 3, qv.Tasks.Active)
+	assert.EqualValues(t, 1, qv.Tasks.InFlight)
+	assert.EqualValues(t, 2, qv.Tasks.Scheduled)
+	assert.EqualValues(t, 2, qv.Tasks.DeadLetters)
+	assert.EqualValues(t, 1, qv.Gauges["parked_dequeue"])
+	for _, name := range []string{"active", "in_flight", "scheduled", "dead_letters"} {
+		assert.NotContains(t, qv.Gauges, name)
+	}
+}
+
+func TestMergeScopesPartialTaskGauges(t *testing.T) {
+	reg := NewRegistry(Config{})
+	reg.Scope("jobs").Gauge("active").Set(4)
+
+	c := New(reg, Config{Interval: time.Hour})
+	snap, err := c.Snapshot(t.Context())
+	require.NoError(t, err)
+	qv, ok := snap.Queue("jobs")
+	require.True(t, ok)
+	assert.EqualValues(t, 4, qv.Tasks.Active)
+	assert.Zero(t, qv.Tasks.InFlight)
+	assert.Zero(t, qv.Tasks.CheckpointLag)
+
+	data, err := json.Marshal(qv)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"active":4`)
+	assert.NotContains(t, string(data), `"in_flight":4`)
 }

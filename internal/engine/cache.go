@@ -71,6 +71,13 @@ func (r *ringCache) Get(offset uint64) (Record, bool) {
 	return Record{}, false
 }
 
+// stats returns the cache's current and maximum byte budgets.
+func (r *ringCache) stats() (cur, max int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.curBytes, r.maxBytes
+}
+
 // SetMaxBytes moves the byte budget and evicts from the head until the cache fits.
 func (r *ringCache) SetMaxBytes(maxBytes int64) {
 	r.mu.Lock()

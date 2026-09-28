@@ -253,7 +253,7 @@ func TestNodeCollectorLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, snap.Disabled)
 	require.Greater(t, snap.Runtime.Goroutines, 0)
-	require.Greater(t, snap.Runtime.HeapAlloc, int64(0))
+	require.Greater(t, snap.Runtime.Heap.Alloc, int64(0))
 
 	require.NoError(t, release())
 	// Stop joins the ticker goroutine and closes every subscriber channel. Drain
@@ -306,7 +306,47 @@ func TestNodeSnapshotIncludesQueueInstruments(t *testing.T) {
 	tqv, ok := snap.Queue("tasks")
 	require.True(t, ok)
 	assert.Positive(t, tqv.Counters["enqueues"])
+	assert.EqualValues(t, 1, tqv.Tasks.Active)
+	assert.Zero(t, tqv.Tasks.InFlight)
 }
+
+// TestNodeSnapshotPublishesQueueConfig proves the config source stamps the
+// session layer and each queue's stored spec, so consumers can derive effective
+// values without the node re-resolving them per scrape.
+func TestNodeSnapshotPublishesQueueConfig(t *testing.T) {
+	dir := t.TempDir()
+	session := spec.Spec{Storage: spec.StorageSpec{MaxCache: ptr(int64(8 << 20))}}
+	n, release, err := Acquire(dir, session, WithMetrics(MetricsConfig{Enabled: true, Interval: time.Hour}))
+	require.NoError(t, err)
+	defer func() { _ = release() }()
+
+	ctx := t.Context()
+	createLog(t, n, "logs", spec.Spec{Storage: spec.StorageSpec{MaxCache: ptr(int64(2 << 20))}})
+	createTask(t, n, "tasks", spec.Spec{})
+
+	snap, err := n.Metrics(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, session, snap.Session, "the session layer is published")
+
+	logs, ok := snap.Queue("logs")
+	require.True(t, ok)
+	require.NotNil(t, logs.Spec.Storage.MaxCache)
+	assert.EqualValues(t, 2<<20, *logs.Spec.Storage.MaxCache, "the stored override is published, not the effective value")
+	assert.Nil(t, logs.Spec.Storage.MaxSegment, "an unset field stays unset")
+
+	// Consumers derive: the queue's override wins over the session, unset falls back.
+	logsMax := logs.EffectiveSpec(snap.Session).Storage.MaxCache
+	require.NotNil(t, logsMax)
+	assert.EqualValues(t, 2<<20, *logsMax, "the queue override wins")
+	tasks, ok := snap.Queue("tasks")
+	require.True(t, ok)
+	tasksMax := tasks.EffectiveSpec(snap.Session).Storage.MaxCache
+	require.NotNil(t, tasksMax)
+	assert.EqualValues(t, 8<<20, *tasksMax, "an unset field inherits the session")
+}
+
+// ptr returns a pointer to v, for the optional spec fields under test.
+func ptr[T any](v T) *T { return &v }
 
 func TestNodeCollectorDisabled(t *testing.T) {
 	dir := t.TempDir()

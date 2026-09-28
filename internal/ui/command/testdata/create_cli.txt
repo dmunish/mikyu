@@ -1,0 +1,43 @@
+
+  create <queue>
+    Create a log or task queue
+
+    The queue's kind is structural: it lives under `log/` or `task/` in the data
+    directory, and a name may exist under both kinds without collision. Task
+    queues reject `storage.compaction`.
+
+  USAGE
+    create --type log  [flags] <queue>
+    create --type task [flags] <queue>
+
+  FLAGS
+    STORAGE
+      --durability           <enum>      Ack policy: sync fsyncs before the offset returns, async flushes in the background (default sync)
+      --encryption           <enum>      Use the OS directory encryption at rest (default none)
+      --compaction           <enum>      Drop superseded keys when a segment closes (default none)
+      --max-segment          <bytes>     Bytes per segment file (default 64 MiB)
+      --max-segment-age      <duration>  Maximum age before a segment rolls (default 1h0m0s)
+      --max-payload          <bytes>     Largest payload an append accepts (default 1 MiB)
+      --max-cache            <bytes>     Tail cache budget in bytes (default 32 MiB)
+
+    FLUSH
+      --max-flush-bytes      <bytes>     Flush once the pending WAL reaches this many bytes (default 1 MiB)
+      --max-flush-wait       <duration>  Longest a batch waits before flushing (default 10ms)
+
+    RETENTION
+      --max-retention-age    <duration>  Drop closed segments older than this; 0 keeps forever (default unlimited)
+      --max-retention-bytes  <bytes>     Keep at most this many bytes of history; 0 keeps forever (default unlimited)
+
+    TASK
+      --lease                <duration>  Lease length assigned to a dequeued task (default 30s)
+      --max-attempts         <uint32>    Deliveries before a task is dead-lettered (default 5)
+      --max-in-flight        <uint32>    Concurrent-lease upper bound (default 100000)
+      --max-dead-letters     <uint32>    Dead-letter upper bound (default 100000)
+
+    OPTIONS
+      --type                 <string>    Queue kind: log or task
+
+  EXAMPLES
+    > mikyu create --type log events
+    > mikyu create --type task jobs --lease 60s
+
