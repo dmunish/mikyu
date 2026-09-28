@@ -1,33 +1,42 @@
 # Mikyu — Architecture & Implementation Specification
 
-## 1. What Mikyu Is
-
-**mikyu** is a high-performance, log-structured message queue written from scratch in Go. It presents **two structurally distinct queue kinds over one shared storage engine**:
+Mikyu is a high-performance, log-structured message queue written from scratch in Go. It presents **two structurally distinct queue kinds over one shared storage engine**:
 
 - **Log queues** (`log/<name>`) — append-only streams with consumer-group offsets, replay, streaming, tailing, keyed compaction, per-queue retention.
 - **Task queues** (`task/<name>`) — at-least-once delivery with visibility leases, exponential backoff, scheduling, stale-lease protection, a durable per-queue DLQ, an optional archive log, chunked checkpoint recovery, and per-queue in-flight/DLQ bounds.
 
 A queue's **kind is structural**: it is the name of its parent directory under the data root. `log/events` and `task/events` are two different queues that share nothing but a filesystem tree.
 
-### Core Guarantees
+---
 
-- **Durable-before-ack** by default (`durability: sync`): `Append`/`AppendBatch` block until the WAL flusher has `fsync`'d the record bytes and index entry. The returned offset is crash-safe.
-- **Optional async loss window** (`durability: async`): publishes to the ring cache and `publishedOffset` immediately, flushes in the background without `fsync` per batch.
-- **Zero-copy reads** on closed segments (`mmap` read-only); a `Read` on a closed segment returns a sub-slice of mapped memory with no heap allocation.
-- **Byte-budgeted ring cache** (~10 ns/op tail reads) sized from `max_cache`.
-- **Long-poll tailing** via `Fetch` blocking on the queue's `notify` channel.
-- **Keyed compaction (log queues only)**: records carry an optional `Group`; when `compaction: keys`, `roll()` rewrites closed segments dropping superseded group versions.
-- **Chunked, self-describing task checkpoints** (`recordCPStart/Chunk/Commit`); newest valid commit wins on recovery, corrupt ones skipped.
-- **Archive log for tasks**: moves in-flight or dead-lettered tasks into `<queue>-archive`, a log queue created lazily.
-- **Single source of truth for configuration**: `spec.Table` (`internal/spec/table.go`) holds every parameter with canonical key, path, kind, layer, scope, mutability, env name, flag name, option name, and a `Doc` string.
-- **One sentinel→wire-code taxonomy**: `internal/errs/errs.go`.
-- **Live telemetry under one surface**: `internal/metrics` — `Collector` over a `Registry` of atomic instruments, materializing `Snapshot`s for the wire, CLI/REPL, and the daemon's Prometheus/JSON/SSE HTTP endpoints.
-- **Enforced architecture**: `.go-arch-lint.yml`; `internal/audit` gates legacy names and comment style.
-- **Auth is one handshake per connection**: `OpAuth` on first frame; `none`, `none-insecure`, `token`, `mtls` modes; unauthenticated non-loopback daemon refuses to start.
+## 1. Architectural Principles
+
+1. **Layer purity** — enforced by `.go-arch-lint.yml`. `spec`, `protocol`, `group`, `enginetest`, `style`, `human` are bottoms.
+2. **One storage engine, two structural kinds.** `engine.Storage` is the only contract drivers see. `manager.Manager` owns two `*engine.Manager` roots — `log/` and `task/`.
+3. **Kind is structural.** `manager.GetOf(name, kind)` refuses a queue under the wrong kind (`manager.ErrWrongKind`).
+4. **One configuration table.** `spec.Table` drives every surface (SDK, CLI, env, YAML, wire, storage). Each row carries a `Doc`.
+5. **One observation surface.** `internal/metrics` is the only telemetry contract. No `Info`/`Stats`.
+6. **One error taxonomy.** `internal/errs.Table` maps each Go sentinel to its wire code.
+7. **Registry is a config artifact.** Per-queue specs live in `queues.json`. The filesystem is the source of truth for existence; missing directories purge entries, orphans are adopted.
+8. **Data directory is a lock.** `node.Acquire` takes an exclusive `flock`/`LockFileEx` on `<dir>/mikyu.lock`. Two processes on the same dir fail fast with `ErrLocked`.
+9. **Path escape is a compile-time concern.** File ops in `engine`, `manager`, `node` use `os.Root`.
+10. **Refcount over teardown.** Embedded clients share one `node.Node` per absolute data dir.
+11. **Errors are stable sentinels.** Wire codes map 1:1; messages are human text, never contracts.
+12. **Auth is one handshake per connection.** Credentials declared once in `OpAuth`, verified once.
+
+### Guarantees
+
+- **Durable-before-ack** by default (`durability: sync`): `Append`/`AppendBatch` block until the WAL flusher has `fsync`'d bytes and index.
+- **Optional async loss window** (`durability: async`): publishes to ring cache + `publishedOffset` immediately, flushes in background.
+- **Zero-copy reads** on closed segments (`mmap` read-only).
+- **Byte-budgeted ring cache** sized from `max_cache`.
+- **Long-poll tailing** via `Fetch` on `notify` channel.
+- **Keyed compaction (log only)**: records carry an optional `Group`; when `compaction: keys`, `roll()` rewrites closed segments dropping superseded group versions.
+- **Chunked, self-describing task checkpoints** (`recordCPStart/Chunk/Commit`); newest valid commit wins on recovery.
 
 ### Four Roles, One Binary
 
-| Role | Entry | Description |
+| Role | Entry | Notes |
 |---|---|---|
 | Embedded engine | `mikyu.Open(dir, opts...)` | In-process `node.Node`, no network, ref-counted per data dir. |
 | Remote client | `mikyu.Dial(target, opts...)` | Pooled TCP / Unix / Named-Pipe wire client. |
@@ -36,231 +45,141 @@ A queue's **kind is structural**: it is the name of its parent directory under t
 
 ---
 
-## 2. Architectural Principles
-
-1. **Layer purity** — enforced by `.go-arch-lint.yml`. `spec`, `protocol`, `group` are bottoms; `metrics → spec`; `enginetest` is a test-only adapter over `engine`. `engine → metrics`. `manager → engine, metrics`. `logqueue → engine, group`. `taskqueue, retention → engine, metrics`. `node → spec, engine, manager, metrics, logqueue, taskqueue, retention`. `client → spec, engine, node, group, logqueue, taskqueue, ipc, protocol, metrics, daemon, errs`. `server → spec, engine, node, logqueue, taskqueue, ipc, protocol, metrics, errs`. `client` and `server` never import each other.
-2. **One storage engine, two structural kinds.** `engine.Storage` is the only contract the drivers see. `manager.Manager` owns two `*engine.Manager` roots — `log/` and `task/`.
-3. **Kind is structural.** `manager.GetOf(name, kind)` refuses to open a queue under the wrong kind (`manager.ErrWrongKind`).
-4. **One configuration table.** `spec.Table` drives every surface (SDK, CLI, env, YAML, wire, storage). Each row carries a `Doc`.
-5. **One observation surface.** `internal/metrics` is the only telemetry contract. No `Info`/`Stats`.
-6. **One error taxonomy.** `internal/errs.Table` maps each Go sentinel to its wire code.
-7. **Registry is a config artifact.** Per-queue specs live in `queues.json`. The filesystem is the source of truth for existence; missing directories purge entries, orphans are adopted.
-8. **Data directory is a lock.** `node.Acquire` takes an exclusive `flock`/`LockFileEx` on `<dir>/mikyu.lock`. Two processes on the same dir fail fast with `ErrLocked`.
-9. **Path escape is a compile-time concern.** File operations in `engine`, `manager`, `node` use `os.Root` scoped to the appropriate root.
-10. **Refcount over teardown.** Embedded clients share one `node.Node` per absolute data directory.
-11. **Errors are stable sentinels.** Wire codes map 1:1; messages are human text, never contracts.
-12. **Auth is one handshake per connection.** Credentials declared once in `OpAuth`, verified once.
-
----
-
-## 3. Repository Layout
+## 2. Repository Layout & Dependency Graph
 
 ```
 github.com/dmunish/mikyu/
 ├── .go-arch-lint.yml
-├── mikyu.go                    # SDK facade: Client, Open, Dial, type aliases, sentinels
-├── options.go                  # Re-exported With* constructors
-├── spec.go                     # Schema surface: Param, Kind, Layer, Scope, Schema, Lookup
-├── typed.go                    # Typed[T] + Codec[T]
-│
-├── cmd/mikyu/main.go           # Single-binary entrypoint: run, exitCode
-│
+├── mikyu.go / options.go / spec.go / typed.go   # Public SDK facade
+├── cmd/mikyu/main.go                            # Entry: run, exitCode
 └── internal/
-    ├── audit/                  # Source gates: TestNoLegacyNames, TestInternalCommentStyle
-    ├── spec/                   # THE config schema
-    │   ├── spec.go             # Spec, StorageSpec, FlushSpec, RetentionSpec, TaskSpec, Session, Builtin, Merge, Effective
-    │   ├── table.go            # Table, Param, Kind, Layer, Scope, Mutability, Value, Parse, Encode/Decode
-    │   ├── derive.go           # Resolve, FlushLinger, RecordOverhead
-    │   ├── codec.go            # Duration, Encode/DecodeSpec(YAML), CheckSpecVersion, MaxSpecPayload
-    │   ├── env.go              # ApplyEnv / ApplyEnvSession
-    │   ├── errors.go           # ErrInvalidConfig, ErrImmutableField, ErrSpecTooLarge, ErrSpecTooNew
-    │   ├── validate.go         # ValidateCreate/Update/Session
-    │   └── enums.go            # Durability, Encryption, Compaction
-    │
-    ├── config/config.go        # mikyu.yaml loader, legacy-key/env rejection, bootstrap
-    │
-    ├── engine/                 # Storage engine
-    │   ├── storage.go          # Storage interface
-    │   ├── config.go           # Config, CompactionPolicy, sentinels
-    │   ├── message.go          # Record
-    │   ├── manager.go          # Manager, OpenManager, Create/Get/List/Delete/Collect/Close
-    │   ├── queue.go            # Queue, openQueue, loadSegments, roll, Close, ApplyConfig
-    │   ├── append.go           # Append, AppendBatch, AppendOption, WithGroup
-    │   ├── read.go             # Read, ReadBatch, readFromSegment
-    │   ├── fetch.go            # Fetch
-    │   ├── offset_api.go       # LastOffset, Name, CommitOffset, Committed
-    │   ├── compact.go          # MinOffset, Segments, FloorOlderThan, FloorForSize, TruncateBefore
-    │   ├── wal.go              # wal, newWAL, syncLoop, flush, push/pushBatch/pushAsync, wait
-    │   ├── segment.go          # segment, openSegment, enableMMap, recover, rebuild, destroy, Close
-    │   ├── index.go            # rawIndexEntry, MarshalBinary, UnmarshalRawIndexEntry
-    │   ├── encode.go           # encodeRecord, decodeRecord, record layout constants
-    │   ├── cache.go            # ringCache, Put, Get, EvictBefore, Evict, SetMaxBytes
-    │   ├── offsets.go          # OffsetStore
-    │   ├── compaction.go       # buildKeyIndex, superseded, compactClosedLocked, compactSegmentLocked
-    │   ├── metrics.go          # queueMetrics, walMetrics, Gauge* names, Manager.Collect
-    │   ├── sync_{darwin,fdatasync,windows}.go
-    │   ├── sync_dir{,_unix,_windows}.go
-    │   └── encrypt_{linux,windows,other}.go
-    │
-    ├── metrics/                # THE telemetry model
-    │   ├── instruments.go      # Counter, Gauge, Histogram, HistogramSnapshot, NewHistogram
-    │   ├── registry.go         # Registry, Scope, NewRegistry, Counter/Gauge/Histogram accessors
-    │   ├── snapshot.go         # Snapshot, RuntimeView, ProcessView, StorageView, QueueView, GroupView, Rates, TotalsView
-    │   ├── history.go          # RingBuffer[T]
-    │   ├── source.go           # Source, SourceFunc
-    │   ├── collector.go        # Config, Collector, New, Start, Stop, Snapshot, History, Subscribe, build, mergeScopes, computeRates
-    │   └── prometheus.go       # EncodeOptions, Encode
-    │
-    ├── enginetest/memstorage.go  # In-memory engine.Storage for synctest bubbles
-    │
+    ├── audit/                   # Source gates: TestNoLegacyNames, TestInternalCommentStyle
+    ├── spec/                    # THE config schema (spec, table, derive, codec, env, validate, enums, errors)
+    ├── config/config.go         # mikyu.yaml loader, legacy-key/env rejection, bootstrap
+    ├── engine/                  # Storage engine (storage, manager, queue, append, read, fetch,
+    │                            # wal, segment, compaction, cache, offsets, metrics, sync_*, encrypt_*)
+    ├── enginetest/memstorage.go # In-memory engine.Storage for synctest bubbles
+    ├── metrics/                 # THE telemetry model (instruments, registry, snapshot, state,
+    │                            # history, collector, prometheus, lock, source)
     ├── queue/
-    │   ├── group/group.go      # Base: HighWater, Mark, Commit, Close, CommitFn
-    │   ├── logqueue/
-    │   │   ├── api.go          # Log interface
-    │   │   ├── logqueue.go     # queue, New, Append/AppendBatch/Read/ReadBatch/Fetch, Group, CommitOffset
-    │   │   ├── group.go        # Group interface, queueGroup
-    │   │   ├── retention.go    # TruncateFloor, Truncate
-    │   │   └── stream.go       # Stream, Tail (iter.Seq2), streamBatch, tailWait
-    │   ├── taskqueue/
-    │   │   ├── task.go         # Task, Ref, ID, EnqueueOption, NackOption, NewTaskFromWire, Resolve*
-    │   │   ├── taskqueue.go    # queue, Defaults, ArchiveAppender, ArchiveLogFor, New, SetDefaults, Close, checkpointLoop
-    │   │   ├── enqueue.go / dequeue.go / ack.go / nack.go / extend.go
-    │   │   ├── dlq.go          # DeadLetters, AckDeadLetter
-    │   │   ├── archive.go      # Archive, ArchivePrefix, encode/decodeArchiveEnvelope
-    │   │   ├── lease.go        # resolveLeaseLocked, broadcastLocked, cloneTask
-    │   │   ├── scheduler.go    # taskState, scheduleItem, scheduleHeap, pushScheduleLocked, pruneScheduleLocked
-    │   │   ├── checkpoint.go   # checkpointLocked, loadCheckpointLocked, refreshLocked, encode/decode records
-    │   │   ├── compaction.go   # TruncateFloor
-    │   │   ├── metrics.go      # taskMetrics, newTaskMetrics, recordEnqueue/Dequeue/Stall
-    │   │   └── id.go           # newID
-    │   └── retention/coordinator.go # FloorProvider, Policy, Target, Coordinator, ReconcileAt/All, Start
-    │
+    │   ├── group/group.go       # Base: HighWater, Mark, Commit, Close, CommitFn
+    │   ├── logqueue/            # api, logqueue, group, retention, stream
+    │   ├── taskqueue/           # task, taskqueue, enqueue, dequeue, ack, nack, extend,
+    │   │                        # dlq, archive, lease, scheduler, checkpoint, compaction,
+    │   │                        # metrics, id
+    │   └── retention/coordinator.go
     ├── transport/
-    │   ├── protocol/           # frames, bytes, opcodes, errors, auth, log, task
-    │   └── ipc/ipc.go          # Listen, Dial, DialContext, Listener
-    │
-    ├── manager/                # Kind-partitioned data directory
-    │   ├── kind.go             # Kind, Key, QueueInfo, ErrWrongKind
-    │   └── manager.go          # Manager, Open, Get, GetOf, Create, Delete, List, Collect, Close
-    │
-    ├── node/                   # Process-wide shared local node
-    │   ├── node.go             # Node, openNode, closeInternal, createQueue, Create*/LogQueue/TaskQueue, UpdateQueue, DescribeQueue, DeleteQueue, Truncate, ListQueues
-    │   ├── kind.go             # Kind/QueueInfo aliases, ErrWrongKind alias
-    │   ├── metrics.go          # MetricsConfig, AcquireOption, WithMetrics, MetricsFromSession, preregisterServerMetrics
-    │   ├── pool.go             # ErrSessionDefaultsMismatch, Acquire, releaseFunc
-    │   ├── registry.go         # ErrRegistryCorrupt, QueueEntry, registry, loadRegistry, saveRegistry, reconcileRegistry
-    │   ├── lock.go / lock_unix.go / lock_windows.go
-    │   ├── runtime_source.go / runtime_source_unix.go / runtime_source_windows.go
-    │
-    ├── server/                 # Wire server
-    │   ├── server.go           # Server, New, WithAuth, WithTLS, WithMaxConnections, ListenAndServe, Serve, Stop, serveConn
-    │   ├── dispatch.go         # dispatch
-    │   ├── errors.go           # opErr, taskErr
-    │   ├── auth.go             # authMode, NewAuthMode, Required, Verify
-    │   ├── tls.go              # DefaultTLSConfig, generateSelfSignedCert
-    │   ├── metrics.go          # serverMetrics, newServerMetrics, recordOp, opLabels
-    │   ├── handlers_admin.go / handlers_log.go / handlers_minoffset.go / handlers_task.go
-    │
-    ├── client/                 # Embedded + remote clients
-    │   ├── types.go            # QueueInfo, QueueDescription, Client interface
-    │   ├── options.go          # SessionConfig, DefaultSessionConfig, Option, QueueOption, With*
-    │   ├── errors.go           # ErrProtocol, ErrModeMismatch, ErrUnauthorized, decodeKnown/decodeProtocolError
-    │   ├── embedded.go / embedded_queues.go
-    │   ├── remote.go           # remoteClient, clientConn, NewRemote, acquire, dialConn, writeAuth, exchange
-    │   ├── remote_logqueue.go  # remoteLogQueue, fetch, Stream, Tail, Group
-    │   ├── remote_taskqueue.go # remoteTaskQueue, Dequeue, Enqueue, Ack, Nack, Extend, DLQ, Archive
-    │   └── remote_group.go
-    │
-    ├── errs/errs.go            # Entry, Table, CodeFor, SentinelFor, NonWireSentinels
-    │
-    ├── daemon/
-    │   ├── daemon.go           # ErrUsage, Run, resolveConfig, isLoopback, EnsureDaemonRunning, SendShutdownSignal
-    │   ├── enum.go             # enumValue (flag.Value)
-    │   ├── detach_{unix,windows}.go
-    │   └── metrics_http.go     # metricsServer, startMetricsHTTP, /metrics, /api/metrics, /api/history, /api/events
-    │
+    │   ├── protocol/            # frames, bytes, opcodes, errors, auth, log, task
+    │   └── ipc/ipc.go           # Unix socket + Windows named pipe
+    ├── manager/                 # Kind-partitioned data directory
+    ├── node/                    # Process-wide shared node (node, catalog, kind, pool,
+    │                            # registry, lock_*, metrics, runtime_source_*)
+    ├── errs/errs.go             # Sentinel↔wire-code taxonomy
+    ├── server/                  # Wire server (server, dispatch, errors, auth, tls, handlers_*, metrics)
+    ├── client/                  # Embedded + remote clients
+    ├── daemon/                  # daemon, enum, detach_*, metrics_http
     └── ui/
-        ├── command/            # admin.go, auth.go, client.go, flag.go, help.go, log.go, queue.go, task.go, verb.go
-        ├── cli/cli.go + task.go
-        ├── repl/repl.go + banner.go + confirm.go + style.go + task.go + vt_{other,windows}.go
-        └── style/style.go
+        ├── style/               # Theme, Palette, components (TitledBox, Gauge, ...)
+        ├── human/               # Bytes/Count/Duration/Percent/Rate formatters
+        ├── metricsview/         # summary, detail, queuecard, health, spec, specdiff
+        ├── command/             # admin, auth, client, flag, help, log, queue, task, verb,
+        │                        # metrics, metrics_watch
+        ├── cli/                 # cli.go, task.go, metrics.go
+        └── repl/                # repl, banner, confirm, style, task, metrics, vt_*
 ```
 
 ### Allowed Dependency Edges
 
 ```
-spec, protocol, group, enginetest  → bottoms
-errs                                        → spec, engine, manager, node, taskqueue, protocol
-engine                                      → metrics
-manager                                     → engine, metrics
-ipc                                         → protocol
-logqueue                                    → engine, group
-taskqueue, retention                        → engine, metrics
-node                                        → spec, engine, manager, logqueue, taskqueue, retention, metrics
-client, server                              → spec, engine, node, logqueue, taskqueue, ipc, protocol, metrics, errs
-config                                      → spec, manager
-daemon                                      → spec, config, engine, manager, node, server, protocol, metrics
-mikyu                                       → spec, client, engine, node, logqueue, taskqueue, metrics, protocol
-command                                     → mikyu, client, daemon, spec
-cli, repl                                   → mikyu, client, daemon, command, spec
-cmd                                         → mikyu, daemon, cli, repl
+bottoms:          spec, protocol, group, enginetest, style, human
+metrics        →  spec
+engine         →  spec, metrics
+manager        →  engine, metrics
+ipc            →  protocol
+logqueue       →  engine, group
+taskqueue      →  engine, metrics
+retention      →  engine, metrics
+errs           →  spec, engine, manager, node, logqueue, taskqueue, protocol
+node           →  spec, engine, manager, logqueue, taskqueue, retention, metrics
+config         →  spec, manager
+client, server →  spec, engine, node, logqueue, taskqueue, ipc, protocol, metrics, errs
+                 (client also → group, daemon;  client and server never import each other)
+daemon         →  spec, config, engine, manager, node, server, protocol, metrics
+mikyu          →  spec, client, engine, node, logqueue, taskqueue, metrics, protocol
+metricsview    →  metrics, human, style, spec
+command        →  mikyu, client, daemon, spec, style, human, metricsview
+cli, repl      →  mikyu, client, daemon, command, spec, style, metricsview
+cmd            →  mikyu, daemon, cli, repl
 ```
 
-### Layered Diagram
+### Architecture Diagram
 
 ```mermaid
 flowchart TB
-    subgraph L6["Layer 6 — Access & Deployment"]
-        CLI[ui/cli]:::c
-        REPL[ui/repl]:::c
-        CMD[ui/command]:::c
-        DAEMON[daemon]:::c
-        BIN[cmd/mikyu]:::c
-    end
-    subgraph L5["Layer 5 — Client & Process Core"]
-        CLIENT[client]:::c
-        NODE[node]:::c
-        CONFIG[config]:::c
-    end
-    subgraph L4["Layer 4 — Drivers"]
-        LOGQ[queue/logqueue]:::c
-        TASKQ[queue/taskqueue]:::c
-        GROUP[queue/group]:::c
-        RET[queue/retention]:::c
-    end
-    subgraph L3["Layer 3 — Transport"]
-        PROTO[transport/protocol]:::c
-        IPC[transport/ipc]:::c
-        SERVER[server]:::c
-    end
-    subgraph L2["Layer 2 — Config"]
-        SPEC[spec]:::c
-    end
-    subgraph L1["Layer 1 — Storage"]
-        MGR[manager]:::c
-        ENG[engine]:::c
-        MET[metrics]:::c
-        ERRS[errs]:::c
-    end
-    BIN --> CLI & REPL & DAEMON & CMD
-    CLI & REPL & CMD --> CLIENT & DAEMON & SPEC & PROTO
-    DAEMON --> CONFIG & SERVER & NODE & MGR
-    CLIENT --> NODE & PROTO & IPC & ERRS & MET & GROUP & DAEMON
-    SERVER --> NODE & PROTO & IPC & ERRS & MET
-    NODE --> MGR & LOGQ & TASKQ & RET & MET & SPEC
-    MGR --> ENG
-    LOGQ --> ENG & GROUP
-    TASKQ --> ENG & MET
-    RET --> ENG
-    ENG --> MET
-    MET --> SPEC
+  subgraph L6["L6 — Access & Deployment"]
+    BIN["cmd/mikyu"]:::leaf
+    CMD["ui/command"]:::leaf
+    CLI["ui/cli"]:::leaf
+    REPL["ui/repl"]:::leaf
+  end
+  subgraph L5["L5 — Process Core & Presentation"]
+    DAEMON["daemon"]:::core
+    MIKYU["mikyu (facade)"]:::core
+    STYLE["ui/style"]:::leaf
+    HUMAN["ui/human"]:::leaf
+    MVIEW["ui/metricsview"]:::leaf
+  end
+  subgraph L4["L4 — Client & Server"]
+    CLIENT["client"]:::core
+    SERVER["server"]:::core
+  end
+  subgraph L3["L3 — Node & Config"]
+    NODE["node"]:::core
+    CONFIG["config"]:::core
+    ERRS["errs"]:::bottom
+  end
+  subgraph L2["L2 — Drivers & Retention"]
+    LOGQ["queue/logqueue"]:::driver
+    TASKQ["queue/taskqueue"]:::driver
+    RET["queue/retention"]:::driver
+    GROUP["queue/group"]:::bottom
+    MGR["manager"]:::driver
+  end
+  subgraph L1["L1 — Engine & Transport"]
+    ENG["engine"]:::bottom
+    MET["metrics"]:::bottom
+    PROTO["transport/protocol"]:::bottom
+    IPC["transport/ipc"]:::driver
+    SPEC["spec"]:::bottom
+  end
+
+  BIN --> CLI & REPL & DAEMON & CMD
+  CLI & REPL & CMD --> MIKYU & DAEMON & SPEC & MVIEW
+  CLI & CMD --> STYLE & HUMAN
+  REPL --> STYLE
+  MIKYU --> CLIENT & NODE & SPEC
+  DAEMON --> CONFIG & SERVER & NODE & MGR
+  CLIENT --> NODE & PROTO & IPC & ERRS & MET & GROUP & DAEMON
+  SERVER --> NODE & PROTO & IPC & ERRS & MET
+  NODE --> MGR & LOGQ & TASKQ & RET & MET & SPEC
+  LOGQ --> ENG & GROUP
+  TASKQ --> ENG & MET
+  RET --> ENG & MET
+  ENG --> MET & SPEC
+  MET --> SPEC
+  MGR --> ENG
+  CONFIG --> SPEC & MGR
+  ERRS --> SPEC & ENG & MGR & NODE & TASKQ & PROTO
+
+  classDef bottom fill:#e8eef7,stroke:#3b5b8c,color:#000
+  classDef driver fill:#e6f4ea,stroke:#2e7d32,color:#000
+  classDef core fill:#fff4e0,stroke:#a86200,color:#000
+  classDef leaf fill:#f3e8ff,stroke:#6a1b9a,color:#000
 ```
 
 ---
 
-## 4. Public SDK — `mikyu` Package
-
-**Files:** `mikyu.go`, `options.go`, `spec.go`, `typed.go`.
+## 3. Public SDK — `mikyu` Package
 
 ```go
 type Client interface {
@@ -278,47 +197,31 @@ type Client interface {
     Schema(ctx context.Context) ([]Param, error)
     SubscribeSnapshots() (<-chan Metrics, func())
 }
-
 func Open(dir string, opts ...ClientOption) (Client, error)
 func Dial(target string, opts ...ClientOption) (Client, error)
+const SpecVersion = spec.CurrentSpecVersion   // 5
 ```
 
-**Type aliases (facade):** `LogQueue = logqueue.Log`, `TaskQueue = client.TaskQueue`, `Record = engine.Record`, `Group = logqueue.Group`, `Task = taskqueue.Task`, `TaskRef = taskqueue.Ref`, `TaskID = taskqueue.ID`, `QueueKind = node.Kind`, `QueueInfo = node.QueueInfo`, `QueueDescription = client.QueueDescription`, `Metrics = metrics.Snapshot`, `Param/Kind/Layer/Scope/Session = spec.*`.
+**Type aliases** (`mikyu.go`): `LogQueue = logqueue.Log`, `TaskQueue = client.TaskQueue`, `Record = engine.Record`, `Group = logqueue.Group`, `Task = taskqueue.Task`, `TaskRef = taskqueue.Ref`, `TaskID = taskqueue.ID`, `QueueKind = node.Kind`, `QueueInfo = node.QueueInfo`, `QueueDescription = client.QueueDescription`, `Metrics = metrics.Snapshot`, `Param/Kind/Layer/Scope/Session = spec.*`.
 
 **Typed wrapper** (`typed.go`):
-
 ```go
-type Codec[T any] struct {
-    Marshal   func(T) ([]byte, error)
-    Unmarshal func([]byte, *T) error
-}
-type Typed[T any] struct{ queue LogQueue; codec Codec[T] }
+type Codec[T any] struct { Marshal func(T) ([]byte, error); Unmarshal func([]byte, *T) error }
+type Typed[T any] struct { queue LogQueue; codec Codec[T] }
 func NewTyped[T any](q LogQueue, codec Codec[T]) *Typed[T]
 func (t *Typed[T]) Append(ctx context.Context, val T) (uint64, error)
 func (t *Typed[T]) Read(ctx context.Context, offset uint64) (T, error)
 ```
 
-**Schema surface** (`spec.go`):
+**Schema surface** (`spec.go`): `Schema() []Param`, `Lookup(key) (Param, bool)`, `EncodeSpec`, `EncodeSpecYAML`, `DecodeSpec`, `DecodeSpecYAML`, `ValidateCreate`, `ValidateUpdate`, `ValidateSession`, `Builtin()`, `BuiltinSession()`.
 
-```go
-func Schema() []Param                // fresh copy of spec.Table
-func Lookup(key string) (Param, bool)
-func EncodeSpec(s Spec) ([]byte, error)
-func EncodeSpecYAML(s Spec) ([]byte, error)
-func DecodeSpec(data []byte) (Spec, error)
-func DecodeSpecYAML(data []byte) (Spec, error)
-func ValidateCreate(s Spec) error
-func ValidateUpdate(patch Spec) error
-func ValidateSession(s Session) error
-func Builtin() Spec
-func BuiltinSession() Session
-```
+**Options** (`options.go`): every `With*` constructor re-exports `client.With*` / `taskqueue.With*` / `logqueue.With*`. Notable ones not derived from `spec.Table`: `WithSessionSpec`, `WithAutoStart`, `WithKey` (task), `WithRecordKey` (log), `WithTaskLease`, `WithTaskMaxAttempts`.
 
 ---
 
-## 5. Configuration & Schema — `internal/spec`
+## 4. Configuration & Schema — `internal/spec`
 
-`spec.Table` is the canonical parameter list. Every row carries `Key`, `Path`, `Kind`, `Layer`, `Scope`, `Mutability`, `EnvName`, `FlagName`, `OptionName`, and `Doc`.
+`spec.Table` is the canonical parameter list (`internal/spec/table.go`).
 
 ```go
 type Param struct {
@@ -338,12 +241,10 @@ type Param struct {
 }
 ```
 
-**Kinds:** `KindInt`, `KindUint32`, `KindDuration`, `KindBytes`, `KindBool`, `KindString`, `KindTime`, `KindEnum`.
+**Kinds:** `KindInt, KindUint32, KindDuration, KindBytes, KindBool, KindString, KindTime, KindEnum`.
+**Layers:** `LayerCall, LayerSpec, LayerSession`. **Scopes:** `ScopeClient, ScopeServer, ScopeBoth`. **Mutability:** `MutMutable, MutCreateOnly, MutNotApplicable`.
 
-**Layers:** `LayerCall`, `LayerSpec`, `LayerSession`. **Scopes:** `ScopeClient`, `ScopeServer`, `ScopeBoth`. **Mutability:** `MutMutable`, `MutCreateOnly`, `MutNotApplicable`.
-
-**Spec types** (`spec.go`):
-
+**Spec types** (sparse, pointer fields):
 ```go
 type Spec struct {
     Storage   StorageSpec   `json:"storage,omitzero"`
@@ -353,18 +254,15 @@ type Spec struct {
 }
 type StorageSpec struct {
     Durability, Encryption, Compaction *enum
-    MaxSegment, MaxPayload, MaxCache   *int64
-    MaxSegmentAge                      *Duration
+    MaxSegment, MaxPayload, MaxCache *int64
+    MaxSegmentAge *Duration
 }
-type FlushSpec   struct{ MaxBytes *int64; MaxWait *Duration }
-type RetentionSpec struct{ MaxAge *Duration; MaxBytes *int64 }
-type TaskSpec    struct{ Lease *Duration; MaxAttempts, MaxInFlight, MaxDeadLetters *uint32 }
+type FlushSpec     struct { MaxBytes *int64; MaxWait *Duration }
+type RetentionSpec struct { MaxAge *Duration; MaxBytes *int64 }
+type TaskSpec      struct { Lease *Duration; MaxAttempts, MaxInFlight, MaxDeadLetters *uint32 }
 ```
 
-Every field is a pointer so `EncodeSpec` is sparse and presence-aware.
-
-**Session types** (`spec.go`):
-
+**Session type** (server-scoped, no `json`):
 ```go
 type Session struct {
     Target, DataDir string
@@ -373,38 +271,40 @@ type Session struct {
     Auth    AuthConfig
     Metrics MetricsConfig
 }
-type TLSConfig     struct{ Enabled bool; Cert, Key, ClientCA string }
-type AuthConfig    struct{ Method, Token, TokenFile string }
-type MetricsConfig struct{ Enabled bool; Interval Duration; History int; Listen string; PerQueuePrometheus, Histograms bool }
+type TLSConfig     struct { Enabled bool; Cert, Key, ClientCA string }
+type AuthConfig    struct { Method, Token, TokenFile string }
+type MetricsConfig struct {
+    Enabled bool; Interval Duration; History int; Listen string
+    PerQueuePrometheus, Histograms bool
+}
 ```
 
-**Effective spec resolution** (`spec.go`): `effective = stored.Merge(session_defaults).Merge(spec.Builtin())`.
+**Effective spec:** `effective = stored.Merge(session).Merge(spec.Builtin())` then `Resolve` fills every nil field.
 
-**Derived fields** (`derive.go`): `Resolve(s)` fills every nil field with the built-in default. `RecordOverhead = 36`. `FlushLinger(s) = max(0, MaxWait/8)`.
+**Codec:** `CurrentSpecVersion = 5`, `MaxSpecPayload = 1<<20`. `Duration` accepts Go duration strings or int64 nanos. `DecodeSpec` uses `DisallowUnknownFields` + trailing-data rejection. `CheckSpecVersion(version) error` returns `ErrSpecTooNew`.
 
-**Codec** (`codec.go`): `CurrentSpecVersion = 4`, `MaxSpecPayload = 1 MiB`. `Duration` accepts Go duration strings or int64 nanos; `EncodeSpec` omits unset fields; `DecodeSpec` uses `DisallowUnknownFields` + trailing-data rejection; `CheckSpecVersion` returns `ErrSpecTooNew`.
-
-**Validation** (`validate.go`): positive-byte/duration/uint32 rules for storage, non-negative for retention, `max_payload ≤ max_segment − RecordOverhead`, `max_cache ≥ min(builtinMaxCache, max_segment)`. Session: `max_connections ≥ 1`, `metrics_interval > 0` when enabled, `metrics_history ≥ 1`, `metrics_listen` must parse as host:port, `auth_method ∈ {"", none, none-insecure, token, mtls}`, token mode needs token/file ≥ 16 bytes, `mtls` needs TLS.
-
-**Built-in defaults** (`spec.go` → `Builtin()`):
+**Built-in defaults** (`spec.go → Builtin()`):
 
 | Key | Value |
 |---|---|
-| `storage.durability` / `encryption` / `compaction` | `sync` / `none` / `none` |
-| `storage.max_segment` / `max_segment_age` / `max_payload` / `max_cache` | 64 MiB / 1h / 1 MiB / 32 MiB |
-| `flush.max_bytes` / `max_wait` | 1 MiB / 10 ms |
-| `retention.max_age` / `max_bytes` | `0` / `0` (unlimited) |
-| `task.lease` / `max_attempts` / `max_in_flight` / `max_dead_letters` | 30 s / 5 / 100000 / 100000 |
-| `server.target` / `max_connections` | `tcp://127.0.0.1:7420` / 10 |
-| `server.data_dir` | *(unset in `BuiltinSession()`; `config.DefaultConfig()` supplies `./data`)* |
-| `server.auth_method` / `tls_enabled` | `none` / `false` |
-| `server.metrics_enabled` / `interval` / `history` / `histograms` | `true` / 1s / 300 / `true` |
+| `durability` / `encryption` / `compaction` | `sync` / `none` / `none` |
+| `max_segment` / `max_segment_age` / `max_payload` / `max_cache` | 64 MiB / 1 h / 1 MiB / 32 MiB |
+| `max_flush_bytes` / `max_flush_wait` | 1 MiB / 10 ms |
+| `max_retention_age` / `max_retention_bytes` | 0 / 0 (unlimited) |
+| `lease` / `max_attempts` / `max_in_flight` / `max_dead_letters` | 30 s / 5 / 100 000 / 100 000 |
+| `target` / `max_connections` | `tcp://127.0.0.1:7420` / 10 |
+| `auth_method` / `tls_enabled` | `none` / `false` |
+| `metrics_enabled` / `interval` / `history` / `histograms` | `true` / 1 s / 300 / `true` |
 
-**Env/flag/option naming**: `envName = "MIKYU_" + UPPER(key)`, `flagName = key` with `_→-`, `optionName = "With" + PascalCase(key)` (with `tls→TLS`, `ca→CA` initialisms).
+**Naming rule:** `EnvName = "MIKYU_" + UPPER(key)`, `FlagName = key` with `_→-`, `OptionName = "With" + PascalCase(key)` (with `tls→TLS`, `ca→CA` initialisms).
+
+**Validation** (`validate.go`): positive-byte/duration/uint32 rules; non-negative for retention; `max_payload ≤ max_segment − RecordOverhead (36)`; `max_cache ≥ min(builtinMaxCache, max_segment)`. Session: `max_connections ≥ 1`, `metrics_interval > 0` when enabled, `metrics_history ≥ 1`, `metrics_listen` host:port, `auth_method ∈ {"", none, none-insecure, token, mtls}`, token mode needs ≥16-byte token/file, `mtls` needs TLS.
+
+**Derived:** `RecordOverhead = 36`; `FlushLinger(s) = max(0, MaxWait/8)`.
 
 ---
 
-## 6. Storage Engine — `internal/engine`
+## 5. Storage Engine — `internal/engine`
 
 ### `Storage` interface
 
@@ -428,21 +328,11 @@ type Storage interface {
 }
 ```
 
-### `Record`
+### `Record` / `Config`
 
 ```go
-type Record struct {
-    Offset    uint64
-    ID        string
-    Timestamp time.Time
-    Group     []byte   // compaction group; nil for unkeyed records
-    Payload   []byte
-}
-```
+type Record struct { Offset uint64; ID string; Timestamp time.Time; Group, Payload []byte }
 
-### `Config`
-
-```go
 type Config struct {
     Durability       spec.Durability
     Encryption       spec.Encryption
@@ -461,20 +351,32 @@ func (c Config) KeyedCompaction() bool  { return c.Compaction == spec.Compaction
 func (c Config) EncryptedStorage() bool { return c.Encryption == spec.EncryptionOS }
 ```
 
+### Sentinels
+
+`ErrQueueExists, ErrQueueNotFound, ErrOffsetNotFound, ErrMessageTooLarge, ErrRecordTooLarge, ErrOffsetTruncated, ErrQueueClosed, ErrNoData, ErrRecordCompacted, ErrDiskFull, ErrCorruptRecord`.
+
 ### `Manager` (per kind)
 
 ```go
-type Manager struct { mu sync.RWMutex; dir string; root *os.Root; cfg Config; queues map[string]*Queue; offsets *OffsetStore; reg *metrics.Registry }
+type Manager struct {
+    mu      sync.RWMutex
+    dir     string
+    root    *os.Root
+    cfg     Config
+    queues  map[string]*Queue
+    offsets *OffsetStore
+    reg     *metrics.Registry
+}
 func OpenManager(dir string, cfg Config, perQueue map[string]Config, regs ...*metrics.Registry) (*Manager, error)
 func (m *Manager) Create(name string, opts ...Config) (Storage, error)
 func (m *Manager) Get(name string) (Storage, error)
 func (m *Manager) List() []string
 func (m *Manager) Delete(name string) error
-func (m *Manager) Collect(_ context.Context, dst *metrics.Snapshot)
+func (m *Manager) Collect(ctx, dst *metrics.Snapshot)
 func (m *Manager) Close() error
 ```
 
-Each `manager.Manager` opens one engine manager per kind root; `manager-offsets.dat` is per root so consumer groups on `log/events` and `task/events` are independent.
+`manager-offsets.dat` is per root, so consumer groups on `log/events` and `task/events` are independent.
 
 ### `Queue`
 
@@ -501,36 +403,35 @@ type Queue struct {
 }
 ```
 
-`openQueue(parentDir, name, cfg, store, scopes...)` opens the queue directory through `os.Root` scoped to `parentDir`, so a hostile name cannot escape. All segment I/O uses the same mechanism.
+`openQueue(parentDir, name, cfg, store, scopes...)` opens the queue directory through `os.Root` scoped to `parentDir`, so a hostile name cannot escape.
 
 ### Append Path
 
-`Append` delegates to `AppendBatch`. The batch path stages per-segment sub-batches so a WAL write never straddles a roll:
+`Append` delegates to `AppendBatch`. The batch stages per-segment sub-batches so a WAL write never straddles a roll:
 
 1. Validate `len(payload) ≤ MaxPayload`; encode with `uuid.NewV7()`; reject `recLen > MaxSegment` with `ErrRecordTooLarge`.
 2. Stage into a per-segment `stagedBatch{w, seg, recs, positions, recLens, offsets, ids, totalLen, startIdx}`.
-3. On roll or flush budget: commit through `commitSync` (which calls `wal.pushBatch`, unlocks, waits on `wal.wait(seq)`) or `commitAsync` (which calls `wal.pushAsync` and clones into the ring cache).
+3. On roll or flush budget: commit through `commitSync` (calls `wal.pushBatch`, unlocks, waits on `wal.wait(seq)`) or `commitAsync` (calls `wal.pushAsync`, clones into ring cache).
 4. Final staged group committed after the loop; `broadcastLocked()` wakes parked readers.
 
 ### Read Path
 
-1. `q.cache.Get(offset)` (byte-budget ring, O(1)).
-2. `q.locateSegment(offset)` — `slices.BinarySearchFunc` over segment base offsets; `offset < minOffset` → `ErrOffsetTruncated`; `offset ≥ publishedOffset` → `ErrOffsetNotFound`.
-3. `readFromSegment` — reads from `seg.mmapData` when mapped, else `seg.logFile.ReadAt`; `decodeRecord` validates CRC and length; a zeroed slot in a compactable queue returns `ErrRecordCompacted`.
-4. `q.superseded(group, offset)` when compaction is on and the group has a newer offset → `ErrRecordCompacted`.
+1. `q.cache.Get(offset)` — byte-budget ring, O(1).
+2. `q.locateSegment(offset)` — `slices.BinarySearchFunc`; `offset < minOffset` → `ErrOffsetTruncated`; `offset ≥ publishedOffset` → `ErrOffsetNotFound`.
+3. `readFromSegment` — reads from `seg.mmapData` when mapped, else `seg.logFile.ReadAt`; `decodeRecord` validates CRC and length. A zeroed slot in a compactable queue returns `ErrRecordCompacted`.
+4. `q.superseded(group, offset)` when compaction is on → `ErrRecordCompacted`.
 
-`ReadBatch` reuses the current segment between consecutive offsets and only falls back to `locateSegment` at boundaries; compacted offsets are skipped.
+`ReadBatch` reuses the current segment between consecutive offsets; compacted offsets are skipped.
 
 ### Fetch
 
-`Fetch(ctx, offset, maxCount, maxWait)`:
-- `maxCount ≤ 0` → `nil, nil`.
-- `offset < minOffset` → `ErrOffsetTruncated`.
-- `offset < publishedOffset` → `ReadBatch`; if the window held only compacted records, advance past it; else `ErrNoData`.
+```go
+func (q *Queue) Fetch(ctx, offset uint64, maxCount int, maxWait time.Duration) ([]Record, error)
+```
+- `maxCount ≤ 0` → `nil, nil`; `offset < minOffset` → `ErrOffsetTruncated`.
+- `offset < publishedOffset` → `ReadBatch`; if window held only compacted records, advance past it; else `ErrNoData`.
 - `maxWait ≤ 0` → `ErrNoData` immediately.
-- otherwise parks on `ctx.Done()`, `notify`, or `timer.C`.
-
-`broadcastLocked()` swaps `q.notify` for a fresh channel and closes the old one, waking every parked reader.
+- Otherwise parks on `ctx.Done()`, `notify`, or `timer.C`. `broadcastLocked()` swaps `q.notify` and closes the old one.
 
 ### Segment Rolling & Preallocation
 
@@ -539,14 +440,16 @@ type Queue struct {
 - Filled after 5 min → halve, floored at 8 MiB.
 - Active segment truncated to written `pos` before `enableMMap`.
 
-### Compaction
+### Compaction (log only)
 
-When `KeyedCompaction()` is true, `keyIndex map[string]uint64` maps each group to its newest offset; `buildKeyIndex` walks every record on open. After each `roll()`, `compactClosedLocked` rewrites each closed segment in place:
+When `KeyedCompaction()` is true, `keyIndex map[string]uint64` maps group → newest offset; `buildKeyIndex` walks every record on open. After each `roll()`, `compactClosedLocked` rewrites each closed segment in place:
 
-1. Walk index entries; drop records whose group has a newer offset.
+1. Walk index entries; drop records whose group has a newer offset (corrupt records are **kept** — dropping could remove the newest).
 2. Unmap, rewrite `.log` with kept records concatenated, zero dropped index slots.
 3. `cache.Evict(evicted...)`.
-4. `supersededLocked` is checked on every `Read` so a superseded record still in a mapping returns `ErrRecordCompacted`.
+4. `supersededLocked` checked on every `Read` so a superseded record still in a mapping returns `ErrRecordCompacted`.
+
+Key index warn limit is `keyIndexWarnLimit = 1_000_000`; over the limit logs a warning and the `key_index` gauge reports the live size.
 
 ### WAL
 
@@ -554,36 +457,32 @@ When `KeyedCompaction()` is true, `keyIndex map[string]uint64` maps each group t
 type wal struct {
     cfg Config; file *os.File
     mu sync.Mutex; cond *sync.Cond
-    buf, swapBuf           []byte
-    pending, swapPending   []pendingEntry
-    pendingBytes           int64
-    pushedBytes, publishedBytes int64
-    asyncNext              uint64
-    err                    error
-    asyncChan              chan asyncEntry
-    wake, configChanged    chan struct{}
-    shutdown, done         chan struct{}
-    stopOnce               sync.Once
-    m                      *walMetrics
+    buf, swapBuf             []byte
+    pending, swapPending     []pendingEntry
+    pendingBytes, pushedBytes, publishedBytes int64
+    asyncNext                uint64
+    err                      error
+    asyncChan                chan asyncEntry
+    wake, configChanged      chan struct{}
+    shutdown, done           chan struct{}
+    stopOnce                 sync.Once
+    m                        *walMetrics
 }
 ```
 
-**Byte-based sequencing**: `push(rec, pos)` returns `(seq, wake, err)` where `seq = pushedBytes + len(rec)`. `wait(seq)` blocks until `publishedBytes ≥ seq` or `err != nil`.
+**Byte-based sequencing**: `push(rec, pos) (seq, wake, err)` returns `seq = pushedBytes + len(rec)`; `wait(seq)` blocks until `publishedBytes ≥ seq` or `err != nil`.
 
-**Sync path.** `push`/`pushBatch` stage bytes + pending entries under lock. `syncLoop` selects over `asyncChan`, `ticker.C` (`MaxFlushWait`), `wake`, `configChanged`, `shutdown`. `adaptiveFlush` sleeps `FlushLinger` before flushing when the batch is below `MaxFlushBytes`. `flush` swaps `buf ↔ swapBuf` and `pending ↔ swapPending`, drains the wake token under lock, calls `writeAt`, `syncData` if sync durability; broadcasts on `cond`.
+**Sync path.** `push`/`pushBatch` stage bytes + pending entries under lock. `syncLoop` selects over `asyncChan`, `ticker.C` (`MaxFlushWait`), `wake`, `configChanged`, `shutdown`. `adaptiveFlush` sleeps `FlushLinger` before flushing when the batch is below `MaxFlushBytes`. `flush` swaps buffers, drains the wake token under lock, calls `writeAt`, `syncData` if sync durability, and broadcasts on `cond`.
 
-**Async path.** `Queue.AppendBatch` publishes records onto `wal.asyncChan` and clones into the ring cache. `drainAndFlushAsync(first)` groups up to `MaxFlushBytes` entries, writes each record at its `pos`, writes the corresponding `.idx` entry, and advances `asyncNext` contiguously; the queue's own `publishedOffset` is bumped separately in `AppendBatch`'s `commitAsync`.
+**Async path.** `AppendBatch` publishes records onto `wal.asyncChan` and clones into the ring cache. `drainAndFlushAsync(first)` groups up to `MaxFlushBytes` entries, writes each at its `pos`, writes the `.idx` entry, and advances `asyncNext` contiguously; `publishedOffset` is bumped separately in `commitAsync`.
 
-**Single writer.** `writeAt` is the only writer of the WAL segment file; `writerHook` (test hook) asserts the invariant.
+**Single writer.** `writeAt` is the only writer of the WAL segment file; `writerHook` (test) asserts the invariant.
 
-**Wake-token correctness.** The `wake` channel has buffer 1 and is drained inside `flush()` under lock, preventing producer hangs when `adaptiveFlush` is mid-linger.
+**Wake-token correctness.** `wake` has buffer 1 and is drained inside `flush()` under lock, preventing producer hangs when `adaptiveFlush` is mid-linger.
 
 **Async backpressure**: `asyncChan` capacity = `MaxFlushBytes/4096` slots.
 
-**Platform `syncData`:**
-- Darwin: `unix.FcntlInt(fd, F_FULLFSYNC, 0)`, falling back to `file.Sync()`.
-- Linux/BSD: `unix.Fdatasync(fd)`.
-- Windows: `file.Sync()`.
+**Platform `syncData`:** Darwin uses `F_FULLFSYNC`; Linux/BSD use `Fdatasync`; Windows uses `File.Sync()`.
 
 ### Segment
 
@@ -599,12 +498,11 @@ type segment struct {
 ```
 
 - `openSegment(dir, baseOff, preallocSize)` preallocates the `.log` if empty.
-- `enableMMap()` maps both files read-only only if `Stat().Size() > 0` (Windows robustness).
-- `recover()` tries `tryFastRecovery` (validates last index entry, copies raw entries); on failure `rebuild()` re-walks the `.log`, validates each CRC-checked record, rewrites `.idx`, truncates torn tails.
+- `enableMMap()` maps both files read-only only if `Stat().Size() > 0`.
+- `recover()` tries `tryFastRecovery` (validates last index entry); on failure `rebuild()` re-walks the `.log`, validates CRC, rewrites `.idx`, truncates torn tails.
 - `readIndexEntry(offset)` reads 16 bytes from `idxMMap` (closed) or `idxFile.ReadAt`.
 - `lastTimestamp()` returns the newest record's timestamp (`FloorOlderThan`).
-- `destroy()` unmaps, closes, unlinks both files through `os.Root`.
-- `Close()` truncates the active `.log` to `pos`, unmaps, closes.
+- `destroy()` unmaps, closes, unlinks through `os.Root`.
 
 ### Record Format
 
@@ -612,15 +510,15 @@ type segment struct {
 [4B Body Length][4B CRC32][2B ID Length=16][16B Raw UUID v7][8B Unix Nanos][2B Group Length][Group][Payload]
 ```
 
-CRC-32/IEEE covers the body (`rec[8:]`). `decodeRecord` returns `(id string, ts time.Time, group, payload []byte, err error)`.
+CRC-32/IEEE covers the body (`rec[8:]`).
 
 ### Ring Cache
 
-`ringCache` sized from `max_cache` (round up to power of two; floor 64 slots, cap 65536; average record size 256 B + 36 B overhead). `Put` evicts FIFO from `head` while `curBytes > maxBytes`. `Get` validates `msg.Offset == offset` and non-zero timestamp. `EvictBefore(minOffset)` and `Evict(offsets...)` adjust `curBytes`. `SetMaxBytes` moves the budget and evicts from head.
+`ringCache` sized from `max_cache` (round up to power of two; floor 64 slots, cap 65536; avg 256 B + 36 B overhead). `Put` evicts FIFO from `head` while `curBytes > maxBytes`. `Get` validates `msg.Offset == offset` and non-zero timestamp. `EvictBefore(minOffset)` and `Evict(offsets...)` adjust `curBytes`. `SetMaxBytes` moves the budget and evicts from head.
 
 ### Offset Store
 
-One `manager-offsets.dat` per engine root persists `(queue:group) → uint64` as `[2B keyLen][key][8B offset]` tuples. `Commit` writes, flushes, `Sync`s, and every `compactAppendsThreshold = 5000` appends triggers `compactLocked`, which rewrites atomically via `os.Rename` from `manager-offsets.dat.tmp` and `syncDir(root)`.
+One `manager-offsets.dat` per engine root persists `(queue:group) → uint64` as `[2B keyLen][key][8B offset]`. `Commit` writes, flushes, `Sync`s; every `compactAppendsThreshold = 5000` appends triggers `compactLocked`, which rewrites atomically via `os.Rename` from `manager-offsets.dat.tmp` and `syncDir(root)`.
 
 ### Retention Primitives
 
@@ -642,7 +540,7 @@ One `manager-offsets.dat` per engine root persists `(queue:group) → uint64` as
 
 ---
 
-## 7. Log Queue — `internal/queue/logqueue`
+## 6. Log Queue — `internal/queue/logqueue`
 
 ```go
 type Log interface {
@@ -667,30 +565,22 @@ func WithKey(k []byte) AppendOption
 func ResolveAppendOptions(opts ...AppendOption) (key []byte)
 ```
 
-Internally `queue{name, storage, mu sync.RWMutex, groups map[string]*queueGroup}`. `Append`/`AppendBatch` resolve the key and pass it to `engine.WithGroup`.
+Internal `queue{name string, storage engine.Storage, mu sync.RWMutex, groups map[string]*queueGroup}`.
 
 **Consumer group** (`group.go`):
-
 ```go
-type Group interface {
-    io.Closer
-    Name() string
-    Mark(offset uint64)
-    Commit(ctx) error
-    Committed(ctx) (uint64, error)
-}
+type Group interface { io.Closer; Name() string; Mark(offset uint64); Commit(ctx) error; Committed(ctx) (uint64, error) }
 type queueGroup struct { group.Base; q *queue }
 ```
+`group.Base` holds a `sync.Mutex`-guarded `HighWater uint64`, a `Closed` flag, and `CommitFn func(ctx, offset) error`. `Mark` advances to `offset+1` monotonically. `Close` is idempotent and commits the final high water.
 
-`group.Base` holds a `sync.Mutex`-guarded `HighWater uint64`, a `Closed` flag, and `CommitFn func(ctx, offset) error`. `Mark` advances to `offset+1` monotonically. `Commit` snapshots and persists. `Close` is idempotent and commits the final high water.
+**Stream & Tail** (`stream.go`): `streamBatch = 1024`, `tailWait = 30s`. `Stream` uses `maxWait=0` (non-blocking drain). `Tail` blocks in `Fetch` per iteration; `ErrNoData` re-arms.
 
-**Stream & Tail** (`stream.go`): `streamBatch = 1024`, `tailWait = 30s`. `Stream` uses `maxWait=0` (non-blocking drain). `Tail` blocks in `Fetch` per iteration; `ErrNoData` re-arms the wait.
-
-**Retention** (`retention.go`): `TruncateFloor` returns `min(HighWater)` and a `constrained` flag. `Truncate(ctx, 0)` uses the driver's own floor when constrained; otherwise a no-op.
+**Retention** (`retention.go`): `TruncateFloor` returns `min(HighWater)` and a `constrained` flag. `Truncate(ctx, 0)` uses the driver's own floor when constrained; else no-op.
 
 ---
 
-## 8. Task Queue — `internal/queue/taskqueue`
+## 7. Task Queue — `internal/queue/taskqueue`
 
 ```go
 type Queue interface {
@@ -717,17 +607,17 @@ type queue struct {
     name string; storage engine.Storage
     mu sync.Mutex
     active            map[string]*taskState
+    inFlightCount     int64
     dlq               map[string]Task
     dlqUncheckpointed map[string]struct{}
     schedule          scheduleHeap
     sequence, scanNext uint64
-    checkpointOffset  uint64
+    checkpointOffset, checkpointCovered uint64
     dirty             uint64
     notify            chan struct{}
-    stopCh            chan struct{}
-    wg                sync.WaitGroup
     closing, closed   bool
-    defaultLease  time.Duration; defaultMaxAttempts uint32
+    defaultLease       time.Duration
+    defaultMaxAttempts uint32
     maxInFlight, maxDeadLetters uint32
     archiveLog ArchiveLogFor
     m *taskMetrics
@@ -737,87 +627,80 @@ type ArchiveAppender interface{ Append(ctx, payload) (uint64, error) }
 type ArchiveLogFor func(ctx, source string) (ArchiveAppender, error)
 ```
 
-Lifecycle: `New` opens storage, `loadCheckpointLocked`, `scanNext = MinOffset()`, `refreshLocked` replays post-checkpoint records, starts `checkpointLoop` (5 s ticker). `Close` stops the loop, writes a final checkpoint if dirty, marks closed.
+Lifecycle: `New` opens storage, `loadCheckpointLocked`, `scanNext = MinOffset()`, `refreshLocked` replays post-checkpoint records. `Close` stops any checkpoint work, writes a final checkpoint if dirty, marks closed. The node's `catalog.go` sweeps dirty task queues every `checkpointSweepInterval = 5s` via `taskqueue.Checkpoint`.
 
 **Types** (`task.go`):
-
 ```go
 type Task struct {
     ID, DeliveryID string
     Payload        []byte
     Attempts, MaxAttempts, Stalled uint32
     Lease, ScheduledAt time.Time
-    Offset         uint64
-    Key            []byte
+    Offset uint64
+    Key    []byte
 }
-type Ref interface{ taskRef(); taskID() string }
-type ID string   // bare ID → skip strict lease check
+type Ref interface { taskRef(); taskID() string }
+type ID string
 ```
+Constants: `defaultLease=30s`, `defaultMaxAttempts=5`, `defaultRetryDelay=1s`, `defaultMaxRetryDelay=5min`, `checkpointEvery=128`, `checkpointChunkBytes=64KiB`.
 
-Constants: `defaultLease=30s`, `defaultMaxAttempts=5`, `defaultRetryDelay=1s`, `defaultMaxRetryDelay=5min`, `defaultCheckpointInterval=5s`, `checkpointEvery=128`, `checkpointChunkBytes=64KiB`.
+**Enqueue** appends `recordTask`, installs a `taskState{task, nextAt: scheduledAt, lease: visibilityTimeout}`, pushes onto schedule, sets `scanNext = offset+1`, `dirty++`, broadcasts.
 
-**Enqueue** appends `recordTask` under lock, installs a `taskState{task, nextAt: scheduledAt, lease: visibilityTimeout}`, pushes onto the schedule, sets `scanNext = offset+1`, `dirty++`, broadcasts.
-
-**Dequeue** loops on `takeDueLocked(ctx, now)`:
-1. Pop stale schedule entries.
-2. If a due in-flight task is on its final attempt → dead-letter (`recordDLQ`), move to `dlq`, mark `dlqUncheckpointed`, broadcast, continue.
-3. Otherwise assign a fresh `DeliveryID`, `inFlight=true`, `Attempts++`, `Lease=now+visibilityTimeout`, bump version, re-push, broadcast, return.
-
-`TryDequeue` is a single non-blocking pass. Context cancellation returns `ctx.Err()`.
+**Dequeue** loops on `takeDueLocked(ctx, now)`: pop stale entries, dead-letter a final-attempt in-flight task, else assign a fresh `DeliveryID`, `Attempts++`, `Lease=now+lease`, bump version, re-push, broadcast, return. `TryDequeue` is one non-blocking pass.
 
 **Lease resolution** (`lease.go`):
-
 ```go
 func (q *queue) resolveLeaseLocked(ref Ref) (*taskState, error)
 ```
-
-- `nil` → `ErrInvalidTask`.
-- Not in `active` → `ErrTaskNotFound`.
-- Not `inFlight` → `ErrTaskNotInflight`.
-- Visibility expired → `ErrTaskStale`.
+- `nil` → `ErrInvalidTask`; not in `active` → `ErrTaskNotFound`; not `inFlight` → `ErrTaskNotInflight`; visibility expired → `ErrTaskStale`.
 - **Strict mode** (`ref` is `Task`): requires `Offset`, `Attempts`, non-empty `DeliveryID` to match exactly.
-- **Loose mode** (`ref` is `TaskID`): skips strict comparison; visibility check still applies.
+- **Loose mode** (`ref` is `TaskID`): skips strict comparison; visibility still applies.
 
 `broadcastLocked()` closes `q.notify` and allocates a fresh channel.
 
 **Ack / Nack / Extend / DLQ / Archive:**
-- **Ack** — `resolveLeaseLocked`, delete from `active`, `dirty++`, broadcast, prune schedule, `acks++`.
-- **Nack** — `resolveLeaseLocked`; on `Attempts ≥ MaxAttempts` → dead-letter (with DLQ overflow drop of the oldest when `MaxDLQ` is exceeded); otherwise reset `inFlight`, clear `DeliveryID`, `nextAt = now + retryAfter`, bump version, re-push. Bumps `nacks` in both branches.
+- **Ack** — `resolveLeaseLocked`, delete from `active`, `dirty++`, broadcast, prune, `acks++`.
+- **Nack** — `resolveLeaseLocked`; on `Attempts ≥ MaxAttempts` → dead-letter (with DLQ overflow drop of the oldest when `MaxDLQ` exceeded); else reset `inFlight`, clear `DeliveryID`, `nextAt = now + retryAfter`, bump version, re-push.
 - **Extend** — extends `Lease` forward only; never increments `Attempts`.
-- **DeadLetters** — returns an offset-sorted snapshot; **AckDeadLetter** verifies `Offset`/`Attempts` in strict mode, appends `recordDLQAck`, deletes, `dlq_acks++`.
-- **Archive** — resolves against `active` first (strict), then `dlq`. Encodes an `archiveEnvelope`, appends to `<queue>-archive` (created lazily via `ArchiveLogFor`), removes from source. On failure, task stays put; returns `ErrArchiveFailed`.
+- **DeadLetters** — offset-sorted snapshot; **AckDeadLetter** verifies `Offset`/`Attempts` in strict mode, appends `recordDLQAck`, deletes, `dlq_acks++`.
+- **Archive** — resolves against `active` first (strict), then `dlq`. Encodes an `archiveEnvelope`, appends to `<queue>-archive` (created lazily via `ArchiveLogFor`), removes from source. On failure task stays put; returns `ErrArchiveFailed`.
 
 **Scheduler** (`scheduler.go`): binary min-heap ordered by `(due, seq)`. `pushScheduleLocked` bumps `q.sequence`; `pruneScheduleLocked` rebuilds when `len(schedule) > len(active)*3 + 1024`.
 
 **Checkpointing** (`checkpoint.go`): record kinds `recordTask=1`, `recordCPStart=2`, `recordCPChunk=3`, `recordCPCommit=4`, `recordDLQ=5`, `recordDLQAck=6`. `checkpointVersion=3`, `maxCheckpointChunks=1<<20`, `maxCheckpointBytes=512<<20`.
 
 `checkpointLocked`:
-1. `refreshLocked`.
-2. Snapshot `active` (sorted by offset) + `dlq`.
-3. Append `recordCPStart(coveredThrough)`.
-4. Split snapshot into ≤ `min(MaxAppendPayloadBytes()-header, checkpointChunkBytes)` chunks; append `recordCPChunk(i, data)`.
-5. Append `recordCPCommit(startOffset, totalChunks, coveredThrough)`.
-6. Verify `commitOffset == startOffset + totalChunks + 1`; mismatch → `ErrCheckpointCorrupt`.
-7. Clear `dlqUncheckpointed`, `dirty = 0`.
+1. `refreshLocked`; snapshot `active` (offset-sorted) + `dlq`.
+2. Append `recordCPStart(coveredThrough)`.
+3. Split snapshot into ≤ `min(MaxAppendPayloadBytes()-header, checkpointChunkBytes)` chunks; append `recordCPChunk(i, data)`.
+4. Append `recordCPCommit(startOffset, totalChunks, coveredThrough)`.
+5. Verify `commitOffset == startOffset + totalChunks + 1`; mismatch → `ErrCheckpointCorrupt`.
+6. Clear `dlqUncheckpointed`, `dirty = 0`.
 
 `loadCheckpointLocked` scans backward from `LastOffset()` for the newest valid commit; on failure tries an earlier one. `refreshLocked` walks `scanNext` forward; anything that isn't a task record kind is reported as `ErrCorruptRecord` naming the queue (this is how the task driver refuses to reinterpret a moved log directory).
 
 **Archive envelope** (`archive.go`): `ArchivePrefix = "-archive"`. Fields: `sourceQueue(string) + key(string) + taskPayload(bytes) + attempts(u32) + stalled(u32) + deliveryID(string) + offset(u64) + archivedFrom(string) + timestamp(u64)`.
 
-**Task metrics** (`metrics.go`): `enqueues`, `dequeues`, `acks`, `nacks`, `extends`, `dlq_acks`, `dlq_overflow`, `task_stalls`, `enqueue_duration`, `dequeue_wait`.
+**Task metrics** (`metrics.go`): `enqueues, dequeues, acks, nacks, extends, dlq_acks, dlq_overflow, task_stalls, dequeue_park_events, queue_full_events, retry_budget_drops, enqueue_duration, dequeue_wait, in_flight_enqueue, parked_dequeue, active, in_flight, scheduled, dead_letters, uncheckpointed, schedule_heap, checkpoint_lsn, dirty, checkpoint_lag`. `publishLocked()` mirrors `viewLocked()` into the scope.
 
 ---
 
-## 9. Cross-Driver Retention — `internal/queue/retention`
+## 8. Cross-Driver Retention — `internal/queue/retention`
 
 ```go
 type FloorProvider interface {
     TruncateFloor(ctx) (floor uint64, constrained bool, err error)
 }
-type Policy struct{ Age time.Duration; Bytes int64 }
-type Target struct{ Name string; Storage engine.Storage; Driver FloorProvider; Policy Policy; mu sync.Mutex }
-type Coordinator struct{ mu sync.RWMutex; targets map[string]*Target; interval time.Duration }
-
+type Policy struct { Age time.Duration; Bytes int64 }
+type Target struct {
+    Name string; Storage engine.Storage; Driver FloorProvider
+    Policy Policy; mu sync.Mutex
+}
+type Coordinator struct {
+    mu       *metrics.RWLockObserver
+    targets  map[string]*Target
+    interval time.Duration
+}
 func NewCoordinator(interval time.Duration) *Coordinator
 func (c *Coordinator) RegisterTarget(target *Target)
 func (c *Coordinator) SetPolicy(name string, p Policy) (shrunk bool)
@@ -832,7 +715,7 @@ func (c *Coordinator) Start(ctx)
 
 ---
 
-## 10. Transport — `internal/transport`
+## 9. Transport — `internal/transport`
 
 ### Frames
 
@@ -841,7 +724,6 @@ func (c *Coordinator) Start(ctx)
 | Length (uint32) | Opcode (u8) | Payload (Length-1)   |
 +-----------------+-------------+----------------------+
 ```
-
 `MaxFrameBytes = 256 MiB`. `WriteFrame` grabs a pooled `[]byte` (32 KiB seed), grows in-place while retaining the pointer, writes, returns to pool. `ReadFrame` validates length, allocates exactly `length-1` bytes, reads in one `io.ReadFull`. `ReadFrameInto` supports buffer reuse.
 
 ### Bytes
@@ -859,11 +741,11 @@ func (c *Coordinator) Start(ctx)
 | Protocol | `0x7E` | Auth |
 | Error | `0xFF` | Error |
 
-Table is frozen; opcodes never reused. `ParseTarget` supports `tcp://`, `unix://`, `pipe://`, bare `host:port`.
+`ParseTarget` supports `tcp://`, `unix://`, `pipe://`, bare `host:port`.
 
 ### Error Codes
 
-Blocked by subsystem nibble: `0x01–0x0F` admin, `0x11–0x1F` storage, `0x21–0x2F` task, `0x31–0x3F` dead-letter, `0x41–0x4F` server. `ErrCodeUnknown=0x01`, `QueueNotFound=0x02`, `QueueExists=0x03`, `InvalidConfig=0x04`, `ImmutableField=0x05`, `SpecTooNew=0x06`, `SpecTooLarge=0x07`, `Unauthorized=0x09`, `OffsetNotFound=0x11`, `OffsetTruncated=0x12`, `MessageTooLarge=0x13`, `QueueClosed=0x14`, `NoData=0x15`, `DiskFull=0x16`, `CorruptRecord=0x17`, `RecordTooLarge=0x18`, `RecordCompacted=0x19`, `TaskNotAvailable=0x21`, `TaskNotFound=0x22`, `TaskNotInflight=0x23`, `TaskStale=0x24`, `TaskInvalid=0x25`, `CheckpointCorrupt=0x26`, `QueueFull=0x27`, `DeadLetterNotFound=0x31`, `DeadLetterStale=0x32`, `ArchiveFailed=0x33`, `TooManyConnections=0x41`, `WrongKind=0x42`.
+Blocked by subsystem nibble: `0x01–0x0F` admin, `0x11–0x1F` storage, `0x21–0x2F` task, `0x31–0x3F` dead-letter, `0x41–0x4F` server. Includes `ErrCodeUnknown=0x01`, `QueueNotFound=0x02`, `QueueExists=0x03`, `InvalidConfig=0x04`, `ImmutableField=0x05`, `SpecTooNew=0x06`, `SpecTooLarge=0x07`, `Unauthorized=0x09`, `OffsetNotFound=0x11`, `OffsetTruncated=0x12`, `MessageTooLarge=0x13`, `QueueClosed=0x14`, `NoData=0x15`, `DiskFull=0x16`, `CorruptRecord=0x17`, `RecordTooLarge=0x18`, `RecordCompacted=0x19`, `TaskNotAvailable=0x21`, `TaskNotFound=0x22`, `TaskNotInflight=0x23`, `TaskStale=0x24`, `TaskInvalid=0x25`, `CheckpointCorrupt=0x26`, `QueueFull=0x27`, `DeadLetterNotFound=0x31`, `DeadLetterStale=0x32`, `ArchiveFailed=0x33`, `TooManyConnections=0x41`, `WrongKind=0x42`.
 
 ### Auth Frames
 
@@ -886,7 +768,7 @@ func EncodeFetch(b, queue, start, maxCount, maxWait) / DecodeFetch
 ### Task Wire
 
 ```go
-type Task struct{ ID, Payload, DeliveryID, Key []byte/string; Attempts, MaxAttempts, Stalled uint32; Lease, ScheduledAt time.Time; Offset uint64 }
+type Task struct{ ID, Payload, DeliveryID, Key; Attempts, MaxAttempts, Stalled uint32; Lease, ScheduledAt time.Time; Offset uint64 }
 const ( TaskRefModeTask byte = 0; TaskRefModeTaskID byte = 1
         NackModeInherit byte = 0; NackModeExplicit byte = 1 )
 func EncodeTask / DecodeTask / EncodeTaskList / DecodeTaskList
@@ -902,7 +784,7 @@ func EncodeTaskRef / DecodeTaskRef / WriteMode / ReadMode
 
 ---
 
-## 11. Server — `internal/server`
+## 10. Server — `internal/server`
 
 ```go
 type Server struct {
@@ -925,32 +807,11 @@ func (s *Server) Done() <-chan struct{}
 
 ### Connection Lifecycle
 
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant S as serveConn
-    participant A as authMode.Verify
-    participant D as dispatch
-    C->>S: WriteFrame(OpAuth, method+cred)
-    S->>A: Verify(method, cred, tlsState)
-    alt rejected
-        A-->>S: ErrUnauthorized
-        S->>C: OpError(0x09, msg) + close
-    else accepted
-        A-->>S: nil
-        S->>C: OpAuth ack
-        loop per request
-            C->>S: WriteFrame(Op, body)
-            S->>D: dispatch(ctx, op, body)
-            D-->>S: (respOp, respBody, shouldShutdown)
-            S->>C: WriteFrame(respOp, respBody)
-        end
-    end
-```
-
 `serveConn` reads frames on a **single reader goroutine** feeding an unbuffered `reqCh`; the main goroutine dispatches each frame and writes the response. One frame of lookahead + natural backpressure; a dead reader cancels long-polling handlers via `cancel()`.
 
 If the first frame is not `OpAuth` and the server requires auth, the connection is refused with `OpError(ErrCodeUnauthorized)`. Anonymous servers accept a non-`OpAuth` first frame for backwards compatibility.
+
+Over-limit connections are answered with `OpError(ErrCodeTooManyConnections)` after waiting up to `rejectGrace = 1s` for the first frame, then closed.
 
 ### Handlers
 
@@ -993,19 +854,20 @@ type serverMetrics struct {
 }
 ```
 
-`newServerMetrics(scope)` creates one counter + one histogram per opcode in `opLabels`. `recordOp(op, start)` counts and observes every dispatched operation. The node **preregisters** every instrument before the collector ticks.
+`newServerMetrics(scope)` creates one counter + one histogram per opcode in `opLabels`. `recordOp(op, start)` counts and observes every dispatched operation. The node **preregisters** every instrument via `preregisterServerMetrics(reg)` before the collector ticks.
 
 ---
 
-## 12. Node — `internal/node`
+## 11. Node — `internal/node`
 
 ```go
 type Node struct {
-    mgr        *manager.Manager
-    retention  *retention.Coordinator
-    logQueues  map[string]logqueue.Log
-    taskQueues map[string]taskqueue.Queue
-    mu         sync.RWMutex
+    mgr         *manager.Manager
+    retention   *retention.Coordinator
+    logCatalog  map[string]*logEntry
+    taskCatalog map[string]*taskEntry
+    installWG   sync.WaitGroup
+    mu          *metrics.RWLockObserver
 
     retentionCtx    context.Context
     retentionCancel context.CancelFunc
@@ -1022,18 +884,20 @@ type Node struct {
 }
 ```
 
-**Lifecycle** (`openNode`):
-1. `MkdirAll` the data directory.
-2. Acquire the directory lock (`flock`/`LockFileEx`).
-3. `loadRegistry(dir)` + `reconcileRegistry` against the filesystem.
-4. Build per-queue engine configs from the effective spec, keyed by `manager.Key`.
-5. `manager.Open` at the data directory.
-6. `List` on-disk queues; reconcile the registry.
-7. Build the metrics registry, collector, register the runtime source + the manager.
-8. `preregisterServerMetrics`.
-9. Start the retention loop and the collector.
+**Catalog** (`catalog.go`): `logEntry{ready chan struct{}; q logqueue.Log; err error}` and `taskEntry{ready chan struct{}; q taskqueue.Queue; err error}`. Install builds the driver **outside** `n.mu` and `close(e.ready)` when done. `logEntryFor`/`taskEntryFor` wait on `ready`. Faults are recorded via `recordFault(name, err)`, incrementing `queue_faults` and logging — one bad queue does not fail the node.
 
-`Acquire(dir, defaults, opts...)` in `pool.go` — ref-counted process pool keyed by absolute path. `ErrSessionDefaultsMismatch` for mismatched defaults; the release func is `sync.Once`-guarded.
+**Lifecycle** (`openNode`):
+1. `MkdirAll` the data directory; acquire the directory lock (`flock`/`LockFileEx`).
+2. `loadRegistry(dir)` + `reconcileRegistry` against the filesystem.
+3. Build per-queue engine configs from the effective spec, keyed by `manager.Key`.
+4. `manager.Open`.
+5. `List` on-disk queues; reconcile the registry.
+6. Build metrics registry, collector, register runtime source + manager + `configSource{n}`.
+7. `preregisterServerMetrics`.
+8. `installAll(infos)` — one driver per queue.
+9. Start retention loop, checkpoint maintenance loop, collector.
+
+`Acquire(dir, defaults, opts...)` in `pool.go` — ref-counted process pool keyed by absolute path. `ErrSessionDefaultsMismatch` for mismatched defaults; release is `sync.Once`-guarded.
 
 **Queue operations:**
 - **`CreateLogQueue`** — validate, refuse duplicates, create engine queue under `log/`, persist spec to `queues.json`, cache the driver, register retention target, set policy.
@@ -1042,25 +906,21 @@ type Node struct {
 - **`DescribeQueue`** — returns `{Name, Kind, Spec, Derived, Effective, Defaults}`.
 - **`DeleteQueue`** — closes the task driver, drops cached handles, unregisters retention, removes the directory, updates the registry.
 - **`Truncate`** — materializes the log driver, calls `retention.ReconcileAt(ctx, name, minOffset)`.
-- **`LogQueue`/`TaskQueue`** — double-checked locking, cached handles, retention registered on first use.
 
 **Archive wiring** (`archiveLogFor`): looks up `<source>-archive`; if log → wraps as `archiveAppender`; if task → `ErrWrongKind`; if absent → `CreateLogQueue` with empty spec.
 
 **Registry** (`queues.json`):
-
 ```go
-type QueueEntry struct{ Name string; Kind manager.Kind; Spec spec.Spec }
-type registry  struct{ Version int; Queues map[string]QueueEntry }  // keyed by "kind/name"
+type QueueEntry struct { Name string; Kind manager.Kind; Spec spec.Spec }
+type registry    struct { Version int; Queues map[string]QueueEntry } // keyed "kind/name"
 ```
-
 `loadRegistry` uses `DisallowUnknownFields`; missing file → empty; corrupt → `ErrRegistryCorrupt`. `saveRegistry` writes atomically via temp + rename + `SyncDir`. `reconcileRegistry` purges missing entries, adopts orphan directories with the kind their path declares, rewrites cached kinds that disagree with the path.
 
-**Lock** (`lock.go`): `acquireDirLock(dir)` opens `<dir>/mikyu.lock` and tries an exclusive non-blocking flock; contention → `ErrLocked`. `lock.release()` releases.
+**Lock** (`lock.go`): `acquireDirLock(dir)` opens `<dir>/mikyu.lock` and tries an exclusive non-blocking flock; contention → `ErrLocked`.
 
 **Metrics config** (`metrics.go`):
-
 ```go
-type MetricsConfig struct{ Enabled bool; Interval time.Duration; History int; Histograms bool }
+type MetricsConfig struct { Enabled bool; Interval time.Duration; History int; Histograms bool }
 type AcquireOption func(*MetricsConfig)
 func WithMetrics(cfg MetricsConfig) AcquireOption
 func MetricsFromSession(s spec.Session) MetricsConfig
@@ -1068,18 +928,17 @@ func preregisterServerMetrics(reg *metrics.Registry)
 func newRegistry(mc MetricsConfig) *metrics.Registry
 func newCollector(reg *metrics.Registry, mc MetricsConfig, sources ...metrics.Source) *metrics.Collector
 ```
+`Acquire` applies `WithMetrics` only when opening a **new** node; a second `Acquire` on the same dir reuses the existing collector.
 
-`Acquire` applies `WithMetrics` only when opening a **new** node; a second Acquire on the same dir reuses the existing collector.
-
-**Runtime source** (`runtime_source.go`): `Collect` fills `Runtime` (goroutines, heap alloc/in-use, GC count, uptime) and `Process` from platform readers.
-- Unix: `getrusage(RUSAGE_SELF)`; `Maxrss`, `Utime+Stime`.
-- Windows: `GetProcessMemoryInfo` for working set; `GetProcessTimes` for kernel+user 100 ns ticks.
-
-`cpuPercent` converts cumulative CPU into a percent against the process's own wall-clock delta; the first sample establishes the baseline and reports zero.
+**Runtime source** (`runtime_source.go`): filters the runtime metric names actually available in this Go build; reads scheduler/GC/memory stats each tick. `cpuPercent` converts cumulative CPU into a percent against wall-clock delta; the first sample establishes the baseline and reports zero. Platform readers:
+- Unix: `getrusage(RUSAGE_SELF)`; `Maxrss` is 1 KiB on Linux/BSD and bytes on Darwin.
+- Linux: `/proc/self/stat`, `/proc/self/status`, `/proc/self/fd`, cached 5 s.
+- Darwin: `/dev/fd` cached 5 s.
+- Windows: `GetProcessMemoryInfo`, `GetProcessTimes`, `GetProcessHandleCount`, toolhelp thread snapshot cached 5 s.
 
 ---
 
-## 13. Client — `internal/client`
+## 12. Client — `internal/client`
 
 ### Session Config
 
@@ -1109,8 +968,7 @@ func applyQueueOptions(opts []QueueOption) spec.Spec
 type embeddedClient struct{ node *node.Node; release func() error }
 func NewEmbedded(dir string, opts ...Option) (*embeddedClient, error)
 ```
-
-Every method delegates to the node. `Metrics` returns the node snapshot. `Schema` returns a fresh copy of `spec.Table`. `SubscribeSnapshots` delegates to the collector. `Close` releases the reference. `NewEmbedded` rejects `WithTarget` with `ErrModeMismatch` and validates the resolved spec up front. `rejectCompaction` enforces compaction is a log-queue setting at the SDK boundary.
+Every method delegates to the node. `Metrics` returns the node snapshot. `Schema` returns a fresh copy of `spec.Table`. `SubscribeSnapshots` delegates to the collector. `NewEmbedded` rejects `WithTarget` with `ErrModeMismatch`, validates resolved spec up front, and `rejectCompaction` enforces compaction is a log-queue setting at the SDK boundary.
 
 ### Remote Client
 
@@ -1126,10 +984,10 @@ type clientConn struct{ conn net.Conn; r *bufio.Reader }
 ```
 
 - **`acquire(ctx)`** — take a semaphore slot, then pop from the pool or dial fresh.
-- **`dialConn`** — `ipc.DialContext` for `unix`/`pipe`; `tls.Dialer` or `net.Dialer` for `tcp` with a 5 s timeout. **Immediately after the socket is up**, it calls `authCredential()` and sends the `OpAuth` handshake via `writeAuth`.
-- **`authCredential()`** — token file wins over inline token, which wins over the implicit mTLS claim (`c.tls != nil`), which wins over `none`.
+- **`dialConn`** — `ipc.DialContext` for `unix`/`pipe`; `tls.Dialer` or `net.Dialer` for `tcp` with a 5 s timeout. Immediately after the socket is up, calls `authCredential()` and sends the `OpAuth` handshake via `writeAuth`.
+- **`authCredential()`** — token file wins over inline token, then implicit mTLS (`c.tls != nil`), then `none`.
 - **`release(ch)`** — return to pool unless closed or full.
-- **`discard(ch)`** — release the slot and close the connection. Used on cancellation or error.
+- **`discard(ch)`** — release the slot and close the connection; used on cancellation or error.
 - **`exchange(ctx, op, body)`** — acquire, set deadline from `ctx`, run a cancellation watcher that forces the socket deadline to a poisoned time on `ctx.Done()`, write, read, decode `OpError`. `ErrCodeTooManyConnections` always discards.
 
 ### Remote Log Queue
@@ -1153,11 +1011,13 @@ type clientConn struct{ conn net.Conn; r *bufio.Reader }
 
 ### Error Decoding
 
-`decodeProtocolError(code, msg)` looks up the sentinel via `errs.SentinelFor`, then uses `decodeKnown` to preserve the server's detail after the sentinel's text (e.g. `ErrImmutableField: …segment_size…` still satisfies `errors.Is`). Unknown codes wrap in `ErrProtocol`.
+`decodeProtocolError(code, msg)` looks up the sentinel via `errs.SentinelFor`, then uses `decodeKnown` to preserve the server's detail after the sentinel's text (e.g. `ErrImmutableField: …max_segment…` still satisfies `errors.Is`). Unknown codes wrap in `ErrProtocol`.
 
 ---
 
-## 14. Metrics — `internal/metrics`
+## 13. Metrics — `internal/metrics`
+
+### Instruments
 
 ```go
 type Counter struct{ v atomic.Int64 }         // nil-safe; Add, Inc, Load
@@ -1166,59 +1026,147 @@ type Histogram struct{ bounds []float64; counts []atomic.Uint64; sum, total atom
 func NewHistogram(bounds []float64) *Histogram
 func (h *Histogram) Observe(v float64)
 func (h *Histogram) Snapshot() HistogramSnapshot
+```
 
+`HistogramSnapshot` has `Bounds, Counts, Sum, Total` and `Percentile(p)`, `Max()`. `viewOf(s)` derives a `HistogramView` with `P50/P90/P95/P99/P999/Max`.
+
+### Registry and Scopes
+
+```go
+type Scope struct{ name string; mu sync.Mutex; counters, gauges, histograms map[string]*... }
 type Registry struct{ mu sync.RWMutex; cfg Config; scopes map[string]*Scope }
-type Scope struct{ name string; mu sync.Mutex; counters map[string]*Counter; gauges map[string]*Gauge; histograms map[string]*Histogram }
 func NewRegistry(cfg Config) *Registry
 func (r *Registry) Scope(name string) *Scope
 func (r *Registry) Scopes() iter.Seq[*Scope]
 func (s *Scope) Counter/Gauge/Histogram(name string, ...) *...
+```
 
+Scopes are named for the queue they instrument (`q.name`), plus two reserved names: `"server"` for wire-server per-op counters and `"internal"` for engine queues merged without a source-supplied kind.
+
+### Lock Observers (`lock.go`)
+
+```go
+type LockViewSource interface { Name() string; LockViews() []LockView }
+type LockObserver   struct { name string; mu sync.Mutex; waits atomic.Int64; maxBits atomic.Uint64; hist *Histogram }
+type RWLockObserver struct { /* write + read halves */ }
+func NewLockObserver(name string, bounds []float64) *LockObserver
+func NewRWLockObserver(name string, bounds []float64) *RWLockObserver
+func RegisterLockObserver(src LockViewSource)
+func SnapshotLockObservers() []LockView
+```
+
+`Lock()` uses `TryLock` on the fast path; only contended acquisitions are timed (`chargeWait`). `RWLockObserver` charges write contention and read contention separately (`name` and `name + ".read"`). `node.Node` registers `node.mu`, `engine.OffsetStore` registers `engine.offsets`, `retention.Coordinator` registers `retention.coordinator`.
+
+### Snapshot
+
+```go
 type Snapshot struct {
-    Disabled  bool
-    Timestamp time.Time
+    Disabled  bool      `json:"disabled,omitempty"`
+    Timestamp time.Time `json:"timestamp"`
+    Build     BuildView
     Runtime   RuntimeView
     Process   ProcessView
+    GC        GCView
+    Scheduler SchedulerView
+    Locks     LocksView
+    Session   spec.Spec `json:"session,omitzero"`
     Storage   StorageView
     Queues    []QueueView
     Totals    TotalsView
 }
-type RuntimeView struct{ Goroutines int; HeapAlloc, HeapInuse, GCCount int64; UptimeSec float64 }
-type ProcessView struct{ CPUPercent float64; RSSBytes int64 }
-type StorageView struct{ DataDir string; Segments, SizeBytes int64 }
-type QueueView   struct{ Name, Kind string; Spec, Effective spec.Spec; Counters, Gauges map[string]int64; Histograms map[string]HistogramSnapshot; Groups []GroupView; Rates Rates }
-type GroupView   struct{ Name string; Committed, HighWater, Lag uint64 }
-type Rates       struct{ AppendsPerSec, ReadsPerSec, EnqueuesPerSec, DequeuesPerSec, BytesInPerSec, BytesOutPerSec float64 }
-type TotalsView  struct{ Queues int; Messages uint64; Bytes int64 }
+type BuildView struct{ SpecVersion uint16; GoVersion, OS, Arch string }
+type RuntimeView struct {
+    Goroutines, GOMAXPROCS int
+    GoroutineStates GoroutineStates
+    Heap            HeapView
+    Stack, Metadata MemoryClassView
+    UptimeSec       float64
+}
+type HeapView struct{ Alloc, Sys, Inuse, Idle, Released, Objects, TotalAlloc, TotalFree int64 }
+type ProcessView struct {
+    CPUPercent, CPUSecondsUser, CPUSecondsSys float64
+    RSSBytes, VSZBytes, Threads, OpenFDs      int64
+}
+type GCView struct {
+    Cycles int64; PauseTotalMs float64; NextGCBytes, MemLimitBytes int64
+    Pause PauseView
+}
+type SchedulerView struct{ Latency LatencyView }
+type LocksView   struct{ GlobalWaitSec float64; Observers []LockView }
+type StorageView struct {
+    DataDir string
+    Queues int; Segments, SizeBytes, CacheBytes, CacheLimit, CacheHits, CacheMisses int64
+    CommittedBytes, FlushedBytes, PendingBytes, OffsetStoreBytes int64
+}
+type QueueView struct {
+    Name, Kind string
+    Spec, Derived, Effective spec.Spec
+    Counters   map[string]int64
+    Gauges     map[string]int64
+    Rates      Rates
+    Histograms map[string]HistogramView
+    Producers    ProducerView
+    Consumers    ConsumerView
+    Backpressure BackpressureView
+    Tasks        TaskView
+    Groups       []GroupView
+}
+type Rates        struct{ AppendsPerSec, ReadsPerSec, EnqueuesPerSec, DequeuesPerSec, BytesInPerSec, BytesOutPerSec float64 }
+type TotalsView   struct{ Queues int; Messages uint64; Bytes int64 }
+```
 
-type Source interface{ Collect(ctx, dst *Snapshot) }
-type SourceFunc func(context.Context, *Snapshot)
+`Snapshot` methods: `IterQueues() iter.Seq[QueueView]`, `Queue(name) (QueueView, bool)`, `ResolveQueue(name)`, `ResolveQueues() iter.Seq[QueueView]`.
 
-type Collector struct{ reg *Registry; cfg Config; sources []Source; latest atomic.Pointer[Snapshot]; history *RingBuffer[Snapshot]; mu sync.Mutex; subs map[int]*subscriber; nextSub int; started, stopped bool; stopOnce sync.Once; stop chan struct{}; wg sync.WaitGroup }
+### Health (`state.go`)
+
+```go
+type Health int
+const ( HealthOK Health = iota; HealthWarn; HealthCritical )
+func (h Health) String() string                          // "healthy"|"degraded"|"critical"
+func (q QueueView) IsLog/IsTask/IsInternal() bool
+func (q QueueView) Messages/SizeBytes/Segments/LastOffset/MinOffset() int64
+func (q QueueView) EffectiveSpec(session spec.Spec) spec.Spec
+func (q QueueView) MaxInFlight/MaxDeadLetters/MaxAttempts() int64
+func (q QueueView) Lease() time.Duration
+func (q QueueView) LagRatio/MaxLag() float64/uint64
+func GroupHealth(g GroupView) Health
+func QueueHealth(q QueueView) Health
+func NodeHealth(s Snapshot) Health
+```
+
+Queue signals: WAL channel/byte fill (≥0.5/0.9), queue-full events, retry-budget drops, blocked producers, task dead letters, task in-flight ratio (≥0.8/0.95), log group lag ratio (>0.1/>0.5). Node signals: cache fill (≥0.95), GC pause P99 (>10 ms/>50 ms), CPU percent (>80/>95). A non-finite reading reads as absent.
+
+### Collector
+
+```go
+type Config struct { Interval time.Duration; History int; Histograms bool; Disabled bool }
+type Collector struct { /* ... latest, history, subs, stop ... */ }
 func New(reg *Registry, cfg Config, sources ...Source) *Collector
 func (c *Collector) Start(ctx)
 func (c *Collector) Stop()
 func (c *Collector) Snapshot(ctx) (Snapshot, error)
 func (c *Collector) History() []Snapshot
 func (c *Collector) Subscribe() (<-chan Snapshot, func())
-
-func Encode(w io.Writer, s Snapshot, opts EncodeOptions) error
-type EncodeOptions struct{ PerQueue bool; TopNQueues int; Histograms bool }
 ```
 
-Scopes are named for the queue they instrument (`q.name`), plus two reserved names: `"server"` for wire-server per-op counters and `"internal"` for engine queues merged without a source-supplied kind.
+`build(ctx)` runs every source, `mergeScopes`, `computeRates` against the previous snapshot, sorts queues by name, and totals them. `mergeGauges` routes task-scope gauges into `QueueView.Tasks` so the snapshot carries one representation of each value. Subscribers with a full buffer are dropped (`slog.Debug` once).
 
-`build(ctx)` runs every source, `mergeScopes`, `computeRates` against the previous snapshot, sorts queues by name, and totals them. `mergeScopes` merges scope readings **into** an existing queue view so a source's gauges survive.
+### Prometheus
 
-`Encode` emits Prometheus text 0.0.4. Global series (`mikyu_goroutines`, `mikyu_heap_alloc_bytes`, `mikyu_heap_inuse_bytes`, `mikyu_gc_count_total`, `mikyu_uptime_seconds`, `mikyu_process_cpu_percent`, `mikyu_process_rss_bytes`, `mikyu_queues`, `mikyu_messages`, `mikyu_bytes`) are always present. With `PerQueue`, each queue is rendered as labeled series (`queue="<name>"`), `TopNQueues` bounding cardinality by largest queues first.
+```go
+type EncodeOptions struct { PerQueue bool; TopNQueues int; Histograms bool }
+func Encode(w io.Writer, s Snapshot, opts EncodeOptions) error
+```
+
+Emits Prometheus text 0.0.4. Global series (`mikyu_build_info`, `mikyu_runtime_*`, `mikyu_process_*`, `mikyu_gc_*`, `mikyu_scheduler_latency_seconds`, `mikyu_lock_*`, `mikyu_storage_*`, `mikyu_totals_*`) are always present. With `PerQueue`, each queue is rendered as labeled series (`queue="<name>"`), `TopNQueues` bounding cardinality by largest queues first. `mikyu_queue_info` carries effective config as labels; `mikyu_queue_faults_total` reports only faulted queues.
 
 ---
 
-## 15. Errors — `internal/errs`
+## 14. Errors — `internal/errs`
 
 ```go
-type Entry struct{ Sentinel error; Code byte }
-var Table = []Entry{ /* sentinel→wire code 1:1 */ }
+type Entry struct { Sentinel error; Code byte }
+var Table = []Entry{ /* sentinel↔wire code 1:1 */ }
 func CodeFor(err error) (byte, bool)
 func SentinelFor(code byte) (error, bool)
 var NonWireSentinels = map[error]string{
@@ -1229,29 +1177,29 @@ var NonWireSentinels = map[error]string{
 }
 ```
 
-The taxonomy test walks every source file, extracts every `Err*` sentinel declared with `errors.New`, and requires each to be either mapped or explicitly listed in `NonWireSentinels`. `SentinelFor` inverts `CodeFor`.
+The taxonomy test walks every source file, extracts every `Err*` sentinel declared with `errors.New`, and requires each to be either mapped or listed in `NonWireSentinels`. `SentinelFor` inverts `CodeFor`.
 
 ---
 
-## 16. Daemon — `internal/daemon`
+## 15. Daemon — `internal/daemon`
 
 ```go
 func Run(args []string) error
 func EnsureDaemonRunning(opts SpawnOptions) error
 func IsDaemonAlive(target string) bool
 func SendShutdownSignal(target string, sess spec.Session) error
-type SpawnOptions struct{ Target, DataDir string; TLSEnabled bool; TLSCert, TLSKey, AuthMethod, AuthTokenFile, TLSClientCA string; ExtraArgs []string }
-type enumValue struct{ param spec.Param; value string; changed bool }  // flag.Value
+type SpawnOptions struct { Target, DataDir string; TLSEnabled bool; TLSCert, TLSKey, AuthMethod, AuthTokenFile, TLSClientCA string; ExtraArgs []string }
+type enumValue struct { param spec.Param; value string; changed bool }   // flag.Value
 ```
 
-`resolveConfig` parses daemon flags and layers them over the config file and env: **CLI flags > `MIKYU_*` env > `mikyu.yaml` > compiled defaults**. Only flags explicitly set on the command line override, via `fs.Visit`. `--help` written to stdout and returned as `flag.ErrHelp`; any other input mistake is written to stderr with usage text and wrapped in `ErrUsage`.
+`resolveConfig` parses daemon flags and layers them over the config file and env: **CLI flags > `MIKYU_*` env > `mikyu.yaml` > compiled defaults**. Only flags explicitly set on the command line override, via `fs.Visit`. `--help` written to stdout and returned as `flag.ErrHelp`; any other input mistake written to stderr with usage text and wrapped in `ErrUsage`.
 
-**Fail-closed defaults:** on a non-loopback `tcp://` target, `token` requires `--tls-enabled`, `mtls` requires `--tls-enabled` + `--tls-client-ca-file`, and `""`/`none` is refused (opt out with `--auth-method none-insecure`). Loopback, `unix://`, and `pipe://` are exempt. `--auth-token` is registered for `--help` but rejects on use (argv leaks via `ps`).
+**Fail-closed defaults:** on a non-loopback `tcp://` target, `token` requires `--tls-enabled`, `mtls` requires `--tls-enabled` + `--tls-client-ca-file`, and `""`/`none` is refused (opt out with `--auth-method none-insecure`). Loopback, `unix://`, `pipe://` are exempt. `--auth-token` is registered for `--help` but rejects on use (argv leaks via `ps`).
 
 `Run`:
 1. `resolveConfig`.
 2. `logEffectiveConfig`.
-3. `node.Acquire`.
+3. `node.Acquire` with `node.WithMetrics(node.MetricsFromSession(cfg.Server))`.
 4. Reconcile declared queues.
 5. Optional TLS wrapper, `server.NewAuthMode`, `server.New`.
 6. Optional metrics HTTP server (started before the wire server listens so a bind failure still stops `srv`).
@@ -1271,7 +1219,7 @@ type enumValue struct{ param spec.Param; value string; changed bool }  // flag.V
 
 ---
 
-## 17. Config Loader — `internal/config`
+## 16. Config Loader — `internal/config`
 
 ```go
 type Config struct {
@@ -1280,20 +1228,25 @@ type Config struct {
     Queues   map[string]QueueConfig
 }
 type QueueConfig struct{ Kind manager.Kind; Spec spec.Spec }
-
 func Load(flagPath string) (*Config, string, error)
 func DefaultConfig() Config
 ```
 
 `Load` resolves the config file (flag → `mikyu.yaml` next to the executable, bootstrapping a commented template if absent), rejects legacy YAML keys and env names with a hard error naming the replacement, parses with `DisallowUnknownField`, and applies `spec.ApplyEnvSession` + `spec.ApplyEnv`.
 
-Legacy keys rejected include: `max_segment_bytes → max_segment`, `batch_size → max_flush_bytes`, `max_interval → max_flush_wait`, `min_interval → max_flush_wait (linger is derived)`, `segment_size → max_segment`, `segment_age → max_segment_age`, `max_message_bytes → max_payload`, `fsync → durability`, `encrypted → encryption`, `max_conns → max_connections`, `max_dlq → max_dead_letters`, `default_visibility → lease`, `default_max_attempts → max_attempts`, `retention_age/bytes → max_retention_age/bytes`. Legacy env vars (`MIKYU_ENGINE_*`, `MIKYU_SERVER_*`, `MIKYU_BATCH_SIZE`, etc.) are also rejected with their replacements.
+Legacy keys rejected include `max_segment_bytes → max_segment`, `batch_size → max_flush_bytes`, `max_interval → max_flush_wait`, `min_interval → max_flush_wait (linger is derived)`, `segment_size → max_segment`, `segment_age → max_segment_age`, `max_message_bytes → max_payload`, `fsync → durability`, `encrypted → encryption`, `max_conns → max_connections`, `max_dlq → max_dead_letters`, `default_visibility → lease`, `default_max_attempts → max_attempts`, `retention_age/bytes → max_retention_*`.
 
-The bootstrap template (`defaultConfigYAML`) lives at the top of `config.go`.
+The `legacyKeyPattern` matches at key position, so keys that *contain* a legacy name (e.g. `max_segment_age` contains `segment_age`) never trip.
 
 ---
 
-## 18. User Surface — `internal/ui`
+## 17. User Surface — `internal/ui`
+
+### Presentation Layers
+
+- `internal/ui/style` — `Theme{Plain, Accent, Accent2, Label, Text, Ok, Warn, Danger}`, `Palette{Primary, Danger, Success, Error, Warning, Muted, Subtle, Bright, Gradient}`, `Default` palette, `NewTheme(dark)`, `PlainTheme()`, `HealthGlyph(level)`, and layout primitives: `TitledBox`, `GradientHeader`, `StatBand`, `KVSection`, `DataTable`, `Gauge`, `Footer`.
+- `internal/ui/human` — `Formatter{Raw bool}` with `Bytes, Count, Duration, Percent, Rate`. Zero value is the human form.
+- `internal/ui/metricsview` — `Summary(w, snap, theme, formatter, width)`, `Detail(w, snap, selected, theme, formatter, width)`, `ErrUnknownQueue`, `HealthColor`, plus `queuecard.go` and `spec.go` for the layer-diff render.
 
 ### Verb Table (`command/verb.go`)
 
@@ -1312,22 +1265,20 @@ The bootstrap template (`defaultConfigYAML`) lives at the top of `config.go`.
 
 - **Log:** `GetTerminalWidth`, `FormatSingleLinePayload`, `ResolvePayload`, `Append`, `Read`, `Tail`, `Truncate`.
 - **Queue:** `List`, `KindFromName`, `Create`, `Update`, `Describe`, `TightensRetention`, `Delete`.
-- **Task:** `Enqueue`, `Dequeue`, `TaskAck/Nack/Extend/DeadLetters/AckDeadLetter/Archive`, `TaskRecord`, `Record`, `ParseTaskRef`, `FormatTaskRecord(s)`.
+- **Task:** `Enqueue`, `Dequeue`, `TaskAck/Nack/Extend/DeadLetters/AckDeadLetter/Archive`, `Record`, `ParseTaskRef`, `FormatTaskRecord(s)`.
 - **Admin:** `Metrics`, `Shutdown`.
 - **Auth:** `CredentialsPath`, `LoadToken`, `SaveToken`, `DeleteToken`, `Logout`, `Login`, `LoginWithToken`.
 - **Flags:** `Global`, `SessionFlags`, `ParseGlobal`, `SpecOption`, `OpenClient`, `NewFlagSet`, `QueueFlagSet`, `QueuePatchFlagSet`, `EnqueueFlagSet`, `NackFlagSet`, `ParseAnywhere`, `HasHelpFlag`.
 - **Help:** `RenderOptions`, `WriteIndex`, `WriteVerb`, `collectSpecRows`, `writeFlagGroups`, `defaultString`, `humanBytes`, `formatArgsStyled`, `wrapParagraphs`.
-- **Bridge:** `SpecOption(spec.Spec)` — the single bridge handing a fully-built spec to the SDK. `OpenClient(sess)` — embedded if `--dir`, otherwise ensures the daemon is running and dials.
+- **Metrics:** `MetricsOptions`, `MetricsFlagSet`, `RunMetrics`, `presentation`, `renderFrame`, `watchMetrics`, `watchInterval`, `watchModeFor`.
+
+`command.SpecOption(spec.Spec)` is the single bridge handing a fully-built spec to the SDK. `command.OpenClient(sess)` returns an embedded client if `--dir`, otherwise ensures the daemon is running and dials.
 
 ### Credential Store (`command/auth.go`)
 
 `os.UserConfigDir()/mikyu/credentials` holds a YAML map of `target → token`, written atomically at mode `0o600`. `LoginWithToken` verifies a token with a one-shot `Dial` + `ListQueues` before persisting.
 
-### Help Rendering (`command/help.go`)
-
-`WriteIndex` renders the top-level command list grouped by `VerbKind`, filtered by `Mode`. `WriteVerb` renders one verb's detail: long form, `USAGE`, `EXAMPLES`, and `FLAGS`. Flag rows come from `collectExtraRows` (presentation flags) and `collectSpecRows` (spec parameters, which read `Param.Doc`). `defaultString` uses `Param.Default()`, rendering zero durations and bytes as `unlimited`.
-
-### CLI (`cli/cli.go`, `cli/task.go`)
+### CLI (`cli/cli.go`, `cli/task.go`, `cli/metrics.go`)
 
 `App{Stdin, Stdout, Stderr, Confirm}`. `Run(target, args)` parses global flags via `command.ParseGlobal`, looks up the verb, optionally prints per-verb help from `command.WriteVerb`, opens the client via `command.OpenClient`, and dispatches through `handlers`. Exit codes from `cmd/mikyu`: `0` success, `1` general error, `2` usage error via `daemon.ErrUsage`. `emitTask`/`emitTasks` write a card on a terminal and JSON otherwise, so `dequeue --json` feeds `ack`/`nack`/`extend`.
 
@@ -1353,7 +1304,7 @@ type replSession struct {
 - **Every verb from `command.Verbs`** (via `replHandlers`).
 - **Retired names** (`produce`, `publish`, `pop`, `stats`, `info`) are explicitly unreachable.
 
-`handleUse` sets both `activeQueue` and `activeKind`. `kindOf(name)` consults `activeKind` when the name matches, otherwise lists queues. Handlers that are kind-specific reject the wrong kind up front. Task verbs resolve queue with `resolveQueue`, task with `taskRef` (falling back to `lastTaskID`), and pick the queue for mutating verbs with `queueFor`. `renderTaskCard`/`renderDeadLetterCard` produce bordered output; `formatRecord` uses terminal-width-aware payload formatting.
+`handleUse` sets `activeQueue` and `activeKind`. `kindOf(name)` consults `activeKind` when the name matches, else lists queues. Handlers that are kind-specific reject the wrong kind up front. `renderTaskCard`/`renderDeadLetterCard` produce bordered output; `formatRecord` uses terminal-width-aware payload formatting.
 
 ### Entrypoint (`cmd/mikyu/main.go`)
 
@@ -1368,108 +1319,76 @@ func run(args []string) error {
     default:                     return cli.RunCLI(defaultTarget, args)
     }
 }
-func exitCode(err error) int {
-    switch {
-    case err == nil:                    return 0
-    case errors.Is(err, daemon.ErrUsage): return 2
-    default:                            return 1
-    }
-}
+func exitCode(err error) int { 0/1/2 }
 ```
 
 ---
 
-## 19. Concurrency & Locking — At a Glance
+## 18. Concurrency & Locking — At a Glance
 
-| Structure | Lock | Protects | Notable invariants |
+| Structure | Lock | Protects | Notes |
 |---|---|---|---|
-| `engine.Queue.mu` (`sync.RWMutex`) | read for `Read`/`ReadBatch`/`Fetch`; write for `AppendBatch`, `roll`, `Close`, `TruncateBefore` | `segments`, `active`, `nextOffset`, `publishedOffset`, `minOffset`, `closed`, `notify`, `keyIndex` | Writers publish, readers snapshot; `broadcastLocked` only called under the write lock. |
-| `engine.wal.mu` (`sync.Mutex` + `cond`) | staged buffers, pending entries, `pushedBytes`, `publishedBytes`, `asyncNext`, `err` | `pushedBytes > publishedBytes` while a sync flush is in flight; `wait(seq)` blocks until published ≥ seq or err; the async path advances `asyncNext`. |
-| `engine.OffsetStore.mu` (`sync.RWMutex`) | in-memory offsets map + append-only writer | `Commit` serialized; `Fetch` read-only; `compactLocked` under the write lock. |
-| `engine.ringCache.mu` (`sync.Mutex`) | slots, byte accounting, head | Slot matches offset and has non-zero timestamp. |
-| `taskqueue.queue.mu` (`sync.Mutex`) | `active`, `dlq`, `dlqUncheckpointed`, `schedule`, `scanNext`, `checkpointOffset`, `dirty`, `notify`, `closing`/`closed` | Every state mutation is inside one critical section; metric counters bumped in the same section. |
-| `retention.Coordinator.mu` + `Target.mu` | targets map; each target's policy + driver | `ReconcileAt` holds the target lock while reading policy and calling driver floor. |
-| `node.Node.mu` (`sync.RWMutex`) | cached drivers, closed flag | CreateQueue takes the write lock; LogQueue/TaskQueue do read-check then write-check. |
-| `node.pool.poolMu` (`sync.Mutex`) | ref-counted `poolMap` | `Acquire` and `releaseFunc` are the only mutators. |
-| `server.Server.mu` (`sync.Mutex`) | `listener`, `stopCh`/`doneCh` | `Stop` is idempotent. |
-| `server.serveConn` | none | One reader goroutine, one dispatcher goroutine; the reader closes `reqCh` when the connection dies. |
-| `client.remoteClient.connSem` (`chan struct{}`) | connection slot budget | `discard` releases the slot; `release` returns to pool or closes if full/closed. |
+| `engine.Queue.mu` (RWMutex) | read for `Read`/`ReadBatch`/`Fetch`; write for `AppendBatch`, `roll`, `Close`, `TruncateBefore` | `segments`, `active`, offsets, `closed`, `notify`, `keyIndex` | `broadcastLocked` only under write lock. |
+| `engine.wal.mu` (Mutex + cond) | staged buffers, pending entries, `pushedBytes`, `publishedBytes`, `asyncNext`, `err` | `pushedBytes > publishedBytes` while a flush is in flight; `wait(seq)` blocks until `publishedBytes ≥ seq` or `err`; async path advances `asyncNext`. |
+| `engine.OffsetStore.mu` (RWMutex) | in-memory offsets + append-only writer | `Commit` serialized; `compactLocked` under write lock. |
+| `engine.ringCache.mu` (Mutex) | slots, byte accounting, head | Slot matches offset and has non-zero timestamp. |
+| `logqueue.queue.mu` (RWMutex) | `groups` map | Group creation under write lock; reads under read lock. |
+| `taskqueue.queue.mu` (Mutex) | `active`, `dlq`, `dlqUncheckpointed`, `schedule`, `scanNext`, `checkpointOffset`, `dirty`, `notify`, `closing`/`closed` | Every state mutation in one critical section; metric counters bumped inside it. |
+| `retention.Coordinator.mu` (`metrics.RWLockObserver`) + `Target.mu` | targets map; each target's policy + driver | `ReconcileAt` holds target lock while reading policy and calling driver floor. |
+| `node.Node.mu` (`metrics.RWLockObserver`) | catalog maps, `closed` | CreateQueue takes write lock; lookups take read lock; install builds drivers outside the lock. |
+| `node.pool.poolMu` (Mutex) | ref-counted `poolMap` | `Acquire` and `releaseFunc` are the only mutators. |
+| `server.Server.mu` (Mutex) | `listener`, `stopCh`/`doneCh` | `Stop` idempotent. |
+| `server.serveConn` | none | One reader goroutine, one dispatcher goroutine; reader closes `reqCh` when the connection dies. |
+| `client.remoteClient.connSem` (`chan struct{}`) | connection slot budget | `discard` releases the slot; `release` returns to pool or closes. |
 
 ### Durability Sites
 
-`syncData` is called by the WAL flusher on every batch (`durability: sync`) and by `segment.Close` when it truncates an active segment. `syncDir` is called:
+`syncData` called by the WAL flusher on every batch (`durability: sync`) and by `segment.Close` when truncating an active segment. `syncDir` called:
 1. When a new segment file is created.
 2. When `OffsetStore.compactLocked` renames the temp file.
 3. When `node.saveRegistry` renames `queues.json.tmp`.
 4. When `segment.Close` truncates the active segment.
 
-`engine.SyncDirHook` fires before every directory sync; the engine tests count the four sites.
+`engine.SyncDirHook` fires before every directory sync; engine tests count the four sites.
 
 ---
 
-## 20. Wire Protocol Summary
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant S as Server
-    C->>S: WriteFrame(OpAuth, method+cred)
-    S->>S: authMode.Verify(method, cred, tlsState)
-    alt accepted
-        S->>C: OpAuth (empty body)
-    else rejected
-        S->>C: OpError(0x09, msg) + close
-    end
-    C->>S: WriteFrame(Op, body)
-    S->>S: dispatch → handler
-    S->>C: WriteFrame(respOp, respBody) or OpError
-```
-
-- **First frame on every connection is `OpAuth`** (auth-required servers) or any frame (anonymous servers for legacy).
-- **Admin frames carrying a spec** are `bytes(name) u16 specVersion bytes(json)`. The server checks `specVersion` **before** touching JSON.
-- **`OpDescribeQueue`** response: `u16 specVersion bytes(json QueueDescription)`. `QueueDescription` carries `{Name, Kind, Spec, Derived, Effective, Defaults}`.
-- **`OpMetrics`** response: `u16 specVersion bytes(json Snapshot)`.
-- **`OpSchema`** response: `u16 specVersion bytes(json []Param)`.
-- **`OpMinOffset`** response: bare `u64`.
-- **Task refs**: mode `0` = full `Task` (strict), mode `1` = bare ID (skips strict).
-- **Nack**: mode `0` = inherit (server computes backoff), mode `1` = explicit with `u64` nanosecond delay.
-
----
-
-## 21. Testing & Enforcement
+## 19. Testing & Enforcement
 
 - `go test ./...` with `goleak.VerifyTestMain` in every package that owns goroutines.
 - `testing/synctest` bubbles for time-dependent behavior (WAL wake tokens, task lease expiry, metrics tickers, retention age floors).
 - `enginetest.MemStorage` provides an in-memory `engine.Storage` for driver tests with a deterministic clock.
-- Test hooks: `engine.SyncDirHook`, `engine.writerHook`, `config.executablePath`, `client.SessionConfig.testFrameSent`.
+- Test hooks: `engine.SyncDirHook`, `engine.writerHook`, `config.executablePath`, `client.SessionConfig.testFrameSent`, `daemon.daemonHelperEnv`.
 - `internal/audit`:
   - `TestNoLegacyNames` scans every non-test Go file for banned identifiers (with whitelisting for the SDK surface and selector/method positions).
   - `TestInternalCommentStyle` enforces at-most-one-line doc comments on internal packages and exported symbols (root `mikyu` is exempt).
-- `TestParityEveryOp`, `TestParityEveryError`, `TestParityMixedKinds`, `TestSchemaOverWire` require the embedded and remote surfaces to agree field for field.
+- `TestParityEveryOp`, `TestParityEveryError`, `TestParityMixedKinds`, `TestSchemaOverWire` require embedded and remote surfaces to agree field for field.
 - `TestErrorTaxonomyTotal` requires every declared sentinel to be mapped or explicitly off-wire; every wire code to have a sentinel.
 - `TestEverySpecParamHasDoc` (`ui/command/help_test.go`) requires every `spec.Table` row to carry a `Doc`.
-- `TestSpecTagsIdentical` and `TestTableMatches{Spec,Session}Fields` require the table, the struct, and the wire/YAML codec to agree field for field.
+- `TestSpecTagsIdentical` and `TestTableMatches{Spec,Session}Fields` require the table, struct, and wire/YAML codec to agree field for field.
+- `TestPrometheusCoversSnapshot` requires every `Snapshot` leaf to be exported or explicitly skipped with a reason.
 - `cmd/mikyu/main_test.go` covers the exit-code contract (0/1/2).
 
 ---
 
-## 22. Design Decision Log (short)
+## 20. Design Decision Log (short)
 
 | Decision | Rationale |
 |---|---|
-| Kind is a directory, not a spec field | `log/events` and `task/events` are structurally distinct; the filesystem is the source of truth for existence and kind. |
-| Two engine roots, one manager | The manager owns the data directory and its lock; each kind gets its own engine manager so per-kind retention, offsets, and metrics stay independent. |
-| One `spec.Table` drives every surface | A new parameter is one row plus one setter and one getter; CLI/env/YAML/wire/SDK all update at once, and the `Doc` string drives help text. |
-| Byte-based WAL sequencing | `pushedBytes`/`publishedBytes` rather than record count: `wait(seq)` blocks until every byte staged before `seq` is durable. |
-| Ring cache is byte-budgeted | Sized from `max_cache` (not fixed 16K slots) so small queues stay lean and large ones adapt. |
-| One `errs.Table` | Server never invents a code; client never guesses a sentinel. Adding an error is one row. |
+| Kind is a directory, not a spec field | `log/events` and `task/events` are structurally distinct; the filesystem is the source of truth. |
+| Two engine roots, one manager | Per-kind retention, offsets, and metrics stay independent. |
+| One `spec.Table` drives every surface | A new parameter is one row plus one setter and one getter; CLI/env/YAML/wire/SDK all update at once. |
+| Byte-based WAL sequencing | `pushedBytes`/`publishedBytes` rather than record count. |
+| Ring cache is byte-budgeted | Sized from `max_cache`; small queues stay lean, large ones adapt. |
+| One `errs.Table` | Server never invents a code; client never guesses a sentinel. |
 | Compaction is a log-queue setting | Task records are keyed by ID; compaction would corrupt DLQ/checkpoint invariants. Rejected at client and node boundaries. |
-| Archive is a log queue | Immutable history; a log queue already provides replay, retention, and zero-copy reads. |
-| `Stalled` is not lease identity | Identity is `(Offset, Attempts, DeliveryID)`; `Stalled` is an observation counter. |
+| Archive is a log queue | Immutable history; a log queue already provides replay, retention, zero-copy reads. |
+| `Stalled` is not lease identity | Identity is `(Offset, Attempts, DeliveryID)`. |
 | `TaskRefModeTaskID` skips strict check | Stateless admin clients (CLI `ack <id>`) ack without holding the full record; visibility still applies. |
-| Long-poll, not tight polling | A parked `Fetch`/`Dequeue` costs one request per window, and the server can cancel the handler when the connection dies. |
-| Registry is a config artifact | `queues.json` caches specs; the filesystem is the source of truth for existence (missing dirs purge, orphans adopt). |
-| Config bootstrap next to executable | Daemon must not silently read a `mikyu.yaml` from CWD; the executable's directory is stable. |
-| Daemon rejects `--auth-token` | A token on argv leaks via `ps`; use `--auth-token-file`. |
-| Fail-closed on non-loopback | Silent anonymous default would be a security regression; operator must explicitly opt out. |
+| Long-poll, not tight polling | A parked `Fetch`/`Dequeue` costs one request per window; server can cancel the handler when the connection dies. |
+| Registry is a config artifact | `queues.json` caches specs; filesystem is the source of truth. |
+| Config bootstrap next to executable | Daemon must not silently read a `mikyu.yaml` from CWD. |
+| Daemon rejects `--auth-token` | Token on argv leaks via `ps`. |
+| Fail-closed on non-loopback | Silent anonymous default would be a security regression. |
 | Reserved opcode slots frozen | Schema-versioned system cannot rely on opcode reuse. |
+| Locks observed via `metrics.RWLockObserver` | Contention is real telemetry; the fast path only pays `TryLock`. |
