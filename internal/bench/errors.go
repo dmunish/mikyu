@@ -22,6 +22,8 @@ var (
 	ErrNotARun = result.ErrNotARun
 	// ErrEnvelopeVersion reports an envelope whose schema this build does not know.
 	ErrEnvelopeVersion = result.ErrEnvelopeVersion
+	// errUnimplemented reports a bench feature a later phase adds.
+	errUnimplemented = errors.New("bench feature is not implemented in this build")
 )
 
 // VerifyError carries the offending offset and why the payload did not match.

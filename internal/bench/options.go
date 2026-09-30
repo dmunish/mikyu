@@ -1,5 +1,12 @@
 package bench
 
+import (
+	"io"
+	"time"
+
+	"github.com/dmunish/mikyu/internal/spec"
+)
+
 // Mode is what a run does; the phase sequence and the bound that stops it follow from it.
 type Mode string
 
@@ -28,3 +35,45 @@ const (
 
 // Modes lists every run mode in table order.
 var Modes = []Mode{ModeProduce, ModeConsume, ModeMix, ModeRecovery}
+
+// Options is the fully resolved configuration for one run.
+type Options struct {
+	Mode               Mode
+	Access             Access
+	Target             string
+	Dir                string
+	Out                string
+	Persist            bool
+	NoCleanupStale     bool
+	Quiet              bool
+	Verify             bool
+	Cold               bool
+	CPU                int
+	Metrics            []string
+	Workload           Workload
+	Spec               spec.Spec
+	Progress           func(ProgressEvent)
+	Stderr             io.Writer
+	DisableObservation bool
+}
+
+// ProgressKind classifies a progress event.
+type ProgressKind int
+
+const (
+	// ProgressStart marks a phase beginning.
+	ProgressStart ProgressKind = iota
+	// ProgressTick reports a running phase.
+	ProgressTick
+	// ProgressEnd marks a phase finishing.
+	ProgressEnd
+)
+
+// ProgressEvent is emitted by the runner as phases progress.
+type ProgressEvent struct {
+	Kind    ProgressKind
+	Phase   Phase
+	Elapsed time.Duration
+	Bytes   int64
+	Total   int64
+}
