@@ -16,3 +16,6 @@ func readPlatform() HostStats {
 	}
 	return stats
 }
+
+// dropCache cannot evict the page cache on Darwin; it reports an unverified state.
+func dropCache(string) (bool, error) { return false, nil }

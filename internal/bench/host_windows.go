@@ -77,6 +77,9 @@ func readPlatform() HostStats {
 	}
 }
 
+// dropCache cannot evict the page cache on Windows; it reports an unverified state.
+func dropCache(string) (bool, error) { return false, nil }
+
 // windowsMemory reports the working set and pagefile usage in bytes.
 func windowsMemory() (rss, vsz int64) {
 	h, _, _ := procGetCurrentProcess.Call()

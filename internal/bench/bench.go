@@ -31,6 +31,9 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	if err := validateMode(opts); err != nil {
 		return result.Result{}, err
 	}
+	if err := validateMetrics(opts.Metrics); err != nil {
+		return result.Result{}, err
+	}
 
 	runID := generateRunID()
 	names := queueNames(runID, opts.Workload.Queues)
@@ -70,7 +73,7 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 		StartedAt:    time.Now(),
 		Spec:         opts.Spec,
 		Workload:     opts.Workload.View(),
-		Environment:  buildEnvironment(),
+		Environment:  buildEnvironment(opts),
 	})
 	if err != nil {
 		return result.Result{}, err
@@ -117,10 +120,31 @@ func normalizeOptions(opts Options) Options {
 	if opts.Stderr == nil {
 		opts.Stderr = io.Discard
 	}
+	if len(opts.Metrics) == 0 {
+		opts.Metrics = slices.Clone(defaultMetrics)
+	}
 	if opts.CPU > 0 {
 		runtime.GOMAXPROCS(opts.CPU)
 	}
 	return opts
+}
+
+// defaultMetrics is the metric list a run reports when the caller names none.
+var defaultMetrics = []string{"throughput"}
+
+// knownMetrics names every series column a run may report.
+var knownMetrics = []string{
+	"throughput", "p50", "p90", "p99", "queue_depth", "size_bytes", "rss_bytes", "cpu_percent",
+}
+
+// validateMetrics rejects a metric the series does not carry.
+func validateMetrics(metrics []string) error {
+	for _, m := range metrics {
+		if !slices.Contains(knownMetrics, m) {
+			return fmt.Errorf("%w: unknown metric %q", ErrUsage, m)
+		}
+	}
+	return nil
 }
 
 // validateAccess enforces the flag combination each access mode needs.
@@ -361,10 +385,17 @@ func specOption(s spec.Spec) mikyu.QueueOption {
 	return func(dst *mikyu.Spec) { *dst = s }
 }
 
-// buildEnvironment records the build and host the numbers came from.
-func buildEnvironment() result.EnvironmentView {
+// Cache states a run may record for the OS page cache.
+const (
+	cacheWarm    = "warm"
+	cacheCold    = "cold"
+	cacheUnknown = "unknown"
+)
+
+// buildEnvironment records the build and host the numbers came from, dropping the page cache when asked.
+func buildEnvironment(opts Options) result.EnvironmentView {
 	host, _ := os.Hostname()
-	return result.EnvironmentView{
+	env := result.EnvironmentView{
 		Host:            host,
 		OS:              runtime.GOOS,
 		Arch:            runtime.GOARCH,
@@ -372,7 +403,16 @@ func buildEnvironment() result.EnvironmentView {
 		SpecVersion:     spec.CurrentSpecVersion,
 		BenchVersion:    result.CurrentVersion,
 		ClientCPU:       runtime.GOMAXPROCS(0),
-		CacheState:      "warm",
+		CacheState:      cacheWarm,
 		TimerOverheadNS: int64(TimerOverhead()),
 	}
+	if opts.Cold {
+		verified, _ := dropCache(opts.Dir)
+		env.ColdVerified = verified
+		env.CacheState = cacheUnknown
+		if verified {
+			env.CacheState = cacheCold
+		}
+	}
+	return env
 }
