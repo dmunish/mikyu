@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "run_id": "bench-177261981234567890",
+  "mode": "produce",
+  "access": "embedded",
+  "started_at": "2026-03-04T05:06:07Z",
+  "ended_at": "2026-03-04T05:06:12Z",
+  "complete": true,
+  "spec": {
+    "storage": {
+      "durability": "sync",
+      "max_segment": 67108864
+    }
+  },
+  "workload": {
+    "kind": "log",
+    "queues": 1,
+    "msg_size": 256,
+    "duration": "5s",
+    "workers": 8,
+    "batch": 1,
+    "warmup": "5s",
+    "seed": 42
+  },
+  "environment": {
+    "host": "bench-host",
+    "os": "linux",
+    "arch": "amd64",
+    "go_version": "go1.27.0",
+    "spec_version": 5,
+    "bench_version": 1,
+    "client_cpu": 8,
+    "cache_state": "warm",
+    "timer_overhead_ns": 42
+  },
+  "phases": [
+    {
+      "name": "warmup",
+      "duration": "5s",
+      "bytes": 1024
+    },
+    {
+      "name": "measure",
+      "duration": "5s",
+      "bytes": 4096
+    }
+  ],
+  "metrics": {
+    "throughput_msgs_per_sec": 240123.5,
+    "throughput_bytes_per_sec": 62914560,
+    "latency_corrected": {
+      "p50_ns": 42000,
+      "p90_ns": 180000,
+      "p95_ns": 400000,
+      "p99_ns": 1200000,
+      "p999_ns": 4000000,
+      "max_ns": 8100000
+    },
+    "latency_uncorrected": {
+      "p50_ns": 40000,
+      "p90_ns": 150000,
+      "p95_ns": 350000,
+      "p99_ns": 900000,
+      "p999_ns": 3000000,
+      "max_ns": 7000000
+    },
+    "tail_samples_ns": [
+      8100000,
+      7000000,
+      4000000
+    ],
+    "verified": true,
+    "bound_fired": "duration",
+    "messages": 1200000
+  },
+  "notes": [
+    "observation enabled"
+  ]
+}

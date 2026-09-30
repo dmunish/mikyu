@@ -35,6 +35,8 @@ const (
 	KindTime = spec.KindTime
 	// KindEnum values are one of a row's declared constants.
 	KindEnum = spec.KindEnum
+	// KindFloat values are 64-bit floating point ratios.
+	KindFloat = spec.KindFloat
 
 	// LayerCall parameters are per-call arguments, never persisted.
 	LayerCall = spec.LayerCall

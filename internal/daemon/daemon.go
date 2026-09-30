@@ -15,7 +15,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -32,6 +31,9 @@ import (
 
 // ErrUsage marks a command-line mistake: an unknown flag, a stray positional argument, or an invalid flag value.
 var ErrUsage = errors.New("usage error")
+
+// spawnReadyTimeout is how long a caller waits for a freshly spawned daemon to accept connections.
+const spawnReadyTimeout = 3 * time.Second
 
 // Run parses args (CLI flags layered over MIKYU_* environment variables and the config file: flags > env > file > defaults), starts the daemon, and blocks until an interrupt signal or a graceful "mikyu shutdown" ends it.
 func Run(args []string) error {
@@ -460,47 +462,15 @@ func EnsureDaemonRunning(opts SpawnOptions) error {
 	if IsDaemonAlive(opts.Target) {
 		return nil
 	}
-	executable, err := os.Executable()
+	proc, err := Spawn(opts)
 	if err != nil {
 		return err
 	}
-	args := []string{"daemon", "--target", opts.Target}
-	if opts.DataDir != "" {
-		args = append(args, "--data-dir", opts.DataDir)
+	if WaitForAlive(opts.Target, spawnReadyTimeout) {
+		return nil
 	}
-	if opts.TLSEnabled {
-		args = append(args, "--tls-enabled")
-	}
-	if opts.TLSCert != "" {
-		args = append(args, "--tls-cert", opts.TLSCert)
-	}
-	if opts.TLSKey != "" {
-		args = append(args, "--tls-key", opts.TLSKey)
-	}
-	if opts.AuthMethod != "" {
-		args = append(args, "--auth-method", opts.AuthMethod)
-	}
-	if opts.AuthTokenFile != "" {
-		args = append(args, "--auth-token-file", opts.AuthTokenFile)
-	}
-	if opts.TLSClientCA != "" {
-		args = append(args, "--tls-client-ca", opts.TLSClientCA)
-	}
-	args = append(args, opts.ExtraArgs...)
-	cmd := exec.Command(executable, args...)
-	setDetachedProcessAttr(cmd)
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	// Wait up to 3 seconds for daemon to come online.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if IsDaemonAlive(opts.Target) {
-			return nil
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return fmt.Errorf("daemon did not start within 3 seconds")
+	_ = proc.Kill()
+	return fmt.Errorf("daemon did not start within %s", spawnReadyTimeout)
 }
 
 // IsDaemonAlive attempts to connect to the target.
