@@ -37,6 +37,7 @@ components:
   daemon:     { in: internal/daemon }
   result:     { in: internal/bench/result }
   bench:      { in: internal/bench }
+  benchview:  { in: internal/ui/benchview }
   mikyu:      { in: "." }          # root facade package
   audit:      { in: internal/audit }
   command:    { in: internal/ui/command }
@@ -104,8 +105,8 @@ deps:
     mayDependOn: [spec]
   bench:
     mayDependOn: [spec, metrics, mikyu, daemon, human, result]
-  # benchview joins in when internal/ui/benchview exists; an entry for a
-  # directory that is not there yet is a config error, not a placeholder.
+  benchview:
+    mayDependOn: [result, spec, style, human]
 
   # ---- user surface ----
   mikyu:
@@ -120,10 +121,10 @@ deps:
   metricsview:
     mayDependOn: [metrics, human, style, spec]
   command:
-    mayDependOn: [mikyu, client, daemon, spec, style, human, metricsview, bench]
+    mayDependOn: [mikyu, client, daemon, spec, style, human, metricsview, bench, benchview]
   cli:
-    mayDependOn: [mikyu, client, daemon, command, spec, metricsview, bench]
+    mayDependOn: [mikyu, client, daemon, command, spec, metricsview, bench, benchview]
   repl:
-    mayDependOn: [mikyu, client, daemon, command, spec, style, metricsview, bench]
+    mayDependOn: [mikyu, client, daemon, command, spec, style, metricsview, bench, benchview]
   cmd:
     mayDependOn: [mikyu, daemon, cli, repl, bench]

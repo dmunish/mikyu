@@ -15,7 +15,7 @@ var (
 	// ErrCorruptResult reports an envelope this build cannot read.
 	ErrCorruptResult = errors.New("bench result is unreadable")
 	// ErrCompareMismatch reports runs that do not share a mode.
-	ErrCompareMismatch = errors.New("bench runs cannot be compared")
+	ErrCompareMismatch = result.ErrCompareMismatch
 	// ErrUsage reports a bad flag, mode, or workload combination.
 	ErrUsage = errors.New("bench usage error")
 	// ErrNotARun reports a directory without an envelope in it.

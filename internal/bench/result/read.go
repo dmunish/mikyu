@@ -15,6 +15,8 @@ var (
 	ErrNotARun = errors.New("not a bench run")
 	// ErrEnvelopeVersion reports an envelope this build cannot read.
 	ErrEnvelopeVersion = errors.New("unsupported envelope version")
+	// ErrCompareMismatch reports envelopes that cannot be compared, such as runs of different modes.
+	ErrCompareMismatch = errors.New("bench runs cannot be compared")
 )
 
 // ReadResult reads and validates <dir>/result.json.
