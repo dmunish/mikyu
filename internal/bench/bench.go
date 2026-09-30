@@ -28,6 +28,9 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	if err := validateAccess(opts); err != nil {
 		return result.Result{}, err
 	}
+	if err := validateMode(opts); err != nil {
+		return result.Result{}, err
+	}
 
 	runID := generateRunID()
 	names := queueNames(runID, opts.Workload.Queues)
@@ -74,7 +77,7 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	}
 
 	var obs *observer
-	if !opts.DisableObservation {
+	if !opts.DisableObservation && opts.Mode != ModeRecovery {
 		obs = newObserver(handle.Client, env, r.measure, r.phaseOf, names, opts.Workload.Kind, opts.Stderr)
 		obs.Start(ctx)
 	}
@@ -87,6 +90,7 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	snap := r.measure.Snapshot()
 	snap.BoundFired = r.boundFired()
 	snap.Verified = opts.Verify
+	snap.Recovery = r.recovery
 	if secs := r.measureSpan().Seconds(); secs > 0 {
 		snap.ThroughputMsgs = float64(snap.Messages) / secs
 		snap.ThroughputBytes = snap.ThroughputMsgs * float64(opts.Workload.MsgSize)
@@ -139,11 +143,26 @@ func validateAccess(opts Options) error {
 	return nil
 }
 
+// validateMode enforces the constraints a single mode adds on top of access.
+func validateMode(opts Options) error {
+	if opts.Mode != ModeRecovery {
+		return nil
+	}
+	if opts.Workload.Queues > 1 {
+		return errRecoveryQueues
+	}
+	if opts.Access != AccessEmbedded {
+		return fmt.Errorf("%w: recovery mode requires embedded access", ErrUsage)
+	}
+	return nil
+}
+
 // runner holds everything one mode needs to drive a workload.
 type runner struct {
 	opts       Options
 	client     mikyu.Client
 	measure    *Measure
+	recovery   *result.RecoveryMetrics
 	logQueues  []mikyu.LogQueue
 	taskQueues []mikyu.TaskQueue
 	queueNames []string
@@ -175,7 +194,7 @@ func (r *runner) dispatch(ctx context.Context) error {
 	case ModeMix:
 		return runMix(ctx, r)
 	case ModeRecovery:
-		return fmt.Errorf("%w: recovery mode", errUnimplemented)
+		return runRecovery(ctx, r)
 	default:
 		return fmt.Errorf("%w: unknown mode %q", ErrUsage, r.opts.Mode)
 	}

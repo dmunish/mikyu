@@ -51,6 +51,8 @@ func run(args []string) error {
 		return nil
 	case "daemon", "server":
 		return daemon.Run(args[1:])
+	case "bench-child":
+		return bench.RunChild(args[1:])
 	case "shell", "repl":
 		return repl.RunREPL(defaultTarget, args[1:])
 	case "cli":

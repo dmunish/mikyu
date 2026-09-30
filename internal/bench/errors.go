@@ -22,8 +22,8 @@ var (
 	ErrNotARun = result.ErrNotARun
 	// ErrEnvelopeVersion reports an envelope whose schema this build does not know.
 	ErrEnvelopeVersion = result.ErrEnvelopeVersion
-	// errUnimplemented reports a bench feature a later phase adds.
-	errUnimplemented = errors.New("bench feature is not implemented in this build")
+	// errDaemonStart reports a spawned daemon that never accepted connections.
+	errDaemonStart = errors.New("daemon did not accept connections")
 )
 
 // VerifyError carries the offending offset and why the payload did not match.

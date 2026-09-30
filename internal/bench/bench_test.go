@@ -178,12 +178,3 @@ func TestAccessValidation(t *testing.T) {
 	_, err = Run(t.Context(), opts)
 	require.ErrorIs(t, err, ErrUsage)
 }
-
-func TestUnimplementedAccess(t *testing.T) {
-	opts := baseOptions(t, ModeProduce)
-	opts.Spec = asyncSpec()
-	opts.Workload.Duration = time.Second
-	opts.Access = AccessDaemon
-	_, err := Run(t.Context(), opts)
-	require.ErrorIs(t, err, errUnimplemented)
-}
