@@ -219,7 +219,12 @@ func golden(t *testing.T, name string, got []byte) {
 		t.Skipf("golden %s is missing; run with -update to create it", path)
 	}
 	require.NoError(t, err)
-	assert.Equal(t, string(want), string(got))
+	assert.Equal(t, normalizeNewlines(want), normalizeNewlines(got))
+}
+
+// normalizeNewlines makes golden comparisons independent of a checkout's line endings.
+func normalizeNewlines(b []byte) string {
+	return strings.ReplaceAll(strings.ReplaceAll(string(b), "\r\n", "\n"), "\r", "\n")
 }
 
 // indexHasVerb reports whether name appears as the first token of a line.
