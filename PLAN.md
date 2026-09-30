@@ -45,21 +45,22 @@ Learn these words before writing any code.
 5. **Verification off by default.** `--verify` turns it on. Envelope labels `verified: true|false`.
 6. **`--persist` governs *system state*** (queues, daemons), never output. Output always survives.
 7. **`.bench-runs` is the ownership record.** Reconciled on next acquire, mirroring `node.Acquire`'s lock pattern.
-8. **Errors are stable sentinels.** Every bench error lives in `internal/bench/errors.go` and has a wire code in `errs.Table`'s admin block. Never return a bare `errors.New` from bench code.
-9. **Layer purity.** `bench` imports only `spec`, `metrics`, `mikyu`, `daemon`, `human`. `.go-arch-lint.yml` fails the build otherwise.
+8. **Errors are stable sentinels.** Every bench error lives in `internal/bench/errors.go`. Bench errors are client-side, never cross the wire, and therefore carry no wire code. Never return a bare `errors.New` from bench code.
+9. **Layer purity.** `bench` imports only `spec`, `metrics`, `mikyu`, `daemon`, `human`, `result`. `.go-arch-lint.yml` fails the build otherwise.
 10. **No goroutine leaks.** Every goroutine has a documented stop condition. `goleak.VerifyTestMain` guards both bench packages.
 11. **One comment line per symbol.** `TestInternalCommentStyle` enforces ≤1 line on every exported symbol and package doc under `internal/`. The root `mikyu` package is exempt; `internal/bench` is not.
 
 ### Layering (added edges only)
 
 ```
-bench       →  spec, metrics, mikyu, daemon, human, bench/result
-benchview   →  bench/result, spec, style, human
+bench       →  spec, metrics, mikyu, daemon, human, result
+benchview   →  result, spec, style, human
 command     →  ..., bench, benchview
 cli, repl   →  ..., bench, benchview
+cmd         →  ..., bench
 ```
 
-Add `bench` and `benchview` to `.go-arch-lint.yml` and extend `command`, `cli`, `repl` to depend on them.
+Add `bench`, `benchview`, and `result` components to `.go-arch-lint.yml`; extend `command`, `cli`, `repl` to depend on `bench` and `benchview`; extend `cmd` to depend on `bench` so the binary's `exitCode` can recognize `*bench.VerifyError`.
 
 ### Read these existing files before starting
 
@@ -67,7 +68,7 @@ Add `bench` and `benchview` to `.go-arch-lint.yml` and extend `command`, `cli`, 
 - `internal/spec/codec.go` — `Duration` encoding, `CheckSpecVersion`.
 - `internal/node/pool.go` — the `.bench-runs` reconciliation pattern.
 - `internal/engine/sync_dir.go` — `SyncDirHook` and the four durability sites.
-- `internal/audit/legacy_test.go` — the banned-identifier list; `produce` is on it.
+- `internal/audit/legacy_test.go` — the banned-identifier list.
 - `cmd/mikyu/main.go` — the existing 0/1/2 exit-code contract.
 
 ---
@@ -115,7 +116,7 @@ internal/ui/benchview/
 
 internal/ui/command/
   bench.go            BenchFlagSet, RunBench, ResultPresenter
-  verb.go             (modified) Verb.Subs + recursive lookup
+  verb.go             Verb.Subs + recursive lookup
 
 internal/ui/cli/bench.go     CLI handlers
 internal/ui/repl/bench.go    REPL handlers
@@ -409,7 +410,7 @@ func (w Workload) View() result.WorkloadView
 
 - `msg_size ≥ 1`, `queues ≥ 1`, `workers ≥ 1`, `batch ≥ 1`, `warmup ≥ 0`
 - exactly one of `bytes` / `duration` set, except `recovery` (which uses neither and requires `crash_after_bytes`)
-- `rate > 0` XOR `rate_schedule` non-empty (both allowed for produce/mix; both unset = unthrottled)
+- not both `rate > 0` and `rate_schedule` non-empty (either alone is fine; both unset = unthrottled)
 - `rate_schedule` timestamps strictly increasing, first must be at `0s`
 - `ack_rate ∈ [0, 1]`
 - `keys == 0 || kind == "log"` (task queues cannot be keyed for compaction)
@@ -433,7 +434,7 @@ Both forms parse to `[]RatePoint`. A `rate_schedule` parser lives in `scenario.g
 - `TestValidate` — table-driven, one case per rule violation.
 - `TestRateScheduleParse` — string form and YAML form produce identical `[]RatePoint`.
 
-### 3.3 `internal/bench/errors.go` (new) and `errs` update
+### 3.3 `internal/bench/errors.go` (new)
 
 ```go
 package bench
@@ -460,16 +461,7 @@ func (e *VerifyError) Error() string {
 func (e *VerifyError) Unwrap() error { return ErrVerify }
 ```
 
-Add to `errs.Table`:
-
-```go
-{bench.ErrAborted,         0x50},
-{bench.ErrVerify,          0x51},
-{bench.ErrCorruptResult,   0x52},
-{bench.ErrCompareMismatch, 0x53},
-```
-
-`TestErrorTaxonomyTotal` in `internal/errs/taxonomy_test.go` will fail until these are mapped — that is the point. Add the four sentinels to `declaredSentinelValues()` in that test and to the `sentinelNames` scan list (`internal/bench` package).
+Bench errors stay within `internal/bench`. They never cross the wire and never appear in `errs.Table`, which keeps `errs` free of any `internal/bench` import and preserves the acyclic layering of the binary. `TestErrorTaxonomyTotal` does not scan `internal/bench`, so no update to that test is required.
 
 ### 3.4 `cmd/mikyu/main.go` — exit code 3 for verify failures
 
@@ -517,13 +509,13 @@ func (p *Process) Wait() error
 func (p *Process) Alive() bool
 ```
 
-`SpawnOptions` already exists; add a `Target` field that accepts `""` for ephemeral binding.
+`SpawnOptions` already carries a `Target` field; its semantics extend so that the empty string selects ephemeral loopback binding.
 
 `EnsureDaemonRunning` is refactored to call `Spawn` and then poll `IsDaemonAlive`.
 
 **Tests (`spawn_test.go`).** Spawn a real daemon on an ephemeral port. Check `Alive()`. Kill it. Verify exit. Use `t.Cleanup` so a failed test never strands a daemon. This requires a helper-process pattern: the test binary re-execs itself with `daemon` as the first arg when an env var is set, mirroring `internal/daemon/goleak_test.go`'s existing `daemonHelperEnv` pattern.
 
-### 3.6 `.go-arch-lint.yml` and audit whitelist
+### 3.6 `.go-arch-lint.yml` and audit gates
 
 Add:
 
@@ -532,11 +524,13 @@ bench:
   mayDependOn: [spec, metrics, mikyu, daemon, human, result]
 benchview:
   mayDependOn: [result, spec, style, human]
+result:
+  mayDependOn: [spec]
 ```
 
-And extend `command`/`cli`/`repl` to include `bench`, `benchview`.
+Extend `command`/`cli`/`repl` to include `bench`, `benchview`. Extend `cmd` to include `bench`.
 
-In `internal/audit/legacy_test.go`, `bannedIdentifiers` contains `Produce`. The bench's `ModeProduce` and string literal `"produce"` will trip the test. Extend `isSurfaceWhitelisted` to allow `Produce` under `internal/bench/` and `internal/ui/benchview/`, and to allow the `"produce"` string in `table.go`. Never relax the check for other packages.
+`internal/audit/legacy_test.go` bans the identifier `Produce`. The bench's `ModeProduce` constant and the string literal `"produce"` are not identifier matches and do not trip the check, so no whitelist change is needed there. `TestNamingLaw` in `mikyu/surface_test.go` scans verb names for banned substrings such as `"produce"`; extend that scan to recurse into `Verb.Subs` and to recognize the `produce` subcommand under `bench` as the accepted spelling.
 
 **Acceptance for Phase 1.**
 
@@ -651,16 +645,27 @@ Rules:
 ### 4.3 `internal/bench/access.go`
 
 ```go
-// openClient opens a client per Access. Returns the client, a cleanup
-// func, and the run's AccessTarget for the envelope.
-func openClient(ctx context.Context, opts Options, onCreate func(mikyu.Client) error) (mikyu.Client, func() error, string, error)
+// accessHandle carries the client opened for a run and everything the
+// runner needs to describe and close it.
+type accessHandle struct {
+    Client    mikyu.Client
+    Cleanup   func() error
+    Target    string // resolved target for the envelope
+    DaemonPID int    // 0 when the run owns no daemon
+}
+
+// openClient opens a client per Access. Before opening an embedded or
+// daemon client it kills any stale daemon PID recorded in the run
+// directory's .bench-runs, so the lock is released before this run takes it.
+// It never creates queues; the runner does that after lifecycle.acquire.
+func openClient(ctx context.Context, opts Options) (*accessHandle, error)
 ```
 
 - `AccessEmbedded`: `mikyu.Open(opts.Dir)`.
 - `AccessDaemon`: Phase 3. For now, `errors.New("daemon access is implemented in Phase 3")`.
 - `AccessRemote`: Phase 3. Same.
 
-The `onCreate` callback creates the run's queues via the client. It runs before `openClient` returns and before the envelope opens, so a queue-create failure aborts cleanly.
+The runner creates the run's queues after `lifecycle.acquire` writes the ownership entry, so a crash between record-writing and queue-creation cannot leave untracked queues behind.
 
 ### 4.4 `internal/bench/measure.go`
 
@@ -816,13 +821,21 @@ type queueRef struct {
 }
 
 // acquire registers a new run in <dir>/.bench-runs after reconciling stale
-// entries. Returns a release func that removes the entry. Creates dir if
-// missing.
-func acquire(dir, runID string, queues []queueRef, daemonPID int, cleanupStale bool, log func(string)) (release func() error, err error)
+// entries through the supplied client. It removes orphaned queues from
+// previous runs and kills orphaned daemon PIDs, then appends the current
+// run's entry. Returns a release func that removes the entry. Creates dir
+// if missing.
+func acquire(ctx context.Context, client mikyu.Client, dir, runID string, queues []queueRef, daemonPID int, cleanupStale bool, log func(string)) (release func() error, err error)
 
-// reconcileStale removes orphaned queues and daemons recorded in the file.
-// Called from acquire before adding the new entry.
-func reconcileStale(dir string, log func(string)) error
+// reconcileStale removes orphaned queues and daemons recorded in the file
+// using the supplied client. Called from acquire before adding the new entry.
+func reconcileStale(ctx context.Context, client mikyu.Client, dir string, log func(string)) error
+
+// killStaleDaemons reads <dir>/.bench-runs and sends SIGTERM to any daemon
+// PID recorded there. Best-effort; a missing or unkillable PID is not fatal.
+// Called by openClient before it takes the directory, so a previous daemon
+// has released its lock before this run opens its own.
+func killStaleDaemons(dir string, log func(string)) error
 
 // generateRunID returns "bench-<unix-nanos>".
 func generateRunID() string
@@ -831,7 +844,7 @@ func generateRunID() string
 func queueNames(runID string, count int) []string
 ```
 
-**File format** is a plain JSON array of `runEntry`. `<dir>/.bench-runs` is written atomically via `os.OpenRoot(dir)` + temp + rename, mirroring `internal/node/registry.go`.
+**File format** is a plain JSON array of `runEntry`. `<dir>/.bench-runs` is written atomically via `os.OpenRoot(dir)` + temp + rename, mirroring `internal/node/registry.go`. A separate advisory lock file, `<dir>/.bench-runs.lock`, guards concurrent bench invocations; it is distinct from `mikyu.lock`, which is held by whatever node actually owns the directory.
 
 **Reconciliation.** For each entry in `.bench-runs`:
 
@@ -889,17 +902,18 @@ Flow:
 2. Validate `opts.Workload.Validate()`. Validate `opts.Spec` via `spec.ValidateCreate(spec.Resolve(opts.Spec))`.
 3. Resolve access. Require `--dir` for embedded/daemon, `--target` for remote. Refuse `--dir` and `--target` together.
 4. Determine `runID := generateRunID()`, `queueNames := queueNames(runID, opts.Workload.Queues)`.
-5. If `opts.Access != AccessRemote`, call `lifecycle.acquire(...)`; defer release.
-6. `openClient(ctx, opts, onCreate)` where `onCreate` creates each queue with the workload's kind and `opts.Spec`. Returns client, cleanup func, accessTarget.
-7. Build `result.Result{Version: result.CurrentVersion, RunID, Mode: string(opts.Mode), Access: string(opts.Access), AccessTarget, StartedAt: time.Now(), Spec: opts.Spec, Workload: opts.Workload.View(), Environment: buildEnvironment(opts)}`.
-8. `newEnvelope(opts.Out, r)`. Defer `finishEnvelope` with any error captured in a named return.
-9. If `!opts.DisableObservation`, start observer (Phase 2/4).
-10. Start `Measure`. If `opts.Cold`, drop cache (Phase 4).
-11. Dispatch to `runProduce`/`runConsume`/`runMix`/`runRecovery`. The mode fills the phases, produces the envelope rows, and returns.
-12. After the mode returns, stop the observer, collect the final `Measure.Snapshot()`, collect phase views, and finalize the envelope.
-13. If the mode returned a `*VerifyError`, propagate it.
-14. Call cleanup (daemon kill, client close) — order: stop observer, stop measures, close client, then daemon.
-15. Call lifecycle release.
+5. `handle := openClient(ctx, opts)`. The client is opened before `.bench-runs` is touched because reconciliation needs to delete stale queues. Defer `handle.Cleanup`.
+6. If `opts.Access != AccessRemote`, call `lifecycle.acquire(ctx, handle.Client, opts.Dir, runID, queueRefs, handle.DaemonPID, !opts.NoCleanupStale, log)`; defer release.
+7. Create each queue via `handle.Client` with the workload's kind and `opts.Spec`. A create failure aborts before the envelope opens.
+8. Build `result.Result{Version: result.CurrentVersion, RunID, Mode: string(opts.Mode), Access: string(opts.Access), AccessTarget: handle.Target, StartedAt: time.Now(), Spec: opts.Spec, Workload: opts.Workload.View(), Environment: buildEnvironment(opts)}`.
+9. `newEnvelope(opts.Out, r)`. Defer `finishEnvelope` with any error captured in a named return.
+10. If `!opts.DisableObservation`, start observer (Phase 2/4).
+11. Start `Measure`. If `opts.Cold`, drop cache (Phase 4).
+12. Dispatch to `runProduce`/`runConsume`/`runMix`/`runRecovery`. The mode fills the phases, produces the envelope rows, and returns.
+13. After the mode returns, stop the observer, collect the final `Measure.Snapshot()`, collect phase views, and finalize the envelope.
+14. If the mode returned a `*VerifyError`, propagate it.
+15. Call cleanup (daemon kill, client close) — order: stop observer, stop measures, close client, then daemon.
+16. Call lifecycle release.
 
 The full `Run` is roughly 150 lines. It is the only function that sees the whole lifecycle.
 
@@ -935,7 +949,7 @@ The observer's own `Metrics(ctx)` call latency is recorded in a small internal h
 func runProduce(ctx context.Context, r *runner) error
 ```
 
-`runner` is an internal struct holding all resolved state: `opts Options`, `client mikyu.Client`, `env *envelope`, `measure *Measure`, `logQueues []logqueue.Log`, `taskQueues []taskqueue.Queue`, `queueNames []string`, `phases []Phase`.
+`runner` is an internal struct holding all resolved state: `opts Options`, `client mikyu.Client`, `env *envelope`, `measure *Measure`, `logQueues []mikyu.LogQueue`, `taskQueues []mikyu.TaskQueue`, `queueNames []string`, `phases []Phase`.
 
 Produce loop:
 
@@ -962,7 +976,7 @@ For `--kind task` produce means `Enqueue`. `--kind log` produce means `Append`.
 
 **Message size.** Each worker allocates one `[]byte` buffer of `MsgSize` at start and reuses it. Payloads are regenerated per offset via `payloadFor(seed, offset, buf)`.
 
-**Keys.** When `Keys > 0`, each append uses `logqueue.WithKey(fmt.Appendf(nil, "key-%d", offset % uint64(Keys)))` for log queues, or `taskqueue.WithKey` for task queues.
+**Keys.** When `Keys > 0`, each append uses `mikyu.WithRecordKey(fmt.Appendf(nil, "key-%d", offset % uint64(Keys)))` for log queues. Keyed task queues are not supported by the bench; `Workload.Validate` rejects them at config time.
 
 ### 4.12 `internal/bench/mode_consume.go`
 
@@ -1042,7 +1056,7 @@ Flow:
 5. Set `MetricsView.Recovery` with the three durations.
 6. Emit `PhaseView`s for `populate` and `abort`.
 
-`--internal-child` is a hidden flag that runs produce silently and exits on completion. Registered on the CLI flag set but not shown in `--help`.
+`--internal-child` is a hidden flag that runs produce silently and exits on completion. It is registered on the CLI flag set in Phase 6; in Phase 3 the same flag is registered on the bench command's flag set directly, alongside the top-level verbs, so recovery mode can re-exec itself without depending on the subcommand structure.
 
 **Tests.**
 
@@ -1055,7 +1069,7 @@ Flow:
 ```go
 case AccessDaemon:
     if opts.Dir == "" {
-        return nil, nil, "", errors.New("daemon access requires --dir")
+        return nil, errors.New("daemon access requires --dir")
     }
     proc, err := daemon.Spawn(daemon.SpawnOptions{
         DataDir:    opts.Dir,
@@ -1063,28 +1077,28 @@ case AccessDaemon:
         TLSEnabled: false,
         // TLS/auth support deferred; daemon access is local-only for v1.
     })
-    if err != nil { return nil, nil, "", err }
+    if err != nil { return nil, err }
     target := proc.Target
     if !waitForDaemon(target, 5*time.Second) {
         _ = proc.Kill()
-        return nil, nil, "", errors.New("daemon did not accept connections within 5s")
+        return nil, errors.New("daemon did not accept connections within 5s")
     }
     client, err := mikyu.Dial(target)
     if err != nil {
         _ = proc.Kill()
-        return nil, nil, "", err
+        return nil, err
     }
     cleanup := func() error {
         _ = client.Close()
         if opts.Persist { return nil }
         return proc.Kill()
     }
-    return client, cleanup, target, nil
+    return &accessHandle{Client: client, Cleanup: cleanup, Target: target, DaemonPID: proc.PID}, nil
 
 case AccessRemote:
     client, err := mikyu.Dial(opts.Target)
-    if err != nil { return nil, nil, "", err }
-    return client, client.Close, opts.Target, nil
+    if err != nil { return nil, err }
+    return &accessHandle{Client: client, Cleanup: client.Close, Target: opts.Target}, nil
 ```
 
 `waitForDaemon` polls `daemon.IsDaemonAlive(target)` every 50ms.
@@ -1223,7 +1237,7 @@ func LookupVerb(path ...string) (Verb, bool)
 
 `HasVerb("bench", "produce")` returns true if both levels exist.
 
-`cli.handlers` and `repl.replHandlers` key on the space-joined string.
+`cli.handlers` and `repl.replHandlers` key on the space-joined string. The CLI dispatcher in `internal/ui/cli/cli.go` and the REPL dispatcher in `internal/ui/repl/repl.go` descend through `Subs` when the first token names a verb with children, joining `rest[0]` and `rest[1]` into the handler key.
 
 ### 8.2 `internal/ui/command/bench.go`
 
@@ -1251,7 +1265,7 @@ Scenario file support: `--file <path>` loads a YAML doc with three top-level key
 
 ### 8.3 `internal/ui/cli/bench.go` and `internal/ui/repl/bench.go`
 
-CLI handlers keyed on `"bench produce"`, `"bench consume"`, `"bench mix"`, `"bench recovery"`, `"bench show"`, `"bench compare"`, `"bench plot"`.
+CLI handlers keyed on `"bench produce"`, `"bench consume"`, `"bench mix"`, `"bench recovery"`, `"bench show"`, `"bench compare"`, `"bench plot"`. The dispatcher descends through `Subs` when the first token names a verb with children.
 
 REPL specifics:
 
@@ -1314,12 +1328,13 @@ Format:
 
 1. `TestSelfPerturbation` — run the same workload twice, once with `Options.DisableObservation: true` and once without. Assert the throughput delta is within 2%.
 2. `TestKilledRunEnvelope` — spawn a subprocess that runs a produce loop, SIGKILL it mid-run, verify the parent can read the partial envelope.
-3. `TestNoLegacyNames` — passes with the bench whitelist.
+3. `TestNoLegacyNames` — passes with the audit scan.
 4. `TestEnvelopeVersionGate` — a `result.json` with `version: 999` fails `bench show` with `ErrEnvelopeVersion`.
 5. `TestGoLeak` — `goleak.VerifyTestMain` in `internal/bench/` and `internal/bench/result/`.
 6. `TestBenchTableParity` — every `bench.Table` row is reachable from `BenchFlagSet` for every mode it applies to.
 7. `TestBenchEnvVars` — every `bench.Table` row has an env override and is honored by `BenchFlagSet`.
 8. `TestEveryBenchParamHasDoc` — mirrors `TestEverySpecParamHasDoc`.
+9. `TestNamingLawRecurses` — the `TestNamingLaw` scan visits `Verb.Subs` and treats the `produce` sub under `bench` as the accepted spelling.
 
 ---
 
@@ -1327,7 +1342,7 @@ Format:
 
 Strictly sequential. Each phase's acceptance must pass before the next begins.
 
-1. **Phase 1 — Foundations.** No bench behavior. Types, tables, sentinels, `daemon.Spawn`, exit code 3, arch-lint, audit whitelist.
+1. **Phase 1 — Foundations.** No bench behavior. Types, tables, sentinels, `daemon.Spawn`, exit code 3, arch-lint, audit gate updates.
 2. **Phase 2 — Runner core.** Produce/consume/mix against embedded. Envelope streaming. Observation. All the measurements.
 3. **Phase 3 — Recovery + daemon.** Crash simulation and remote access.
 4. **Phase 4 — Observation enrichment.** `--cold` and `--metric` lists.
