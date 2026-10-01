@@ -114,6 +114,21 @@ func TestBenchHelpListsItsSubcommands(t *testing.T) {
 	}
 }
 
+func TestBenchHelpReportsTheTunedDefaults(t *testing.T) {
+	v, ok := command.LookupVerb("bench", "produce")
+	require.True(t, ok)
+
+	var buf bytes.Buffer
+	require.NoError(t, command.WriteVerb(&buf, v, command.RenderOptions{Mode: command.ModeCLI, Color: false}))
+	out := buf.String()
+
+	assert.Contains(t, out, "(default async)", "a run flushes in the background by default")
+	assert.Contains(t, out, "(default 256 MiB)", "segments are sized for sustained traffic")
+	assert.Contains(t, out, "(default 1 KiB)", "message and byte defaults read in units")
+	assert.Contains(t, out, "(default 64)", "appends are batched by default")
+	assert.NotContains(t, out, "(default 64 MiB)", "the built-in segment size is not the run's")
+}
+
 func TestShowRunReportsAMissingEnvelope(t *testing.T) {
 	var buf bytes.Buffer
 	require.ErrorIs(t, command.ShowRun(&buf, t.TempDir()), result.ErrNotARun)

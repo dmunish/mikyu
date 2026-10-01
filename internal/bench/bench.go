@@ -128,6 +128,7 @@ func normalizeOptions(opts Options) Options {
 	if len(opts.Metrics) == 0 {
 		opts.Metrics = slices.Clone(defaultMetrics)
 	}
+	opts.Spec = opts.Spec.Merge(DefaultSpec())
 	if opts.CPU > 0 {
 		runtime.GOMAXPROCS(opts.CPU)
 	}

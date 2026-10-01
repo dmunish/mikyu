@@ -267,9 +267,14 @@ type flagGroup struct {
 	rows []flagRow
 }
 
-// collectSpecRows turns spec params into flag rows keyed by their path
+// collectSpecRows turns a verb's spec parameters into flag rows keyed by their path
 // prefix: `engine.batch_size` lands in the "engine" group.
-func collectSpecRows(params []spec.Param) []flagRow {
+func collectSpecRows(v Verb) []flagRow {
+	resolve := defaultString
+	if v.Flags == FlagsBench {
+		resolve = benchSpecDefault
+	}
+	params := paramsFor(v)
 	rows := make([]flagRow, 0, len(params))
 	for _, p := range params {
 		g, _, ok := strings.Cut(p.Path, ".")
@@ -281,7 +286,7 @@ func collectSpecRows(params []spec.Param) []flagRow {
 			name:  "--" + p.FlagName,
 			kind:  "<" + p.Kind.String() + ">",
 			doc:   p.Doc,
-			def:   defaultString(p),
+			def:   resolve(p),
 		})
 	}
 	return rows
@@ -321,7 +326,7 @@ func buildFlagGroups(v Verb) []flagGroup {
 		groups = append(groups, flagGroup{name: row.group, rows: []flagRow{row}})
 	}
 
-	for _, r := range collectSpecRows(paramsFor(v)) {
+	for _, r := range collectSpecRows(v) {
 		add(r)
 	}
 	for _, r := range collectBenchRows(v) {
@@ -349,10 +354,30 @@ func collectBenchRows(v Verb) []flagRow {
 			name:  "--" + p.FlagName,
 			kind:  "<" + p.Kind.String() + ">",
 			doc:   p.Doc,
-			def:   p.Default,
+			def:   workloadParamDefault(p),
 		})
 	}
 	return rows
+}
+
+// benchSpecDefault renders a queue parameter's default as a bench run actually sees it.
+func benchSpecDefault(p spec.Param) string {
+	if v, ok := bench.DefaultSpec().Field(p); ok {
+		return formatDefault(v)
+	}
+	return defaultString(p)
+}
+
+// workloadParamDefault renders a workload row's built-in default for help.
+func workloadParamDefault(p bench.Param) string {
+	if p.Default == "" {
+		return ""
+	}
+	v, err := p.Parse(p.Default)
+	if err != nil {
+		return p.Default
+	}
+	return formatDefault(v)
 }
 
 // humanGroup renders a flag group's key as its display label.
