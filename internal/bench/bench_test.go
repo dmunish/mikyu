@@ -2,6 +2,7 @@ package bench
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -177,4 +178,45 @@ func TestAccessValidation(t *testing.T) {
 	opts.Target = ""
 	_, err = Run(t.Context(), opts)
 	require.ErrorIs(t, err, ErrUsage)
+}
+
+func TestProgressEventsSpanTheRun(t *testing.T) {
+	opts := baseOptions(t, ModeProduce)
+	opts.Spec = asyncSpec()
+	opts.Workload.Duration = 2 * time.Second
+	opts.Workload.Warmup = time.Second
+
+	var mu sync.Mutex
+	started := map[Phase]int{}
+	ticks := 0
+	opts.Progress = func(e ProgressEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch e.Kind {
+		case ProgressStart:
+			started[e.Phase]++
+		case ProgressTick:
+			ticks++
+		}
+	}
+
+	_, err := Run(t.Context(), opts)
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, started[PhaseWarmup])
+	assert.Equal(t, 1, started[PhaseMeasure])
+	assert.Equal(t, 1, started[PhaseDrain])
+	assert.Positive(t, ticks, "a duration-bound run reports progress every second")
+}
+
+func TestStartProgressStopsCleanly(t *testing.T) {
+	opts := baseOptions(t, ModeProduce)
+	r := &runner{opts: opts}
+	r.bound.begin(PhaseMeasure, time.Now())
+
+	stop := r.startProgress(t.Context())
+	stop()
+	stop()
 }

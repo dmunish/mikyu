@@ -121,7 +121,7 @@ deps:
   metricsview:
     mayDependOn: [metrics, human, style, spec]
   command:
-    mayDependOn: [mikyu, client, daemon, spec, style, human, metricsview, bench, benchview]
+    mayDependOn: [mikyu, client, daemon, spec, style, human, metricsview, bench, benchview, result]
   cli:
     mayDependOn: [mikyu, client, daemon, command, spec, metricsview, bench, benchview]
   repl:

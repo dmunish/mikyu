@@ -1,5 +1,7 @@
 package command
 
+import "strings"
+
 // VerbKind groups verbs in help output and dispatch.
 type VerbKind int
 
@@ -43,6 +45,7 @@ const (
 	FlagsQueuePatch
 	FlagsEnqueue
 	FlagsNack
+	FlagsBench
 )
 
 // FlagDoc describes a presentation flag that is not a spec parameter.
@@ -72,6 +75,8 @@ type Verb struct {
 	ExtraFlags  []FlagDoc
 	Aliases     []string
 	Intercepted bool
+	Local       bool
+	Subs        []Verb
 }
 
 // Verbs is the canonical verb table. Slice order is render order.
@@ -351,11 +356,114 @@ var Verbs = []Verb{
 			{Name: "target", Kind: "string", Doc: "Target to forget"},
 		},
 	},
+
+	// bench
+	benchVerb(),
 }
 
-// LookupVerb finds a verb by name or alias.
-func LookupVerb(name string) (Verb, bool) {
-	for _, v := range Verbs {
+// benchVerb is the benchmark command and its run, show, compare, and plot subcommands.
+func benchVerb() Verb {
+	runFlags := []FlagDoc{
+		{Name: "dir", Kind: "string", Doc: "Data directory (embedded and daemon access)"},
+		{Name: "target", Kind: "string", Doc: "Remote target to dial"},
+		{Name: "access", Kind: "string", Doc: "How to reach mikyu: embedded, daemon, or remote", Default: "embedded"},
+		{Name: "out", Kind: "string", Doc: "Directory the run is written under", Default: "bench"},
+		{Name: "persist", Kind: "bool", Doc: "Keep the spawned daemon and queues after the run"},
+		{Name: "cleanup-stale", Kind: "bool", Doc: "Remove queues recorded by previous runs", Default: "true"},
+		{Name: "quiet", Kind: "bool", Doc: "Suppress the progress bar"},
+		{Name: "verify", Kind: "bool", Doc: "Verify every payload the run reads"},
+		{Name: "cold", Kind: "bool", Doc: "Drop the page cache before measuring"},
+		{Name: "cpu", Kind: "int", Doc: "GOMAXPROCS override; 0 leaves it alone"},
+		{Name: "metric", Kind: "string", Doc: "Series metric to retain; repeatable"},
+		{Name: "file", Kind: "string", Doc: "Scenario YAML file (mode, spec, workload)"},
+	}
+	run := func(name, summary, long string) Verb {
+		return Verb{
+			Name: name, Args: "[flags]", Kind: KindAdmin, Modes: ModeCLI | ModeREPL, Local: true,
+			Summary: summary, Long: long,
+			Usage:      []string{"bench " + name + " [flags]"},
+			ExtraFlags: runFlags,
+			Flags:      FlagsBench,
+		}
+	}
+	return Verb{
+		Name: "bench", Kind: KindAdmin, Modes: ModeCLI | ModeREPL, Local: true,
+		Summary: "Run and inspect benchmarks",
+		Long: "Runs a workload against an embedded engine, a spawned daemon, or a remote " +
+			"target, then renders the result. `bench show`, `bench compare`, and " +
+			"`bench plot` read runs already written to disk.",
+		Usage: []string{"bench <command> [flags]"},
+		Subs: []Verb{
+			run("produce", "Measure the write path",
+				"Appends seeded payloads until the byte or duration bound fires, then reports throughput and latency."),
+			run("consume", "Measure the read path",
+				"Reads records or dequeues tasks, optionally verifying every payload, until the bound fires."),
+			run("mix", "Measure producers and consumers together",
+				"Runs one producer and one consumer per worker over the same queues and reports the combined rate."),
+			run("recovery", "Time reopening a queue after a crash",
+				"Writes a backlog, kills a writer mid-stream, and times the open, first read, and full recovery milestones."),
+			{
+				Name: "show", Args: "<run-dir>", Kind: KindAdmin, Modes: ModeCLI | ModeREPL, Local: true,
+				Summary: "Render a saved run",
+				Long:    "Loads a run's result.json and prints its summary.",
+				Usage:   []string{"bench show <run-dir>"},
+			},
+			{
+				Name: "compare", Args: "<dir>...", Kind: KindAdmin, Modes: ModeCLI | ModeREPL, Local: true,
+				Summary: "Diff two or more runs",
+				Long:    "Prints a side-by-side configuration and metrics table for runs that share a mode.",
+				Usage:   []string{"bench compare <dir> <dir> [dir...]"},
+			},
+			{
+				Name: "plot", Args: "<run-dir>", Kind: KindAdmin, Modes: ModeCLI | ModeREPL, Local: true,
+				Summary: "Chart a run's series",
+				Long:    "Reads a run's series.csv and draws one ASCII chart per requested metric.",
+				Usage:   []string{"bench plot <run-dir> [--metric <name>]..."},
+				ExtraFlags: []FlagDoc{
+					{Name: "metric", Kind: "string", Doc: "Metric to chart: throughput, p50, p90, p99, queue_depth, size_bytes, rss_bytes, cpu_percent", Default: "throughput"},
+				},
+			},
+		},
+	}
+}
+
+// LookupVerb resolves a verb by a possibly two-level path such as ("bench", "produce").
+func LookupVerb(path ...string) (Verb, bool) {
+	if len(path) == 0 {
+		return Verb{}, false
+	}
+	v, ok := lookupIn(Verbs, path[0])
+	if !ok {
+		return Verb{}, false
+	}
+	for _, name := range path[1:] {
+		v, ok = lookupIn(v.Subs, name)
+		if !ok {
+			return Verb{}, false
+		}
+	}
+	return v, true
+}
+
+// ResolveVerb resolves the leading verb and optional subcommand from a command line.
+func ResolveVerb(first string, rest []string) (v Verb, path string, args []string, ok bool) {
+	v, ok = LookupVerb(first)
+	if !ok {
+		return Verb{}, "", nil, false
+	}
+	if len(v.Subs) == 0 || len(rest) == 0 || strings.HasPrefix(rest[0], "-") {
+		return v, v.Name, rest, true
+	}
+	sub, found := lookupIn(v.Subs, rest[0])
+	if !found {
+		return v, v.Name, rest, true
+	}
+	return sub, v.Name + " " + sub.Name, rest[1:], true
+}
+
+// lookupIn finds a verb by name or alias in one level of the table.
+func lookupIn(verbs []Verb, name string) (Verb, bool) {
+	for _, v := range verbs {
 		if v.Name == name {
 			return v, true
 		}
@@ -368,12 +476,21 @@ func LookupVerb(name string) (Verb, bool) {
 	return Verb{}, false
 }
 
-// VerbNames returns every verb name in table order.
+// VerbNames returns every verb path in table order, each subcommand after its parent.
 func VerbNames() []string {
-	names := make([]string, 0, len(Verbs))
-	for _, v := range Verbs {
-		names = append(names, v.Name)
+	var names []string
+	var walk func(prefix string, verbs []Verb)
+	walk = func(prefix string, verbs []Verb) {
+		for _, v := range verbs {
+			name := v.Name
+			if prefix != "" {
+				name = prefix + " " + v.Name
+			}
+			names = append(names, name)
+			walk(name, v.Subs)
+		}
 	}
+	walk("", Verbs)
 	return names
 }
 
@@ -403,8 +520,8 @@ func verbsInMode(kind VerbKind, mode Mode) []Verb {
 	return out
 }
 
-// HasVerb reports whether name is a known verb or alias.
-func HasVerb(name string) bool {
-	_, ok := LookupVerb(name)
+// HasVerb reports whether a possibly two-level verb path exists.
+func HasVerb(path ...string) bool {
+	_, ok := LookupVerb(path...)
 	return ok
 }

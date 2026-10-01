@@ -43,6 +43,7 @@ type Options struct {
 	Target             string
 	Dir                string
 	Out                string
+	RunID              string
 	Persist            bool
 	NoCleanupStale     bool
 	Quiet              bool

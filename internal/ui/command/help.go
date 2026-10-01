@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/dmunish/mikyu/internal/bench"
 	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/dmunish/mikyu/internal/ui/style"
 )
@@ -96,6 +97,9 @@ func WriteVerb(w io.Writer, v Verb, opts RenderOptions) error {
 	if err := writeVerbLong(w, v, s, width); err != nil {
 		return err
 	}
+	if err := writeVerbSubs(w, v, s); err != nil {
+		return err
+	}
 	if err := writeVerbUsage(w, v, s); err != nil {
 		return err
 	}
@@ -109,6 +113,24 @@ func WriteVerb(w io.Writer, v Verb, opts RenderOptions) error {
 	return err
 }
 
+// writeVerbSubs lists a parent verb's subcommands.
+func writeVerbSubs(w io.Writer, v Verb, s style.HelpStyles) error {
+	if len(v.Subs) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintf(w, "\n  %s\n", s.Section.Render("COMMANDS")); err != nil {
+		return err
+	}
+	nameWidth, argWidth := columnWidths(v.Subs)
+	for _, sub := range v.Subs {
+		if _, err := fmt.Fprintln(w, renderIndexRow(sub, s, nameWidth, argWidth)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeVerbHeader writes a verb's name, args, and summary line.
 func writeVerbHeader(w io.Writer, v Verb, s style.HelpStyles) error {
 	var head strings.Builder
 	head.WriteString("  ")
@@ -207,6 +229,8 @@ func paramsFor(v Verb) []spec.Param {
 		return pickCallParams("lease", "max_attempts", "scheduled_at")
 	case FlagsNack:
 		return pickCallParams("retry_after")
+	case FlagsBench:
+		return spec.Params(spec.LayerSpec)
 	default:
 		return nil
 	}
@@ -300,10 +324,35 @@ func buildFlagGroups(v Verb) []flagGroup {
 	for _, r := range collectSpecRows(paramsFor(v)) {
 		add(r)
 	}
+	for _, r := range collectBenchRows(v) {
+		add(r)
+	}
 	for _, r := range collectExtraRows(v.ExtraFlags) {
 		add(r)
 	}
 	return groups
+}
+
+// collectBenchRows turns the workload table into flag rows for a bench run verb.
+func collectBenchRows(v Verb) []flagRow {
+	if v.Flags != FlagsBench {
+		return nil
+	}
+	mode := bench.Mode(v.Name)
+	rows := make([]flagRow, 0, len(bench.Table))
+	for _, p := range bench.Table {
+		if !p.AppliesTo(mode) {
+			continue
+		}
+		rows = append(rows, flagRow{
+			group: "workload",
+			name:  "--" + p.FlagName,
+			kind:  "<" + p.Kind.String() + ">",
+			doc:   p.Doc,
+			def:   p.Default,
+		})
+	}
+	return rows
 }
 
 // humanGroup renders a flag group's key as its display label.

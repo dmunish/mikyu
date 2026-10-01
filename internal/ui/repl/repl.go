@@ -29,6 +29,7 @@ type replSession struct {
 	activeKind    mikyu.QueueKind
 	lastTaskQueue string
 	lastTaskID    string
+	lastBenchRun  string
 	done          bool
 }
 
@@ -118,17 +119,21 @@ func (s *replSession) dispatch(line string) bool {
 	}
 	name := strings.ToLower(args[0])
 
-	// Resolve aliases (quit → exit) before anything else.
-	if v, ok := command.LookupVerb(name); ok {
-		name = v.Name
-		if command.HasHelpFlag(args[1:]) {
-			_ = command.WriteVerb(os.Stdout, v, command.RenderOptions{Mode: command.ModeREPL, Color: true})
-			return false
-		}
+	v, path, rest, ok := command.ResolveVerb(name, args[1:])
+	if !ok {
+		fmt.Println(errStyle.Render(fmt.Sprintf("Unknown command %q. Type 'help' for options.", name)))
+		return false
 	}
-
-	if handler, ok := replHandlers[name]; ok {
-		handler(s, args[1:])
+	if command.HasHelpFlag(rest) {
+		_ = command.WriteVerb(os.Stdout, v, command.RenderOptions{Mode: command.ModeREPL, Color: true})
+		return false
+	}
+	if len(v.Subs) > 0 && path == v.Name && len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+		fmt.Println(errStyle.Render(fmt.Sprintf("Unknown subcommand %q.", path+" "+rest[0])))
+		return false
+	}
+	if handler, ok := replHandlers[path]; ok {
+		handler(s, rest)
 		return s.done
 	}
 	fmt.Println(errStyle.Render(fmt.Sprintf("Unknown command %q. Type 'help' for options.", name)))

@@ -35,7 +35,10 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 		return result.Result{}, err
 	}
 
-	runID := generateRunID()
+	runID := opts.RunID
+	if runID == "" {
+		runID = generateRunID()
+	}
 	names := queueNames(runID, opts.Workload.Queues)
 
 	handle, err := openClient(ctx, opts)
@@ -85,7 +88,9 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 		obs.Start(ctx)
 	}
 
+	stopProgress := r.startProgress(ctx)
 	runErr := r.dispatch(ctx)
+	stopProgress()
 	if obs != nil {
 		obs.Stop()
 	}
@@ -302,6 +307,26 @@ func (r *runner) addPhaseBytes(n int64) {
 	r.phasesMu.Lock()
 	r.bound.add(n)
 	r.phasesMu.Unlock()
+}
+
+// moved returns the bytes this run has moved so far on its measured path.
+func (r *runner) moved() int64 {
+	if r.opts.Mode == ModeConsume {
+		return r.consumed.Load()
+	}
+	return r.written.Load()
+}
+
+// byteBound returns the run's byte budget, or 0 when the run is duration bound.
+func (r *runner) byteBound() int64 {
+	switch w := r.opts.Workload; {
+	case w.CrashAfterBytes > 0:
+		return w.CrashAfterBytes
+	case w.Bytes > 0:
+		return w.Bytes
+	default:
+		return 0
+	}
 }
 
 // phaseOf reports the phase in progress for the observer.

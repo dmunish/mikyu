@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"context"
 	"time"
 
 	"github.com/dmunish/mikyu/internal/bench/result"
@@ -68,4 +69,30 @@ func emitProgress(opts Options, e ProgressEvent) {
 	if opts.Progress != nil {
 		opts.Progress(e)
 	}
+}
+
+// startProgress ticks the running phase once per second; the returned stop ends the ticker.
+func (r *runner) startProgress(ctx context.Context) func() {
+	if r.opts.Progress == nil {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				switch r.phaseOf() {
+				case PhaseWarmup, PhaseMeasure, PhaseDrain:
+					emitProgress(r.opts, ProgressEvent{Kind: ProgressTick, Phase: r.phaseOf(), Bytes: r.moved(), Total: r.byteBound()})
+				}
+			}
+		}
+	}()
+	return func() { cancel(); <-done }
 }

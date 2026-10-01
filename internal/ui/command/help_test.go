@@ -186,6 +186,8 @@ func TestGoldenHelpPages(t *testing.T) {
 		{"update_cli", "update", command.ModeCLI},
 		{"metrics_cli", "metrics", command.ModeCLI},
 		{"metrics_repl", "metrics", command.ModeREPL},
+		{"bench_cli", "bench", command.ModeCLI},
+		{"bench_produce_cli", "bench produce", command.ModeCLI},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -196,7 +198,7 @@ func TestGoldenHelpPages(t *testing.T) {
 			if tc.verb == "" {
 				err = command.WriteIndex(&buf, opts)
 			} else {
-				v, ok := command.LookupVerb(tc.verb)
+				v, ok := command.LookupVerb(strings.Fields(tc.verb)...)
 				require.True(t, ok, "unknown verb %q", tc.verb)
 				err = command.WriteVerb(&buf, v, opts)
 			}

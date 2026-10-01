@@ -119,6 +119,9 @@ func removeRun(dir, runID string) error {
 	return writeRuns(dir, runs)
 }
 
+// NewRunID returns a run identifier unique to this process.
+func NewRunID() string { return generateRunID() }
+
 // generateRunID returns a run identifier unique to this process.
 func generateRunID() string {
 	for {

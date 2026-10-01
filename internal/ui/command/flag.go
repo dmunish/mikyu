@@ -155,6 +155,12 @@ func QueuePatchFlagSet(name string, s *spec.Spec) *flag.FlagSet {
 
 func queueFlagSet(name string, s *spec.Spec, params []spec.Param) *flag.FlagSet {
 	fs := NewFlagSet(name)
+	queueFlagSetInto(fs, s, params)
+	return fs
+}
+
+// queueFlagSetInto binds queue-scoped parameters onto an existing flag set.
+func queueFlagSetInto(fs *flag.FlagSet, s *spec.Spec, params []spec.Param) {
 	for _, p := range params {
 		value := &paramValue{param: p, spec: s}
 		if p.Kind == spec.KindBool {
@@ -163,7 +169,6 @@ func queueFlagSet(name string, s *spec.Spec, params []spec.Param) *flag.FlagSet 
 		}
 		fs.Var(value, p.FlagName, p.Doc)
 	}
-	return fs
 }
 
 // EnqueueFlagSet returns the per-call flag set for enqueue, writing into o.

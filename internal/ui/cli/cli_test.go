@@ -114,6 +114,14 @@ func TestNoLegacyVerbs(t *testing.T) {
 		_, ok := handlers[v.Name]
 		assert.True(t, ok, "verb %q has no CLI handler", v.Name)
 	}
+	for _, path := range command.VerbNames() {
+		v, ok := command.LookupVerb(strings.Fields(path)...)
+		if !ok || v.Intercepted || v.Modes&command.ModeCLI == 0 {
+			continue
+		}
+		_, registered := handlers[path]
+		assert.True(t, registered, "verb %q has no CLI handler", path)
+	}
 }
 
 func TestUpdateImmutableIsUsageError(t *testing.T) {
