@@ -654,7 +654,7 @@ func ParseValue(kind Kind, text string) (Value, error) {
 		}
 		return NewDuration(d), nil
 	case KindBytes:
-		n, err := strconv.ParseInt(text, 10, 64)
+		n, err := parseBytes(text)
 		if err != nil {
 			return Value{}, err
 		}

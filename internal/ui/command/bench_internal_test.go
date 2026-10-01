@@ -135,6 +135,40 @@ func TestSplitCSVTrimsAndDropsEmpties(t *testing.T) {
 	assert.Nil(t, splitCSV(" , "))
 }
 
+func TestBenchByteFlagsAcceptUnits(t *testing.T) {
+	opts, err := resolveBench(bench.ModeProduce,
+		[]string{"--dir", "d", "--bytes", "256MB", "--msg-size", "4 KiB"},
+		spec.BuiltinSession(), envLookup(nil))
+	require.NoError(t, err)
+	assert.Equal(t, int64(256_000_000), opts.Workload.Bytes)
+	assert.Equal(t, 4096, opts.Workload.MsgSize)
+}
+
+func TestBenchEnvByteFlagsAcceptUnits(t *testing.T) {
+	env := map[string]string{"MIKYU_BENCH_MSG_SIZE": "64KiB"}
+
+	opts, err := resolveBench(bench.ModeProduce, []string{"--dir", "d", "--duration", "1s"},
+		spec.BuiltinSession(), envLookup(env))
+	require.NoError(t, err)
+	assert.Equal(t, 64<<10, opts.Workload.MsgSize)
+}
+
+func TestBenchSpecFlagsAcceptUnits(t *testing.T) {
+	opts, err := resolveBench(bench.ModeProduce,
+		[]string{"--dir", "d", "--duration", "1s", "--max-segment", "512MiB"},
+		spec.BuiltinSession(), envLookup(nil))
+	require.NoError(t, err)
+	require.NotNil(t, opts.Spec.Storage.MaxSegment)
+	assert.Equal(t, int64(512<<20), *opts.Spec.Storage.MaxSegment)
+}
+
+func TestBenchRejectsAnUnknownByteUnit(t *testing.T) {
+	_, err := resolveBench(bench.ModeProduce,
+		[]string{"--dir", "d", "--bytes", "256MBB"},
+		spec.BuiltinSession(), envLookup(nil))
+	require.ErrorIs(t, err, bench.ErrUsage)
+}
+
 func TestClamp01BoundsTheFraction(t *testing.T) {
 	assert.Equal(t, 0.0, clamp01(-2))
 	assert.Equal(t, 1.0, clamp01(4))
