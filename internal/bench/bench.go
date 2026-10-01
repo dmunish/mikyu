@@ -59,6 +59,14 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 		return result.Result{}, err
 	}
 
+	if opts.Access != AccessRemote && !opts.Persist {
+		defer func() {
+			for _, name := range names {
+				_ = handle.Client.DeleteQueue(ctx, name)
+			}
+		}()
+	}
+
 	r := &runner{opts: opts, client: handle.Client, queueNames: names, measure: NewMeasure()}
 	if err := r.openQueues(); err != nil {
 		return result.Result{}, err
