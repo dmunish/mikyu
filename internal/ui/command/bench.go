@@ -244,10 +244,12 @@ func (v *accessValue) Set(text string) error {
 	}
 }
 
-// benchPresentation picks the theme and formatter for a bench destination.
+// benchPresentation picks the theme for a bench destination; the numbers are human-scaled either way.
 func benchPresentation(w io.Writer) (style.Theme, human.Formatter) {
-	p := presentationFor(w, 0)
-	return p.theme, p.formatter
+	if isTerminalWriter(w) {
+		return style.NewTheme(true), human.Formatter{}
+	}
+	return style.PlainTheme(), human.Formatter{}
 }
 
 // splitCSV splits a comma-separated flag value into its trimmed parts.

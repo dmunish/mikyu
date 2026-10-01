@@ -129,6 +129,39 @@ func TestBenchHelpReportsTheTunedDefaults(t *testing.T) {
 	assert.NotContains(t, out, "(default 64 MiB)", "the built-in segment size is not the run's")
 }
 
+// TestBenchOutputIsHumanScaledInAPipe proves a bench summary reads as units, not as bare numbers, off a terminal.
+func TestBenchOutputIsHumanScaledInAPipe(t *testing.T) {
+	var buf bytes.Buffer
+	require.NoError(t, command.Present(&buf, result.Result{
+		Version: result.CurrentVersion,
+		RunID:   "bench-human",
+		Mode:    "produce",
+		Access:  "embedded",
+		Spec:    bench.DefaultSpec(),
+		Workload: result.WorkloadView{
+			Kind: "log", MsgSize: 1024, Bytes: 1 << 30, Workers: 4, Batch: 64,
+		},
+		Metrics: &result.MetricsView{
+			ThroughputMsgs:  240123,
+			ThroughputBytes: 245 << 20,
+			BoundFired:      "bytes",
+			LatencyUncorrected: result.HistogramView{
+				P50: 42_000, P90: 180_000, P99: 1_200_000, Max: 8_100_000,
+			},
+		},
+	}, "./bench/bench-human"))
+
+	out := buf.String()
+	assert.Contains(t, out, "256.0 MiB segment")
+	assert.Contains(t, out, "128.0 MiB cache")
+	assert.Contains(t, out, "1.0 KiB × 1.0 GiB")
+	assert.Contains(t, out, "240,123")
+	assert.Contains(t, out, "245.0 MiB/s")
+	assert.Contains(t, out, "p50 42µs")
+	assert.Contains(t, out, "p99 1.2ms")
+	assert.NotContains(t, out, "\x1b[", "a pipe still gets no color")
+}
+
 func TestShowRunReportsAMissingEnvelope(t *testing.T) {
 	var buf bytes.Buffer
 	require.ErrorIs(t, command.ShowRun(&buf, t.TempDir()), result.ErrNotARun)
