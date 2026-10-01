@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/dmunish/mikyu"
+	"github.com/dmunish/mikyu/internal/bench"
 	"github.com/dmunish/mikyu/internal/daemon"
 	"github.com/dmunish/mikyu/internal/ui/cli"
 	"github.com/dmunish/mikyu/internal/ui/repl"
@@ -24,16 +25,19 @@ func main() {
 }
 
 // exitCode maps run's result to a process exit code: 0 success, 1 general
-// error, 2 command-line usage error (Unix convention).
+// error, 2 command-line usage error, 3 a failed payload verification.
 func exitCode(err error) int {
 	switch {
 	case err == nil:
 		return 0
-	case errors.Is(err, daemon.ErrUsage):
+	case errors.Is(err, daemon.ErrUsage), errors.Is(err, bench.ErrUsage):
 		return 2
-	default:
-		return 1
 	}
+	var verify *bench.VerifyError
+	if errors.As(err, &verify) {
+		return 3
+	}
+	return 1
 }
 
 func run(args []string) error {
@@ -47,6 +51,8 @@ func run(args []string) error {
 		return nil
 	case "daemon", "server":
 		return daemon.Run(args[1:])
+	case "bench-child":
+		return bench.RunChild(args[1:])
 	case "shell", "repl":
 		return repl.RunREPL(defaultTarget, args[1:])
 	case "cli":

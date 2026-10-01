@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/goccy/go-yaml"
@@ -76,6 +77,58 @@ func (d *Duration) parseNanos(text string) error {
 	}
 	*d = Duration(nanos)
 	return nil
+}
+
+// byteUnits are the suffixes a byte count may carry: SI decimal steps and IEC binary steps.
+var byteUnits = []struct {
+	suffix string
+	scale  int64
+}{
+	{"TIB", 1 << 40}, {"GIB", 1 << 30}, {"MIB", 1 << 20}, {"KIB", 1 << 10},
+	{"TB", 1_000_000_000_000}, {"GB", 1_000_000_000}, {"MB", 1_000_000}, {"KB", 1_000},
+	{"T", 1_000_000_000_000}, {"G", 1_000_000_000}, {"M", 1_000_000}, {"K", 1_000},
+	{"B", 1},
+}
+
+// parseBytes reads "1048576", "64MB", or "64 MiB" as a byte count; the suffix is optional.
+func parseBytes(text string) (int64, error) {
+	digits, unit := splitByteUnit(text)
+	if digits == "" {
+		return 0, fmt.Errorf("%w: bad byte count %q: want \"64MB\", \"64 MiB\", or bytes", ErrInvalidConfig, text)
+	}
+	scale, err := byteUnitScale(unit)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v in %q", ErrInvalidConfig, err, text)
+	}
+	n, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%w: bad byte count %q: want \"64MB\", \"64 MiB\", or bytes", ErrInvalidConfig, text)
+	}
+	return n * scale, nil
+}
+
+// splitByteUnit separates a byte count's digits from its unit, tolerating a space or underscore between them.
+func splitByteUnit(text string) (digits, unit string) {
+	i := 0
+	for i < len(text) && (text[i] == '+' || text[i] == '-' || text[i] == '_' || (text[i] >= '0' && text[i] <= '9')) {
+		i++
+	}
+	digits = strings.ReplaceAll(text[:i], "_", "")
+	unit = strings.ToUpper(strings.Trim(strings.ReplaceAll(text[i:], "_", ""), " "))
+	return digits, unit
+}
+
+// byteUnitScale resolves a byte suffix, or reports the ones this build knows.
+func byteUnitScale(unit string) (int64, error) {
+	for _, u := range byteUnits {
+		if u.suffix == unit {
+			return u.scale, nil
+		}
+	}
+	if unit == "" {
+		return 1, nil
+	}
+	return 0, fmt.Errorf("unknown byte unit %q", unit)
 }
 
 // CheckSpecVersion rejects a wire schema number this build cannot decode.

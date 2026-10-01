@@ -30,5 +30,6 @@
     shutdown              Stop the running daemon
     login                 Store a token for a target
     logout                Forget a stored token
+    bench                 Run and inspect benchmarks
 
   Run `<verb> --help` for flags and examples.

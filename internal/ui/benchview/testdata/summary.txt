@@ -1,0 +1,10 @@
+bench-177261981234567890 · produce · embedded
+spec      log · sync · 64.0 MiB segment · 32.0 MiB cache
+workload  256 B × 5s · 8 workers · batch=1
+240,123  58.6 MiB/s
+ MSGS/S    BYTES/S
+latency   p50 42µs · p90 180µs · p99 1.2ms · max 8.1ms
+verified  no
+bound     duration
+cache     warm
+written  ./bench/bench-177261981234567890

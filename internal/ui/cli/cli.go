@@ -87,44 +87,53 @@ func (a *App) Run(target string, args []string) error {
 
 	verb, vargs := rest[0], rest[1:]
 
-	// `help` alone prints the index.
-	if verb == "help" {
-		return command.WriteIndex(a.Stdout, opts)
-	}
-
-	// Per-verb help is revealed by --help / -h only.
-	if command.HasHelpFlag(vargs) {
-		v, ok := command.LookupVerb(verb)
-		if !ok {
-			_ = command.WriteIndex(a.Stdout, opts)
-			return a.usage("unknown command: %s", verb)
-		}
-		return command.WriteVerb(a.Stdout, v, opts)
-	}
-
-	handler, ok := handlers[verb]
+	v, path, vargs, ok := command.ResolveVerb(verb, vargs)
 	if !ok {
 		_ = command.WriteIndex(a.Stdout, opts)
 		return a.usage("unknown command: %s", verb)
 	}
 
-	client, err := command.OpenClient(global.Session)
-	if err != nil {
-		if errors.Is(err, mikyu.ErrLocked) {
-			return fmt.Errorf("%w (use --target to connect to the running daemon)", err)
-		}
-		return err
+	// `help` alone prints the index.
+	if path == "help" {
+		return command.WriteIndex(a.Stdout, opts)
 	}
-	defer client.Close()
+
+	// Per-verb help is revealed by --help / -h only.
+	if command.HasHelpFlag(vargs) {
+		return command.WriteVerb(a.Stdout, v, opts)
+	}
+
+	// A parent verb with children that was given an unknown child reports it.
+	if len(v.Subs) > 0 && path == v.Name && len(vargs) > 0 && !strings.HasPrefix(vargs[0], "-") {
+		_ = command.WriteIndex(a.Stdout, opts)
+		return a.usage("unknown subcommand: %s %s", v.Name, vargs[0])
+	}
+
+	handler, ok := handlers[path]
+	if !ok {
+		_ = command.WriteIndex(a.Stdout, opts)
+		return a.usage("unknown command: %s", verb)
+	}
 
 	in := &invocation{
 		app:     a,
 		ctx:     context.Background(),
-		client:  client,
 		dir:     global.Session.DataDir,
 		target:  global.Session.Target,
 		session: global.Session,
 	}
+	if !v.Local {
+		client, err := command.OpenClient(global.Session)
+		if err != nil {
+			if errors.Is(err, mikyu.ErrLocked) {
+				return fmt.Errorf("%w (use --target to connect to the running daemon)", err)
+			}
+			return err
+		}
+		defer client.Close()
+		in.client = client
+	}
+
 	err = handler(in, vargs)
 	if errors.Is(err, mikyu.ErrLocked) {
 		return fmt.Errorf("%w (use --target to connect to the running daemon)", err)

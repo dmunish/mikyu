@@ -22,6 +22,7 @@ const (
 	KindString
 	KindTime
 	KindEnum
+	KindFloat
 )
 
 func (k Kind) String() string {
@@ -42,6 +43,8 @@ func (k Kind) String() string {
 		return "timestamp"
 	case KindEnum:
 		return "enum"
+	case KindFloat:
+		return "float"
 	default:
 		return "unknown"
 	}
@@ -103,7 +106,7 @@ func (k *Kind) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return err
 	}
-	for i := KindInt; i <= KindEnum; i++ {
+	for i := KindInt; i <= KindFloat; i++ {
 		if i.String() == s {
 			*k = i
 			return nil
@@ -540,6 +543,7 @@ type Value struct {
 	num  int64
 	str  string
 	t    time.Time
+	f    float64
 }
 
 func NewInt(n int) Value                { return Value{kind: KindInt, num: int64(n)} }
@@ -549,6 +553,7 @@ func NewBytes(b int64) Value            { return Value{kind: KindBytes, num: b} 
 func NewBool(b bool) Value              { return Value{kind: KindBool, num: boolNum(b)} }
 func NewString(s string) Value          { return Value{kind: KindString, str: s} }
 func NewEnum(s string) Value            { return Value{kind: KindEnum, str: s} }
+func NewFloat(f float64) Value          { return Value{kind: KindFloat, f: f} }
 func NewSpecDuration(d Duration) Value  { return NewDuration(d.Duration()) }
 
 // NewTime strips any monotonic reading so Values compare and print the same way they were built.
@@ -563,6 +568,7 @@ func (v Value) Bool() bool              { return v.numOf(KindBool) != 0 }
 func (v Value) Text() string            { return v.strOf(KindString) }
 func (v Value) Enum() string            { return v.strOf(KindEnum) }
 func (v Value) Time() time.Time         { return v.timeOf(KindTime) }
+func (v Value) Float() float64          { return v.floatOf(KindFloat) }
 
 // String renders the value for flags, logs, and describe output.
 func (v Value) String() string {
@@ -575,6 +581,8 @@ func (v Value) String() string {
 		return v.Time().Format(time.RFC3339)
 	case KindString, KindEnum:
 		return v.str
+	case KindFloat:
+		return strconv.FormatFloat(v.Float(), 'f', -1, 64)
 	case KindUnknown:
 		return "<unset>"
 	default:
@@ -603,6 +611,14 @@ func (v Value) strOf(k Kind) string {
 		panic(fmt.Sprintf("spec: value of kind %s read as %s", v.kind, k))
 	}
 	return v.str
+}
+
+// floatOf panics on kind mismatch, like the other typed accessors.
+func (v Value) floatOf(k Kind) float64 {
+	if v.kind != k {
+		panic(fmt.Sprintf("spec: value of kind %s read as %s", v.kind, k))
+	}
+	return v.f
 }
 
 func (v Value) timeOf(k Kind) time.Time {
@@ -638,7 +654,7 @@ func ParseValue(kind Kind, text string) (Value, error) {
 		}
 		return NewDuration(d), nil
 	case KindBytes:
-		n, err := strconv.ParseInt(text, 10, 64)
+		n, err := parseBytes(text)
 		if err != nil {
 			return Value{}, err
 		}
@@ -653,6 +669,12 @@ func ParseValue(kind Kind, text string) (Value, error) {
 		return NewString(text), nil
 	case KindEnum:
 		return NewEnum(text), nil
+	case KindFloat:
+		f, err := strconv.ParseFloat(text, 64)
+		if err != nil {
+			return Value{}, err
+		}
+		return NewFloat(f), nil
 	case KindTime:
 		t, err := time.Parse(time.RFC3339, text)
 		if err != nil {

@@ -114,6 +114,14 @@ func TestNoLegacyVerbs(t *testing.T) {
 		_, ok := handlers[v.Name]
 		assert.True(t, ok, "verb %q has no CLI handler", v.Name)
 	}
+	for _, path := range command.VerbNames() {
+		v, ok := command.LookupVerb(strings.Fields(path)...)
+		if !ok || v.Intercepted || v.Modes&command.ModeCLI == 0 {
+			continue
+		}
+		_, registered := handlers[path]
+		assert.True(t, registered, "verb %q has no CLI handler", path)
+	}
 }
 
 func TestUpdateImmutableIsUsageError(t *testing.T) {
@@ -184,6 +192,23 @@ func TestGlobalFlagsBothForms(t *testing.T) {
 	assert.Contains(t, out, "q")
 }
 
+// TestByteFlagAcceptsUnits: a byte count and a unit spelling reach the same queue.
+func TestByteFlagAcceptsUnits(t *testing.T) {
+	app := newTestApp(t)
+	app.run(t, "create", "--type", "log", "q", "--max-segment", "128MiB")
+
+	var got mikyu.QueueDescription
+	require.NoError(t, json.Unmarshal([]byte(app.run(t, "describe", "q", "--json")), &got))
+	require.NotNil(t, got.Spec.Storage.MaxSegment)
+	assert.Equal(t, int64(128<<20), *got.Spec.Storage.MaxSegment)
+}
+
+func TestByteFlagRejectsUnknownUnit(t *testing.T) {
+	app := newTestApp(t)
+	err := app.runErr(t, "create", "--type", "log", "q", "--max-segment", "128QQ")
+	require.ErrorIs(t, err, daemon.ErrUsage)
+	assert.Contains(t, app.errOut.String(), "QQ")
+}
 func TestConfirmNonInteractive(t *testing.T) {
 	app := &App{Stdin: strings.NewReader(""), Stdout: io.Discard, Stderr: io.Discard}
 	_, err := app.confirm("delete queue?", false)

@@ -340,6 +340,27 @@ func TestParseValueAcceptsNanos(t *testing.T) {
 	require.Equal(t, 10*time.Millisecond, v.Duration())
 }
 
+// KindFloat carries ratios such as the bench ack fraction; it round-trips
+// through text and through the kind's string form on the wire.
+func TestFloatValues(t *testing.T) {
+	v, err := ParseValue(KindFloat, "0.9")
+	require.NoError(t, err)
+	require.Equal(t, KindFloat, v.Kind())
+	require.InDelta(t, 0.9, v.Float(), 1e-9)
+	require.Equal(t, "0.9", v.String())
+	require.Panics(t, func() { _ = v.Int() })
+
+	_, err = ParseValue(KindFloat, "most")
+	require.Error(t, err)
+
+	var k Kind
+	require.NoError(t, json.Unmarshal([]byte(`"float"`), &k))
+	require.Equal(t, KindFloat, k)
+	encoded, err := json.Marshal(KindFloat)
+	require.NoError(t, err)
+	require.JSONEq(t, `"float"`, string(encoded))
+}
+
 func TestEnumValuesAreChecked(t *testing.T) {
 	p, ok := Lookup("durability")
 	require.True(t, ok)
@@ -401,6 +422,7 @@ func TestLayerKindAndParamNames(t *testing.T) {
 
 	require.Equal(t, "timestamp", KindTime.String())
 	require.Equal(t, "enum", KindEnum.String())
+	require.Equal(t, "float", KindFloat.String())
 	require.Equal(t, "unknown", KindUnknown.String())
 
 	p, ok := Lookup("durability")
@@ -473,6 +495,7 @@ func TestValueRendersAnyKind(t *testing.T) {
 	require.Equal(t, "sample", sampleValue(KindString).String())
 	require.Equal(t, "sync", sampleValue(KindEnum).String())
 	require.Equal(t, "2026-01-02T03:04:05Z", sampleValue(KindTime).String())
+	require.Equal(t, "0.9", sampleValue(KindFloat).String())
 	require.Equal(t, "<unset>", Value{}.String())
 
 	require.Equal(t, "sample", sampleValue(KindString).Text())
@@ -630,6 +653,8 @@ func sampleValue(k Kind) Value {
 		return NewEnum("sync")
 	case KindTime:
 		return NewTime(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	case KindFloat:
+		return NewFloat(0.9)
 	default:
 		panic("no sample value for kind " + k.String())
 	}

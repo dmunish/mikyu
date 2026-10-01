@@ -3,6 +3,7 @@ package repl
 import (
 	"bytes"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/dmunish/mikyu"
@@ -32,6 +33,14 @@ func TestREPLMirrorsEveryVerb(t *testing.T) {
 		}
 		_, ok := replHandlers[v.Name]
 		assert.True(t, ok, "verb %q is missing from the REPL", v.Name)
+	}
+	for _, path := range command.VerbNames() {
+		v, ok := command.LookupVerb(strings.Fields(path)...)
+		if !ok || v.Intercepted || v.Modes&command.ModeREPL == 0 {
+			continue
+		}
+		_, registered := replHandlers[path]
+		assert.True(t, registered, "verb %q is missing from the REPL", path)
 	}
 	for _, name := range []string{"produce", "publish", "pop", "stats", "info"} {
 		_, ok := replHandlers[name]
