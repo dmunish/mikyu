@@ -236,10 +236,26 @@ func TestRunBenchRefusesAnUnknownAccess(t *testing.T) {
 	require.ErrorIs(t, err, bench.ErrUsage)
 }
 
-func TestRunBenchNeedsADirectoryForEmbeddedAccess(t *testing.T) {
+func TestRunBenchRefusesRemoteAccessWithoutATarget(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	_, err := command.RunBench(t.Context(),
-		[]string{"--duration", "1s"},
+		[]string{"--duration", "1s", "--access", "remote"},
 		&stdout, &stderr, spec.BuiltinSession())
 	require.ErrorIs(t, err, bench.ErrUsage)
+}
+
+// TestRunBenchRunsWithoutADirectory proves a bare invocation lands in the run's own data directory.
+func TestRunBenchRunsWithoutADirectory(t *testing.T) {
+	t.Chdir(t.TempDir())
+	var stdout, stderr bytes.Buffer
+
+	run, err := command.RunBench(t.Context(),
+		[]string{"--out", t.TempDir(), "--bytes", "65536", "--warmup", "0s", "--workers", "1"},
+		&stdout, &stderr, spec.BuiltinSession())
+	require.NoError(t, err)
+
+	res, err := result.ReadResult(run)
+	require.NoError(t, err)
+	assert.True(t, res.Complete)
+	assert.DirExists(t, "mikyu-bench", "the run owns a data directory it never asked for")
 }

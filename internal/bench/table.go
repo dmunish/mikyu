@@ -159,6 +159,17 @@ func DefaultWorkload() Workload {
 	return w
 }
 
+// DefaultDuration is the measure window a run gets when it names no bound of its own.
+const DefaultDuration = time.Minute
+
+// EnsureBound installs DefaultDuration for a run that named no bound; recovery has no measure window to fill.
+func (w *Workload) EnsureBound(mode Mode) {
+	if mode == ModeRecovery || w.Bytes > 0 || w.Duration > 0 || w.CrashAfterBytes > 0 {
+		return
+	}
+	w.Duration = DefaultDuration
+}
+
 // Validate checks the workload in isolation; the runner checks the rules that span it and the access.
 func (w Workload) Validate() error {
 	switch {

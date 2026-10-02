@@ -22,6 +22,9 @@ import (
 	"github.com/dmunish/mikyu/internal/ui/style"
 )
 
+// runDir is the data directory a run uses when neither the session nor --dir names one.
+const runDir = "mikyu-bench"
+
 // BenchArgs carries the destinations BenchFlagSet binds for one run.
 type BenchArgs struct {
 	Options bench.Options
@@ -36,6 +39,7 @@ func BenchFlagSet(a *BenchArgs) *flag.FlagSet {
 	fs := NewFlagSet("bench run")
 	a.cleanupStale = true
 	a.explicit = make(map[string]bool)
+	a.Options.Dir = dirOrDefault(a.Options.Dir)
 	for _, p := range bench.Table {
 		fs.Var(&workloadValue{param: p, args: a}, p.FlagName, p.Doc)
 	}
@@ -178,7 +182,16 @@ func resolveBench(args []string, sess spec.Session, lookup func(string) string) 
 	if final.Options.Access == "" {
 		final.Options.Access = bench.AccessEmbedded
 	}
+	final.Options.Workload.EnsureBound(final.Options.Mode)
 	return final.Options, nil
+}
+
+// dirOrDefault falls back to the run's own data directory when no directory was named.
+func dirOrDefault(dir string) string {
+	if dir == "" {
+		return runDir
+	}
+	return dir
 }
 
 // resolveMode picks the run mode: the --mode flag, else the scenario's mode, else the default.

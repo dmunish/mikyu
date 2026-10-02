@@ -1349,11 +1349,15 @@ func (p Param) ScopeNames() []string
 func (p Param) Parse(text string) (spec.Value, error)
 func Lookup(key string) (Param, bool)
 func DefaultWorkload() Workload
+const DefaultDuration = time.Minute
+func (w *Workload) EnsureBound(mode Mode)
 func (w Workload) Validate() error
 func (w Workload) View() result.WorkloadView
 ```
 
 `Table` rows in order: `kind`, `queues`, `msg_size`, `bytes`, `duration`, `rate` (produce/mix), `rate_schedule` (produce/mix), `workers`, `batch`, `keys` (produce/mix), `preload` (consume), `warmup`, `ack_rate` (consume/mix), `crash_after_bytes` (recovery), `seed`. Every row carries a `Doc`; name derivation is automatic (`EnvName = "MIKYU_BENCH_" + UPPER(key)`, `FlagName = key` with `_→-`). A mode-scoped row is registered on one flag set and rejected when a run sets it in another mode; `ScopeNames` is what help and the error message render.
+
+`EnsureBound` is the fallback bound: a run that named none of bytes/duration/crash_after_bytes measures for `DefaultDuration`, and recovery is left alone because it has no measure window to fill.
 
 `Workload.Validate` enforces: known kind, positive queues/msg_size/workers/batch, non-negative warmup/keys, `keys=0` for task queues, `ack_rate ∈ [0,1]`, `rate` XOR `rate_schedule`, one bound (bytes XOR duration XOR crash_after_bytes), and a schedule anchored at 0 s with strictly rising timestamps.
 
@@ -1708,11 +1712,11 @@ Series layout (`seriesHeader`): `t, phase, client_*, system_*, host_*` in this f
 - **Flags:** `Global`, `SessionFlags`, `ParseGlobal`, `SpecOption`, `OpenClient`, `NewFlagSet`, `QueueFlagSet`, `QueuePatchFlagSet`, `EnqueueFlagSet`, `NackFlagSet`, `ParseAnywhere`, `HasHelpFlag`.
 - **Help:** `RenderOptions`, `WriteIndex`, `WriteVerb`, `collectSpecRows`, `writeFlagGroups`, `defaultString`, `humanBytes`, `formatArgsStyled`, `wrapParagraphs`.
 - **Metrics:** `MetricsOptions`, `MetricsFlagSet`, `RunMetrics`, `presentation`, `renderFrame`, `watchMetrics`, `watchInterval`, `watchModeFor`.
-- **Bench:** `BenchArgs`, `BenchFlagSet`, `PlotFlagSet`, `RunBench`, `Present`, `ShowRun`, `CompareRuns`, `PlotRun`, `resolveBench`, `resolveMode`, `applyBenchEnv`, `checkModeScope`, `scenarioDoc`, `readScenario`, `applyScenario`, `modeScopeDoc`, `workloadValue`, `modeValue`, `accessValue`, `benchPresentation`, `splitCSV`, `benchProgress`.
+- **Bench:** `runDir`, `BenchArgs`, `BenchFlagSet`, `PlotFlagSet`, `RunBench`, `Present`, `ShowRun`, `CompareRuns`, `PlotRun`, `resolveBench`, `resolveMode`, `applyBenchEnv`, `checkModeScope`, `dirOrDefault`, `scenarioDoc`, `readScenario`, `applyScenario`, `modeScopeDoc`, `workloadValue`, `modeValue`, `accessValue`, `benchPresentation`, `splitCSV`, `benchProgress`.
 
 `command.SpecOption(spec.Spec)` is the single bridge handing a fully-built spec to the SDK. `command.OpenClient(sess)` returns an embedded client if `--dir`, otherwise ensures the daemon is running and dials.
 
-`command.RunBench` resolves a run in one place: the mode is `--mode` over the scenario's `mode:` over `bench.DefaultMode`, and every workload value layers as built-in default < `MIKYU_BENCH_*` < `--file` scenario < flags. A workload flag the resolved mode never reads is a usage error rather than a silently ignored argument.
+`command.RunBench` resolves a run in one place: the mode is `--mode` over the scenario's `mode:` over `bench.DefaultMode`, and every workload value layers as built-in default < `MIKYU_BENCH_*` < `--file` scenario < flags. A workload flag the resolved mode never reads is a usage error rather than a silently ignored argument. A bare `bench run` needs no flags: `dirOrDefault` puts it in `./mikyu-bench` and `Workload.EnsureBound` measures it for `bench.DefaultDuration`.
 
 ### Credential Store (`command/auth.go`)
 

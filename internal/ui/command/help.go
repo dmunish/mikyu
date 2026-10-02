@@ -375,14 +375,21 @@ func benchSpecDefault(p spec.Param) string {
 	return defaultString(p)
 }
 
+// durationKey names the workload row whose help default is the fallback measure window.
+const durationKey = "duration"
+
 // workloadParamDefault renders a workload row's built-in default for help.
 func workloadParamDefault(p bench.Param) string {
-	if p.Default == "" {
+	text := p.Default
+	if text == "" && p.Key == durationKey {
+		text = bench.DefaultDuration.String()
+	}
+	if text == "" {
 		return ""
 	}
-	v, err := p.Parse(p.Default)
+	v, err := p.Parse(text)
 	if err != nil {
-		return p.Default
+		return text
 	}
 	return formatDefault(v)
 }

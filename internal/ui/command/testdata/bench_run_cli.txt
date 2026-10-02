@@ -42,7 +42,7 @@
       --queues               <int>       Number of queues to spread load across (default 1)
       --msg-size             <bytes>     Payload size in bytes (default 1 KiB)
       --bytes                <bytes>     Total bytes to write before stopping
-      --duration             <duration>  Total measure-phase duration
+      --duration             <duration>  Total measure-phase duration (default 1m0s)
       --rate                 <uint32>    Target messages/s; 0 = unthrottled (produce|mix only) (default 0)
       --rate-schedule        <string>    Rate schedule: '0:0,30s:100k,60s:10k' (produce|mix only)
       --workers              <int>       Concurrent client workers (default 4)
@@ -55,7 +55,7 @@
       --seed                 <uint32>    PRNG seed for payload generation and ack decisions (default 0)
 
     OPTIONS
-      --dir                  <string>    Data directory (embedded and daemon access)
+      --dir                  <string>    Data directory (embedded and daemon access) (default mikyu-bench)
       --target               <string>    Remote target to dial
       --access               <string>    How to reach mikyu: embedded, daemon, or remote (default embedded)
       --out                  <string>    Directory the run is written under (default bench)

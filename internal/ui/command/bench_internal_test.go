@@ -200,6 +200,26 @@ func TestBenchInheritsTheSessionDirectory(t *testing.T) {
 	assert.Equal(t, "explicit", opts.Dir)
 }
 
+func TestBenchDefaultsTheDataDirectory(t *testing.T) {
+	opts, err := resolveBench([]string{"--duration", "1s"}, spec.BuiltinSession(), envLookup(nil))
+	require.NoError(t, err)
+	assert.Equal(t, runDir, opts.Dir, "a run owns its directory when no session names one")
+}
+
+func TestBenchMeasuresForTheDefaultDuration(t *testing.T) {
+	opts, err := resolveBench([]string{"--dir", "d"}, spec.BuiltinSession(), envLookup(nil))
+	require.NoError(t, err)
+	assert.Equal(t, bench.DefaultDuration, opts.Workload.Duration)
+	require.NoError(t, opts.Workload.Validate(), "the fallback bound is a runnable one")
+}
+
+func TestBenchKeepsTheBoundItWasGiven(t *testing.T) {
+	opts, err := resolveBench([]string{"--dir", "d", "--bytes", "65536"}, spec.BuiltinSession(), envLookup(nil))
+	require.NoError(t, err)
+	assert.Zero(t, opts.Workload.Duration, "a byte budget is the bound")
+	require.NoError(t, opts.Workload.Validate())
+}
+
 func TestBenchCleanupStaleIsOnByDefault(t *testing.T) {
 	opts, err := resolveBench([]string{"--dir", "d", "--duration", "1s"},
 		spec.BuiltinSession(), envLookup(nil))

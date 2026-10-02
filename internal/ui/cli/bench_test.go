@@ -97,6 +97,20 @@ func TestBenchRunConsumesThroughTheModeFlag(t *testing.T) {
 	assert.Contains(t, out, "MSGS/S")
 }
 
+// TestBenchRunNeedsNoDirectoryFlag proves the run's own data directory is the fallback.
+func TestBenchRunNeedsNoDirectoryFlag(t *testing.T) {
+	t.Chdir(t.TempDir())
+	app := newTestApp(t)
+
+	out, err := app.runRaw(t, "bench", "run",
+		"--out", t.TempDir(),
+		"--bytes", "65536", "--warmup", "0s", "--workers", "1")
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "MSGS/S")
+	assert.DirExists(t, "mikyu-bench")
+}
+
 func TestBenchRunRefusesAPositionalArgument(t *testing.T) {
 	app := newTestApp(t)
 

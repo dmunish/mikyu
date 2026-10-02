@@ -386,7 +386,7 @@ func benchVerb() Verb {
 					{Invocation: "bench run --mode consume --preload 512MiB --verify"},
 				},
 				ExtraFlags: []FlagDoc{
-					{Name: "dir", Kind: "string", Doc: "Data directory (embedded and daemon access)"},
+					{Name: "dir", Kind: "string", Doc: "Data directory (embedded and daemon access)", Default: runDir},
 					{Name: "target", Kind: "string", Doc: "Remote target to dial"},
 					{Name: "access", Kind: "string", Doc: "How to reach mikyu: embedded, daemon, or remote", Default: "embedded"},
 					{Name: "out", Kind: "string", Doc: "Directory the run is written under", Default: "bench"},
