@@ -125,6 +125,15 @@ func Lookup(key string) (Param, bool) {
 // AppliesTo reports whether the row is meaningful in mode; an unscoped row applies everywhere.
 func (p Param) AppliesTo(mode Mode) bool { return len(p.Modes) == 0 || slices.Contains(p.Modes, mode) }
 
+// ScopeNames names the modes a row applies to, in table order.
+func (p Param) ScopeNames() []string {
+	names := make([]string, len(p.Modes))
+	for i, m := range p.Modes {
+		names[i] = string(m)
+	}
+	return names
+}
+
 // Parse converts flag or env text into a Value of the row's kind.
 func (p Param) Parse(text string) (spec.Value, error) {
 	v, err := spec.ParseValue(p.Kind, text)

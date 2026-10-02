@@ -44,7 +44,7 @@ A queue's **kind is structural**: it is the name of its parent directory under t
 | Remote client | `mikyu.Dial(target, opts...)` | Pooled TCP / Unix / Named-Pipe wire client. |
 | Daemon | `mikyu daemon` | Long-lived server over TCP, Unix socket, or Windows named pipe. |
 | CLI / REPL | `mikyu <cmd>`, `mikyu shell` | Stateless one-shot CLI and styled interactive REPL. |
-| Bench harness | `mikyu bench <mode>` | Spawns its own client, writes a run directory, renders the summary. |
+| Bench harness | `mikyu bench run` | Spawns its own client, writes a run directory, renders the summary. |
 
 ---
 
@@ -1269,6 +1269,9 @@ const (
     ModeRecovery Mode = "recovery"
 )
 var Modes = []Mode{ModeProduce, ModeConsume, ModeMix, ModeRecovery}
+const DefaultMode = ModeProduce
+const ModeDoc = "What the run measures: produce, consume, mix, or recovery"
+func ParseMode(text string) (Mode, error)   // trims; rejects anything not in Modes with ErrUsage
 
 type Access string
 const (
@@ -1277,6 +1280,8 @@ const (
     AccessRemote   Access = "remote"     // dials an existing target
 )
 ```
+
+A run's mode is a `--mode` value on `bench run`, not a verb; `normalizeOptions` falls back to `DefaultMode` when a caller passes none.
 
 ### Options and Progress Events
 
@@ -1340,6 +1345,7 @@ type Param struct {
 }
 var Table = buildTable()
 func (p Param) AppliesTo(mode Mode) bool
+func (p Param) ScopeNames() []string
 func (p Param) Parse(text string) (spec.Value, error)
 func Lookup(key string) (Param, bool)
 func DefaultWorkload() Workload
@@ -1347,7 +1353,7 @@ func (w Workload) Validate() error
 func (w Workload) View() result.WorkloadView
 ```
 
-`Table` rows in order: `kind`, `queues`, `msg_size`, `bytes`, `duration`, `rate` (produce/mix), `rate_schedule` (produce/mix), `workers`, `batch`, `keys` (produce/mix), `preload` (consume), `warmup`, `ack_rate` (consume/mix), `crash_after_bytes` (recovery), `seed`. Every row carries a `Doc`; name derivation is automatic (`EnvName = "MIKYU_BENCH_" + UPPER(key)`, `FlagName = key` with `_→-`).
+`Table` rows in order: `kind`, `queues`, `msg_size`, `bytes`, `duration`, `rate` (produce/mix), `rate_schedule` (produce/mix), `workers`, `batch`, `keys` (produce/mix), `preload` (consume), `warmup`, `ack_rate` (consume/mix), `crash_after_bytes` (recovery), `seed`. Every row carries a `Doc`; name derivation is automatic (`EnvName = "MIKYU_BENCH_" + UPPER(key)`, `FlagName = key` with `_→-`). A mode-scoped row is registered on one flag set and rejected when a run sets it in another mode; `ScopeNames` is what help and the error message render.
 
 `Workload.Validate` enforces: known kind, positive queues/msg_size/workers/batch, non-negative warmup/keys, `keys=0` for task queues, `ack_rate ∈ [0,1]`, `rate` XOR `rate_schedule`, one bound (bytes XOR duration XOR crash_after_bytes), and a schedule anchored at 0 s with strictly rising timestamps.
 
@@ -1402,7 +1408,7 @@ type runner struct {
 
 `Run` validates the resolved workload and spec, opens the client (`openClient`), registers the run in `<dir>/.bench-runs` (except for remote access), creates queues, opens driver handles, opens the envelope, starts the observer, dispatches by mode, and finishes the envelope.
 
-`normalizeOptions` fills defaults: access=embedded, out=`bench`, stderr=io.Discard, metrics=`["throughput"]`, spec merges `DefaultSpec()`, and applies `GOMAXPROCS` when `CPU>0`.
+`normalizeOptions` fills defaults: mode=produce, access=embedded, out=`bench`, stderr=io.Discard, metrics=`["throughput"]`, spec merges `DefaultSpec()`, and applies `GOMAXPROCS` when `CPU>0`.
 
 `validateAccess`: embedded/daemon require `--dir`; remote requires `--target`; `--dir` and `--target` are mutually exclusive. `validateMode`: recovery refuses multi-queue and non-embedded access. `validateMetrics`: rejects a name not in `knownMetrics` (`throughput, p50, p90, p99, queue_depth, size_bytes, rss_bytes, cpu_percent`).
 
@@ -1685,12 +1691,12 @@ Series layout (`seriesHeader`): `t, phase, client_*, system_*, host_*` in this f
 | Log | `list`, `create`, `update`, `describe`, `delete`, `append`, `read`, `tail`, `truncate` |
 | Task | `enqueue`, `dequeue`, `ack`, `nack`, `extend`, `dlq`, `dlq-ack`, `archive` |
 | Admin | `metrics`, `shutdown`, `login`, `logout` |
-| Bench | `bench`, `bench produce`, `bench consume`, `bench mix`, `bench recovery`, `bench show`, `bench compare`, `bench plot` |
+| Bench | `bench`, `bench run`, `bench show`, `bench compare`, `bench plot` |
 | Session (REPL only) | `help`, `use`, `exit` |
 
-`benchVerb()` builds `bench` and its subcommands with `KindAdmin`, `Local: true` (no client required), `Flags: FlagsBench`. The `bench` run subcommands share a `runFlags` list. `bench show` / `compare` / `plot` take a run directory.
+`benchVerb()` builds `bench` with `KindAdmin`, `Local: true` (no client required); only `bench run` carries `Flags: FlagsBench` plus the run presentation flags, and its `--mode` flag selects the run mode. `bench show` / `compare` / `plot` take a run directory.
 
-`cli.handlers` and `repl.replHandlers` are keyed by the same names; `TestNamingLaw` asserts no retired vocabulary (`produce`, `publish`, `pop`, `stats`, `info`) leaks in. `bench produce` is the one exception in `TestNamingLaw` (the plan retires `produce` at the queue level, not at the bench level).
+`cli.handlers` and `repl.replHandlers` are keyed by the same names; `TestNamingLaw` asserts no retired vocabulary (`produce`, `publish`, `pop`, `stats`, `info`) leaks in. A bench run mode is a `--mode` value, not a verb, so no verb path carries retired vocabulary.
 
 ### Shared Command Helpers (`command/`)
 
@@ -1702,9 +1708,11 @@ Series layout (`seriesHeader`): `t, phase, client_*, system_*, host_*` in this f
 - **Flags:** `Global`, `SessionFlags`, `ParseGlobal`, `SpecOption`, `OpenClient`, `NewFlagSet`, `QueueFlagSet`, `QueuePatchFlagSet`, `EnqueueFlagSet`, `NackFlagSet`, `ParseAnywhere`, `HasHelpFlag`.
 - **Help:** `RenderOptions`, `WriteIndex`, `WriteVerb`, `collectSpecRows`, `writeFlagGroups`, `defaultString`, `humanBytes`, `formatArgsStyled`, `wrapParagraphs`.
 - **Metrics:** `MetricsOptions`, `MetricsFlagSet`, `RunMetrics`, `presentation`, `renderFrame`, `watchMetrics`, `watchInterval`, `watchModeFor`.
-- **Bench:** `BenchArgs`, `BenchFlagSet`, `PlotFlagSet`, `RunBench`, `Present`, `ShowRun`, `CompareRuns`, `PlotRun`, `resolveBench`, `applyBenchEnv`, `scenarioDoc`, `loadScenario`, `workloadValue`, `accessValue`, `benchPresentation`, `splitCSV`, `benchProgress`.
+- **Bench:** `BenchArgs`, `BenchFlagSet`, `PlotFlagSet`, `RunBench`, `Present`, `ShowRun`, `CompareRuns`, `PlotRun`, `resolveBench`, `resolveMode`, `applyBenchEnv`, `checkModeScope`, `scenarioDoc`, `readScenario`, `applyScenario`, `modeScopeDoc`, `workloadValue`, `modeValue`, `accessValue`, `benchPresentation`, `splitCSV`, `benchProgress`.
 
 `command.SpecOption(spec.Spec)` is the single bridge handing a fully-built spec to the SDK. `command.OpenClient(sess)` returns an embedded client if `--dir`, otherwise ensures the daemon is running and dials.
+
+`command.RunBench` resolves a run in one place: the mode is `--mode` over the scenario's `mode:` over `bench.DefaultMode`, and every workload value layers as built-in default < `MIKYU_BENCH_*` < `--file` scenario < flags. A workload flag the resolved mode never reads is a usage error rather than a silently ignored argument.
 
 ### Credential Store (`command/auth.go`)
 
@@ -1738,7 +1746,7 @@ type replSession struct {
 - **Every verb from `command.Verbs`** (via `replHandlers`).
 - **Retired names** (`produce`, `publish`, `pop`, `stats`, `info`) are explicitly unreachable.
 
-`handleUse` sets `activeQueue` and `activeKind`. `kindOf(name)` consults `activeKind` when the name matches, else lists queues. Handlers that are kind-specific reject the wrong kind up front. `renderTaskCard`/`renderDeadLetterCard` produce bordered output; `formatRecord` uses terminal-width-aware payload formatting. `handleBenchShow` / `Compare` / `Plot` remember `lastBenchRun` so a subsequent call can default to it. `runBench` installs a `signal.NotifyContext` for Ctrl+C and delegates to `command.RunBench`.
+`handleUse` sets `activeQueue` and `activeKind`. `kindOf(name)` consults `activeKind` when the name matches, else lists queues. Handlers that are kind-specific reject the wrong kind up front. `renderTaskCard`/`renderDeadLetterCard` produce bordered output; `formatRecord` uses terminal-width-aware payload formatting. `handleBenchShow` / `Compare` / `Plot` remember `lastBenchRun` so a subsequent call can default to it. `handleBenchRun` installs a `signal.NotifyContext` for Ctrl+C and delegates to `command.RunBench`.
 
 ### Entrypoint (`cmd/mikyu/main.go`)
 
@@ -1828,7 +1836,7 @@ func exitCode(err error) int {
   - `internal/bench/bench_test.go` — `TestProduceClosedLoop`, `TestProduceBatch`, `TestProduceOpenLoop`, `TestConsumeWithPreload`, `TestProduceTaskQueue`, `TestMixSymmetric`, `TestAbortOnCancel`, `TestEnvelopeShape`, `TestEnvelopeStreaming`, `TestAccessValidation`, `TestProgressEventsSpanTheRun`.
   - `internal/bench/measure_test.go` — `TestHistogramAccuracy`, `TestCOCorrection`, `TestConcurrentRecord`, `TestHistogramMerge`, `TestSnapshotSinceDeltas`, `TestTimerOverhead`.
   - `internal/bench/verify_test.go` — `TestPayloadDeterministic`, `TestPayloadShort`, `TestVerifyCatchesCorruption`, `TestVerifyOverhead` (skipped when `raceEnabled`).
-  - `internal/bench/access_test.go`, `mode_recovery_test.go`, `lifecycle_test.go`, `defaults_test.go`, `host_test.go`, `cache_test.go`, `metrics_test.go`, `observe_test.go`, `phases_test.go`.
+  - `internal/bench/access_test.go`, `mode_test.go`, `mode_recovery_test.go`, `lifecycle_test.go`, `defaults_test.go`, `host_test.go`, `cache_test.go`, `metrics_test.go`, `observe_test.go`, `phases_test.go`.
   - `internal/bench/result/result_test.go` — round-trip, golden, version check, unknown-field rejection, streaming series, `IsRun`.
   - `internal/node/bench_test.go` — `BenchmarkLookupTaskQueue`, `BenchmarkSharedCheckpointSweep` (build-tagged `bench`).
   - `internal/engine/stress_bench_test.go` — produce-only, read-only, mixed, batch, high-concurrency benchmarks (build-tagged `bench`).
@@ -1867,4 +1875,4 @@ func exitCode(err error) int {
 | `.bench-runs` is the run ownership record | A subsequent run clears stale queues and daemons deterministically, without touching the engine lock. |
 | Recovery mode spawns a detached child | The parent can kill mid-write without terminating the harness itself; `MIKYU_BENCH_CHILD` marks the child. |
 | `raceEnabled` build tag | Timing-sensitive tests (verify overhead) are skipped under the race detector. |
-| Bench `produce` is not a legacy verb | The retired-vocabulary rule applies to the queue API; `bench produce` names a mode, not an operation. |
+| Bench modes are a `--mode` flag, not verbs | One run page covers all four modes, the mode default stays visible in help, and the retired-vocabulary rule applies to every verb path. |

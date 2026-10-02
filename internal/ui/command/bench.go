@@ -27,23 +27,23 @@ type BenchArgs struct {
 	Options bench.Options
 	File    string
 
+	explicit     map[string]bool
 	cleanupStale bool
 }
 
-// BenchFlagSet builds the flag set for one run mode, binding into a.
-func BenchFlagSet(mode bench.Mode, a *BenchArgs) *flag.FlagSet {
-	fs := NewFlagSet("bench " + string(mode))
+// BenchFlagSet builds the flag set for one run, binding into a.
+func BenchFlagSet(a *BenchArgs) *flag.FlagSet {
+	fs := NewFlagSet("bench run")
 	a.cleanupStale = true
+	a.explicit = make(map[string]bool)
 	for _, p := range bench.Table {
-		if !p.AppliesTo(mode) {
-			continue
-		}
-		fs.Var(&workloadValue{param: p, workload: &a.Options.Workload}, p.FlagName, p.Doc)
+		fs.Var(&workloadValue{param: p, args: a}, p.FlagName, p.Doc)
 	}
 	queueFlagSetInto(fs, &a.Options.Spec, spec.Params(spec.LayerSpec))
 	if a.Options.Out == "" {
 		a.Options.Out = "bench"
 	}
+	fs.Var(&modeValue{mode: &a.Options.Mode}, "mode", bench.ModeDoc)
 	fs.StringVar(&a.Options.Dir, "dir", a.Options.Dir, "data directory (embedded and daemon access)")
 	fs.StringVar(&a.Options.Target, "target", a.Options.Target, "remote target to dial")
 	fs.Var(&accessValue{access: &a.Options.Access}, "access", "how to reach mikyu: embedded, daemon, or remote")
@@ -58,8 +58,20 @@ func BenchFlagSet(mode bench.Mode, a *BenchArgs) *flag.FlagSet {
 		a.Options.Metrics = append(a.Options.Metrics, splitCSV(text)...)
 		return nil
 	})
-	fs.StringVar(&a.File, "file", "", "scenario YAML file (mode, spec, workload)")
+	fs.StringVar(&a.File, "file", "", "scenario YAML file (mode, spec, workload); --mode overrides its mode")
 	return fs
+}
+
+// checkModeScope rejects a workload flag the resolved mode never reads.
+func (a *BenchArgs) checkModeScope(mode bench.Mode) error {
+	for _, p := range bench.Table {
+		if !a.explicit[p.Key] || p.AppliesTo(mode) {
+			continue
+		}
+		return fmt.Errorf("%w: --%s applies to %s, not %s mode",
+			bench.ErrUsage, p.FlagName, modeScopeDoc(p), mode)
+	}
+	return nil
 }
 
 // PlotFlagSet binds the --metric flag for bench plot.
@@ -73,8 +85,8 @@ func PlotFlagSet(metrics *[]string) *flag.FlagSet {
 }
 
 // RunBench resolves args, runs the benchmark, renders the summary, and returns the run directory.
-func RunBench(ctx context.Context, mode bench.Mode, args []string, out, errw io.Writer, sess spec.Session) (string, error) {
-	opts, err := resolveBench(mode, args, sess, os.Getenv)
+func RunBench(ctx context.Context, args []string, out, errw io.Writer, sess spec.Session) (string, error) {
+	opts, err := resolveBench(args, sess, os.Getenv)
 	if err != nil {
 		return "", err
 	}
@@ -124,14 +136,23 @@ func PlotRun(w io.Writer, dir string, metrics []string) error {
 }
 
 // resolveBench computes the run options from flags, a scenario file, and the environment.
-func resolveBench(mode bench.Mode, args []string, sess spec.Session, lookup func(string) string) (bench.Options, error) {
-	probe := BenchArgs{Options: bench.Options{Mode: mode, Dir: sess.DataDir}}
-	rest, err := ParseAnywhere(BenchFlagSet(mode, &probe), args)
+func resolveBench(args []string, sess spec.Session, lookup func(string) string) (bench.Options, error) {
+	probe := BenchArgs{Options: bench.Options{Dir: sess.DataDir}}
+	rest, err := ParseAnywhere(BenchFlagSet(&probe), args)
 	if err != nil {
 		return bench.Options{}, fmt.Errorf("%w: %v", bench.ErrUsage, err)
 	}
 	if len(rest) > 0 {
-		return bench.Options{}, fmt.Errorf("%w: bench %s takes no positional arguments", bench.ErrUsage, mode)
+		return bench.Options{}, fmt.Errorf("%w: bench run takes no positional arguments", bench.ErrUsage)
+	}
+
+	doc, err := readScenario(probe.File)
+	if err != nil {
+		return bench.Options{}, err
+	}
+	mode, err := resolveMode(probe.Options.Mode, doc.Mode)
+	if err != nil {
+		return bench.Options{}, err
 	}
 
 	opts := bench.Options{
@@ -142,15 +163,16 @@ func resolveBench(mode bench.Mode, args []string, sess spec.Session, lookup func
 		Workload: bench.DefaultWorkload(),
 	}
 	applyBenchEnv(&opts, lookup)
-	if probe.File != "" {
-		if err := loadScenario(probe.File, mode, &opts); err != nil {
-			return bench.Options{}, err
-		}
+	if err := applyScenario(doc, &opts); err != nil {
+		return bench.Options{}, err
 	}
 
 	final := BenchArgs{Options: opts}
-	if _, err := ParseAnywhere(BenchFlagSet(mode, &final), args); err != nil {
+	if _, err := ParseAnywhere(BenchFlagSet(&final), args); err != nil {
 		return bench.Options{}, fmt.Errorf("%w: %v", bench.ErrUsage, err)
+	}
+	if err := final.checkModeScope(final.Options.Mode); err != nil {
+		return bench.Options{}, err
 	}
 	final.Options.NoCleanupStale = !final.cleanupStale
 	if final.Options.Access == "" {
@@ -159,7 +181,18 @@ func resolveBench(mode bench.Mode, args []string, sess spec.Session, lookup func
 	return final.Options, nil
 }
 
-// applyBenchEnv sets every workload parameter the environment provides.
+// resolveMode picks the run mode: the --mode flag, else the scenario's mode, else the default.
+func resolveMode(flagged bench.Mode, declared string) (bench.Mode, error) {
+	if flagged != "" {
+		return flagged, nil
+	}
+	if strings.TrimSpace(declared) == "" {
+		return bench.DefaultMode, nil
+	}
+	return bench.ParseMode(declared)
+}
+
+// applyBenchEnv sets every workload parameter the run's mode reads from the environment.
 func applyBenchEnv(opts *bench.Options, lookup func(string) string) {
 	for _, p := range bench.Table {
 		if !p.AppliesTo(opts.Mode) {
@@ -182,19 +215,24 @@ type scenarioDoc struct {
 	Workload yaml.RawMessage `yaml:"workload"`
 }
 
-// loadScenario layers a scenario file over the resolved options.
-func loadScenario(path string, mode bench.Mode, opts *bench.Options) error {
+// readScenario parses a scenario file; an empty path is the zero document.
+func readScenario(path string) (scenarioDoc, error) {
+	if path == "" {
+		return scenarioDoc{}, nil
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("%w: %v", bench.ErrUsage, err)
+		return scenarioDoc{}, fmt.Errorf("%w: %v", bench.ErrUsage, err)
 	}
 	var doc scenarioDoc
 	if err := yaml.UnmarshalWithOptions(data, &doc, yaml.DisallowUnknownField()); err != nil {
-		return fmt.Errorf("%w: %v", bench.ErrUsage, err)
+		return scenarioDoc{}, fmt.Errorf("%w: %v", bench.ErrUsage, err)
 	}
-	if doc.Mode != "" && bench.Mode(doc.Mode) != mode {
-		return fmt.Errorf("%w: scenario mode %q does not match %q", bench.ErrUsage, doc.Mode, mode)
-	}
+	return doc, nil
+}
+
+// applyScenario layers a parsed scenario over the resolved options.
+func applyScenario(doc scenarioDoc, opts *bench.Options) error {
 	if len(doc.Spec) > 0 {
 		s, err := spec.DecodeSpecYAML(doc.Spec)
 		if err != nil {
@@ -214,8 +252,8 @@ func loadScenario(path string, mode bench.Mode, opts *bench.Options) error {
 
 // workloadValue binds one workload parameter to a flag.Value.
 type workloadValue struct {
-	param    bench.Param
-	workload *bench.Workload
+	param bench.Param
+	args  *BenchArgs
 }
 
 func (v *workloadValue) String() string { return "" }
@@ -225,9 +263,27 @@ func (v *workloadValue) Set(text string) error {
 	if err != nil {
 		return err
 	}
-	v.param.Apply(v.workload, value)
+	v.param.Apply(&v.args.Options.Workload, value)
+	v.args.explicit[v.param.Key] = true
 	return nil
 }
+
+// modeValue binds the run mode to a flag.Value.
+type modeValue struct{ mode *bench.Mode }
+
+func (v *modeValue) String() string { return string(*v.mode) }
+
+func (v *modeValue) Set(text string) error {
+	mode, err := bench.ParseMode(text)
+	if err != nil {
+		return err
+	}
+	*v.mode = mode
+	return nil
+}
+
+// modeScopeDoc renders the modes a workload row applies to, for a help suffix or an error message.
+func modeScopeDoc(p bench.Param) string { return strings.Join(p.ScopeNames(), "|") }
 
 // accessValue binds the access enum to a flag.Value.
 type accessValue struct{ access *bench.Access }

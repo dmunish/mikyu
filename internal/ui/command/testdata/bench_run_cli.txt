@@ -1,12 +1,16 @@
 
-  produce [flags]
-    Measure the write path
+  run [flags]
+    Measure a workload against a queue
 
-    Appends seeded payloads until the byte or duration bound fires, then reports
-    throughput and latency.
+    Appends seeded payloads, reads them back, or kills a writer mid-stream, then
+    reports throughput and latency. `--mode` chooses what is measured: produce
+    writes (the default), consume reads, mix runs producers and consumers over
+    the same queues, and recovery times how fast a queue reopens after a crash.
+    A flag only another mode reads is rejected, and a scenario named by `--file`
+    may declare its own mode.
 
   USAGE
-    bench produce [flags]
+    bench run [flags] [--mode produce|consume|mix|recovery]
 
   FLAGS
     STORAGE
@@ -33,17 +37,21 @@
       --max-dead-letters     <uint32>    Dead-letter upper bound (default 100000)
 
     WORKLOAD
+      --mode                 <string>    What the run measures: produce, consume, mix, or recovery (default produce)
       --kind                 <string>    Queue kind: log or task (default log)
       --queues               <int>       Number of queues to spread load across (default 1)
       --msg-size             <bytes>     Payload size in bytes (default 1 KiB)
       --bytes                <bytes>     Total bytes to write before stopping
       --duration             <duration>  Total measure-phase duration
-      --rate                 <uint32>    Target messages/s; 0 = unthrottled (default 0)
-      --rate-schedule        <string>    Rate schedule: '0:0,30s:100k,60s:10k'
+      --rate                 <uint32>    Target messages/s; 0 = unthrottled (produce|mix only) (default 0)
+      --rate-schedule        <string>    Rate schedule: '0:0,30s:100k,60s:10k' (produce|mix only)
       --workers              <int>       Concurrent client workers (default 4)
       --batch                <int>       Messages per API call (default 64)
-      --keys                 <int>       Distinct key cardinality; 0 = unkeyed (default 0)
+      --keys                 <int>       Distinct key cardinality; 0 = unkeyed (produce|mix only) (default 0)
+      --preload              <bytes>     Bytes written before measurement (populate phase) (consume only) (default unlimited)
       --warmup               <duration>  Warmup duration excluded from measurement (default 5s)
+      --ack-rate             <float>     Fraction of task dequeues that Ack (rest Nack) (consume|mix only) (default 0.9)
+      --crash-after-bytes    <bytes>     Bytes written before simulated crash (recovery only)
       --seed                 <uint32>    PRNG seed for payload generation and ack decisions (default 0)
 
     OPTIONS
@@ -58,5 +66,9 @@
       --cold                 <bool>      Drop the page cache before measuring
       --cpu                  <int>       GOMAXPROCS override; 0 leaves it alone
       --metric               <string>    Series metric to retain; repeatable
-      --file                 <string>    Scenario YAML file (mode, spec, workload)
+      --file                 <string>    Scenario YAML file; --mode overrides its mode
+
+  EXAMPLES
+    > mikyu bench run --dir ./data --bytes 1GiB
+    > mikyu bench run --mode consume --preload 512MiB --verify
 

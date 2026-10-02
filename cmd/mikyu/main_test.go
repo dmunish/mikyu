@@ -43,7 +43,7 @@ func TestExitCode(t *testing.T) {
 		{"usage error", fmt.Errorf("%w: flag provided but not defined: -nope", daemon.ErrUsage), 2},
 		{"bench usage error", fmt.Errorf("%w: set exactly one of bytes or duration", bench.ErrUsage), 2},
 		{"verify error", &bench.VerifyError{Offset: 42, Reason: "payload differs at byte 7"}, 3},
-		{"wrapped verify error", fmt.Errorf("bench produce: %w", &bench.VerifyError{Offset: 1, Reason: "short"}), 3},
+		{"wrapped verify error", fmt.Errorf("bench run: %w", &bench.VerifyError{Offset: 1, Reason: "short"}), 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

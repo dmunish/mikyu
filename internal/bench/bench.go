@@ -124,6 +124,9 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 
 // normalizeOptions fills the defaults the command layer leaves for the runner.
 func normalizeOptions(opts Options) Options {
+	if opts.Mode == "" {
+		opts.Mode = DefaultMode
+	}
 	if opts.Access == "" {
 		opts.Access = AccessEmbedded
 	}

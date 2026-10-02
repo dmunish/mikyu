@@ -7,10 +7,7 @@
     plot` read runs already written to disk.
 
   COMMANDS
-    produce   [flags]     Measure the write path
-    consume   [flags]     Measure the read path
-    mix       [flags]     Measure producers and consumers together
-    recovery  [flags]     Time reopening a queue after a crash
+    run       [flags]     Measure a workload against a queue
     show      <run-dir>   Render a saved run
     compare   <dir>...    Diff two or more runs
     plot      <run-dir>   Chart a run's series

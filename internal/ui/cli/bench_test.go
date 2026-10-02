@@ -15,8 +15,18 @@ func TestBenchSubHelpListsCommands(t *testing.T) {
 
 	out := app.run(t, "bench")
 	assert.Contains(t, out, "COMMANDS")
-	for _, sub := range []string{"produce", "consume", "mix", "recovery", "show", "compare", "plot"} {
+	for _, sub := range []string{"run", "show", "compare", "plot"} {
 		assert.Contains(t, out, sub)
+	}
+}
+
+func TestBenchRetiredModesAreNotSubcommands(t *testing.T) {
+	app := newTestApp(t)
+
+	for _, mode := range bench.Modes {
+		err := app.runErr(t, "bench", string(mode))
+		require.ErrorIs(t, err, daemon.ErrUsage, "%s is a --mode value, not a subcommand", mode)
+		assert.Contains(t, app.errOut.String(), "unknown subcommand")
 	}
 }
 
@@ -60,10 +70,10 @@ func TestBenchPlotNeedsARunDir(t *testing.T) {
 	assert.Contains(t, app.errOut.String(), "bench plot")
 }
 
-func TestBenchProduceWritesARunWithoutOpeningAClient(t *testing.T) {
+func TestBenchRunWritesARunWithoutOpeningAClient(t *testing.T) {
 	app := newTestApp(t)
 
-	out, err := app.runRaw(t, "bench", "produce",
+	out, err := app.runRaw(t, "bench", "run",
 		"--dir", app.dir, "--out", t.TempDir(),
 		"--bytes", "65536", "--warmup", "0s", "--workers", "1", "--durability", "async")
 	require.NoError(t, err)
@@ -74,27 +84,55 @@ func TestBenchProduceWritesARunWithoutOpeningAClient(t *testing.T) {
 	assert.NotContains(t, out, "unknown command", "the run must dispatch, not fall through")
 }
 
-func TestBenchProduceRefusesAPositionalArgument(t *testing.T) {
+func TestBenchRunConsumesThroughTheModeFlag(t *testing.T) {
 	app := newTestApp(t)
 
-	_, err := app.runRaw(t, "bench", "produce", "extra", "--dir", app.dir, "--duration", "1s")
+	out, err := app.runRaw(t, "bench", "run", "--mode", "consume",
+		"--dir", app.dir, "--out", t.TempDir(),
+		"--preload", "65536", "--bytes", "32768", "--warmup", "0s", "--workers", "1",
+		"--batch", "16", "--durability", "async", "--verify")
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "spec")
+	assert.Contains(t, out, "MSGS/S")
+}
+
+func TestBenchRunRefusesAPositionalArgument(t *testing.T) {
+	app := newTestApp(t)
+
+	_, err := app.runRaw(t, "bench", "run", "extra", "--dir", app.dir, "--duration", "1s")
 	require.ErrorIs(t, err, bench.ErrUsage)
 }
 
-func TestBenchShowHelpRendersTheSubcommandPage(t *testing.T) {
+func TestBenchRunRefusesAnUnknownMode(t *testing.T) {
 	app := newTestApp(t)
 
-	out, err := app.runRaw(t, "bench", "produce", "--help")
+	_, err := app.runRaw(t, "bench", "run", "--mode", "carrier-pigeon", "--dir", app.dir, "--duration", "1s")
+	require.ErrorIs(t, err, bench.ErrUsage)
+}
+
+func TestBenchRunRefusesAFlagAnotherModeOwns(t *testing.T) {
+	app := newTestApp(t)
+
+	_, err := app.runRaw(t, "bench", "run", "--preload", "1MiB", "--dir", app.dir, "--duration", "1s")
+	require.ErrorIs(t, err, bench.ErrUsage)
+}
+
+func TestBenchRunHelpRendersTheSubcommandPage(t *testing.T) {
+	app := newTestApp(t)
+
+	out, err := app.runRaw(t, "bench", "run", "--help")
 	require.NoError(t, err)
 	assert.Contains(t, out, "--msg-size")
+	assert.Contains(t, out, "--mode")
 	assert.Contains(t, out, "USAGE")
 }
 
 func TestBenchDispatchesThroughTheFlagSetOnly(t *testing.T) {
 	app := newTestApp(t)
 
-	// `help produce` is a queue named help, not a benchmark subcommand page.
-	_, err := app.runRaw(t, "bench", "produce", "help")
+	// `help` inside a run is not a verb: a bench run takes flags only.
+	_, err := app.runRaw(t, "bench", "run", "help")
 	require.Error(t, err)
 	assert.True(t, strings.Contains(err.Error(), "positional") || strings.Contains(err.Error(), "usage"))
 }

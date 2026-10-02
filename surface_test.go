@@ -286,9 +286,6 @@ func TestNamingLaw(t *testing.T) {
 		"Visibility", "BatchSize", "SegmentSize", "MaxMessageBytes", "MaxDLQ", "MaxConns", "Fsync", "Encrypted", "MinInterval", "MaxInterval"}
 
 	for _, path := range command.VerbNames() {
-		if path == "bench produce" {
-			continue
-		}
 		lower := strings.ToLower(path)
 		for _, banned := range []string{"produce", "publish", "pop", "stats", "fetchoffset"} {
 			assert.False(t, strings.Contains(lower, banned), "verb %q uses retired vocabulary", path)

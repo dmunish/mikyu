@@ -3,6 +3,7 @@ package repl
 import (
 	"testing"
 
+	"github.com/dmunish/mikyu/internal/bench"
 	"github.com/dmunish/mikyu/internal/bench/result"
 	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/stretchr/testify/assert"
@@ -27,7 +28,16 @@ func writeRun(t *testing.T, id string) string {
 func TestREPLBenchSubHelpListsCommands(t *testing.T) {
 	out := captureStdout(func() { (&replSession{}).handleBench(nil) })
 	assert.Contains(t, out, "COMMANDS")
-	assert.Contains(t, out, "produce")
+	for _, sub := range []string{"run", "show", "compare", "plot"} {
+		assert.Contains(t, out, sub)
+	}
+}
+
+func TestREPLBenchRetiredModesAreNotSubcommands(t *testing.T) {
+	for _, mode := range bench.Modes {
+		out := captureStdout(func() { (&replSession{}).dispatch("bench " + string(mode)) })
+		assert.Contains(t, out, "Unknown subcommand", "%s is a --mode value, not a subcommand", mode)
+	}
 }
 
 func TestREPLBenchShowNeedsARunDir(t *testing.T) {

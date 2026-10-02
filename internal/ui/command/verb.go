@@ -363,29 +363,6 @@ var Verbs = []Verb{
 
 // benchVerb is the benchmark command and its run, show, compare, and plot subcommands.
 func benchVerb() Verb {
-	runFlags := []FlagDoc{
-		{Name: "dir", Kind: "string", Doc: "Data directory (embedded and daemon access)"},
-		{Name: "target", Kind: "string", Doc: "Remote target to dial"},
-		{Name: "access", Kind: "string", Doc: "How to reach mikyu: embedded, daemon, or remote", Default: "embedded"},
-		{Name: "out", Kind: "string", Doc: "Directory the run is written under", Default: "bench"},
-		{Name: "persist", Kind: "bool", Doc: "Keep the spawned daemon and queues after the run"},
-		{Name: "cleanup-stale", Kind: "bool", Doc: "Remove queues recorded by previous runs", Default: "true"},
-		{Name: "quiet", Kind: "bool", Doc: "Suppress the progress bar"},
-		{Name: "verify", Kind: "bool", Doc: "Verify every payload the run reads"},
-		{Name: "cold", Kind: "bool", Doc: "Drop the page cache before measuring"},
-		{Name: "cpu", Kind: "int", Doc: "GOMAXPROCS override; 0 leaves it alone"},
-		{Name: "metric", Kind: "string", Doc: "Series metric to retain; repeatable"},
-		{Name: "file", Kind: "string", Doc: "Scenario YAML file (mode, spec, workload)"},
-	}
-	run := func(name, summary, long string) Verb {
-		return Verb{
-			Name: name, Args: "[flags]", Kind: KindAdmin, Modes: ModeCLI | ModeREPL, Local: true,
-			Summary: summary, Long: long,
-			Usage:      []string{"bench " + name + " [flags]"},
-			ExtraFlags: runFlags,
-			Flags:      FlagsBench,
-		}
-	}
 	return Verb{
 		Name: "bench", Kind: KindAdmin, Modes: ModeCLI | ModeREPL, Local: true,
 		Summary: "Run and inspect benchmarks",
@@ -394,14 +371,36 @@ func benchVerb() Verb {
 			"`bench plot` read runs already written to disk.",
 		Usage: []string{"bench <command> [flags]"},
 		Subs: []Verb{
-			run("produce", "Measure the write path",
-				"Appends seeded payloads until the byte or duration bound fires, then reports throughput and latency."),
-			run("consume", "Measure the read path",
-				"Reads records or dequeues tasks, optionally verifying every payload, until the bound fires."),
-			run("mix", "Measure producers and consumers together",
-				"Runs one producer and one consumer per worker over the same queues and reports the combined rate."),
-			run("recovery", "Time reopening a queue after a crash",
-				"Writes a backlog, kills a writer mid-stream, and times the open, first read, and full recovery milestones."),
+			{
+				Name: "run", Args: "[flags]", Kind: KindAdmin, Modes: ModeCLI | ModeREPL, Local: true,
+				Summary: "Measure a workload against a queue",
+				Long: "Appends seeded payloads, reads them back, or kills a writer mid-stream, " +
+					"then reports throughput and latency. `--mode` chooses what is measured: " +
+					"produce writes (the default), consume reads, mix runs producers and " +
+					"consumers over the same queues, and recovery times how fast a queue " +
+					"reopens after a crash. A flag only another mode reads is rejected, and " +
+					"a scenario named by `--file` may declare its own mode.",
+				Usage: []string{"bench run [flags] [--mode produce|consume|mix|recovery]"},
+				Examples: []Example{
+					{Invocation: "bench run --dir ./data --bytes 1GiB"},
+					{Invocation: "bench run --mode consume --preload 512MiB --verify"},
+				},
+				ExtraFlags: []FlagDoc{
+					{Name: "dir", Kind: "string", Doc: "Data directory (embedded and daemon access)"},
+					{Name: "target", Kind: "string", Doc: "Remote target to dial"},
+					{Name: "access", Kind: "string", Doc: "How to reach mikyu: embedded, daemon, or remote", Default: "embedded"},
+					{Name: "out", Kind: "string", Doc: "Directory the run is written under", Default: "bench"},
+					{Name: "persist", Kind: "bool", Doc: "Keep the spawned daemon and queues after the run"},
+					{Name: "cleanup-stale", Kind: "bool", Doc: "Remove queues recorded by previous runs", Default: "true"},
+					{Name: "quiet", Kind: "bool", Doc: "Suppress the progress bar"},
+					{Name: "verify", Kind: "bool", Doc: "Verify every payload the run reads"},
+					{Name: "cold", Kind: "bool", Doc: "Drop the page cache before measuring"},
+					{Name: "cpu", Kind: "int", Doc: "GOMAXPROCS override; 0 leaves it alone"},
+					{Name: "metric", Kind: "string", Doc: "Series metric to retain; repeatable"},
+					{Name: "file", Kind: "string", Doc: "Scenario YAML file; --mode overrides its mode"},
+				},
+				Flags: FlagsBench,
+			},
 			{
 				Name: "show", Args: "<run-dir>", Kind: KindAdmin, Modes: ModeCLI | ModeREPL, Local: true,
 				Summary: "Render a saved run",

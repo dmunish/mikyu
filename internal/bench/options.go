@@ -1,7 +1,10 @@
 package bench
 
 import (
+	"fmt"
 	"io"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/dmunish/mikyu/internal/spec"
@@ -35,6 +38,25 @@ const (
 
 // Modes lists every run mode in table order.
 var Modes = []Mode{ModeProduce, ModeConsume, ModeMix, ModeRecovery}
+
+// DefaultMode is the mode a run measures when the caller names none.
+const DefaultMode = ModeProduce
+
+// ModeDoc describes the run mode on every surface.
+const ModeDoc = "What the run measures: produce, consume, mix, or recovery"
+
+// ParseMode converts flag, scenario, or environment text into a Mode.
+func ParseMode(text string) (Mode, error) {
+	mode := Mode(strings.TrimSpace(text))
+	if slices.Contains(Modes, mode) {
+		return mode, nil
+	}
+	names := make([]string, len(Modes))
+	for i, m := range Modes {
+		names[i] = string(m)
+	}
+	return "", fmt.Errorf("%w: mode must be one of %s", ErrUsage, strings.Join(names, "|"))
+}
 
 // Options is the fully resolved configuration for one run.
 type Options struct {

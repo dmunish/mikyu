@@ -338,22 +338,29 @@ func buildFlagGroups(v Verb) []flagGroup {
 	return groups
 }
 
-// collectBenchRows turns the workload table into flag rows for a bench run verb.
+// collectBenchRows turns the mode flag and the workload table into flag rows for a bench run verb.
 func collectBenchRows(v Verb) []flagRow {
 	if v.Flags != FlagsBench {
 		return nil
 	}
-	mode := bench.Mode(v.Name)
-	rows := make([]flagRow, 0, len(bench.Table))
+	rows := make([]flagRow, 0, len(bench.Table)+1)
+	rows = append(rows, flagRow{
+		group: "workload",
+		name:  "--mode",
+		kind:  "<string>",
+		doc:   bench.ModeDoc,
+		def:   string(bench.DefaultMode),
+	})
 	for _, p := range bench.Table {
-		if !p.AppliesTo(mode) {
-			continue
+		doc := p.Doc
+		if scope := modeScopeDoc(p); scope != "" {
+			doc += " (" + scope + " only)"
 		}
 		rows = append(rows, flagRow{
 			group: "workload",
 			name:  "--" + p.FlagName,
 			kind:  "<" + p.Kind.String() + ">",
-			doc:   p.Doc,
+			doc:   doc,
 			def:   workloadParamDefault(p),
 		})
 	}

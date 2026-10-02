@@ -14,21 +14,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// benchRunFlags are the presentation flags every run mode registers.
+// benchRunFlags are the presentation flags every run registers.
 var benchRunFlags = []string{
-	"dir", "target", "access", "out", "persist", "cleanup-stale",
+	"mode", "dir", "target", "access", "out", "persist", "cleanup-stale",
 	"quiet", "verify", "cold", "cpu", "metric", "file",
 }
 
 func TestResolveVerbFindsSubcommands(t *testing.T) {
 	require.True(t, command.HasVerb("bench"))
-	require.True(t, command.HasVerb("bench", "produce"))
+	require.True(t, command.HasVerb("bench", "run"))
 	assert.False(t, command.HasVerb("bench", "nope"))
 
-	v, path, rest, ok := command.ResolveVerb("bench", []string{"produce", "--bytes", "1"})
+	v, path, rest, ok := command.ResolveVerb("bench", []string{"run", "--bytes", "1"})
 	require.True(t, ok)
-	assert.Equal(t, "produce", v.Name)
-	assert.Equal(t, "bench produce", path)
+	assert.Equal(t, "run", v.Name)
+	assert.Equal(t, "bench run", path)
 	assert.Equal(t, []string{"--bytes", "1"}, rest)
 
 	v, path, rest, ok = command.ResolveVerb("bench", []string{"--help"})
@@ -45,60 +45,72 @@ func TestResolveVerbFindsSubcommands(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestBenchHasNoPerModeSubcommands(t *testing.T) {
+	for _, mode := range bench.Modes {
+		assert.False(t, command.HasVerb("bench", string(mode)),
+			"a mode is a flag, not a subcommand")
+	}
+}
+
 func TestVerbNamesFlattensSubcommands(t *testing.T) {
 	names := command.VerbNames()
-	for _, want := range []string{"bench", "bench produce", "bench recovery", "bench show", "bench plot"} {
+	for _, want := range []string{"bench", "bench run", "bench show", "bench compare", "bench plot"} {
 		assert.Contains(t, names, want)
 	}
 }
 
 func TestBenchFlagSetCoversEveryParam(t *testing.T) {
-	for _, mode := range bench.Modes {
-		fs := command.BenchFlagSet(mode, &command.BenchArgs{})
-		for _, p := range bench.Table {
-			if !p.AppliesTo(mode) {
-				continue
-			}
-			assert.NotNil(t, fs.Lookup(p.FlagName), "bench %s is missing --%s", mode, p.FlagName)
-		}
-		for _, p := range spec.Params(spec.LayerSpec) {
-			assert.NotNil(t, fs.Lookup(p.FlagName), "bench %s is missing --%s", mode, p.FlagName)
-		}
-		for _, name := range benchRunFlags {
-			assert.NotNil(t, fs.Lookup(name), "bench %s is missing --%s", mode, name)
-		}
+	fs := command.BenchFlagSet(&command.BenchArgs{})
+	for _, p := range bench.Table {
+		assert.NotNil(t, fs.Lookup(p.FlagName), "bench run is missing --%s", p.FlagName)
+	}
+	for _, p := range spec.Params(spec.LayerSpec) {
+		assert.NotNil(t, fs.Lookup(p.FlagName), "bench run is missing --%s", p.FlagName)
+	}
+	for _, name := range benchRunFlags {
+		assert.NotNil(t, fs.Lookup(name), "bench run is missing --%s", name)
 	}
 }
 
-func TestBenchFlagSetScopesModeRows(t *testing.T) {
-	produce := command.BenchFlagSet(bench.ModeProduce, &command.BenchArgs{})
-	assert.Nil(t, produce.Lookup("preload"), "preload is consume-only")
-	assert.Nil(t, produce.Lookup("crash-after-bytes"), "crash-after-bytes is recovery-only")
-
-	consume := command.BenchFlagSet(bench.ModeConsume, &command.BenchArgs{})
-	assert.Nil(t, consume.Lookup("rate"), "rate is produce-only")
-	assert.NotNil(t, consume.Lookup("preload"))
-	assert.NotNil(t, consume.Lookup("ack-rate"))
+// TestBenchFlagSetCarriesEveryMode proves one flag set serves all four modes.
+func TestBenchFlagSetCarriesEveryMode(t *testing.T) {
+	fs := command.BenchFlagSet(&command.BenchArgs{})
+	for _, name := range []string{"mode", "preload", "rate", "rate-schedule", "keys", "ack-rate", "crash-after-bytes"} {
+		assert.NotNil(t, fs.Lookup(name), "bench run is missing --%s", name)
+	}
 }
 
 func TestBenchHelpListsEveryWorkloadFlag(t *testing.T) {
-	v, ok := command.LookupVerb("bench", "produce")
+	v, ok := command.LookupVerb("bench", "run")
 	require.True(t, ok)
 
 	var buf bytes.Buffer
 	require.NoError(t, command.WriteVerb(&buf, v, command.RenderOptions{Mode: command.ModeCLI, Color: false}))
 	out := buf.String()
 
+	assert.Contains(t, out, bench.ModeDoc)
+	assert.Contains(t, out, "--mode")
 	for _, p := range bench.Table {
-		if !p.AppliesTo(bench.ModeProduce) {
-			continue
-		}
-		assert.Contains(t, out, "--"+p.FlagName, "bench produce help is missing --%s", p.FlagName)
-		assert.Contains(t, out, p.Doc, "bench produce help is missing the doc for %s", p.Key)
+		assert.Contains(t, out, "--"+p.FlagName, "bench run help is missing --%s", p.FlagName)
+		assert.Contains(t, out, p.Doc, "bench run help is missing the doc for %s", p.Key)
 	}
 	for _, name := range benchRunFlags {
-		assert.Contains(t, out, "--"+name, "bench produce help is missing --%s", name)
+		assert.Contains(t, out, "--"+name, "bench run help is missing --%s", name)
 	}
+}
+
+// TestBenchHelpMarksModeScopedFlags keeps one help page honest about which mode reads a flag.
+func TestBenchHelpMarksModeScopedFlags(t *testing.T) {
+	v, ok := command.LookupVerb("bench", "run")
+	require.True(t, ok)
+
+	var buf bytes.Buffer
+	require.NoError(t, command.WriteVerb(&buf, v, command.RenderOptions{Mode: command.ModeCLI, Color: false}))
+	out := buf.String()
+
+	assert.Contains(t, out, "(consume only)")
+	assert.Contains(t, out, "(produce|mix only)")
+	assert.Contains(t, out, "(recovery only)")
 }
 
 func TestBenchHelpListsItsSubcommands(t *testing.T) {
@@ -115,13 +127,14 @@ func TestBenchHelpListsItsSubcommands(t *testing.T) {
 }
 
 func TestBenchHelpReportsTheTunedDefaults(t *testing.T) {
-	v, ok := command.LookupVerb("bench", "produce")
+	v, ok := command.LookupVerb("bench", "run")
 	require.True(t, ok)
 
 	var buf bytes.Buffer
 	require.NoError(t, command.WriteVerb(&buf, v, command.RenderOptions{Mode: command.ModeCLI, Color: false}))
 	out := buf.String()
 
+	assert.Contains(t, out, "(default produce)", "produce is the mode a run starts in")
 	assert.Contains(t, out, "(default async)", "a run flushes in the background by default")
 	assert.Contains(t, out, "(default 256 MiB)", "segments are sized for sustained traffic")
 	assert.Contains(t, out, "(default 1 KiB)", "message and byte defaults read in units")
@@ -179,7 +192,7 @@ func TestRunBenchWritesASummaryAndNoProgressBar(t *testing.T) {
 	dataDir, outDir := t.TempDir(), t.TempDir()
 	var stdout, stderr bytes.Buffer
 
-	run, err := command.RunBench(t.Context(), bench.ModeProduce,
+	run, err := command.RunBench(t.Context(),
 		[]string{
 			"--dir", dataDir, "--out", outDir,
 			"--bytes", "65536", "--warmup", "0s", "--workers", "1",
@@ -198,9 +211,26 @@ func TestRunBenchWritesASummaryAndNoProgressBar(t *testing.T) {
 	assert.NotContains(t, stderr.String(), "\x1b[", "a pipe never gets a progress bar")
 }
 
+// TestRunBenchDefaultsToProduce proves the mode flag is optional on the happy path.
+func TestRunBenchDefaultsToProduce(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	run, err := command.RunBench(t.Context(),
+		[]string{
+			"--dir", t.TempDir(), "--out", t.TempDir(),
+			"--bytes", "65536", "--warmup", "0s", "--workers", "1",
+			"--durability", "async",
+		},
+		&stdout, &stderr, spec.BuiltinSession())
+	require.NoError(t, err)
+
+	res, err := result.ReadResult(run)
+	require.NoError(t, err)
+	assert.Equal(t, "produce", res.Mode)
+}
+
 func TestRunBenchRefusesAnUnknownAccess(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	_, err := command.RunBench(t.Context(), bench.ModeProduce,
+	_, err := command.RunBench(t.Context(),
 		[]string{"--dir", t.TempDir(), "--duration", "1s", "--access", "carrier-pigeon"},
 		&stdout, &stderr, spec.BuiltinSession())
 	require.ErrorIs(t, err, bench.ErrUsage)
@@ -208,7 +238,7 @@ func TestRunBenchRefusesAnUnknownAccess(t *testing.T) {
 
 func TestRunBenchNeedsADirectoryForEmbeddedAccess(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	_, err := command.RunBench(t.Context(), bench.ModeProduce,
+	_, err := command.RunBench(t.Context(),
 		[]string{"--duration", "1s"},
 		&stdout, &stderr, spec.BuiltinSession())
 	require.ErrorIs(t, err, bench.ErrUsage)
