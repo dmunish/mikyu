@@ -71,7 +71,7 @@ func TestDefaultWorkload(t *testing.T) {
 		Kind:     KindLog,
 		Queues:   1,
 		MsgSize:  1024,
-		Workers:  4,
+		Workers:  8,
 		Batch:    64,
 		Warmup:   5 * time.Second,
 		AckRate:  0.9,
@@ -213,7 +213,7 @@ func TestWorkloadView(t *testing.T) {
 	assert.Equal(t, "5s", view.Warmup)
 	assert.Equal(t, 1024, view.MsgSize)
 	assert.Equal(t, 64, view.Batch)
-	assert.Equal(t, 4, view.Workers)
+	assert.Equal(t, 8, view.Workers)
 	assert.Equal(t, "30s", view.RateSchedule[1].At)
 	assert.Zero(t, view.AckRate)
 
@@ -266,3 +266,4 @@ func nan() float64 {
 	zero := 0.0
 	return zero / zero
 }
+

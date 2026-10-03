@@ -80,7 +80,7 @@ func buildTable() []Param {
 		{Key: "rate_schedule", Kind: spec.KindString, Modes: []Mode{ModeProduce, ModeMix},
 			Doc:   "Rate schedule: '0:0,30s:100k,60s:10k'",
 			Apply: func(w *Workload, v spec.Value) { w.RateSchedule, _ = ParseRateSchedule(v.Text()) }},
-		{Key: "workers", Kind: spec.KindInt, Default: "4",
+		{Key: "workers", Kind: spec.KindInt, Default: "8",
 			Doc:   "Concurrent client workers",
 			Apply: func(w *Workload, v spec.Value) { w.Workers = v.Int() }},
 		{Key: "batch", Kind: spec.KindInt, Default: "64",
@@ -266,3 +266,4 @@ func rateScheduleView(points []RatePoint) []result.RatePoint {
 	}
 	return out
 }
+
