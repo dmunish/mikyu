@@ -173,16 +173,20 @@ func (s *segment) writeIndexAt(idxPos, pos, len int64) error {
 
 // writeIndexBatchAt writes consecutive index entries in one syscall.
 func (s *segment) writeIndexBatchAt(idxPos int64, positions, lengths []int64) error {
-	buf := make([]byte, len(positions)*rawIndexEntrySize)
+	if len(positions) == 0 {
+		return nil
+	}
+	buf := getBuf(len(positions) * rawIndexEntrySize)
 	for i := range positions {
 		var ent [rawIndexEntrySize]byte
 		rawIndexEntry{pos: positions[i], len: lengths[i]}.MarshalBinary(&ent)
-		copy(buf[i*rawIndexEntrySize:], ent[:])
+		copy(buf.b[i*rawIndexEntrySize:], ent[:])
 	}
 	if indexWriteHook != nil {
-		indexWriteHook(idxPos, len(buf))
+		indexWriteHook(idxPos, len(buf.b))
 	}
-	_, err := s.idxFile.WriteAt(buf, idxPos)
+	_, err := s.idxFile.WriteAt(buf.b, idxPos)
+	buf.release(maxIndexKeepBytes)
 	return err
 }
 

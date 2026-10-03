@@ -36,18 +36,18 @@ var encPool = sync.Pool{
 	New: func() any { return new(bytes.Buffer) },
 }
 
-func encodeRecord(id uuid.UUID, ts time.Time, group, payload []byte) []byte {
-	// Frame Layout:
-	// [4B Body Length][4B CRC32][2B ID Len (16)][16B Raw UUID][8B TS Nano][2B Group Len][Group][Payload]
+// encodeRecord writes one record frame into dst, allocating when dst is too small.
+func encodeRecord(dst []byte, id uuid.UUID, ts time.Time, group, payload []byte) []byte {
 	payloadLen := len(payload)
 	groupLen := len(group)
 	bodyLen := uint32(recordCRCSize + recordIDLenSize + recordUUIDSize + recordTSSize + recordGroupLenSize + groupLen + payloadLen)
-	totalLen := recordLengthSize + bodyLen
-
-	rec := make([]byte, totalLen)
+	totalLen := int(recordLengthSize) + int(bodyLen)
+	if cap(dst) < totalLen {
+		dst = make([]byte, totalLen)
+	}
+	rec := dst[:totalLen]
 
 	binary.BigEndian.PutUint32(rec[offLength:offCRC], bodyLen)
-	// rec[offCRC:offIDLen] reserved for CRC32 checksum
 	binary.BigEndian.PutUint16(rec[offIDLen:offUUID], recordUUIDSize)
 	copy(rec[offUUID:offTS], id[:])
 	binary.BigEndian.PutUint64(rec[offTS:offGroupLen], uint64(ts.UnixNano()))

@@ -32,7 +32,7 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 			t.Parallel()
 			id := uuid.NewV7()
 			ts := time.Now().UTC().Truncate(time.Microsecond)
-			rec := encodeRecord(id, ts, tt.group, tt.payload)
+			rec := encodeRecord(nil, id, ts, tt.group, tt.payload)
 			require.NotNil(t, rec)
 			require.Len(t, rec, 4+4+2+16+8+2+len(tt.group)+len(tt.payload))
 
@@ -51,7 +51,7 @@ func TestDecodeRecordCorrupt(t *testing.T) {
 	t.Parallel()
 	id := uuid.NewV7()
 	ts := time.Now()
-	rec := encodeRecord(id, ts, nil, []byte("data"))
+	rec := encodeRecord(nil, id, ts, nil, []byte("data"))
 	// Corrupt checksum
 	rec[4+0] ^= 0xFF
 	_, _, _, _, err := decodeRecord(rec[4:])
@@ -60,7 +60,7 @@ func TestDecodeRecordCorrupt(t *testing.T) {
 
 func TestDecodeRecordTruncatedGroup(t *testing.T) {
 	t.Parallel()
-	rec := encodeRecord(uuid.NewV7(), time.Now(), []byte("abcd"), []byte("payload"))
+	rec := encodeRecord(nil, uuid.NewV7(), time.Now(), []byte("abcd"), []byte("payload"))
 	// Claim a 256-byte group in a record far too small for it.
 	body := rec[4:]
 	binary.BigEndian.PutUint16(body[30:32], 256)
@@ -74,7 +74,7 @@ func TestEncodeRecordCRC(t *testing.T) {
 	id := uuid.NewV7()
 	ts := time.Now()
 	payload := []byte("payload")
-	rec := encodeRecord(id, ts, nil, payload)
+	rec := encodeRecord(nil, id, ts, nil, payload)
 	// Verify stored CRC matches checksum of body (after length field)
 	storedCRC := binary.BigEndian.Uint32(rec[4:8])
 	body := rec[8:]
@@ -84,7 +84,7 @@ func TestEncodeRecordCRC(t *testing.T) {
 func TestEncodeRecordLargePayload(t *testing.T) {
 	t.Parallel()
 	payload := make([]byte, 2*1024*1024) // 2MB (no limit check in encodeRecord)
-	rec := encodeRecord(uuid.NewV7(), time.Now(), nil, payload)
+	rec := encodeRecord(nil, uuid.NewV7(), time.Now(), nil, payload)
 	require.NotNil(t, rec)
 	// Ensure payload is intact
 	_, _, _, decodedPayload, err := decodeRecord(rec[4:])
@@ -111,6 +111,6 @@ func BenchmarkEncodeRecord(b *testing.B) {
 
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = encodeRecord(id, ts, nil, payload)
+		_ = encodeRecord(nil, id, ts, nil, payload)
 	}
 }

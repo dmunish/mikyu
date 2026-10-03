@@ -27,6 +27,7 @@ type asyncEntry struct {
 	pos    int64
 	recLen int64
 	offset uint64
+	buf    *pooledBuf
 }
 
 // wal manages write-ahead logging using byte-budgeted flusher batching with
@@ -302,6 +303,7 @@ func (w *wal) flush() {
 		w.mu.Unlock()
 		return
 	}
+	maxBytes := w.cfg.MaxFlushBytes
 
 	// Swap staged buffers with pre-allocated swap buffers
 	data := w.buf
@@ -338,9 +340,17 @@ func (w *wal) flush() {
 		w.publishedBytes += int64(len(data))
 	}
 
-	// Reclaim used buffer capacity for next swap cycle
-	w.swapBuf = data[:0]
-	w.swapPending = entries[:0]
+	// Reclaim used buffer capacity for next swap cycle, trimming oversized buffers
+	if int64(cap(data)) > 2*maxBytes {
+		w.swapBuf = make([]byte, 0, maxBytes)
+	} else {
+		w.swapBuf = data[:0]
+	}
+	if int64(cap(entries)) > 2*maxBytes/int64(minRecordSize) {
+		w.swapPending = make([]pendingEntry, 0, 64)
+	} else {
+		w.swapPending = entries[:0]
+	}
 	w.m.pending.Set(int64(len(w.pending)))
 
 	w.cond.Broadcast()
@@ -406,20 +416,21 @@ WRITE:
 // writeRun coalesces one contiguous same-segment run into a single log write and writes its index entries.
 func (w *wal) writeRun(run []asyncEntry, next *uint64) error {
 	data := run[0].rec
+	var slab *pooledBuf
 	if len(run) > 1 {
 		var totalLen int64
 		for _, e := range run {
 			totalLen += e.recLen
 		}
-		buf := make([]byte, 0, totalLen)
+		slab = getBuf(int(totalLen))
+		var off int
 		for _, e := range run {
-			buf = append(buf, e.rec...)
+			copy(slab.b[off:], e.rec)
+			off += len(e.rec)
 		}
-		data = buf
+		data = slab.b
 	}
-	if _, err := w.writeAt(data, run[0].pos); err != nil {
-		return err
-	}
+	_, err := w.writeAt(data, run[0].pos)
 	positions := make([]int64, len(run))
 	lengths := make([]int64, len(run))
 	for i, e := range run {
@@ -428,8 +439,20 @@ func (w *wal) writeRun(run []asyncEntry, next *uint64) error {
 			*next++
 		}
 	}
-	idxPos := int64(run[0].offset-run[0].seg.baseOff) * rawIndexEntrySize
-	return run[0].seg.writeIndexBatchAt(idxPos, positions, lengths)
+	if err == nil {
+		idxPos := int64(run[0].offset-run[0].seg.baseOff) * rawIndexEntrySize
+		err = run[0].seg.writeIndexBatchAt(idxPos, positions, lengths)
+	}
+	if slab != nil {
+		slab.release(2 * int(w.cfg.MaxFlushBytes))
+	}
+	encodeKeep := 4 * int(w.cfg.MaxPayload)
+	for _, e := range run {
+		if e.buf != nil {
+			e.buf.release(encodeKeep)
+		}
+	}
+	return err
 }
 
 func (w *wal) setError(err error) {
