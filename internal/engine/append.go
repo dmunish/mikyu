@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"time"
@@ -128,14 +127,17 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 		}
 		q.mu.Unlock()
 		pushErr := b.w.pushAsyncBatch(ctx, entries)
-		if pushErr == nil {
-			for i := range b.recs {
+		if pushErr == nil && (!q.cacheGated || q.hasReader.Load()) {
+			// The rec buffers are fresh allocations the flusher only writes and
+			// discards, so the cache can hold their payload slices by reference.
+			groupLen := len(group)
+			for i, rec := range b.recs {
 				q.cache.Put(Record{
 					Offset:    b.offsets[i],
 					ID:        b.ids[i].String(),
 					Timestamp: ts,
 					Group:     group,
-					Payload:   bytes.Clone(payloads[b.startIdx+i]),
+					Payload:   rec[offBody+groupLen:],
 				})
 			}
 		}

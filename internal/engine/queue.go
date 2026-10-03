@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dmunish/mikyu/internal/metrics"
@@ -51,6 +52,8 @@ type Queue struct {
 	nextPreallocBytes int64
 	reservedPos       int64
 	reservations      []*reservation
+	hasReader         atomic.Bool
+	cacheGated        bool
 	closed            bool
 	notify            chan struct{}
 	keyIndex          map[string]uint64
@@ -97,6 +100,7 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore, scopes ..
 		offsets:           store,
 		cache:             newRingCache(cfg.MaxCache),
 		nextPreallocBytes: initialPrealloc,
+		cacheGated:        cfg.GateCache,
 		notify:            make(chan struct{}),
 		m:                 newQueueMetrics(scope),
 		scope:             scope,

@@ -13,6 +13,7 @@ func (q *Queue) Fetch(ctx context.Context, offset uint64, maxCount int, maxWait 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	q.hasReader.Store(true)
 	deadline := time.Now().Add(maxWait)
 	for {
 		q.mu.RLock()

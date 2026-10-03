@@ -39,6 +39,7 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Record, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, err
 	}
+	q.hasReader.Store(true)
 	start := time.Now()
 
 	q.mu.RLock()
@@ -82,6 +83,7 @@ func (q *Queue) Read(ctx context.Context, offset uint64) (Record, error) {
 
 // ReadBatch implements Storage.ReadBatch.
 func (q *Queue) ReadBatch(ctx context.Context, start uint64, n int) ([]Record, error) {
+	q.hasReader.Store(true)
 	q.m.inFlightRead.Add(1)
 	defer q.m.inFlightRead.Add(-1)
 
