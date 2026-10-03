@@ -34,11 +34,11 @@ type asyncEntry struct {
 //
 // Single writer: exactly one goroutine (the syncLoop) writes bytes to the WAL
 // segment file. Producers only stage records via push/pushBatch (sync path) or
-// pushAsync (async path); flush and drainAndFlushAsync are the sole callers of
+// pushAsyncBatch (async path); flush and drainAndFlushAsync are the sole callers of
 // writeAt. Sequencing is byte-based: pushedBytes/publishedBytes count staged
 // and flushed bytes, and wait(seq) blocks until publishedBytes reaches the
 // byte offset the push returned. Async backpressure is bounded: asyncChan
-// holds MaxFlushBytes/4096 slots (a byte-to-slot approximation), a full
+// holds MaxFlushBytes/4096 slices (a byte-to-slot approximation), a full
 // channel blocks the producer, and a canceled context yields ctx.Err().
 type wal struct {
 	cfg  Config
@@ -56,7 +56,7 @@ type wal struct {
 	asyncNext      uint64
 	err            error
 
-	asyncChan     chan asyncEntry // Lock-free channel for the async fast path
+	asyncChan     chan []asyncEntry // one slice per producer batch; lock-free handoff on the async fast path
 	wake          chan struct{}
 	configChanged chan struct{}
 	shutdown      chan struct{}
@@ -76,7 +76,7 @@ func newWAL(f *os.File, cfg Config, startOffset uint64, scopes ...*metrics.Scope
 		pending:       make([]pendingEntry, 0, 64),
 		swapBuf:       make([]byte, 0, flushBytes),
 		swapPending:   make([]pendingEntry, 0, 64),
-		asyncChan:     make(chan asyncEntry, max(1, int(cfg.MaxFlushBytes)/4096)),
+		asyncChan:     make(chan []asyncEntry, max(1, int(cfg.MaxFlushBytes)/4096)),
 		wake:          make(chan struct{}, 1),
 		configChanged: make(chan struct{}, 1),
 		shutdown:      make(chan struct{}),
@@ -105,8 +105,8 @@ func (w *wal) syncLoop() {
 
 	for {
 		select {
-		case entry := <-w.asyncChan:
-			w.drainAndFlushAsync(entry)
+		case entries := <-w.asyncChan:
+			w.drainAndFlushAsync(entries)
 		case <-ticker.C:
 			w.flush()
 		case <-w.wake:
@@ -204,13 +204,21 @@ func (w *wal) writeAt(p []byte, off int64) (int, error) {
 	return n, err
 }
 
-// pushAsync stages one record on the async path, blocking while the channel is full and honoring ctx.
+// pushAsync stages one record on the async path (see pushAsyncBatch).
 func (w *wal) pushAsync(ctx context.Context, e asyncEntry) error {
+	return w.pushAsyncBatch(ctx, []asyncEntry{e})
+}
+
+// pushAsyncBatch stages one producer batch on the async path as a single channel slot, blocking while the channel is full and honoring ctx.
+func (w *wal) pushAsyncBatch(ctx context.Context, entries []asyncEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	select {
-	case w.asyncChan <- e:
+	case w.asyncChan <- entries:
 		return nil
 	default:
 	}
@@ -218,7 +226,7 @@ func (w *wal) pushAsync(ctx context.Context, e asyncEntry) error {
 	w.m.blockedProducers.Add(1)
 	defer w.m.blockedProducers.Add(-1)
 	select {
-	case w.asyncChan <- e:
+	case w.asyncChan <- entries:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -339,19 +347,24 @@ func (w *wal) flush() {
 	w.mu.Unlock()
 }
 
-func (w *wal) drainAndFlushAsync(first asyncEntry) {
+func (w *wal) drainAndFlushAsync(first []asyncEntry) {
 	w.mu.Lock()
 	maxBytes := w.cfg.MaxFlushBytes
 	w.mu.Unlock()
 
-	entries := []asyncEntry{first}
-	total := first.recLen
+	entries := first
+	var total int64
+	for _, e := range first {
+		total += e.recLen
+	}
 
 	for total < maxBytes {
 		select {
-		case entry := <-w.asyncChan:
-			entries = append(entries, entry)
-			total += entry.recLen
+		case more := <-w.asyncChan:
+			entries = append(entries, more...)
+			for _, e := range more {
+				total += e.recLen
+			}
 		default:
 			goto WRITE
 		}
@@ -434,8 +447,8 @@ func (w *wal) setError(err error) {
 func (w *wal) drainRemainingAsync() {
 	for {
 		select {
-		case entry := <-w.asyncChan:
-			w.drainAndFlushAsync(entry)
+		case entries := <-w.asyncChan:
+			w.drainAndFlushAsync(entries)
 		default:
 			return
 		}

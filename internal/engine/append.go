@@ -40,6 +40,19 @@ func (q *Queue) Append(ctx context.Context, payload []byte, opts ...AppendOption
 	return offs[0], nil
 }
 
+// stagedBatch holds the records of one append that share a target segment.
+type stagedBatch struct {
+	w         *wal
+	seg       *segment
+	recs      [][]byte
+	positions []int64
+	recLens   []int64
+	offsets   []uint64
+	ids       []uuid.UUID
+	totalLen  int64
+	startIdx  int
+}
+
 // AppendBatch implements Storage.AppendBatch.
 func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...AppendOption) ([]uint64, error) {
 	q.m.inFlightApp.Add(1)
@@ -54,18 +67,6 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 	}
 	start := time.Now()
 	var totalBytes int64
-
-	type stagedBatch struct {
-		w         *wal
-		seg       *segment
-		recs      [][]byte
-		positions []int64
-		recLens   []int64
-		offsets   []uint64
-		ids       []uuid.UUID
-		totalLen  int64
-		startIdx  int
-	}
 
 	q.mu.Lock()
 	if q.closed || q.active == nil || q.w == nil {
@@ -115,25 +116,39 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 		return seq, wake, nil
 	}
 
-	commitAsync := func(b *stagedBatch) error {
+	// commitAsyncGroup runs the async commit in three steps: reserve space and
+	// offsets under the queue lock, push onto the WAL channel with the lock
+	// released (a full channel must not stall other producers), then commit the
+	// reservation under the lock again.
+	commitAsyncGroup := func(b *stagedBatch) error {
+		node := q.reserveLocked(b)
+		entries := make([]asyncEntry, len(b.recs))
 		for i, rec := range b.recs {
-			entry := asyncEntry{seg: b.seg, rec: rec, pos: b.positions[i], recLen: b.recLens[i], offset: b.offsets[i]}
-			if err := b.w.pushAsync(ctx, entry); err != nil {
-				return err
+			entries[i] = asyncEntry{seg: b.seg, rec: rec, pos: b.positions[i], recLen: b.recLens[i], offset: b.offsets[i]}
+		}
+		q.mu.Unlock()
+		pushErr := b.w.pushAsyncBatch(ctx, entries)
+		if pushErr == nil {
+			for i := range b.recs {
+				q.cache.Put(Record{
+					Offset:    b.offsets[i],
+					ID:        b.ids[i].String(),
+					Timestamp: ts,
+					Group:     group,
+					Payload:   bytes.Clone(payloads[b.startIdx+i]),
+				})
 			}
-			q.cache.Put(Record{
-				Offset:    b.offsets[i],
-				ID:        b.ids[i].String(),
-				Timestamp: ts,
-				Group:     group,
-				Payload:   bytes.Clone(payloads[b.startIdx+i]),
-			})
 		}
-		b.seg.pos += b.totalLen
-		last := b.offsets[len(b.offsets)-1]
-		if last+1 > q.publishedOffset {
-			q.publishedOffset = last + 1
+		q.mu.Lock()
+		if pushErr != nil {
+			q.abortReservationLocked(node)
+			return pushErr
 		}
+		if q.closed {
+			q.abortReservationLocked(node)
+			return ErrQueueClosed
+		}
+		q.commitReservationLocked(node)
 		return nil
 	}
 
@@ -145,7 +160,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 
 	for i := range payloads {
 		recLen := recLens[i]
-		rollRequired := q.active.pos+staged.totalLen+recLen > q.cfg.MaxSegment || time.Since(q.active.createdAt) > q.cfg.MaxSegmentAge
+		rollRequired := q.active.pos+q.reservedPos+staged.totalLen+recLen > q.cfg.MaxSegment || time.Since(q.active.createdAt) > q.cfg.MaxSegmentAge
 		if rollRequired && len(staged.recs) == 0 {
 			// An old/aged active segment may already be unable to accept the next
 			// record. Roll before staging the record so every group fits entirely
@@ -161,7 +176,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 		flushRequired := len(staged.recs) > 0 && staged.totalLen+recLen > q.cfg.MaxFlushBytes
 		if rollRequired || flushRequired {
 			if q.cfg.Async() {
-				if err := commitAsync(&staged); err != nil {
+				if err := commitAsyncGroup(&staged); err != nil {
 					q.mu.Unlock()
 					return nil, err
 				}
@@ -214,9 +229,11 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 	}
 
 	if q.cfg.Async() {
-		if err := commitAsync(&staged); err != nil {
-			q.mu.Unlock()
-			return nil, err
+		if len(staged.recs) > 0 {
+			if err := commitAsyncGroup(&staged); err != nil {
+				q.mu.Unlock()
+				return nil, err
+			}
 		}
 		q.broadcastLocked()
 		q.mu.Unlock()

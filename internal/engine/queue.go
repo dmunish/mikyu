@@ -20,6 +20,21 @@ const (
 	slowFillThreshold  = 5 * time.Minute   // Halve allocation if filling took longer than 5m
 )
 
+const (
+	resPending = iota
+	resCommitted
+	resAborted
+)
+
+// reservation holds one async batch's place in the queue's FIFO of outstanding segment-space reservations.
+type reservation struct {
+	seg        *segment
+	startPos   int64
+	totalLen   int64
+	lastOffset uint64
+	state      int
+}
+
 // Queue implements Storage using a write‑ahead log and memory‑mapped segments.
 type Queue struct {
 	name              string
@@ -34,6 +49,8 @@ type Queue struct {
 	offsets           *OffsetStore
 	cache             *ringCache
 	nextPreallocBytes int64
+	reservedPos       int64
+	reservations      []*reservation
 	closed            bool
 	notify            chan struct{}
 	keyIndex          map[string]uint64
@@ -195,6 +212,61 @@ func (q *Queue) broadcastLocked() {
 	close(old)
 }
 
+// reserveLocked reserves contiguous segment space and offsets for one async staged group without blocking.
+func (q *Queue) reserveLocked(b *stagedBatch) *reservation {
+	base := q.active.pos + q.reservedPos
+	node := &reservation{seg: b.seg, startPos: base, totalLen: b.totalLen, lastOffset: b.offsets[len(b.offsets)-1]}
+	q.reservations = append(q.reservations, node)
+	q.reservedPos += b.totalLen
+	b.positions = b.positions[:0]
+	var cum int64
+	for i := range b.recs {
+		b.positions = append(b.positions, base+cum)
+		cum += b.recLens[i]
+	}
+	return node
+}
+
+// commitReservationLocked marks a reservation delivered and publishes every reservation resolved at the front of the FIFO.
+func (q *Queue) commitReservationLocked(node *reservation) {
+	node.state = resCommitted
+	q.drainReservationsLocked()
+}
+
+// abortReservationLocked marks a reservation failed; its offsets stay consumed but its space becomes a hole.
+func (q *Queue) abortReservationLocked(node *reservation) {
+	node.state = resAborted
+	q.drainReservationsLocked()
+}
+
+// drainReservationsLocked resolves the committed-prefix frontier: segment end and published offset only ever advance over resolved reservations in order.
+func (q *Queue) drainReservationsLocked() {
+	for len(q.reservations) > 0 && q.reservations[0].state != resPending {
+		node := q.reservations[0]
+		q.reservations = q.reservations[1:]
+		q.reservedPos -= node.totalLen
+		if node.state != resCommitted {
+			continue
+		}
+		if end := node.startPos + node.totalLen; end > node.seg.pos {
+			node.seg.pos = end
+		}
+		if node.lastOffset+1 > q.publishedOffset {
+			q.publishedOffset = node.lastOffset + 1
+		}
+	}
+}
+
+// hasPendingReservation reports whether any async batch is between its reserve and commit steps.
+func (q *Queue) hasPendingReservation() bool {
+	for _, node := range q.reservations {
+		if node.state == resPending {
+			return true
+		}
+	}
+	return false
+}
+
 func (q *Queue) closeSegments() {
 	for _, seg := range q.segments {
 		_ = seg.Close()
@@ -204,6 +276,19 @@ func (q *Queue) closeSegments() {
 
 // roll rotates to a new active segment.
 func (q *Queue) roll() error {
+	// A pending async reservation still owns space at the tail of the active
+	// segment; its producer is between the reserve and commit steps, holding
+	// no lock while it pushes onto the WAL channel. Wait for it to resolve
+	// before sealing the segment, so no write lands on a closed file.
+	for q.hasPendingReservation() {
+		q.mu.Unlock()
+		time.Sleep(time.Millisecond)
+		q.mu.Lock()
+		if q.closed {
+			return ErrQueueClosed
+		}
+	}
+
 	if err := q.w.stop(); err != nil {
 		return err
 	}
