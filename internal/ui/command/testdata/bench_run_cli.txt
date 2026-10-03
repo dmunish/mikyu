@@ -45,7 +45,7 @@
       --duration             <duration>  Total measure-phase duration (default 1m0s)
       --rate                 <uint32>    Target messages/s; 0 = unthrottled (produce|mix only) (default 0)
       --rate-schedule        <string>    Rate schedule: '0:0,30s:100k,60s:10k' (produce|mix only)
-      --workers              <int>       Concurrent client workers (default 4)
+      --workers              <int>       Concurrent client workers (default 8)
       --batch                <int>       Messages per API call (default 64)
       --keys                 <int>       Distinct key cardinality; 0 = unkeyed (produce|mix only) (default 0)
       --preload              <bytes>     Bytes written before measurement (populate phase) (consume only) (default unlimited)

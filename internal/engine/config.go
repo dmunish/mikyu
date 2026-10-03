@@ -48,6 +48,10 @@ type Config struct {
 	MaxFlushWait     time.Duration
 	FlushLinger      time.Duration
 	CompactionPolicy CompactionPolicy
+	// GateCache feeds the ring cache only after the first read, saving the
+	// per-append copy on produce-only workloads. Task-style drivers that read
+	// back their own appends leave it off.
+	GateCache bool
 }
 
 // Async reports whether appends publish without waiting for the flusher.

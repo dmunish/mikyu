@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/edsrzf/mmap-go"
@@ -21,28 +23,23 @@ type segment struct {
 	pos          int64
 	preallocSize int64
 	createdAt    time.Time
+	mapMu        sync.RWMutex
 	mmapData     mmap.MMap
 	idxMMap      mmap.MMap // Memory-mapped index region for closed historical segment
 }
 
 // openSegment creates or opens the segment files for baseOff inside dir.
-// The files are opened through an os.Root scoped to dir, so segment paths
-// can never escape the queue directory.
+// The file names are generated, so direct path opens cannot escape the queue
+// directory; the os.Root is still used for the directory-sync durability site.
 func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, error) {
 	logName := fmt.Sprintf("%020d.log", baseOff)
 	idxName := fmt.Sprintf("%020d.idx", baseOff)
 
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		return nil, err
-	}
-	defer root.Close()
-
 	logCreated := false
-	if _, err := root.Stat(logName); errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(dir, logName)); errors.Is(err, fs.ErrNotExist) {
 		logCreated = true
 	}
-	logFile, err := root.OpenFile(logName, os.O_CREATE|os.O_RDWR, 0o644)
+	logFile, err := openSegmentFile(filepath.Join(dir, logName), os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -55,16 +52,23 @@ func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, erro
 	}
 
 	idxCreated := false
-	if _, err := root.Stat(idxName); errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(dir, idxName)); errors.Is(err, fs.ErrNotExist) {
 		idxCreated = true
 	}
-	idxFile, err := root.OpenFile(idxName, os.O_CREATE|os.O_RDWR, 0o644)
+	idxFile, err := openSegmentFile(filepath.Join(dir, idxName), os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		_ = logFile.Close()
 		return nil, err
 	}
 
 	if logCreated || idxCreated {
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			_ = logFile.Close()
+			_ = idxFile.Close()
+			return nil, err
+		}
+		defer root.Close()
 		if err := syncDir(root); err != nil {
 			_ = logFile.Close()
 			_ = idxFile.Close()
@@ -89,11 +93,20 @@ func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, erro
 	}, nil
 }
 
+// views returns the segment's current log and index mappings.
+func (s *segment) views() (logData, idxData mmap.MMap) {
+	s.mapMu.RLock()
+	defer s.mapMu.RUnlock()
+	return s.mmapData, s.idxMMap
+}
+
 // Map the segment into read-only memory once closed for production zero-copy reads.
 // The extra open handles are obtained through an os.Root scoped to the segment
 // directory because the segment's own handles may have been opened relative to
 // a root (see openSegment).
 func (s *segment) enableMMap() error {
+	s.mapMu.Lock()
+	defer s.mapMu.Unlock()
 	root, err := os.OpenRoot(s.dir)
 	if err != nil {
 		return err
@@ -136,8 +149,9 @@ func (s *segment) readIndexEntry(offset uint64) (pos int64, length int64, err er
 	var buf [rawIndexEntrySize]byte
 
 	// Zero-copy read from mapped .idx file if historical, otherwise syscall ReadAt
-	if len(s.idxMMap) >= int(idxPos+rawIndexEntrySize) {
-		copy(buf[:], s.idxMMap[idxPos:idxPos+rawIndexEntrySize])
+	_, idxData := s.views()
+	if len(idxData) >= int(idxPos+rawIndexEntrySize) {
+		copy(buf[:], idxData[idxPos:idxPos+rawIndexEntrySize])
 	} else if _, err := s.idxFile.ReadAt(buf[:], idxPos); err != nil {
 		return 0, 0, err
 	}
@@ -157,11 +171,36 @@ func (s *segment) writeIndex(pos, len int64) error {
 	return err
 }
 
+// indexWriteHook, when non-nil, receives every live index write's offset and length so tests can assert batching.
+var indexWriteHook func(off int64, n int)
+
 // writeIndexAt writes an index entry; only the WAL flusher calls it on a live segment.
 func (s *segment) writeIndexAt(idxPos, pos, len int64) error {
 	var buf [rawIndexEntrySize]byte
 	rawIndexEntry{pos: pos, len: len}.MarshalBinary(&buf)
+	if indexWriteHook != nil {
+		indexWriteHook(idxPos, rawIndexEntrySize)
+	}
 	_, err := s.idxFile.WriteAt(buf[:], idxPos)
+	return err
+}
+
+// writeIndexBatchAt writes consecutive index entries in one syscall.
+func (s *segment) writeIndexBatchAt(idxPos int64, positions, lengths []int64) error {
+	if len(positions) == 0 {
+		return nil
+	}
+	buf := getBuf(len(positions) * rawIndexEntrySize)
+	for i := range positions {
+		var ent [rawIndexEntrySize]byte
+		rawIndexEntry{pos: positions[i], len: lengths[i]}.MarshalBinary(&ent)
+		copy(buf.b[i*rawIndexEntrySize:], ent[:])
+	}
+	if indexWriteHook != nil {
+		indexWriteHook(idxPos, len(buf.b))
+	}
+	_, err := s.idxFile.WriteAt(buf.b, idxPos)
+	buf.release(maxIndexKeepBytes)
 	return err
 }
 
@@ -278,8 +317,9 @@ func (s *segment) diskSize() int64 {
 }
 
 func (s *segment) nextOffset() uint64 {
-	if len(s.idxMMap) > 0 {
-		return s.baseOff + uint64(len(s.idxMMap)/rawIndexEntrySize)
+	_, idxData := s.views()
+	if len(idxData) > 0 {
+		return s.baseOff + uint64(len(idxData)/rawIndexEntrySize)
 	}
 	if s.idxFile != nil {
 		if info, err := s.idxFile.Stat(); err == nil && info.Size() > 0 {
@@ -299,8 +339,9 @@ func (s *segment) lastTimestamp() (time.Time, bool) {
 
 	idxPos := int64(count-1) * rawIndexEntrySize
 	var buf [rawIndexEntrySize]byte
-	if len(s.idxMMap) >= int(idxPos+rawIndexEntrySize) {
-		copy(buf[:], s.idxMMap[idxPos:idxPos+rawIndexEntrySize])
+	_, idxData := s.views()
+	if len(idxData) >= int(idxPos+rawIndexEntrySize) {
+		copy(buf[:], idxData[idxPos:idxPos+rawIndexEntrySize])
 	} else if _, err := s.idxFile.ReadAt(buf[:], idxPos); err != nil {
 		return time.Time{}, false
 	}
@@ -310,8 +351,9 @@ func (s *segment) lastTimestamp() (time.Time, bool) {
 	}
 
 	rec := make([]byte, entry.len)
-	if len(s.mmapData) >= int(entry.pos+entry.len) {
-		copy(rec, s.mmapData[entry.pos:entry.pos+entry.len])
+	logData, _ := s.views()
+	if len(logData) >= int(entry.pos+entry.len) {
+		copy(rec, logData[entry.pos:entry.pos+entry.len])
 	} else if _, err := s.logFile.ReadAt(rec, entry.pos); err != nil {
 		return time.Time{}, false
 	}
@@ -324,8 +366,9 @@ func (s *segment) lastTimestamp() (time.Time, bool) {
 
 // indexCount returns the number of index slots the segment holds.
 func (s *segment) indexCount() int {
-	if len(s.idxMMap) > 0 {
-		return len(s.idxMMap) / rawIndexEntrySize
+	_, idxData := s.views()
+	if len(idxData) > 0 {
+		return len(idxData) / rawIndexEntrySize
 	}
 	if s.idxFile != nil {
 		if info, err := s.idxFile.Stat(); err == nil {
@@ -337,6 +380,8 @@ func (s *segment) indexCount() int {
 
 // unmap releases the segment's read mappings so its files can be rewritten.
 func (s *segment) unmap() error {
+	s.mapMu.Lock()
+	defer s.mapMu.Unlock()
 	var err error
 	if s.mmapData != nil {
 		err = s.mmapData.Unmap()
@@ -379,17 +424,7 @@ func (s *segment) destroy() (int64, error) {
 
 func (s *segment) Close() error {
 	// Unmap first: Windows refuses to truncate a file with a mapped section open.
-	var mmapErr error
-	if s.mmapData != nil {
-		mmapErr = s.mmapData.Unmap()
-		s.mmapData = nil
-	}
-	if s.idxMMap != nil {
-		if err := s.idxMMap.Unmap(); err != nil && mmapErr == nil {
-			mmapErr = err
-		}
-		s.idxMMap = nil
-	}
+	mmapErr := s.unmap()
 
 	var firstErr error
 	// Trim unused pre-allocated capacity; a real shrink makes the directory entry worth syncing.

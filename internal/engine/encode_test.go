@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"uuid"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,22 +21,22 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 		{"small", nil, []byte("hello")},
 		{"unicode", nil, []byte("héllo wörld")},
 		{"binary", nil, []byte{0xFF, 0x00, 0x7F}},
-		{"large", nil, make([]byte, 1024*1024)},          // 1MB
+		{"large", nil, make([]byte, 1024*1024)},           // 1MB
 		{"grouped", []byte("user-42"), []byte("payload")}, // keyed record
 		{"empty-group", []byte{}, []byte("payload")},      // empty group is ungrouped
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			id := uuid.NewV7()
+			id := newRecordID()
 			ts := time.Now().UTC().Truncate(time.Microsecond)
-			rec := encodeRecord(id, ts, tt.group, tt.payload)
+			rec := encodeRecord(nil, id, ts, tt.group, tt.payload)
 			require.NotNil(t, rec)
 			require.Len(t, rec, 4+4+2+16+8+2+len(tt.group)+len(tt.payload))
 
 			decodedID, decodedTime, decodedGroup, decodedPayload, err := decodeRecord(rec[4:])
 			require.NoError(t, err)
-			assert.Equal(t, id.String(), decodedID)
+			assert.Equal(t, formatRecordID(id), decodedID)
 			assert.WithinDuration(t, ts, decodedTime, time.Microsecond)
 			assert.Equal(t, len(tt.group) > 0, len(decodedGroup) > 0)
 			assert.Equal(t, string(tt.group), string(decodedGroup))
@@ -49,9 +47,9 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 
 func TestDecodeRecordCorrupt(t *testing.T) {
 	t.Parallel()
-	id := uuid.NewV7()
+	id := newRecordID()
 	ts := time.Now()
-	rec := encodeRecord(id, ts, nil, []byte("data"))
+	rec := encodeRecord(nil, id, ts, nil, []byte("data"))
 	// Corrupt checksum
 	rec[4+0] ^= 0xFF
 	_, _, _, _, err := decodeRecord(rec[4:])
@@ -60,7 +58,7 @@ func TestDecodeRecordCorrupt(t *testing.T) {
 
 func TestDecodeRecordTruncatedGroup(t *testing.T) {
 	t.Parallel()
-	rec := encodeRecord(uuid.NewV7(), time.Now(), []byte("abcd"), []byte("payload"))
+	rec := encodeRecord(nil, newRecordID(), time.Now(), []byte("abcd"), []byte("payload"))
 	// Claim a 256-byte group in a record far too small for it.
 	body := rec[4:]
 	binary.BigEndian.PutUint16(body[30:32], 256)
@@ -71,10 +69,10 @@ func TestDecodeRecordTruncatedGroup(t *testing.T) {
 
 func TestEncodeRecordCRC(t *testing.T) {
 	t.Parallel()
-	id := uuid.NewV7()
+	id := newRecordID()
 	ts := time.Now()
 	payload := []byte("payload")
-	rec := encodeRecord(id, ts, nil, payload)
+	rec := encodeRecord(nil, id, ts, nil, payload)
 	// Verify stored CRC matches checksum of body (after length field)
 	storedCRC := binary.BigEndian.Uint32(rec[4:8])
 	body := rec[8:]
@@ -84,7 +82,7 @@ func TestEncodeRecordCRC(t *testing.T) {
 func TestEncodeRecordLargePayload(t *testing.T) {
 	t.Parallel()
 	payload := make([]byte, 2*1024*1024) // 2MB (no limit check in encodeRecord)
-	rec := encodeRecord(uuid.NewV7(), time.Now(), nil, payload)
+	rec := encodeRecord(nil, newRecordID(), time.Now(), nil, payload)
 	require.NotNil(t, rec)
 	// Ensure payload is intact
 	_, _, _, decodedPayload, err := decodeRecord(rec[4:])
@@ -105,12 +103,12 @@ func TestDecodeRecordInvalidIDLength(t *testing.T) {
 }
 
 func BenchmarkEncodeRecord(b *testing.B) {
-	id := uuid.NewV7()
+	id := newRecordID()
 	ts := time.Now()
 	payload := make([]byte, 1024)
 
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = encodeRecord(id, ts, nil, payload)
+		_ = encodeRecord(nil, id, ts, nil, payload)
 	}
 }

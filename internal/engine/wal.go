@@ -13,6 +13,9 @@ import (
 // writerHook, when non-nil, runs before every WAL file write so tests can assert the single-writer invariant.
 var writerHook func()
 
+// writeAtHook, when non-nil, receives every WAL log write's offset and length so tests can assert batching.
+var writeAtHook func(off int64, n int)
+
 type pendingEntry struct {
 	pos int64
 	len int64
@@ -24,6 +27,7 @@ type asyncEntry struct {
 	pos    int64
 	recLen int64
 	offset uint64
+	buf    *pooledBuf
 }
 
 // wal manages write-ahead logging using byte-budgeted flusher batching with
@@ -31,11 +35,11 @@ type asyncEntry struct {
 //
 // Single writer: exactly one goroutine (the syncLoop) writes bytes to the WAL
 // segment file. Producers only stage records via push/pushBatch (sync path) or
-// pushAsync (async path); flush and drainAndFlushAsync are the sole callers of
+// pushAsyncBatch (async path); flush and drainAndFlushAsync are the sole callers of
 // writeAt. Sequencing is byte-based: pushedBytes/publishedBytes count staged
 // and flushed bytes, and wait(seq) blocks until publishedBytes reaches the
 // byte offset the push returned. Async backpressure is bounded: asyncChan
-// holds MaxFlushBytes/4096 slots (a byte-to-slot approximation), a full
+// holds MaxFlushBytes/4096 slices (a byte-to-slot approximation), a full
 // channel blocks the producer, and a canceled context yields ctx.Err().
 type wal struct {
 	cfg  Config
@@ -53,7 +57,7 @@ type wal struct {
 	asyncNext      uint64
 	err            error
 
-	asyncChan     chan asyncEntry // Lock-free channel for the async fast path
+	asyncChan     chan []asyncEntry // one slice per producer batch; lock-free handoff on the async fast path
 	wake          chan struct{}
 	configChanged chan struct{}
 	shutdown      chan struct{}
@@ -73,7 +77,7 @@ func newWAL(f *os.File, cfg Config, startOffset uint64, scopes ...*metrics.Scope
 		pending:       make([]pendingEntry, 0, 64),
 		swapBuf:       make([]byte, 0, flushBytes),
 		swapPending:   make([]pendingEntry, 0, 64),
-		asyncChan:     make(chan asyncEntry, max(1, int(cfg.MaxFlushBytes)/4096)),
+		asyncChan:     make(chan []asyncEntry, max(1, int(cfg.MaxFlushBytes)/4096)),
 		wake:          make(chan struct{}, 1),
 		configChanged: make(chan struct{}, 1),
 		shutdown:      make(chan struct{}),
@@ -102,8 +106,8 @@ func (w *wal) syncLoop() {
 
 	for {
 		select {
-		case entry := <-w.asyncChan:
-			w.drainAndFlushAsync(entry)
+		case entries := <-w.asyncChan:
+			w.drainAndFlushAsync(entries)
 		case <-ticker.C:
 			w.flush()
 		case <-w.wake:
@@ -194,16 +198,28 @@ func (w *wal) writeAt(p []byte, off int64) (int, error) {
 	if writerHook != nil {
 		writerHook()
 	}
-	return w.file.WriteAt(p, off)
+	n, err := w.file.WriteAt(p, off)
+	if writeAtHook != nil {
+		writeAtHook(off, n)
+	}
+	return n, err
 }
 
-// pushAsync stages one record on the async path, blocking while the channel is full and honoring ctx.
+// pushAsync stages one record on the async path (see pushAsyncBatch).
 func (w *wal) pushAsync(ctx context.Context, e asyncEntry) error {
+	return w.pushAsyncBatch(ctx, []asyncEntry{e})
+}
+
+// pushAsyncBatch stages one producer batch on the async path as a single channel slot, blocking while the channel is full and honoring ctx.
+func (w *wal) pushAsyncBatch(ctx context.Context, entries []asyncEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	select {
-	case w.asyncChan <- e:
+	case w.asyncChan <- entries:
 		return nil
 	default:
 	}
@@ -211,7 +227,7 @@ func (w *wal) pushAsync(ctx context.Context, e asyncEntry) error {
 	w.m.blockedProducers.Add(1)
 	defer w.m.blockedProducers.Add(-1)
 	select {
-	case w.asyncChan <- e:
+	case w.asyncChan <- entries:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
@@ -287,6 +303,7 @@ func (w *wal) flush() {
 		w.mu.Unlock()
 		return
 	}
+	maxBytes := w.cfg.MaxFlushBytes
 
 	// Swap staged buffers with pre-allocated swap buffers
 	data := w.buf
@@ -323,28 +340,41 @@ func (w *wal) flush() {
 		w.publishedBytes += int64(len(data))
 	}
 
-	// Reclaim used buffer capacity for next swap cycle
-	w.swapBuf = data[:0]
-	w.swapPending = entries[:0]
+	// Reclaim used buffer capacity for next swap cycle, trimming oversized buffers
+	if int64(cap(data)) > 2*maxBytes {
+		w.swapBuf = make([]byte, 0, maxBytes)
+	} else {
+		w.swapBuf = data[:0]
+	}
+	if int64(cap(entries)) > 2*maxBytes/int64(minRecordSize) {
+		w.swapPending = make([]pendingEntry, 0, 64)
+	} else {
+		w.swapPending = entries[:0]
+	}
 	w.m.pending.Set(int64(len(w.pending)))
 
 	w.cond.Broadcast()
 	w.mu.Unlock()
 }
 
-func (w *wal) drainAndFlushAsync(first asyncEntry) {
+func (w *wal) drainAndFlushAsync(first []asyncEntry) {
 	w.mu.Lock()
 	maxBytes := w.cfg.MaxFlushBytes
 	w.mu.Unlock()
 
-	entries := []asyncEntry{first}
-	total := first.recLen
+	entries := first
+	var total int64
+	for _, e := range first {
+		total += e.recLen
+	}
 
 	for total < maxBytes {
 		select {
-		case entry := <-w.asyncChan:
-			entries = append(entries, entry)
-			total += entry.recLen
+		case more := <-w.asyncChan:
+			entries = append(entries, more...)
+			for _, e := range more {
+				total += e.recLen
+			}
 		default:
 			goto WRITE
 		}
@@ -360,19 +390,17 @@ WRITE:
 	}
 
 	start := time.Now()
-	for _, e := range entries {
-		if _, err := w.writeAt(e.rec, e.pos); err != nil {
+	for i := 0; i < len(entries); {
+		j := i + 1
+		for j < len(entries) && entries[j].seg == entries[i].seg &&
+			entries[j].pos == entries[j-1].pos+entries[j-1].recLen {
+			j++
+		}
+		if err := w.writeRun(entries[i:j], &next); err != nil {
 			w.setError(err)
 			return
 		}
-		idxPos := int64(e.offset-e.seg.baseOff) * rawIndexEntrySize
-		if err := e.seg.writeIndexAt(idxPos, e.pos, e.recLen); err != nil {
-			w.setError(err)
-			return
-		}
-		if e.offset == next {
-			next++
-		}
+		i = j
 	}
 	w.m.flushes.Inc()
 	w.m.flushDur.Observe(time.Since(start).Seconds())
@@ -383,6 +411,48 @@ WRITE:
 	}
 	w.cond.Broadcast()
 	w.mu.Unlock()
+}
+
+// writeRun coalesces one contiguous same-segment run into a single log write and writes its index entries.
+func (w *wal) writeRun(run []asyncEntry, next *uint64) error {
+	data := run[0].rec
+	var slab *pooledBuf
+	if len(run) > 1 {
+		var totalLen int64
+		for _, e := range run {
+			totalLen += e.recLen
+		}
+		slab = getBuf(int(totalLen))
+		var off int
+		for _, e := range run {
+			copy(slab.b[off:], e.rec)
+			off += len(e.rec)
+		}
+		data = slab.b
+	}
+	_, err := w.writeAt(data, run[0].pos)
+	positions := make([]int64, len(run))
+	lengths := make([]int64, len(run))
+	for i, e := range run {
+		positions[i], lengths[i] = e.pos, e.recLen
+		if e.offset == *next {
+			*next++
+		}
+	}
+	if err == nil {
+		idxPos := int64(run[0].offset-run[0].seg.baseOff) * rawIndexEntrySize
+		err = run[0].seg.writeIndexBatchAt(idxPos, positions, lengths)
+	}
+	if slab != nil {
+		slab.release(2 * int(w.cfg.MaxFlushBytes))
+	}
+	encodeKeep := 4 * int(w.cfg.MaxPayload)
+	for _, e := range run {
+		if e.buf != nil {
+			e.buf.release(encodeKeep)
+		}
+	}
+	return err
 }
 
 func (w *wal) setError(err error) {
@@ -400,8 +470,8 @@ func (w *wal) setError(err error) {
 func (w *wal) drainRemainingAsync() {
 	for {
 		select {
-		case entry := <-w.asyncChan:
-			w.drainAndFlushAsync(entry)
+		case entries := <-w.asyncChan:
+			w.drainAndFlushAsync(entries)
 		default:
 			return
 		}

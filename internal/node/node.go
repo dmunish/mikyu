@@ -68,7 +68,9 @@ func openNode(dir string, defaults spec.Spec, mc MetricsConfig) (*Node, error) {
 	builtin := spec.Builtin()
 	perQueue := make(map[manager.Key]engine.Config, len(reg.Queues))
 	for _, entry := range reg.Queues {
-		perQueue[manager.Key{Name: entry.Name, Kind: entry.Kind}] = toEngineConfig(entry.Spec.Effective(defaults, builtin))
+		cfg := toEngineConfig(entry.Spec.Effective(defaults, builtin))
+		cfg.GateCache = entry.Kind == manager.KindLog
+		perQueue[manager.Key{Name: entry.Name, Kind: entry.Kind}] = cfg
 	}
 	defaultEngineCfg := toEngineConfig(defaults.Merge(builtin))
 
@@ -175,7 +177,9 @@ func (n *Node) createQueue(ctx context.Context, name string, kind manager.Kind, 
 	if kind == manager.KindTask && deref(eff.Storage.Compaction, spec.CompactionNone) == spec.CompactionKeys {
 		return nil, spec.Spec{}, fmt.Errorf("%w: compaction is a log-queue setting", spec.ErrInvalidConfig)
 	}
-	storage, err := n.mgr.Create(ctx, name, kind, toEngineConfig(eff))
+	cfg := toEngineConfig(eff)
+	cfg.GateCache = kind == manager.KindLog
+	storage, err := n.mgr.Create(ctx, name, kind, cfg)
 	if err != nil {
 		return nil, spec.Spec{}, err
 	}

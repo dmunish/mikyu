@@ -1,11 +1,9 @@
 package engine
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"time"
-	"uuid"
 )
 
 // appendOptions carries the effective per-call append settings.
@@ -40,6 +38,20 @@ func (q *Queue) Append(ctx context.Context, payload []byte, opts ...AppendOption
 	return offs[0], nil
 }
 
+// stagedBatch holds the records of one append that share a target segment.
+type stagedBatch struct {
+	w         *wal
+	seg       *segment
+	recs      [][]byte
+	bufs      []*pooledBuf
+	positions []int64
+	recLens   []int64
+	offsets   []uint64
+	ids       [][16]byte
+	totalLen  int64
+	startIdx  int
+}
+
 // AppendBatch implements Storage.AppendBatch.
 func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...AppendOption) ([]uint64, error) {
 	q.m.inFlightApp.Add(1)
@@ -53,18 +65,40 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 		return nil, nil
 	}
 	start := time.Now()
-	var totalBytes int64
 
-	type stagedBatch struct {
-		w         *wal
-		seg       *segment
-		recs      [][]byte
-		positions []int64
-		recLens   []int64
-		offsets   []uint64
-		ids       []uuid.UUID
-		totalLen  int64
-		startIdx  int
+	offsets := make([]uint64, len(payloads))
+	ids := make([][16]byte, len(payloads))
+	recs := make([][]byte, len(payloads))
+	bufs := make([]*pooledBuf, len(payloads))
+	recLens := make([]int64, len(payloads))
+
+	// Validate and encode without touching queue state; only immutable
+	// configuration and the atomic reader gate are read here.
+	ts := time.Now()
+	cacheable := !q.cacheGated || q.hasReader.Load()
+	recyclable := !q.cfg.Async() || !cacheable
+	var totalBytes int64
+	for i, payload := range payloads {
+		if int64(len(payload)) > q.cfg.MaxPayload {
+			return nil, fmt.Errorf("%w: queue %q payload of %d bytes exceeds max_payload %d", ErrMessageTooLarge, q.name, len(payload), q.cfg.MaxPayload)
+		}
+		totalBytes += int64(len(payload))
+		recLen := int64(minRecordSize + len(group) + len(payload))
+		if recLen > q.cfg.MaxSegment {
+			return nil, fmt.Errorf("%w: queue %q record of %d bytes exceeds max_segment %d", ErrRecordTooLarge, q.name, recLen, q.cfg.MaxSegment)
+		}
+		id := newRecordID()
+		ids[i] = id
+		recLens[i] = recLen
+		var rec []byte
+		if recyclable {
+			bb := getBuf(int(recLen))
+			bufs[i] = bb
+			rec = encodeRecord(bb.b, id, ts, group, payload)
+		} else {
+			rec = encodeRecord(nil, id, ts, group, payload)
+		}
+		recs[i] = rec
 	}
 
 	q.mu.Lock()
@@ -77,64 +111,60 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 		return nil, err
 	}
 
-	offsets := make([]uint64, len(payloads))
-	ids := make([]uuid.UUID, len(payloads))
-	recs := make([][]byte, len(payloads))
-	recLens := make([]int64, len(payloads))
-
-	// Prepare records up-front while the queue is locked, but do not mutate queue
-	// positions until a complete per-segment group is ready to commit.
-	ts := time.Now()
-	for i, payload := range payloads {
-		if int64(len(payload)) > q.cfg.MaxPayload {
-			q.mu.Unlock()
-			return nil, fmt.Errorf("%w: queue %q payload of %d bytes exceeds max_payload %d", ErrMessageTooLarge, q.name, len(payload), q.cfg.MaxPayload)
-		}
-		totalBytes += int64(len(payload))
-		id := uuid.NewV7()
-		rec := encodeRecord(id, ts, group, payload)
-		recLen := int64(len(rec))
-		if recLen > q.cfg.MaxSegment {
-			q.mu.Unlock()
-			return nil, fmt.Errorf("%w: queue %q record of %d bytes exceeds max_segment %d", ErrRecordTooLarge, q.name, recLen, q.cfg.MaxSegment)
-		}
-		ids[i], recs[i], recLens[i] = id, rec, recLen
-	}
-
-	commitSync := func(b *stagedBatch) (int64, bool, error) {
-		seq, wake, err := b.w.pushBatch(b.recs, b.positions)
+	commitSync := func(b *stagedBatch) (int64, error) {
+		seq, _, err := b.w.pushBatch(b.recs, b.positions)
 		if err != nil {
-			return 0, false, err
+			return 0, err
+		}
+		encodeKeep := 4 * int(q.cfg.MaxPayload)
+		for _, bb := range b.bufs {
+			bb.release(encodeKeep)
 		}
 		b.seg.pos += b.totalLen
-		for i := range b.recs {
-			if err := b.seg.writeIndexAt(int64(b.offsets[i]-b.seg.baseOff)*rawIndexEntrySize, b.positions[i], b.recLens[i]); err != nil {
-				b.w.setError(err)
-				return 0, false, err
-			}
+		idxPos := int64(b.offsets[0]-b.seg.baseOff) * rawIndexEntrySize
+		if err := b.seg.writeIndexBatchAt(idxPos, b.positions, b.recLens); err != nil {
+			b.w.setError(err)
+			return 0, err
 		}
-		return seq, wake, nil
+		return seq, nil
 	}
 
-	commitAsync := func(b *stagedBatch) error {
+	// commitAsyncGroup runs the async commit in three steps: reserve space and
+	// offsets under the queue lock, push onto the WAL channel with the lock
+	// released (a full channel must not stall other producers), then commit the
+	// reservation under the lock again.
+	commitAsyncGroup := func(b *stagedBatch) error {
+		node := q.reserveLocked(b)
+		entries := make([]asyncEntry, len(b.recs))
 		for i, rec := range b.recs {
-			entry := asyncEntry{seg: b.seg, rec: rec, pos: b.positions[i], recLen: b.recLens[i], offset: b.offsets[i]}
-			if err := b.w.pushAsync(ctx, entry); err != nil {
-				return err
+			entries[i] = asyncEntry{seg: b.seg, rec: rec, pos: b.positions[i], recLen: b.recLens[i], offset: b.offsets[i], buf: b.bufs[i]}
+		}
+		q.mu.Unlock()
+		pushErr := b.w.pushAsyncBatch(ctx, entries)
+		if pushErr == nil && cacheable {
+			// The rec buffers are fresh allocations the flusher only writes and
+			// discards, so the cache can hold their payload slices by reference.
+			groupLen := len(group)
+			for i, rec := range b.recs {
+				q.cache.Put(Record{
+					Offset:    b.offsets[i],
+					ID:        formatRecordID(b.ids[i]),
+					Timestamp: ts,
+					Group:     group,
+					Payload:   rec[offBody+groupLen:],
+				})
 			}
-			q.cache.Put(Record{
-				Offset:    b.offsets[i],
-				ID:        b.ids[i].String(),
-				Timestamp: ts,
-				Group:     group,
-				Payload:   bytes.Clone(payloads[b.startIdx+i]),
-			})
 		}
-		b.seg.pos += b.totalLen
-		last := b.offsets[len(b.offsets)-1]
-		if last+1 > q.publishedOffset {
-			q.publishedOffset = last + 1
+		q.mu.Lock()
+		if pushErr != nil {
+			q.abortReservationLocked(node)
+			return pushErr
 		}
+		if q.closed {
+			q.abortReservationLocked(node)
+			return ErrQueueClosed
+		}
+		q.commitReservationLocked(node)
 		return nil
 	}
 
@@ -146,7 +176,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 
 	for i := range payloads {
 		recLen := recLens[i]
-		rollRequired := q.active.pos+staged.totalLen+recLen > q.cfg.MaxSegment || time.Since(q.active.createdAt) > q.cfg.MaxSegmentAge
+		rollRequired := q.active.pos+q.reservedPos+staged.totalLen+recLen > q.cfg.MaxSegment || time.Since(q.active.createdAt) > q.cfg.MaxSegmentAge
 		if rollRequired && len(staged.recs) == 0 {
 			// An old/aged active segment may already be unable to accept the next
 			// record. Roll before staging the record so every group fits entirely
@@ -162,22 +192,22 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 		flushRequired := len(staged.recs) > 0 && staged.totalLen+recLen > q.cfg.MaxFlushBytes
 		if rollRequired || flushRequired {
 			if q.cfg.Async() {
-				if err := commitAsync(&staged); err != nil {
+				if err := commitAsyncGroup(&staged); err != nil {
 					q.mu.Unlock()
 					return nil, err
 				}
 			} else {
-				seq, wake, err := commitSync(&staged)
+				seq, err := commitSync(&staged)
 				if err != nil {
 					q.mu.Unlock()
 					return nil, err
 				}
 				q.mu.Unlock()
-				if wake {
-					select {
-					case staged.w.wake <- struct{}{}:
-					default:
-					}
+				// A sync producer is about to block on this data, so always wake
+				// the flusher; its linger and byte budget decide when to flush.
+				select {
+				case staged.w.wake <- struct{}{}:
+				default:
 				}
 				if err := staged.w.wait(seq); err != nil {
 					return nil, err
@@ -198,6 +228,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 		}
 
 		staged.recs = append(staged.recs, recs[i])
+		staged.bufs = append(staged.bufs, bufs[i])
 		staged.recLens = append(staged.recLens, recLens[i])
 		staged.positions = append(staged.positions, q.active.pos+staged.totalLen)
 		staged.offsets = append(staged.offsets, q.nextOffset)
@@ -215,9 +246,11 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 	}
 
 	if q.cfg.Async() {
-		if err := commitAsync(&staged); err != nil {
-			q.mu.Unlock()
-			return nil, err
+		if len(staged.recs) > 0 {
+			if err := commitAsyncGroup(&staged); err != nil {
+				q.mu.Unlock()
+				return nil, err
+			}
 		}
 		q.broadcastLocked()
 		q.mu.Unlock()
@@ -225,17 +258,15 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 		return offsets, nil
 	}
 
-	seq, wake, err := commitSync(&staged)
+	seq, err := commitSync(&staged)
 	if err != nil {
 		q.mu.Unlock()
 		return nil, err
 	}
 	q.mu.Unlock()
-	if wake {
-		select {
-		case staged.w.wake <- struct{}{}:
-		default:
-		}
+	select {
+	case staged.w.wake <- struct{}{}:
+	default:
 	}
 	if err := staged.w.wait(seq); err != nil {
 		return nil, err
