@@ -533,3 +533,5 @@ A grab-bag, each item measurable independently:
 **Revert-friendly phases.** Phases 1–5 each stand alone. Phases 6–8 build on 1–5 but can be reverted individually. Phase 9 is Windows-only and safe to revert. Phases 12, 13, 14 are independent. Phase 15 must be kept if 16 or 17 are kept (they implement its interface). Phase 18 depends on 15. Phase 19 depends on 12. Phase 20 items are independent.
 
 **When a phase underperforms.** Don't force the ratio. If phase 3 shows 1.05x instead of the expected 1.4x, that's evidence the channel isn't the bottleneck at this workload — record the actual number, keep the change if it doesn't regress anything, and update the plan's expectation for the next phase based on the new evidence.
+
+**Total phases: 20.** Critical path for Windows: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 9 → 12 → 14 → 15 → 18. Everything else is either a Linux-specific win (16, 17) or architectural polish (11, 13, 19, 20).
