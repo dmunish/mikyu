@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/edsrzf/mmap-go"
@@ -26,23 +27,17 @@ type segment struct {
 }
 
 // openSegment creates or opens the segment files for baseOff inside dir.
-// The files are opened through an os.Root scoped to dir, so segment paths
-// can never escape the queue directory.
+// The file names are generated, so direct path opens cannot escape the queue
+// directory; the os.Root is still used for the directory-sync durability site.
 func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, error) {
 	logName := fmt.Sprintf("%020d.log", baseOff)
 	idxName := fmt.Sprintf("%020d.idx", baseOff)
 
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		return nil, err
-	}
-	defer root.Close()
-
 	logCreated := false
-	if _, err := root.Stat(logName); errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(dir, logName)); errors.Is(err, fs.ErrNotExist) {
 		logCreated = true
 	}
-	logFile, err := root.OpenFile(logName, os.O_CREATE|os.O_RDWR, 0o644)
+	logFile, err := openSegmentFile(filepath.Join(dir, logName), os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -55,16 +50,23 @@ func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, erro
 	}
 
 	idxCreated := false
-	if _, err := root.Stat(idxName); errors.Is(err, fs.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(dir, idxName)); errors.Is(err, fs.ErrNotExist) {
 		idxCreated = true
 	}
-	idxFile, err := root.OpenFile(idxName, os.O_CREATE|os.O_RDWR, 0o644)
+	idxFile, err := openSegmentFile(filepath.Join(dir, idxName), os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		_ = logFile.Close()
 		return nil, err
 	}
 
 	if logCreated || idxCreated {
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			_ = logFile.Close()
+			_ = idxFile.Close()
+			return nil, err
+		}
+		defer root.Close()
 		if err := syncDir(root); err != nil {
 			_ = logFile.Close()
 			_ = idxFile.Close()
