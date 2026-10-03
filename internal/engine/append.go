@@ -107,11 +107,10 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 			return 0, false, err
 		}
 		b.seg.pos += b.totalLen
-		for i := range b.recs {
-			if err := b.seg.writeIndexAt(int64(b.offsets[i]-b.seg.baseOff)*rawIndexEntrySize, b.positions[i], b.recLens[i]); err != nil {
-				b.w.setError(err)
-				return 0, false, err
-			}
+		idxPos := int64(b.offsets[0]-b.seg.baseOff) * rawIndexEntrySize
+		if err := b.seg.writeIndexBatchAt(idxPos, b.positions, b.recLens); err != nil {
+			b.w.setError(err)
+			return 0, false, err
 		}
 		return seq, wake, nil
 	}

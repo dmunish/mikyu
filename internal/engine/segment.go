@@ -157,11 +157,32 @@ func (s *segment) writeIndex(pos, len int64) error {
 	return err
 }
 
+// indexWriteHook, when non-nil, receives every live index write's offset and length so tests can assert batching.
+var indexWriteHook func(off int64, n int)
+
 // writeIndexAt writes an index entry; only the WAL flusher calls it on a live segment.
 func (s *segment) writeIndexAt(idxPos, pos, len int64) error {
 	var buf [rawIndexEntrySize]byte
 	rawIndexEntry{pos: pos, len: len}.MarshalBinary(&buf)
+	if indexWriteHook != nil {
+		indexWriteHook(idxPos, rawIndexEntrySize)
+	}
 	_, err := s.idxFile.WriteAt(buf[:], idxPos)
+	return err
+}
+
+// writeIndexBatchAt writes consecutive index entries in one syscall.
+func (s *segment) writeIndexBatchAt(idxPos int64, positions, lengths []int64) error {
+	buf := make([]byte, len(positions)*rawIndexEntrySize)
+	for i := range positions {
+		var ent [rawIndexEntrySize]byte
+		rawIndexEntry{pos: positions[i], len: lengths[i]}.MarshalBinary(&ent)
+		copy(buf[i*rawIndexEntrySize:], ent[:])
+	}
+	if indexWriteHook != nil {
+		indexWriteHook(idxPos, len(buf))
+	}
+	_, err := s.idxFile.WriteAt(buf, idxPos)
 	return err
 }
 

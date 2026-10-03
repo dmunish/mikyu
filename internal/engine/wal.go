@@ -407,16 +407,16 @@ func (w *wal) writeRun(run []asyncEntry, next *uint64) error {
 	if _, err := w.writeAt(data, run[0].pos); err != nil {
 		return err
 	}
-	for _, e := range run {
-		idxPos := int64(e.offset-e.seg.baseOff) * rawIndexEntrySize
-		if err := e.seg.writeIndexAt(idxPos, e.pos, e.recLen); err != nil {
-			return err
-		}
+	positions := make([]int64, len(run))
+	lengths := make([]int64, len(run))
+	for i, e := range run {
+		positions[i], lengths[i] = e.pos, e.recLen
 		if e.offset == *next {
 			*next++
 		}
 	}
-	return nil
+	idxPos := int64(run[0].offset-run[0].seg.baseOff) * rawIndexEntrySize
+	return run[0].seg.writeIndexBatchAt(idxPos, positions, lengths)
 }
 
 func (w *wal) setError(err error) {
