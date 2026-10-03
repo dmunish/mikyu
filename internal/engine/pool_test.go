@@ -6,13 +6,12 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"uuid"
 )
 
 // TestEncodeBufferReused pins the buffer pool: encoding a batch of records
 // reuses one pooled buffer instead of allocating per record.
 func TestEncodeBufferReused(t *testing.T) {
-	id := uuid.NewV7()
+	id := newRecordID()
 	ts := time.Now()
 	group := []byte("grp")
 	payload := make([]byte, 512)

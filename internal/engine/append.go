@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-	"uuid"
 )
 
 // appendOptions carries the effective per-call append settings.
@@ -48,7 +47,7 @@ type stagedBatch struct {
 	positions []int64
 	recLens   []int64
 	offsets   []uint64
-	ids       []uuid.UUID
+	ids       [][16]byte
 	totalLen  int64
 	startIdx  int
 }
@@ -79,7 +78,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 	}
 
 	offsets := make([]uint64, len(payloads))
-	ids := make([]uuid.UUID, len(payloads))
+	ids := make([][16]byte, len(payloads))
 	recs := make([][]byte, len(payloads))
 	bufs := make([]*pooledBuf, len(payloads))
 	recLens := make([]int64, len(payloads))
@@ -100,7 +99,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 			q.mu.Unlock()
 			return nil, fmt.Errorf("%w: queue %q record of %d bytes exceeds max_segment %d", ErrRecordTooLarge, q.name, recLen, q.cfg.MaxSegment)
 		}
-		id := uuid.NewV7()
+		id := newRecordID()
 		var rec []byte
 		if recyclable {
 			bb := getBuf(int(recLen))
@@ -149,7 +148,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 			for i, rec := range b.recs {
 				q.cache.Put(Record{
 					Offset:    b.offsets[i],
-					ID:        b.ids[i].String(),
+					ID:        formatRecordID(b.ids[i]),
 					Timestamp: ts,
 					Group:     group,
 					Payload:   rec[offBody+groupLen:],

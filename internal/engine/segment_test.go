@@ -3,7 +3,6 @@ package engine
 import (
 	"testing"
 	"time"
-	"uuid"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,8 +14,8 @@ func TestSegmentWriteAndRecover(t *testing.T) {
 	require.NoError(t, err)
 	defer seg.Close()
 
-	rec1 := encodeRecord(nil, uuid.NewV7(), time.Now(), []byte("first"), nil)
-	rec2 := encodeRecord(nil, uuid.NewV7(), time.Now(), []byte("second"), nil)
+	rec1 := encodeRecord(nil, newRecordID(), time.Now(), []byte("first"), nil)
+	rec2 := encodeRecord(nil, newRecordID(), time.Now(), []byte("second"), nil)
 	seg.pos = 0
 	_, err = seg.logFile.WriteAt(rec1, 0)
 	require.NoError(t, err)
@@ -39,7 +38,7 @@ func TestSegmentRebuildOnCorruptIndex(t *testing.T) {
 	seg, _ := openSegment(dir, 0, minSegmentPrealloc)
 	defer seg.Close()
 
-	rec := encodeRecord(nil, uuid.NewV7(), time.Now(), []byte("payload"), nil)
+	rec := encodeRecord(nil, newRecordID(), time.Now(), []byte("payload"), nil)
 	_, _ = seg.logFile.WriteAt(rec, 0)
 	seg.pos = int64(len(rec))
 	_, _ = seg.idxFile.Write([]byte{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04})
@@ -56,10 +55,10 @@ func TestSegmentTornWriteRecovery(t *testing.T) {
 	seg, _ := openSegment(dir, 0, minSegmentPrealloc)
 	defer seg.Close()
 
-	rec := encodeRecord(nil, uuid.NewV7(), time.Now(), []byte("payload"), nil)
+	rec := encodeRecord(nil, newRecordID(), time.Now(), []byte("payload"), nil)
 	// Write full record, then a partial second record
 	_, _ = seg.logFile.WriteAt(rec, 0)
-	torn := encodeRecord(nil, uuid.NewV7(), time.Now(), []byte("partial"), nil)
+	torn := encodeRecord(nil, newRecordID(), time.Now(), []byte("partial"), nil)
 	_, _ = seg.logFile.WriteAt(torn[:len(torn)-2], int64(len(rec))) // truncated write
 
 	entries, err := seg.recover()
@@ -71,7 +70,7 @@ func TestSegmentMMap(t *testing.T) {
 	dir := t.TempDir()
 	seg, _ := openSegment(dir, 0, minSegmentPrealloc)
 	defer seg.Close()
-	rec := encodeRecord(nil, uuid.NewV7(), time.Now(), []byte("data"), nil)
+	rec := encodeRecord(nil, newRecordID(), time.Now(), []byte("data"), nil)
 	_, _ = seg.logFile.WriteAt(rec, 0)
 	seg.pos = int64(len(rec))
 
@@ -84,7 +83,7 @@ func TestSegmentMMap(t *testing.T) {
 func TestSegmentCloseUnmapsMMap(t *testing.T) {
 	dir := t.TempDir()
 	seg, _ := openSegment(dir, 0, minSegmentPrealloc)
-	rec := encodeRecord(nil, uuid.NewV7(), time.Now(), []byte("data"), nil)
+	rec := encodeRecord(nil, newRecordID(), time.Now(), []byte("data"), nil)
 	_, _ = seg.logFile.WriteAt(rec, 0)
 	seg.pos = int64(len(rec))
 	_ = seg.enableMMap()

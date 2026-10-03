@@ -7,20 +7,19 @@ import (
 	"hash/crc32"
 	"sync"
 	"time"
-	"uuid" // Go standard library UUID package
 )
 
 var ErrCorruptRecord = errors.New("corrupt record")
 
 const (
-	recordLengthSize   = 4 // 4B Body Length
-	recordCRCSize      = 4 // 4B CRC32
-	recordIDLenSize    = 2 // 2B ID Length
+	recordLengthSize   = 4  // 4B Body Length
+	recordCRCSize      = 4  // 4B CRC32
+	recordIDLenSize    = 2  // 2B ID Length
 	recordUUIDSize     = 16 // 16B Raw UUID
 	recordTSSize       = 8  // 8B Unix Nanoseconds
 	recordGroupLenSize = 2  // 2B Group Length
 
-	recordHeaderSize = recordLengthSize + recordCRCSize // 8B prefix before body
+	recordHeaderSize = recordLengthSize + recordCRCSize                                                                        // 8B prefix before body
 	minRecordSize    = recordLengthSize + recordCRCSize + recordIDLenSize + recordUUIDSize + recordTSSize + recordGroupLenSize // 36B
 
 	offLength   = 0
@@ -37,7 +36,7 @@ var encPool = sync.Pool{
 }
 
 // encodeRecord writes one record frame into dst, allocating when dst is too small.
-func encodeRecord(dst []byte, id uuid.UUID, ts time.Time, group, payload []byte) []byte {
+func encodeRecord(dst []byte, id [16]byte, ts time.Time, group, payload []byte) []byte {
 	payloadLen := len(payload)
 	groupLen := len(group)
 	bodyLen := uint32(recordCRCSize + recordIDLenSize + recordUUIDSize + recordTSSize + recordGroupLenSize + groupLen + payloadLen)
@@ -89,10 +88,11 @@ func decodeRecord(buf []byte) (id string, ts time.Time, group, payload []byte, e
 		return "", time.Time{}, nil, nil, ErrCorruptRecord
 	}
 
-	rawID := uuid.UUID(buf[idStart:idEnd])
+	var rawID [16]byte
+	copy(rawID[:], buf[idStart:idEnd])
 	if groupLen > 0 {
 		group = buf[groupStart:groupEnd]
 	}
 	payload = buf[groupEnd:]
-	return rawID.String(), time.Unix(0, int64(tsNano)), group, payload, nil
+	return formatRecordID(rawID), time.Unix(0, int64(tsNano)), group, payload, nil
 }
