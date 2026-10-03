@@ -13,6 +13,9 @@ import (
 // writerHook, when non-nil, runs before every WAL file write so tests can assert the single-writer invariant.
 var writerHook func()
 
+// writeAtHook, when non-nil, receives every WAL log write's offset and length so tests can assert batching.
+var writeAtHook func(off int64, n int)
+
 type pendingEntry struct {
 	pos int64
 	len int64
@@ -194,7 +197,11 @@ func (w *wal) writeAt(p []byte, off int64) (int, error) {
 	if writerHook != nil {
 		writerHook()
 	}
-	return w.file.WriteAt(p, off)
+	n, err := w.file.WriteAt(p, off)
+	if writeAtHook != nil {
+		writeAtHook(off, n)
+	}
+	return n, err
 }
 
 // pushAsync stages one record on the async path, blocking while the channel is full and honoring ctx.
@@ -360,19 +367,17 @@ WRITE:
 	}
 
 	start := time.Now()
-	for _, e := range entries {
-		if _, err := w.writeAt(e.rec, e.pos); err != nil {
+	for i := 0; i < len(entries); {
+		j := i + 1
+		for j < len(entries) && entries[j].seg == entries[i].seg &&
+			entries[j].pos == entries[j-1].pos+entries[j-1].recLen {
+			j++
+		}
+		if err := w.writeRun(entries[i:j], &next); err != nil {
 			w.setError(err)
 			return
 		}
-		idxPos := int64(e.offset-e.seg.baseOff) * rawIndexEntrySize
-		if err := e.seg.writeIndexAt(idxPos, e.pos, e.recLen); err != nil {
-			w.setError(err)
-			return
-		}
-		if e.offset == next {
-			next++
-		}
+		i = j
 	}
 	w.m.flushes.Inc()
 	w.m.flushDur.Observe(time.Since(start).Seconds())
@@ -383,6 +388,35 @@ WRITE:
 	}
 	w.cond.Broadcast()
 	w.mu.Unlock()
+}
+
+// writeRun coalesces one contiguous same-segment run into a single log write and writes its index entries.
+func (w *wal) writeRun(run []asyncEntry, next *uint64) error {
+	data := run[0].rec
+	if len(run) > 1 {
+		var totalLen int64
+		for _, e := range run {
+			totalLen += e.recLen
+		}
+		buf := make([]byte, 0, totalLen)
+		for _, e := range run {
+			buf = append(buf, e.rec...)
+		}
+		data = buf
+	}
+	if _, err := w.writeAt(data, run[0].pos); err != nil {
+		return err
+	}
+	for _, e := range run {
+		idxPos := int64(e.offset-e.seg.baseOff) * rawIndexEntrySize
+		if err := e.seg.writeIndexAt(idxPos, e.pos, e.recLen); err != nil {
+			return err
+		}
+		if e.offset == *next {
+			*next++
+		}
+	}
+	return nil
 }
 
 func (w *wal) setError(err error) {

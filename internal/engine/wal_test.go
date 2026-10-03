@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -258,6 +259,60 @@ func TestWALWakeTokenLossRace(t *testing.T) {
 		w.mu.Unlock()
 		assert.GreaterOrEqual(t, published, seq2, "linger-time flush must publish both records")
 	})
+}
+
+// TestWALAsyncBatchesWrites pins the async flusher to coalesce same-segment
+// runs into one log write per flush, and verifies the written ranges tile the
+// record area exactly once.
+func TestWALAsyncBatchesWrites(t *testing.T) {
+	testWithTimeout(t, 5*time.Second)
+	dir := t.TempDir()
+	cfg := testConfig()
+	cfg.MaxFlushBytes = 1 << 20
+	cfg.MaxFlushWait = time.Millisecond
+	seg, err := openSegment(dir, 0, 0)
+	require.NoError(t, err)
+	defer seg.Close()
+	w := newWAL(seg.logFile, cfg, 0)
+	w.start()
+
+	type span struct{ off, n int64 }
+	var mu sync.Mutex
+	var writes []span
+	writeAtHook = func(off int64, n int) {
+		mu.Lock()
+		defer mu.Unlock()
+		writes = append(writes, span{off, int64(n)})
+	}
+	t.Cleanup(func() { writeAtHook = nil })
+
+	const count = 1000
+	const recLen = 4
+
+	for i := range count {
+		e := asyncEntry{
+			seg:    seg,
+			rec:    []byte{byte(i), byte(i >> 8), byte(i >> 16), byte(i >> 24)},
+			pos:    int64(i) * recLen,
+			recLen: recLen,
+			offset: uint64(i),
+		}
+		require.NoError(t, w.pushAsync(t.Context(), e))
+	}
+
+	require.NoError(t, w.stop())
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.LessOrEqual(t, len(writes), 8, "1000 entries must coalesce into few writes")
+
+	sort.Slice(writes, func(i, j int) bool { return writes[i].off < writes[j].off })
+	var want int64
+	for _, s := range writes {
+		require.Equal(t, want, s.off, "written ranges must tile the record area with no gaps")
+		want += s.n
+	}
+	require.Equal(t, int64(count*recLen), want, "every record byte must be written exactly once")
 }
 
 func BenchmarkWALFlushAllocations(b *testing.B) {
