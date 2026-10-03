@@ -8,7 +8,57 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/dmunish/mikyu/internal/metrics"
 )
+
+// TestSyncAppendWakeDrivesFlushCadence pins the sync wake contract: appends
+// wake the flusher immediately, so the flush cadence tracks fsync latency
+// rather than the MaxFlushWait ticker.
+func TestSyncAppendWakeDrivesFlushCadence(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openOffsetStore(dir)
+	require.NoError(t, err)
+	defer store.Close()
+	cfg := testConfig()
+	cfg.MaxFlushWait = time.Second // the ticker must never drive the cadence
+	reg := metrics.NewRegistry(metrics.Config{})
+	q, err := openQueue(dir, "wake", cfg, store, reg.Scope("wake"))
+	require.NoError(t, err)
+	defer q.Close()
+
+	payloads := make([][]byte, 8)
+	for i := range payloads {
+		payloads[i] = make([]byte, 1024)
+	}
+
+	const window = 1500 * time.Millisecond
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if _, err := q.AppendBatch(t.Context(), payloads); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	time.Sleep(window)
+	close(stop)
+	wg.Wait()
+
+	require.Greater(t, q.w.m.flushes.Load(), int64(100),
+		"flushes must be wake-driven, not ticker-driven")
+}
 
 // TestCommitSyncBatchesIndexWrites pins the sync commit path to write a
 // staged batch's index entries in one syscall.

@@ -112,10 +112,10 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 		ids[i], recs[i], recLens[i] = id, rec, recLen
 	}
 
-	commitSync := func(b *stagedBatch) (int64, bool, error) {
-		seq, wake, err := b.w.pushBatch(b.recs, b.positions)
+	commitSync := func(b *stagedBatch) (int64, error) {
+		seq, _, err := b.w.pushBatch(b.recs, b.positions)
 		if err != nil {
-			return 0, false, err
+			return 0, err
 		}
 		encodeKeep := 4 * int(q.cfg.MaxPayload)
 		for _, bb := range b.bufs {
@@ -125,9 +125,9 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 		idxPos := int64(b.offsets[0]-b.seg.baseOff) * rawIndexEntrySize
 		if err := b.seg.writeIndexBatchAt(idxPos, b.positions, b.recLens); err != nil {
 			b.w.setError(err)
-			return 0, false, err
+			return 0, err
 		}
-		return seq, wake, nil
+		return seq, nil
 	}
 
 	// commitAsyncGroup runs the async commit in three steps: reserve space and
@@ -198,17 +198,17 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 					return nil, err
 				}
 			} else {
-				seq, wake, err := commitSync(&staged)
+				seq, err := commitSync(&staged)
 				if err != nil {
 					q.mu.Unlock()
 					return nil, err
 				}
 				q.mu.Unlock()
-				if wake {
-					select {
-					case staged.w.wake <- struct{}{}:
-					default:
-					}
+				// A sync producer is about to block on this data, so always wake
+				// the flusher; its linger and byte budget decide when to flush.
+				select {
+				case staged.w.wake <- struct{}{}:
+				default:
 				}
 				if err := staged.w.wait(seq); err != nil {
 					return nil, err
@@ -259,17 +259,15 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 		return offsets, nil
 	}
 
-	seq, wake, err := commitSync(&staged)
+	seq, err := commitSync(&staged)
 	if err != nil {
 		q.mu.Unlock()
 		return nil, err
 	}
 	q.mu.Unlock()
-	if wake {
-		select {
-		case staged.w.wake <- struct{}{}:
-		default:
-		}
+	select {
+	case staged.w.wake <- struct{}{}:
+	default:
 	}
 	if err := staged.w.wait(seq); err != nil {
 		return nil, err
