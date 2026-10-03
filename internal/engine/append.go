@@ -65,7 +65,41 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 		return nil, nil
 	}
 	start := time.Now()
+
+	offsets := make([]uint64, len(payloads))
+	ids := make([][16]byte, len(payloads))
+	recs := make([][]byte, len(payloads))
+	bufs := make([]*pooledBuf, len(payloads))
+	recLens := make([]int64, len(payloads))
+
+	// Validate and encode without touching queue state; only immutable
+	// configuration and the atomic reader gate are read here.
+	ts := time.Now()
+	cacheable := !q.cacheGated || q.hasReader.Load()
+	recyclable := !q.cfg.Async() || !cacheable
 	var totalBytes int64
+	for i, payload := range payloads {
+		if int64(len(payload)) > q.cfg.MaxPayload {
+			return nil, fmt.Errorf("%w: queue %q payload of %d bytes exceeds max_payload %d", ErrMessageTooLarge, q.name, len(payload), q.cfg.MaxPayload)
+		}
+		totalBytes += int64(len(payload))
+		recLen := int64(minRecordSize + len(group) + len(payload))
+		if recLen > q.cfg.MaxSegment {
+			return nil, fmt.Errorf("%w: queue %q record of %d bytes exceeds max_segment %d", ErrRecordTooLarge, q.name, recLen, q.cfg.MaxSegment)
+		}
+		id := newRecordID()
+		ids[i] = id
+		recLens[i] = recLen
+		var rec []byte
+		if recyclable {
+			bb := getBuf(int(recLen))
+			bufs[i] = bb
+			rec = encodeRecord(bb.b, id, ts, group, payload)
+		} else {
+			rec = encodeRecord(nil, id, ts, group, payload)
+		}
+		recs[i] = rec
+	}
 
 	q.mu.Lock()
 	if q.closed || q.active == nil || q.w == nil {
@@ -75,40 +109,6 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 	if err := q.w.currentError(); err != nil {
 		q.mu.Unlock()
 		return nil, err
-	}
-
-	offsets := make([]uint64, len(payloads))
-	ids := make([][16]byte, len(payloads))
-	recs := make([][]byte, len(payloads))
-	bufs := make([]*pooledBuf, len(payloads))
-	recLens := make([]int64, len(payloads))
-
-	// Prepare records up-front while the queue is locked, but do not mutate queue
-	// positions until a complete per-segment group is ready to commit.
-	ts := time.Now()
-	cacheable := !q.cacheGated || q.hasReader.Load()
-	recyclable := !q.cfg.Async() || !cacheable
-	for i, payload := range payloads {
-		if int64(len(payload)) > q.cfg.MaxPayload {
-			q.mu.Unlock()
-			return nil, fmt.Errorf("%w: queue %q payload of %d bytes exceeds max_payload %d", ErrMessageTooLarge, q.name, len(payload), q.cfg.MaxPayload)
-		}
-		totalBytes += int64(len(payload))
-		recLen := int64(minRecordSize + len(group) + len(payload))
-		if recLen > q.cfg.MaxSegment {
-			q.mu.Unlock()
-			return nil, fmt.Errorf("%w: queue %q record of %d bytes exceeds max_segment %d", ErrRecordTooLarge, q.name, recLen, q.cfg.MaxSegment)
-		}
-		id := newRecordID()
-		var rec []byte
-		if recyclable {
-			bb := getBuf(int(recLen))
-			bufs[i] = bb
-			rec = encodeRecord(bb.b, id, ts, group, payload)
-		} else {
-			rec = encodeRecord(nil, id, ts, group, payload)
-		}
-		ids[i], recs[i], recLens[i] = id, rec, recLen
 	}
 
 	commitSync := func(b *stagedBatch) (int64, error) {
