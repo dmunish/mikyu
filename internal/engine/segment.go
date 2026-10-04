@@ -31,8 +31,6 @@ type segment struct {
 }
 
 // openSegment creates or opens the segment files for baseOff inside dir.
-// The file names are generated, so direct path opens cannot escape the queue
-// directory; the os.Root is still used for the directory-sync durability site.
 func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, error) {
 	logName := fmt.Sprintf("%020d.log", baseOff)
 	idxName := fmt.Sprintf("%020d.idx", baseOff)
@@ -47,7 +45,7 @@ func openSegment(dir string, baseOff uint64, preallocSize int64) (*segment, erro
 	}
 
 	if info, err := logFile.Stat(); err == nil && info.Size() == 0 && preallocSize > 0 {
-		if err := logFile.Truncate(preallocSize); err != nil {
+		if err := preallocate(logFile, preallocSize); err != nil {
 			_ = logFile.Close()
 			return nil, err
 		}
