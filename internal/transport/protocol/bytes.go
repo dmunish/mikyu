@@ -89,9 +89,19 @@ func (buf *Buffer) WriteU64(v uint64) {
 
 func (buf *Buffer) WriteBytes(data []byte) {
 	buf.WriteU32(uint32(len(data)))
+	buf.WriteRaw(data)
+}
+
+// WriteRaw appends bytes without a length prefix.
+func (buf *Buffer) WriteRaw(data []byte) {
 	buf.b = append(buf.b, data...)
 }
 
 func (buf *Buffer) Bytes() []byte {
 	return buf.b
+}
+
+// Reset empties the buffer while retaining its capacity.
+func (buf *Buffer) Reset() {
+	buf.b = buf.b[:0]
 }

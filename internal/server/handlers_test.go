@@ -1,4 +1,4 @@
-package server
+﻿package server
 
 import (
 	"bytes"
@@ -138,7 +138,7 @@ func TestHandleFetch(t *testing.T) {
 		b.WriteU64(0)
 		b.WriteU32(16)
 		b.WriteU64(0)
-		respOp, respBody := srv.handleFetch(t.Context(), b.Bytes())
+		respOp, respBody, _ := srv.handleFetch(t.Context(), nil, b.Bytes())
 		assert.Equal(t, protocol.OpError, respOp)
 		code, _ := protocol.DecodeError(respBody)
 		assert.Equal(t, protocol.ErrCodeNoData, code)
@@ -154,7 +154,7 @@ func TestHandleFetch(t *testing.T) {
 		b.WriteU64(0)
 		b.WriteU32(16)
 		b.WriteU64(0)
-		respOp, respBody := srv.handleFetch(t.Context(), b.Bytes())
+		respOp, respBody, _ := srv.handleFetch(t.Context(), nil, b.Bytes())
 		assert.Equal(t, protocol.OpFetch, respOp)
 		r := protocol.NewReader(respBody)
 		got, _ := r.ReadU32()
@@ -170,7 +170,7 @@ func TestHandleFetch(t *testing.T) {
 		q, _ := srv.getOrCreateLogQueue("q")
 		_, err := q.Append(t.Context(), []byte("msg"))
 		require.NoError(t, err)
-		respOp, _ := srv.handleFetch(t.Context(), b.Bytes())
+		respOp, _, _ := srv.handleFetch(t.Context(), nil, b.Bytes())
 		assert.Equal(t, protocol.OpFetch, respOp)
 	})
 }

@@ -25,7 +25,9 @@ type segment struct {
 	createdAt    time.Time
 	mapMu        sync.RWMutex
 	mmapData     mmap.MMap
-	idxMMap      mmap.MMap // Memory-mapped index region for closed historical segment
+	idxMMap      mmap.MMap  // Memory-mapped index region for closed historical segment
+	sendMu       sync.Mutex // serializes position-based zero-copy sends over sendFile
+	sendFile     *os.File   // read-only handle for zero-copy payload sends, opened lazily
 }
 
 // openSegment creates or opens the segment files for baseOff inside dir.
@@ -142,6 +144,40 @@ func (s *segment) enableMMap() error {
 		}
 	}
 	return nil
+}
+
+// sendFD opens (once) a read-only handle used for zero-copy payload sends.
+func (s *segment) sendFD() (*os.File, error) {
+	s.mapMu.Lock()
+	defer s.mapMu.Unlock()
+	if s.sendFile != nil {
+		return s.sendFile, nil
+	}
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	f, err := root.Open(s.logName)
+	if err != nil {
+		return nil, err
+	}
+	s.sendFile = f
+	return f, nil
+}
+
+// readBytes copies len(dst) bytes at pos into dst, preferring the read mapping.
+func (s *segment) readBytes(dst []byte, pos int64) bool {
+	logData, _ := s.views()
+	if len(logData) >= int(pos)+len(dst) {
+		copy(dst, logData[pos:int(pos)+len(dst)])
+		return true
+	}
+	if s.logFile == nil {
+		return false
+	}
+	_, err := s.logFile.ReadAt(dst, pos)
+	return err == nil
 }
 
 func (s *segment) readIndexEntry(offset uint64) (pos int64, length int64, err error) {
@@ -457,6 +493,15 @@ func (s *segment) Close() error {
 			firstErr = err
 		}
 	}
+
+	s.mapMu.Lock()
+	if s.sendFile != nil {
+		if err := s.sendFile.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		s.sendFile = nil
+	}
+	s.mapMu.Unlock()
 
 	if mmapErr != nil && firstErr == nil {
 		firstErr = mmapErr

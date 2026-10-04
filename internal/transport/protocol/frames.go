@@ -90,6 +90,14 @@ func ReadFrameInto(r *bufio.Reader, buf []byte) (op byte, payload, next []byte, 
 	return opBuf[0], buf, buf, nil
 }
 
+// WriteFrameHeader writes the 4-byte big-endian frame length prefix.
+func WriteFrameHeader(w io.Writer, length uint32) error {
+	var hdr [4]byte
+	binary.BigEndian.PutUint32(hdr[:], length)
+	_, err := w.Write(hdr[:])
+	return err
+}
+
 // WriteFrame writes an opcode and payload using a pooled buffer, preserving enlarged buffers.
 func WriteFrame(w io.Writer, op byte, payload []byte) error {
 	if len(payload) > int(MaxFrameBytes-1) {

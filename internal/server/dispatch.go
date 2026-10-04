@@ -2,13 +2,15 @@ package server
 
 import (
 	"context"
+	"net"
 	"time"
 
 	"github.com/dmunish/mikyu/internal/transport/protocol"
 )
 
-// dispatch routes opcodes to handlers.
-func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byte, respBody []byte, shouldShutdown bool) {
+// dispatch routes opcodes to handlers. streamed is true when the handler
+// already wrote its own response frame (the zero-copy read path).
+func (s *Server) dispatch(ctx context.Context, conn net.Conn, op byte, body []byte) (respOp byte, respBody []byte, shouldShutdown bool, streamed bool) {
 	start := time.Now()
 	defer func() { s.recordOp(op, start) }()
 
@@ -37,7 +39,7 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byt
 	case protocol.OpRead:
 		respOp, respBody = s.handleRead(ctx, body)
 	case protocol.OpReadBatch:
-		respOp, respBody = s.handleReadBatch(ctx, body)
+		respOp, respBody, streamed = s.handleReadBatch(ctx, conn, body)
 	case protocol.OpLastOffset:
 		respOp, respBody = s.handleLastOffset(ctx, body)
 	case protocol.OpMinOffset:
@@ -47,7 +49,7 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byt
 	case protocol.OpCommitted:
 		respOp, respBody = s.handleCommitted(ctx, body)
 	case protocol.OpFetch:
-		respOp, respBody = s.handleFetch(ctx, body)
+		respOp, respBody, streamed = s.handleFetch(ctx, conn, body)
 
 	case protocol.OpEnqueue:
 		respOp, respBody = s.handleEnqueue(ctx, body)
@@ -67,9 +69,9 @@ func (s *Server) dispatch(ctx context.Context, op byte, body []byte) (respOp byt
 		respOp, respBody = s.handleArchive(ctx, body)
 
 	case protocol.OpShutdown:
-		return protocol.OpShutdown, nil, true
+		return protocol.OpShutdown, nil, true, false
 	default:
 		respOp, respBody = opErr(protocol.ErrCodeUnknown, "unknown opcode")
 	}
-	return respOp, respBody, false
+	return respOp, respBody, false, streamed
 }

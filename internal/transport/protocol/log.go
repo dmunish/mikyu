@@ -13,11 +13,22 @@ type Record struct {
 
 // WriteRecord appends offset, ID, timestamp, group, and payload.
 func WriteRecord(b *Buffer, rec Record) {
-	b.WriteU64(rec.Offset)
-	b.WriteBytes([]byte(rec.ID))
-	b.WriteU64(uint64(rec.Timestamp.UnixNano()))
-	b.WriteBytes(rec.Group)
-	b.WriteBytes(rec.Payload)
+	b.WriteRecordFraming(rec.Offset, rec.ID, rec.Timestamp, rec.Group, len(rec.Payload))
+	b.WriteRaw(rec.Payload)
+}
+
+// WriteRecordFraming appends offset, ID, timestamp, group, and a payload length.
+func (buf *Buffer) WriteRecordFraming(offset uint64, id string, ts time.Time, group []byte, payloadLen int) {
+	buf.WriteU64(offset)
+	buf.WriteBytes([]byte(id))
+	buf.WriteU64(uint64(ts.UnixNano()))
+	buf.WriteBytes(group)
+	buf.WriteU32(uint32(payloadLen))
+}
+
+// RecordFramingLen returns the byte count WriteRecordFraming emits for id and group.
+func RecordFramingLen(id string, group []byte) int {
+	return 8 + 4 + len(id) + 8 + 4 + len(group) + 4
 }
 
 // ReadRecord parses one log record.
