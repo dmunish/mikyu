@@ -109,8 +109,7 @@ func TestValidate(t *testing.T) {
 		{"keyed task", func(w *Workload) { w.Kind, w.Keys = KindTask, 4 }, "keys"},
 		{"ack rate high", func(w *Workload) { w.AckRate = 1.5 }, "ack_rate"},
 		{"ack rate nan", func(w *Workload) { w.AckRate = nan() }, "ack_rate"},
-		{"both bounds", func(w *Workload) { w.Bytes = 4096 }, "exactly one"},
-		{"no bound", func(w *Workload) { w.Duration = 0 }, "exactly one"},
+		{"no bound", func(w *Workload) { w.Duration = 0 }, "at least one"},
 		{"crash with duration", func(w *Workload) { w.CrashAfterBytes = 4096 }, "crash_after_bytes"},
 		{"rate and schedule", func(w *Workload) {
 			w.Rate, w.RateSchedule = 10, []RatePoint{{At: 0, Rate: 5}}
@@ -266,4 +265,3 @@ func nan() float64 {
 	zero := 0.0
 	return zero / zero
 }
-

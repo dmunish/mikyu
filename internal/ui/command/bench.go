@@ -448,13 +448,31 @@ func (p *benchProgress) repaintLocked() {
 // percentLocked estimates how far the active phase has progressed.
 func (p *benchProgress) percentLocked() float64 {
 	elapsed := time.Since(p.started).Seconds()
+
+	var byBytes, byTime float64
+	haveBytes := p.total > 0
+	if haveBytes {
+		byBytes = clamp01(float64(p.bytes) / float64(p.total))
+	}
+	var haveTime bool
+	switch p.active {
+	case bench.PhaseMeasure:
+		if p.measure > 0 {
+			byTime, haveTime = clamp01(elapsed/p.measure.Seconds()), true
+		}
+	case bench.PhaseWarmup:
+		if p.warmup > 0 {
+			byTime, haveTime = clamp01(elapsed/p.warmup.Seconds()), true
+		}
+	}
+
 	switch {
-	case p.total > 0:
-		return clamp01(float64(p.bytes) / float64(p.total))
-	case p.active == bench.PhaseMeasure && p.measure > 0:
-		return clamp01(elapsed / p.measure.Seconds())
-	case p.active == bench.PhaseWarmup && p.warmup > 0:
-		return clamp01(elapsed / p.warmup.Seconds())
+	case haveBytes && haveTime:
+		return max(byBytes, byTime) // track the bound that will fire first
+	case haveBytes:
+		return byBytes
+	case haveTime:
+		return byTime
 	default:
 		return 0
 	}
