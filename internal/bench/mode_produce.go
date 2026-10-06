@@ -134,6 +134,7 @@ func (r *runner) openProduceWorker(ctx context.Context, tickets <-chan time.Time
 // appendMessages writes one batch of seeded payloads to a queue.
 func (r *runner) appendMessages(ctx context.Context, start uint64, bufs [][]byte) error {
 	w := r.opts.Workload
+	batchIdx := start / uint64(w.Batch)
 	if r.isLog() {
 		for i := range w.Batch {
 			payloadFor(w.Seed, start+uint64(i), bufs[i])
@@ -142,12 +143,12 @@ func (r *runner) appendMessages(ctx context.Context, start uint64, bufs [][]byte
 		if w.Keys > 0 {
 			opts = append(opts, mikyu.WithRecordKey(keyFor(start, w.Keys)))
 		}
-		q := r.logQueues[int(start%uint64(len(r.logQueues)))]
+		q := r.logQueues[int(batchIdx%uint64(len(r.logQueues)))]
 		if _, err := q.AppendBatch(ctx, bufs[:w.Batch], opts...); err != nil {
 			return err
 		}
 	} else {
-		q := r.taskQueues[int(start%uint64(len(r.taskQueues)))]
+		q := r.taskQueues[int(batchIdx%uint64(len(r.taskQueues)))]
 		for i := range w.Batch {
 			payloadFor(w.Seed, start+uint64(i), bufs[i])
 			if _, err := q.Enqueue(ctx, bufs[i]); err != nil {
