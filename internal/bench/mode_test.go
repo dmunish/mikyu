@@ -58,6 +58,7 @@ func TestEnsureBoundMeasuresForTheDefaultDuration(t *testing.T) {
 	w := DefaultWorkload()
 	w.EnsureBound(ModeProduce)
 	assert.Equal(t, DefaultDuration, w.Duration)
+	assert.Equal(t, int64(DefaultByteCap), w.Bytes)
 	require.NoError(t, w.Validate())
 }
 

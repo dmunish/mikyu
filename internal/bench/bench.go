@@ -283,9 +283,12 @@ func (r *runner) limitReached(moved int64) bool {
 
 // boundFired names the bound that stopped the run.
 func (r *runner) boundFired() string {
-	switch w := r.opts.Workload; {
+	w := r.opts.Workload
+	switch {
 	case w.CrashAfterBytes > 0:
 		return "crash"
+	case w.Bytes > 0 && r.moved() >= w.Bytes:
+		return "bytes"
 	case w.Duration > 0:
 		return "duration"
 	case w.Bytes > 0:
@@ -301,7 +304,11 @@ func (r *runner) beginPhase(p Phase) {
 	r.current = p
 	r.bound.begin(p, time.Now())
 	r.phasesMu.Unlock()
-	emitProgress(r.opts, ProgressEvent{Kind: ProgressStart, Phase: p})
+	emitProgress(r.opts, ProgressEvent{
+		Kind:  ProgressStart,
+		Phase: p,
+		Total: r.byteBound(),
+	})
 }
 
 // endPhase closes the current phase into a view.
@@ -319,6 +326,12 @@ func (r *runner) addPhaseBytes(n int64) {
 	r.phasesMu.Lock()
 	r.bound.add(n)
 	r.phasesMu.Unlock()
+}
+
+func (r *runner) phaseBytes() int64 {
+	r.phasesMu.Lock()
+	defer r.phasesMu.Unlock()
+	return r.bound.bytes
 }
 
 // moved returns the bytes this run has moved so far on its measured path.

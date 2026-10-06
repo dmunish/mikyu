@@ -292,9 +292,11 @@ func (s *Server) serveConn(conn net.Conn) {
 	})
 
 	for req := range reqCh {
-		respOp, respBody, shouldShutdown := s.dispatch(ctx, req.op, req.body)
-		if err := protocol.WriteFrame(conn, respOp, respBody); err != nil {
-			break
+		respOp, respBody, shouldShutdown, streamed := s.dispatch(ctx, conn, req.op, req.body)
+		if !streamed {
+			if err := protocol.WriteFrame(conn, respOp, respBody); err != nil {
+				break
+			}
 		}
 		if shouldShutdown {
 			go s.Stop()

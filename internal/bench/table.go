@@ -159,15 +159,18 @@ func DefaultWorkload() Workload {
 	return w
 }
 
-// DefaultDuration is the measure window a run gets when it names no bound of its own.
-const DefaultDuration = time.Minute
+const (
+	DefaultDuration = time.Minute
+	DefaultByteCap  = 5 << 30
+)
 
-// EnsureBound installs DefaultDuration for a run that named no bound; recovery has no measure window to fill.
+// EnsureBound installs Duration and Byte defaults when none is explicitly set
 func (w *Workload) EnsureBound(mode Mode) {
 	if mode == ModeRecovery || w.Bytes > 0 || w.Duration > 0 || w.CrashAfterBytes > 0 {
 		return
 	}
 	w.Duration = DefaultDuration
+	w.Bytes = DefaultByteCap
 }
 
 // Validate checks the workload in isolation; the runner checks the rules that span it and the access.
@@ -208,14 +211,10 @@ func (w Workload) validateBound() error {
 		}
 		return nil
 	}
-	switch {
-	case w.Bytes > 0 && w.Duration > 0:
-		return fmt.Errorf("%w: set exactly one of bytes or duration", ErrUsage)
-	case w.Bytes <= 0 && w.Duration <= 0:
-		return fmt.Errorf("%w: set exactly one of bytes or duration", ErrUsage)
-	default:
-		return nil
+	if w.Bytes <= 0 && w.Duration <= 0 {
+		return fmt.Errorf("%w: set at least one of bytes or duration", ErrUsage)
 	}
+	return nil
 }
 
 // validateSchedule requires a schedule anchored at zero with strictly rising timestamps.
@@ -266,4 +265,3 @@ func rateScheduleView(points []RatePoint) []result.RatePoint {
 	}
 	return out
 }
-

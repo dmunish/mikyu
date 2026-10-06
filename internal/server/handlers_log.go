@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"net"
 	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
@@ -58,21 +59,27 @@ func (s *Server) handleAppendBatch(ctx context.Context, body []byte) (byte, []by
 
 const maxFetchWait = 5 * time.Minute
 
-func (s *Server) handleFetch(ctx context.Context, body []byte) (byte, []byte) {
+func (s *Server) handleFetch(ctx context.Context, conn net.Conn, body []byte) (byte, []byte, bool) {
 	name, start, count, wait, err := protocol.DecodeFetch(protocol.NewReader(body))
 	if err != nil {
-		return opErr(protocol.ErrCodeInvalidConfig, err.Error())
+		op, resp := opErr(protocol.ErrCodeInvalidConfig, err.Error())
+		return op, resp, false
 	}
 	q, err := s.getOrCreateLogQueue(name)
 	if err != nil {
-		return taskErr(err)
+		op, resp := taskErr(err)
+		return op, resp, false
 	}
 	if wait > maxFetchWait {
 		wait = maxFetchWait
 	}
+	if s.streamSpans(conn, q, protocol.OpFetch, start, count) {
+		return protocol.OpFetch, nil, true
+	}
 	msgs, err := q.Fetch(ctx, start, count, wait)
 	if err != nil {
-		return logReadErr(err)
+		op, resp := logReadErr(err)
+		return op, resp, false
 	}
 	recs := make([]protocol.Record, len(msgs))
 	for i, msg := range msgs {
@@ -80,7 +87,7 @@ func (s *Server) handleFetch(ctx context.Context, body []byte) (byte, []byte) {
 	}
 	var buf protocol.Buffer
 	protocol.WriteRecordList(&buf, recs)
-	return protocol.OpFetch, buf.Bytes()
+	return protocol.OpFetch, buf.Bytes(), false
 }
 
 // toWireRecord converts an engine record to its wire form.
@@ -111,21 +118,27 @@ func (s *Server) handleRead(ctx context.Context, body []byte) (byte, []byte) {
 	return protocol.OpRead, buf.Bytes()
 }
 
-func (s *Server) handleReadBatch(ctx context.Context, body []byte) (byte, []byte) {
+func (s *Server) handleReadBatch(ctx context.Context, conn net.Conn, body []byte) (byte, []byte, bool) {
 	r := protocol.NewReader(body)
 	name, _ := r.ReadBytes()
 	start, _ := r.ReadU64()
 	count, err := r.ReadU32()
 	if err != nil || count > 65536 {
-		return opErr(protocol.ErrCodeUnknown, "invalid batch count")
+		op, resp := opErr(protocol.ErrCodeUnknown, "invalid batch count")
+		return op, resp, false
 	}
 	q, err := s.getOrCreateLogQueue(string(name))
 	if err != nil {
-		return taskErr(err)
+		op, resp := taskErr(err)
+		return op, resp, false
+	}
+	if s.streamSpans(conn, q, protocol.OpReadBatch, start, int(count)) {
+		return protocol.OpReadBatch, nil, true
 	}
 	msgs, err := q.ReadBatch(ctx, start, int(count))
 	if err != nil {
-		return logReadErr(err)
+		op, resp := logReadErr(err)
+		return op, resp, false
 	}
 	recs := make([]protocol.Record, len(msgs))
 	for i, msg := range msgs {
@@ -133,7 +146,7 @@ func (s *Server) handleReadBatch(ctx context.Context, body []byte) (byte, []byte
 	}
 	buf := protocol.Buffer{}
 	protocol.WriteRecordList(&buf, recs)
-	return protocol.OpReadBatch, buf.Bytes()
+	return protocol.OpReadBatch, buf.Bytes(), false
 }
 
 func (s *Server) handleLastOffset(ctx context.Context, body []byte) (byte, []byte) {
