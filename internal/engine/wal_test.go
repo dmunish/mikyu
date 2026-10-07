@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dmunish/mikyu/internal/spec"
 )
 
 // testWithTimeout ensures a test does not hang forever.
@@ -66,7 +68,7 @@ func TestWALBatch(t *testing.T) {
 
 	recs := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
 	positions := []int64{0, 1, 2}
-	seq, wake, err := w.pushBatch(recs, positions, -1)
+	seq, wake, err := w.pushBatch(recs, positions)
 	require.NoError(t, err)
 	assert.Equal(t, int64(3), seq)
 	assert.True(t, wake, "the byte budget was reached")
@@ -157,21 +159,20 @@ func TestWALConcurrentPush(t *testing.T) {
 	}
 }
 
-// TestWALByteBackpressure fills the async channel to its byte-derived capacity and asserts the next push blocks until cancel.
+// TestWALByteBackpressure fills the async slot budget and asserts the next push blocks until cancel.
 func TestWALByteBackpressure(t *testing.T) {
 	testWithTimeout(t, 2*time.Second)
+	useBlockingWriter(t)
 	dir := t.TempDir()
 	seg, err := openSegment(dir, 0, 0)
 	require.NoError(t, err)
 	defer seg.Close()
 
-	// The WAL is never started, so nothing drains the channel and
-	// MaxFlushBytes/4096 is the exact capacity.
 	cfg := testConfig()
 	cfg.MaxFlushBytes = 8192
 	w := newWAL(seg, cfg, 0, nil)
 	ctx, cancel := context.WithCancel(context.Background())
-	entry := asyncEntry{seg: &segment{}, rec: []byte("x"), pos: 0, recLen: 1, offset: 0}
+	entry := asyncEntry{seg: seg, rec: []byte("x"), pos: 0, recLen: 1, offset: 0}
 
 	const capacity = 8192 / 4096
 	for range capacity {
@@ -182,7 +183,7 @@ func TestWALByteBackpressure(t *testing.T) {
 	go func() { blocked <- w.pushAsync(ctx, entry) }()
 	select {
 	case err := <-blocked:
-		t.Fatalf("pushAsync returned %v; expected it to block on a full channel", err)
+		t.Fatalf("pushAsync returned %v; expected it to block on a full slot budget", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -213,6 +214,7 @@ func TestWALWakeTokenLossRace(t *testing.T) {
 	cfg.FlushLinger = 10 * time.Millisecond
 
 	synctest.Test(t, func(t *testing.T) {
+		useSyncWriter(t)
 		w := newWAL(seg, cfg, 0, nil)
 		w.start()
 		defer w.stop()
@@ -263,17 +265,16 @@ func waitWALDrained(t *testing.T, w *wal, count uint64) {
 	}, 5*time.Second, time.Millisecond)
 }
 
-// TestWALAsyncBatchesWrites pins the async flusher to coalesce same-segment
-// runs into one log write per flush, and verifies the written ranges tile the
-// record area exactly once.
-func TestWALAsyncBatchesWrites(t *testing.T) {
+// TestWALAsyncBatchWrites pins one async producer batch to a single coalesced
+// log write, and verifies the written ranges tile the record area exactly once.
+func TestWALAsyncBatchWrites(t *testing.T) {
 	type span struct {
 		off, n int64
 	}
 	dir := t.TempDir()
 	cfg := testConfig()
-	cfg.MaxFlushBytes = 8 << 20 // channel holds every entry before the flusher starts
-	cfg.MaxFlushWait = time.Millisecond
+	cfg.Durability = spec.DurabilityAsync
+	cfg.MaxFlushBytes = 8 << 20
 	seg, err := openSegment(dir, 0, 0)
 	require.NoError(t, err)
 	defer seg.Close()
@@ -281,15 +282,15 @@ func TestWALAsyncBatchesWrites(t *testing.T) {
 
 	const count = 1000
 	const recLen = 4
+	entries := make([]asyncEntry, count)
 	for i := range count {
-		e := asyncEntry{
+		entries[i] = asyncEntry{
 			seg:    seg,
 			rec:    []byte{byte(i), byte(i >> 8), byte(i >> 16), byte(i >> 24)},
 			pos:    int64(i) * recLen,
 			recLen: recLen,
 			offset: uint64(i),
 		}
-		require.NoError(t, w.pushAsync(t.Context(), e))
 	}
 
 	var writes []span
@@ -298,12 +299,12 @@ func TestWALAsyncBatchesWrites(t *testing.T) {
 	}
 	t.Cleanup(func() { writeAtHook = nil })
 
+	require.NoError(t, w.pushAsyncBatch(t.Context(), entries))
 	w.start()
 	waitWALDrained(t, w, count)
 	require.NoError(t, w.stop())
 
-	require.LessOrEqual(t, len(writes), 8, "1000 entries must coalesce into few writes")
-
+	require.Len(t, writes, 1, "one producer batch must reach the kernel in one write")
 	sort.Slice(writes, func(i, j int) bool { return writes[i].off < writes[j].off })
 	var want int64
 	for _, s := range writes {
@@ -313,16 +314,16 @@ func TestWALAsyncBatchesWrites(t *testing.T) {
 	require.Equal(t, int64(count*recLen), want, "every record byte must be written exactly once")
 }
 
-// TestWALAsyncBatchesIndexWrites pins the async flusher to write a run's
-// index entries in one syscall, and verifies the entries land at the right slots.
-func TestWALAsyncBatchesIndexWrites(t *testing.T) {
+// TestWALAsyncBatchIndexWrites pins one async producer batch's index entries to
+// a single write, and verifies the entries land at the right slots.
+func TestWALAsyncBatchIndexWrites(t *testing.T) {
 	type span struct {
 		off, n int64
 	}
 	dir := t.TempDir()
 	cfg := testConfig()
-	cfg.MaxFlushBytes = 8 << 20 // channel holds every entry before the flusher starts
-	cfg.MaxFlushWait = time.Millisecond
+	cfg.Durability = spec.DurabilityAsync
+	cfg.MaxFlushBytes = 8 << 20
 	seg, err := openSegment(dir, 0, 0)
 	require.NoError(t, err)
 	defer seg.Close()
@@ -330,15 +331,15 @@ func TestWALAsyncBatchesIndexWrites(t *testing.T) {
 
 	const count = 1000
 	const recLen = 4
+	entries := make([]asyncEntry, count)
 	for i := range count {
-		e := asyncEntry{
+		entries[i] = asyncEntry{
 			seg:    seg,
 			rec:    []byte{byte(i), byte(i >> 8), byte(i >> 16), byte(i >> 24)},
 			pos:    int64(i) * recLen,
 			recLen: recLen,
 			offset: uint64(i),
 		}
-		require.NoError(t, w.pushAsync(t.Context(), e))
 	}
 
 	var writes []span
@@ -347,12 +348,12 @@ func TestWALAsyncBatchesIndexWrites(t *testing.T) {
 	}
 	t.Cleanup(func() { indexWriteHook = nil })
 
+	require.NoError(t, w.pushAsyncBatch(t.Context(), entries))
 	w.start()
 	waitWALDrained(t, w, count)
 	require.NoError(t, w.stop())
 
-	require.LessOrEqual(t, len(writes), 4, "1000 index entries must coalesce into few writes")
-
+	require.Len(t, writes, 1, "one producer batch must write its index entries in one syscall")
 	sort.Slice(writes, func(i, j int) bool { return writes[i].off < writes[j].off })
 	var want int64
 	for _, s := range writes {

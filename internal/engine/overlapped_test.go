@@ -10,8 +10,7 @@ import (
 )
 
 // TestOverlappedSingleSyscall drives one large batch through a live queue and
-// requires the WAL to reach the kernel at most eight times regardless of the
-// underlying handle mode.
+// requires the WAL to reach the kernel with one log write and one index write.
 func TestOverlappedSingleSyscall(t *testing.T) {
 	type span struct {
 		off, n int64
@@ -33,21 +32,22 @@ func TestOverlappedSingleSyscall(t *testing.T) {
 
 	const count = 1000
 	const recLen = 8
+	entries := make([]asyncEntry, count)
 	for i := range count {
-		e := asyncEntry{
+		entries[i] = asyncEntry{
 			seg:    seg,
 			rec:    make([]byte, recLen),
 			pos:    int64(i) * recLen,
 			recLen: recLen,
 			offset: uint64(i),
 		}
-		require.NoError(t, w.pushAsync(t.Context(), e))
 	}
+	require.NoError(t, w.pushAsyncBatch(t.Context(), entries))
 	w.start()
 	waitWALDrained(t, w, count)
 	require.NoError(t, w.stop())
 
-	require.LessOrEqual(t, len(writes), 8, "1000 entries must reach the kernel in at most eight writes")
+	require.Len(t, writes, 1, "1000 records must reach the kernel in a single write")
 	sort.Slice(writes, func(i, j int) bool { return writes[i].off < writes[j].off })
 	var want int64
 	for _, s := range writes {

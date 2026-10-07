@@ -113,7 +113,7 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 
 	commitSync := func(b *stagedBatch) (int64, error) {
 		idxPos := int64(b.offsets[0]-b.seg.baseOff) * rawIndexEntrySize
-		seq, _, err := b.w.pushBatch(b.recs, b.positions, idxPos)
+		seq, _, err := b.w.pushBatch(b.recs, b.positions)
 		if err != nil {
 			return 0, err
 		}
@@ -122,11 +122,9 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 			bb.release(encodeKeep)
 		}
 		b.seg.pos += b.totalLen
-		if !b.w.ownsIndex() {
-			if err := b.seg.writeIndexBatchAt(idxPos, b.positions, b.recLens); err != nil {
-				b.w.setError(err)
-				return 0, err
-			}
+		if err := b.seg.writeIndexBatchAt(idxPos, b.positions, b.recLens); err != nil {
+			b.w.setError(err)
+			return 0, err
 		}
 		return seq, nil
 	}
@@ -226,7 +224,12 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 					return nil, err
 				}
 			}
-			reset(i)
+			// A concurrent producer may roll while this one was unlocked pushing
+			// its committed group; the rest of the append belongs to the segment
+			// that is active now, not the one it staged against.
+			if rollRequired || staged.seg != q.active {
+				reset(i)
+			}
 		}
 
 		staged.recs = append(staged.recs, recs[i])

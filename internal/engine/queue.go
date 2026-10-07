@@ -41,7 +41,6 @@ type Queue struct {
 	name              string
 	dir               string
 	cfg               Config
-	ring              *uringRing
 	active            *segment
 	segments          []*segment
 	nextOffset        uint64
@@ -72,8 +71,7 @@ var _ Storage = (*Queue)(nil)
 // keeps parentDir/name only for read-only directory listing; all file
 // creation, opening, and removal happen through os.Root handles. An optional
 // instrumentation scope records queue operations; without one they are no-ops.
-// ring may be nil on hosts without io_uring.
-func openQueue(parentDir, name string, cfg Config, store *OffsetStore, ring *uringRing, scopes ...*metrics.Scope) (*Queue, error) {
+func openQueue(parentDir, name string, cfg Config, store *OffsetStore, scopes ...*metrics.Scope) (*Queue, error) {
 	parent, err := os.OpenRoot(parentDir)
 	if err != nil {
 		return nil, err
@@ -99,7 +97,6 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore, ring *uri
 		name:              name,
 		dir:               dir,
 		cfg:               cfg,
-		ring:              ring,
 		offsets:           store,
 		cache:             newRingCache(cfg.MaxCache),
 		nextPreallocBytes: initialPrealloc,
@@ -207,7 +204,7 @@ func (q *Queue) loadSegments() error {
 	if len(q.segments) > 0 {
 		q.minOffset = q.segments[0].baseOff
 	}
-	q.w = newWAL(q.active, q.cfg, q.nextOffset, q.ring, q.scope)
+	q.w = newWAL(q.active, q.cfg, q.nextOffset, q.scope)
 	q.w.start()
 	return nil
 }
@@ -295,6 +292,14 @@ func (q *Queue) roll() error {
 			return ErrQueueClosed
 		}
 	}
+	// Waiting released the lock, so a concurrent producer may have rolled in the
+	// meantime. Roll only a segment that can no longer hold a full record, or
+	// every producer at the boundary would seal a fresh segment behind the first.
+	headroom := int64(minRecordSize) + q.cfg.MaxPayload
+	if q.active.pos+q.reservedPos+headroom <= q.cfg.MaxSegment &&
+		time.Since(q.active.createdAt) <= q.cfg.MaxSegmentAge {
+		return nil
+	}
 
 	if err := q.w.stop(); err != nil {
 		return err
@@ -345,7 +350,7 @@ func (q *Queue) roll() error {
 		return err
 	}
 	q.m.segmentRolls.Inc()
-	q.w = newWAL(seg, q.cfg, q.nextOffset, q.ring, q.scope)
+	q.w = newWAL(seg, q.cfg, q.nextOffset, q.scope)
 	q.w.start()
 	return nil
 }

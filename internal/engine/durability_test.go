@@ -27,8 +27,9 @@ func goroutineID() uint64 {
 	return id
 }
 
-// TestSingleWriter drives concurrent producers and asserts one goroutine wrote the WAL file.
-func TestSingleWriter(t *testing.T) {
+// TestConcurrentWritesDoNotInterleave drives concurrent producers through the
+// writer pool and asserts every record lands at the offset its producer reserved.
+func TestConcurrentWritesDoNotInterleave(t *testing.T) {
 	dir := t.TempDir()
 	seg, err := openSegment(dir, 0, 0)
 	require.NoError(t, err)
@@ -40,15 +41,8 @@ func TestSingleWriter(t *testing.T) {
 	w.start()
 	defer w.stop()
 
-	var mu sync.Mutex
-	writers := map[uint64]struct{}{}
-	writerHook = func() {
-		mu.Lock()
-		writers[goroutineID()] = struct{}{}
-		mu.Unlock()
-	}
-	t.Cleanup(func() { writerHook = nil })
-
+	payload := []byte("payload")
+	recLen := int64(len(payload))
 	const goroutines, perGoroutine = 8, 40
 	var wg sync.WaitGroup
 	for g := range goroutines {
@@ -56,7 +50,8 @@ func TestSingleWriter(t *testing.T) {
 		go func(g int) {
 			defer wg.Done()
 			for i := range perGoroutine {
-				seq, _, err := w.push([]byte("payload"), int64(g*perGoroutine+i)*7)
+				pos := int64(g*perGoroutine+i) * recLen
+				seq, _, err := w.push(payload, pos)
 				if err != nil {
 					t.Error(err)
 					return
@@ -69,27 +64,31 @@ func TestSingleWriter(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
+	require.NoError(t, w.stop())
 
-	mu.Lock()
-	defer mu.Unlock()
-	require.NotEmpty(t, writers, "expected at least one WAL write")
-	require.Len(t, writers, 1, "WAL file written by %d distinct goroutines", len(writers))
+	total := int64(goroutines * perGoroutine * recLen)
+	got := make([]byte, total)
+	_, err = seg.logFile.ReadAt(got, 0)
+	require.NoError(t, err)
+	for i := range int(goroutines * perGoroutine) {
+		at := int64(i) * recLen
+		require.Equal(t, payload, got[at:at+recLen], "record %d landed at the wrong offset", i)
+	}
 }
 
-// TestBackpressureBlocksProducer fills the bounded async channel and asserts the next push blocks until canceled.
+// TestBackpressureBlocksProducer fills the bounded async slot budget and asserts the next push blocks until canceled.
 func TestBackpressureBlocksProducer(t *testing.T) {
+	useBlockingWriter(t)
 	dir := t.TempDir()
 	seg, err := openSegment(dir, 0, 0)
 	require.NoError(t, err)
 	defer seg.Close()
 
-	// The WAL is never started, so nothing drains the channel and
-	// MaxFlushBytes/4096 is the exact capacity.
 	cfg := testConfig()
 	cfg.MaxFlushBytes = 8192
 	w := newWAL(seg, cfg, 0, nil)
 	ctx, cancel := context.WithCancel(context.Background())
-	entry := asyncEntry{seg: &segment{}, rec: []byte("x"), pos: 0, recLen: 1, offset: 0}
+	entry := asyncEntry{seg: seg, rec: []byte("x"), pos: 0, recLen: 1, offset: 0}
 
 	for range 8192 / 4096 {
 		require.NoError(t, w.pushAsync(ctx, entry))
@@ -99,7 +98,7 @@ func TestBackpressureBlocksProducer(t *testing.T) {
 	go func() { blocked <- w.pushAsync(ctx, entry) }()
 	select {
 	case err := <-blocked:
-		t.Fatalf("pushAsync returned %v; expected it to block on a full channel", err)
+		t.Fatalf("pushAsync returned %v; expected it to block on a full slot budget", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 

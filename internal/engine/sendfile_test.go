@@ -90,6 +90,7 @@ func TestPayloadSpansDeclineOnCompaction(t *testing.T) {
 }
 
 func TestPayloadSpansDeclineWhenUnflushed(t *testing.T) {
+	useBlockingWriter(t)
 	dir := t.TempDir()
 	store, err := openOffsetStore(dir)
 	require.NoError(t, err)
