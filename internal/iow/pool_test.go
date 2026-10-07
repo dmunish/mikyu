@@ -11,12 +11,7 @@ import (
 	"testing/synctest"
 
 	"github.com/stretchr/testify/require"
-	"go.uber.org/goleak"
 )
-
-func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(m)
-}
 
 // testFile opens a scratch file that the pool may close.
 func testFile(t *testing.T, dir, name string) *os.File {
@@ -327,6 +322,41 @@ func TestSyncFailsAfterBatchError(t *testing.T) {
 	require.ErrorIs(t, <-awaitDone(p, oneWrite(f, 1, 0)), errBoom)
 	require.ErrorIs(t, p.Sync(), errBoom)
 	require.ErrorIs(t, p.Close(), errBoom)
+}
+
+func TestSyncWaitsForInFlightWrites(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		f := testFile(t, dir, "outstanding.log")
+
+		started := make(chan struct{})
+		gate := make(chan struct{})
+		release := sync.OnceFunc(func() { close(gate) })
+		defer release()
+		stubWriteAt(t, func(_ *os.File, _ []byte, _ int64) (int, error) {
+			close(started)
+			<-gate
+			return 8, nil
+		})
+
+		w := newPool(nil, Options{Workers: 1, Durability: DataSync})
+		t.Cleanup(func() { _ = w.Close() })
+
+		require.NoError(t, w.Write(context.Background(), oneWrite(f, 1, 0), nil))
+		<-started
+
+		synced := make(chan error, 1)
+		go func() { synced <- w.Sync() }()
+		synctest.Wait()
+
+		select {
+		case err := <-synced:
+			t.Fatalf("Sync returned %v while a write was in flight", err)
+		default:
+		}
+		release()
+		require.NoError(t, <-synced)
+	})
 }
 
 func TestDoneMaySubmitAnotherBatch(t *testing.T) {

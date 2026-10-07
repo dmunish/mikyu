@@ -59,7 +59,7 @@ deps:
     mayDependOn: [spec]
     anyVendorDeps: true
   engine:
-    mayDependOn: [spec, metrics]
+    mayDependOn: [spec, metrics, iow]
     anyVendorDeps: true
   manager:
     mayDependOn: [engine, metrics]

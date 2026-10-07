@@ -63,7 +63,7 @@ github.com/dmunish/mikyu/
     ├── bench/                     # Benchmark harness (modes, phases, measure, envelope, verify)
     │   └── result/                # On-disk envelope of one bench run (result.json, series.csv)
     ├── spec/                      # THE config schema (spec, table, derive, codec, env, validate, enums, errors)
-    ├── iow/                       # Bounded, ordered concurrent writes: Writer, pool, platform stubs
+    ├── iow/                       # Bounded, ordered concurrent writes: Writer, pool, ring (linux), iocp (windows), order
     ├── config/config.go           # mikyu.yaml loader, legacy-key/env rejection, bootstrap
     ├── engine/                    # Storage engine (storage, manager, queue, append, read, fetch,
     │                              # wal, segment, compaction, cache, offsets, metrics, sync_*, encrypt_*,
@@ -521,17 +521,19 @@ Key index warn limit is `keyIndexWarnLimit = 1_000_000`; over the limit logs a w
 
 ### WAL (updated)
 
-The syscall WAL writes through `iow.Writer` (`internal/iow`): `internal/engine/sink.go` is a pure adapter that renders a batch as the flat `[]iow.Write` the writer consumes, and the writer owns bounded concurrency, ordered completion, and the fsync boundary. `newWAL` passes no files — the segment owns its handles — and names the log in `SyncFiles`, because the index is rebuilt from the log on crash. `Workers` is `GOMAXPROCS` under `Buffered` and **1** under `DataSync`, since the kernel serializes fsyncs per file anyway.
+The WAL writes through an `iow.Writer` (`internal/iow`): a small sink adapter in `wal.go` renders a batch as the flat `[]iow.Write` the writer consumes, and the writer owns bounded concurrency, ordered completion, and the fsync boundary. `newWAL` passes no files — the segment owns its handles — and names the log in `SyncFiles`, because the index is rebuilt from the log on crash. `Workers` is `GOMAXPROCS` under `Buffered` and **1** under `DataSync`, since the kernel serializes fsyncs per file anyway.
 
-On hosts with io_uring (Linux kernel ≥ 5.13, `MIKYU_DISABLE_URING` unset), `newWAL` builds the **ring WAL** (`wal_ring.go`) instead: producers submit every batch directly to one ring per data directory (`internal/manager` opens it, `engine.Ring`), a single reaper goroutine completes all of a directory's queues, and the flusher and staging machinery below are bypassed. Sync batches wait on a completion watermark that turns out-of-order ring completions back into the byte-based `wait(seq)` guarantee; async batches are bounded by a slot semaphore (`MaxFlushBytes/MaxPayload`). `MIKYU_FORCE_SYSCALL_WAL=1` restores the syscall WAL. The ring path submits through `ringSink` (io_uring SQEs, `uring_linux.go`) and is removed once `iow` grows its own ring.
+Which writer runs is `iow.New`'s business, never the WAL's: the portable pool everywhere; on Linux a process-wide io_uring ring (kernel ≥ 5.13, `MIKYU_DISABLE_URING` unset) whose single reaper completes every queue's batches; on Windows a process-wide completion port (`MIKYU_DISABLE_IOCP` unset) whose handles join on first use and whose synchronous completions settle inline. Both reapers deliver through the shared `order` layer, which advances its frontier only after each callback starts, so batch *N*'s done can never start before batch *N-1*'s — that is what turns out-of-order kernel completions back into the byte-based `wait(seq)` guarantee. A submission that fails partway settles the batch through the same frontier with the recorded error and returns nil, matching the pool's "done carries the outcome" contract.
+
+**The completion port serves `Buffered` only.** A `DataSync` batch serializes on its own fsync, so overlapped submission buys nothing there, and the measurements say it costs: on an 8 GiB produce run the port reaches ~55k msg/s at p50 8.6–9.6ms against the pool's ~63–67k at p50 6.8–7.1ms, so `New` skips it under `DataSync`. Under `Buffered` it is the best Windows writer: ~250k msg/s against the pool's ~183–193k, with p90 1.1ms against 3.0–3.3ms and p99 1.7–1.8ms against 7.4–8.7ms.
+
+**The port's `max` is device writeback, not steady state.** Every configuration shows multi-second worst-case appends in a saturating run, because a segment roll flushes a sealed 256 MiB segment while the device has whatever else queued: ~30 such events per 8 GiB run (32 rolls) in every writer. `max` is one sample of 8.4M and swings 5.9s–8.7s across identical binaries, so it does not rank the writers. The counts that do: per 8.4M appends the port has ~205 samples over 100ms against the pool's ~260 and the pre-Phase-1 sink's ~280, and the best p99 (1.7–1.8ms against 7.4–8.7ms and 10.3ms) and p999 (790–807ms against 683–958ms and ~915ms). Capping the async slot budget to shrink the kernel queue was measured and rejected: it left `max` untouched and moved p90/p99 from 1.1ms/1.8ms to 1.6ms/3.6ms.
 
 ```go
 type wal struct {
     cfg    Config
-    files  *sink      // log+idx adapter for the pool path
-    writer iow.Writer // nil on the ring path
-    sink   ringSink   // nil on the pool path
-    ring   *uringRing // nil on the syscall path
+    files  *sink      // log+idx adapter
+    writer iow.Writer
 
     mu sync.Mutex; cond *sync.Cond
     stage                     staged     // the sync path's unflushed group

@@ -88,6 +88,28 @@ func (b *blockingWriter) awaitEntered(t *testing.T) {
 	}
 }
 
+// syncWriter completes every batch synchronously inside Write, keeping the
+// whole WAL lifecycle inside a synctest bubble.
+type syncWriter struct{}
+
+func (syncWriter) Write(_ context.Context, _ []iow.Write, done func(error)) error {
+	if done != nil {
+		done(nil)
+	}
+	return nil
+}
+
+func (syncWriter) Sync() error  { return nil }
+func (syncWriter) Close() error { return nil }
+
+// useSyncWriter installs a synchronous writer for the next WAL built.
+func useSyncWriter(t *testing.T) {
+	t.Helper()
+	prev := newWriter
+	newWriter = func([]*os.File, iow.Options) (iow.Writer, error) { return syncWriter{}, nil }
+	t.Cleanup(func() { newWriter = prev })
+}
+
 // fillSlots submits batches until every async slot is taken.
 func fillSlots(t *testing.T, w *wal, seg *segment) {
 	t.Helper()

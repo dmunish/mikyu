@@ -1,9 +1,11 @@
 //go:build linux
 
-package engine
+package iow
 
 import (
+	"context"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,7 +42,7 @@ const (
 	uringSinkIDNone = ^uint32(0) // completion id that matches no registered handle
 )
 
-// rawSQE mirrors struct io_uring_sqe; the size assert in newUringRing pins the ABI.
+// rawSQE mirrors struct io_uring_sqe; the size assert in newRing pins the ABI.
 type rawSQE struct {
 	opcode        uint8
 	flags         uint8
@@ -88,8 +90,29 @@ type uringParams struct {
 	cqOff        uringCqOffsets
 }
 
-// uringRing is one io_uring instance shared by every queue of a data directory.
-type uringRing struct {
+type opKind uint8
+
+const (
+	opWrite opKind = iota
+	opFsync
+	opNop
+)
+
+// op is one ring submission; fields unused by Kind are ignored. Submit stamps the handle's id into Sink and the completion echoes Sink<<32 | Tag back in userData.
+type op struct {
+	Kind     opKind
+	File     *os.File
+	Buf      []byte
+	Off      int64
+	DataSync bool
+	Link     bool
+	Drain    bool
+	Sink     uint32
+	Tag      uint32
+}
+
+// ring is one io_uring instance shared by every Writer in the process.
+type ring struct {
 	fd      int
 	entries uint32
 	sqRing  []byte
@@ -108,7 +131,7 @@ type uringRing struct {
 	submitMu sync.Mutex
 
 	mu      sync.Mutex
-	handles []*uringSinkHandle
+	handles []*ringHandle
 	free    []uint32
 
 	stopOnce sync.Once
@@ -116,20 +139,48 @@ type uringRing struct {
 	done     chan struct{}
 }
 
-// newUringRing tries io_uring_setup; on any failure it returns errUringUnsupported and callers treat the ring as absent.
-func newUringRing() (*uringRing, error) {
+// sharedRing opens the process-wide ring on first use; nil means io_uring is unavailable.
+var sharedRing = sync.OnceValue(newRing)
+
+// newRingWriter returns a Writer backed by the shared ring, or false when io_uring is unavailable.
+func newRingWriter(files []*os.File, opts Options) (Writer, bool) {
+	r := sharedRing()
+	if r == nil {
+		return nil, false
+	}
+	return newRingWriterOn(r, files, opts), true
+}
+
+// newRingWriterOn binds one Writer to an existing ring, which the caller owns.
+func newRingWriterOn(r *ring, files []*os.File, opts Options) *ringWriter {
+	outstanding := opts.Outstanding
+	if outstanding <= 0 {
+		outstanding = opts.Workers * 4
+	}
+	return &ringWriter{
+		files:   files,
+		syncSet: opts.SyncFiles,
+		durable: opts.Durability == DataSync,
+		order:   newOrder(),
+		handle:  r.register(),
+		slots:   make(chan struct{}, max(outstanding, 1)),
+	}
+}
+
+// newRing tries io_uring_setup; on any failure it returns nil and callers fall back to the pool.
+func newRing() *ring {
 	if os.Getenv("MIKYU_DISABLE_URING") != "" {
-		return nil, errUringUnsupported
+		return nil
 	}
 	if !uringKernelSupported() || unsafe.Sizeof(rawSQE{}) != uringSqeSize {
-		return nil, errUringUnsupported
+		return nil
 	}
 	var params uringParams
 	fd, _, errno := unix.Syscall(unix.SYS_IO_URING_SETUP, uintptr(uringEntries), uintptr(unsafe.Pointer(&params)), 0)
 	if errno != 0 {
-		return nil, errUringUnsupported
+		return nil
 	}
-	r := &uringRing{
+	r := &ring{
 		fd:      int(fd),
 		entries: params.sqEntries,
 		stop:    make(chan struct{}),
@@ -137,17 +188,17 @@ func newUringRing() (*uringRing, error) {
 	}
 	if err := r.mapRings(&params); err != nil {
 		_ = unix.Close(int(fd))
-		return nil, errUringUnsupported
+		return nil
 	}
 	for i := uint32(0); i < r.entries; i++ {
 		atomic.StoreUint32((*uint32)(unsafe.Add(unsafe.Pointer(r.sqArray), uintptr(i)*4)), i)
 	}
 	go r.loop()
-	return r, nil
+	return r
 }
 
 // mapRings maps the shared SQ ring, CQ ring, and SQE array at their protocol offsets.
-func (r *uringRing) mapRings(p *uringParams) error {
+func (r *ring) mapRings(p *uringParams) error {
 	sq, err := unix.Mmap(r.fd, uringOffSQRing, int(p.sqOff.array)+int(p.sqEntries)*4, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
 	if err != nil {
 		return err
@@ -185,8 +236,7 @@ func uringKernelSupported() bool {
 	if err := unix.Uname(&u); err != nil {
 		return false
 	}
-	release := utsnameString(u.Release[:])
-	majorText, minorText, found := strings.Cut(release, ".")
+	majorText, minorText, found := strings.Cut(utsnameString(u.Release[:]), ".")
 	if !found {
 		return false
 	}
@@ -212,8 +262,8 @@ func utsnameString(field []byte) string {
 	return string(out)
 }
 
-// Submit writes the SQEs and issues one io_uring_enter per chunk, holding submitMu so concurrent producers never interleave their SQE writes.
-func (r *uringRing) Submit(ops []uringOp) error {
+// submit writes the SQEs and issues one io_uring_enter per chunk, holding submitMu so concurrent producers never interleave their SQE writes.
+func (r *ring) submit(ops []op) error {
 	if len(ops) == 0 {
 		return nil
 	}
@@ -230,45 +280,46 @@ func (r *uringRing) Submit(ops []uringOp) error {
 			continue
 		}
 		n := min(free, len(ops)-i)
-		for k := 0; k < n; k++ {
+		for k := range n {
 			slot := (tail + uint32(k)) & r.sqMask
 			r.encodeSQE((*rawSQE)(unsafe.Pointer(&r.sqes[uintptr(slot)*uringSqeSize])), ops[i+k])
 		}
 		atomic.StoreUint32(r.sqTail, tail+uint32(n))
-		if err := r.enter(uint32(n), 0, 0); err != nil {			return err
+		if err := r.enter(uint32(n), 0, 0); err != nil {
+			return err
 		}
 		i += n
 	}
 	return nil
 }
 
-func (r *uringRing) encodeSQE(sqe *rawSQE, op uringOp) {
-	*sqe = rawSQE{userData: uint64(op.Sink)<<32 | uint64(op.Tag)}
-	switch op.Kind {
-	case uringOpWrite:
+func (r *ring) encodeSQE(sqe *rawSQE, o op) {
+	*sqe = rawSQE{userData: uint64(o.Sink)<<32 | uint64(o.Tag)}
+	switch o.Kind {
+	case opWrite:
 		sqe.opcode = uringOpWriteByte
-		sqe.fd = int32(op.File.Fd())
-		sqe.off = uint64(op.Off)
-		sqe.addr = uint64(uintptr(unsafe.Pointer(unsafe.SliceData(op.Buf))))
-		sqe.length = uint32(len(op.Buf))
-	case uringOpFsync:
+		sqe.fd = int32(o.File.Fd())
+		sqe.off = uint64(o.Off)
+		sqe.addr = uint64(uintptr(unsafe.Pointer(unsafe.SliceData(o.Buf))))
+		sqe.length = uint32(len(o.Buf))
+	case opFsync:
 		sqe.opcode = uringOpFsyncByte
-		sqe.fd = int32(op.File.Fd())
-		if op.DataSync {
+		sqe.fd = int32(o.File.Fd())
+		if o.DataSync {
 			sqe.off = uringFsyncDataSync
 		}
-	case uringOpNop:
+	case opNop:
 		sqe.opcode = uringOpNopByte
 	}
-	if op.Link {
+	if o.Link {
 		sqe.flags |= sqeFlagLink
 	}
-	if op.Drain {
+	if o.Drain {
 		sqe.flags |= sqeFlagDrain
 	}
 }
 
-func (r *uringRing) enter(toSubmit, minComplete, flags uint32) error {
+func (r *ring) enter(toSubmit, minComplete, flags uint32) error {
 	for {
 		_, _, errno := unix.Syscall6(unix.SYS_IO_URING_ENTER, uintptr(r.fd), uintptr(toSubmit), uintptr(minComplete), uintptr(flags), 0, 0)
 		if errno == 0 {
@@ -281,8 +332,8 @@ func (r *uringRing) enter(toSubmit, minComplete, flags uint32) error {
 	}
 }
 
-// Register allocates a sink id and returns the handle bound to it.
-func (r *uringRing) Register() *uringSinkHandle {
+// register allocates a sink id and returns the handle bound to it.
+func (r *ring) register() *ringHandle {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var id uint32
@@ -293,17 +344,14 @@ func (r *uringRing) Register() *uringSinkHandle {
 		id = uint32(len(r.handles))
 		r.handles = append(r.handles, nil)
 	}
-	h := &uringSinkHandle{ring: r, id: id}
+	h := &ringHandle{ring: r, id: id, pend: make(map[uint32]int32), res: make(map[uint32]int64), dones: make(map[uint32]func(error))}
 	h.cond = sync.NewCond(&h.mu)
-	h.pend = make(map[uint32]int32)
-	h.res = make(map[uint32]int64)
-	h.dones = make(map[uint32]sinkDone)
 	r.handles[id] = h
 	return h
 }
 
-// Unregister clears the handle's slot and returns its id to the free list.
-func (r *uringRing) Unregister(h *uringSinkHandle) {
+// unregister clears the handle's slot and returns its id to the free list.
+func (r *ring) unregister(h *ringHandle) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if int(h.id) >= len(r.handles) || r.handles[h.id] != h {
@@ -313,8 +361,8 @@ func (r *uringRing) Unregister(h *uringSinkHandle) {
 	r.free = append(r.free, h.id)
 }
 
-// Close closes the ring fd; in-flight completions are lost and every handle with an outstanding tag sees ErrQueueClosed from its Wait.
-func (r *uringRing) Close() error {
+// close closes the ring fd; in-flight completions are lost and every handle with an outstanding tag reports ErrClosed.
+func (r *ring) close() error {
 	r.stopOnce.Do(func() {
 		close(r.stop)
 		r.wakeReaper()
@@ -327,13 +375,12 @@ func (r *uringRing) Close() error {
 	return nil
 }
 
-// wakeReaper submits a completion id that matches no handle so a reaper parked
-// in enter returns and observes the stop signal.
-func (r *uringRing) wakeReaper() {
-	_ = r.Submit([]uringOp{{Kind: uringOpNop, Sink: uringSinkIDNone}})
+// wakeReaper submits a completion id that matches no handle so a reaper parked in enter returns and observes the stop signal.
+func (r *ring) wakeReaper() {
+	_ = r.submit([]op{{Kind: opNop, Sink: uringSinkIDNone}})
 }
 
-func (r *uringRing) loop() {
+func (r *ring) loop() {
 	defer close(r.done)
 	cqes := make([]rawCQE, uringCqBatch)
 	for {
@@ -346,21 +393,20 @@ func (r *uringRing) loop() {
 		if err != nil {
 			return
 		}
-		for i := 0; i < n; i++ {
+		for i := range n {
 			r.dispatch(cqes[i])
 		}
 	}
 }
 
-// waitCQEs blocks until at least one CQE is available, copies out up to one
-// batch, and advances the consumer head.
-func (r *uringRing) waitCQEs(dst []rawCQE) (int, error) {
+// waitCQEs blocks until at least one CQE is available, copies out up to one batch, and advances the consumer head.
+func (r *ring) waitCQEs(dst []rawCQE) (int, error) {
 	for {
 		ready := atomic.LoadUint32(r.cqTail) - atomic.LoadUint32(r.cqHead)
 		if ready > 0 {
 			n := min(int(ready), len(dst), int(r.entries))
 			head := atomic.LoadUint32(r.cqHead)
-			for i := 0; i < n; i++ {
+			for i := range n {
 				dst[i] = *(*rawCQE)(unsafe.Add(r.cqBase, uintptr((head+uint32(i))&r.cqMask)*uringCqeSize))
 			}
 			atomic.StoreUint32(r.cqHead, head+uint32(n))
@@ -372,27 +418,23 @@ func (r *uringRing) waitCQEs(dst []rawCQE) (int, error) {
 	}
 }
 
-// dispatch routes a completion to its handle; a completion whose sink id is no
-// longer registered is dropped because no one is listening.
-func (r *uringRing) dispatch(cqe rawCQE) {
+// dispatch routes a completion to its handle; a completion whose sink id is no longer registered is dropped because no one is listening.
+func (r *ring) dispatch(cqe rawCQE) {
 	sinkID := uint32(cqe.userData >> 32)
-	tag := uint32(cqe.userData)
-	if sinkID >= uint32(len(r.handles)) {
-		return
-	}
 	r.mu.Lock()
-	h := r.handles[sinkID]
+	var h *ringHandle
+	if sinkID < uint32(len(r.handles)) {
+		h = r.handles[sinkID]
+	}
 	r.mu.Unlock()
 	if h != nil {
-		h.complete(tag, int64(cqe.res))
+		h.complete(uint32(cqe.userData), int64(cqe.res))
 	}
 }
 
-// uringSinkHandle tracks one sink's outstanding tags. A tag submitted with a
-// nil done is waited on through cond; a tag submitted with a done callback is
-// driven by the reaper.
-type uringSinkHandle struct {
-	ring *uringRing
+// ringHandle tracks one Writer's outstanding tags. A tag submitted with a nil callback is waited on through cond; a tag submitted with a callback is driven by the reaper.
+type ringHandle struct {
+	ring *ring
 	id   uint32
 	next atomic.Uint32
 
@@ -400,28 +442,22 @@ type uringSinkHandle struct {
 	cond   *sync.Cond
 	pend   map[uint32]int32
 	res    map[uint32]int64
-	dones  map[uint32]sinkDone
+	dones  map[uint32]func(error)
 	closed bool
 }
 
-// NextTag returns a fresh tag for the next submission.
-func (h *uringSinkHandle) NextTag() uint32 { return h.next.Add(1) - 1 }
+// nextTag returns a fresh tag for the next submission.
+func (h *ringHandle) nextTag() uint32 { return h.next.Add(1) - 1 }
 
-// Submit registers the tag — with its optional completion callback — before the ring takes the ops, and rolls the registration back if the submission fails.
-func (h *uringSinkHandle) Submit(ops []uringOp, done sinkDone) error {
+// submit registers the tag and its completion callback before the ring takes the ops, rolls the registration back if submission fails, and never calls done itself: the caller owns completion exactly once.
+func (h *ringHandle) submit(ops []op, done func(error)) error {
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
-		if done != nil {
-			done(ErrQueueClosed)
-		}
-		return ErrQueueClosed
+		return ErrClosed
 	}
 	if len(ops) == 0 {
 		h.mu.Unlock()
-		if done != nil {
-			done(nil)
-		}
 		return nil
 	}
 	for i := range ops {
@@ -433,7 +469,7 @@ func (h *uringSinkHandle) Submit(ops []uringOp, done sinkDone) error {
 		h.dones[tag] = done
 	}
 	h.mu.Unlock()
-	if err := h.ring.Submit(ops); err != nil {
+	if err := h.ring.submit(ops); err != nil {
 		h.mu.Lock()
 		h.pend[tag] -= int32(len(ops))
 		if h.pend[tag] <= 0 {
@@ -447,15 +483,15 @@ func (h *uringSinkHandle) Submit(ops []uringOp, done sinkDone) error {
 	return nil
 }
 
-// Wait blocks until every completion for tag has arrived, then reports the first error recorded for it, if any.
-func (h *uringSinkHandle) Wait(tag uint32) error {
+// wait blocks until every completion for tag has arrived, then reports the first error recorded for it, if any.
+func (h *ringHandle) wait(tag uint32) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for h.pend[tag] > 0 && !h.closed {
 		h.cond.Wait()
 	}
 	if h.closed {
-		return ErrQueueClosed
+		return ErrClosed
 	}
 	e := h.res[tag]
 	delete(h.pend, tag)
@@ -467,7 +503,7 @@ func (h *uringSinkHandle) Wait(tag uint32) error {
 }
 
 // complete is called by the reaper once per CQE; the first error for a tag wins.
-func (h *uringSinkHandle) complete(tag uint32, res int64) {
+func (h *ringHandle) complete(tag uint32, res int64) {
 	h.mu.Lock()
 	n, ok := h.pend[tag]
 	if !ok {
@@ -501,17 +537,16 @@ func (h *uringSinkHandle) complete(tag uint32, res int64) {
 }
 
 // fsync submits a data-sync-only fsync and waits for it.
-func (h *uringSinkHandle) fsync(f *os.File) error {
-	tag := h.NextTag()
-	ops := []uringOp{{Kind: uringOpFsync, File: f, DataSync: true, Tag: tag}}
-	if err := h.Submit(ops, nil); err != nil {
+func (h *ringHandle) fsync(f *os.File) error {
+	tag := h.nextTag()
+	if err := h.submit([]op{{Kind: opFsync, File: f, DataSync: true, Tag: tag}}, nil); err != nil {
 		return err
 	}
-	return h.Wait(tag)
+	return h.wait(tag)
 }
 
-// Close marks the handle closed, wakes every waiter with ErrQueueClosed, and deregisters it from the ring.
-func (h *uringSinkHandle) Close() error {
+// close marks the handle closed, wakes every waiter with ErrClosed, and deregisters it from the ring.
+func (h *ringHandle) close() error {
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -520,74 +555,134 @@ func (h *uringSinkHandle) Close() error {
 	h.closed = true
 	h.cond.Broadcast()
 	h.mu.Unlock()
-	h.ring.Unregister(h)
+	h.ring.unregister(h)
 	return nil
 }
 
-// newRingSink returns a sink that submits the WAL's writes to the shared ring.
-func newRingSink(log, idx *os.File, durable bool, ring *uringRing) ringSink {
-	return &ringSinkImpl{log: log, idx: idx, handle: ring.Register(), durable: durable}
-}
-
-// ringSinkImpl submits one tag per Write: the batch's record write, its index
-// write, and — for durable sinks — a draining fsync over both files. A nil
-// done makes Write synchronous (it returns once the batch is durable); a
-// non-nil done makes it asynchronous (Write returns after submission and done
-// runs once on completion, on the reaper goroutine).
-type ringSinkImpl struct {
-	log     *os.File
-	idx     *os.File
-	handle  *uringSinkHandle
+// ringWriter writes batches by submitting SQEs to a shared io_uring ring.
+type ringWriter struct {
+	files   []*os.File
+	syncSet []*os.File
 	durable bool
+
+	ring   *ring
+	handle *ringHandle
+	order  *order
+	slots  chan struct{}
+
+	mu     sync.Mutex
+	closed bool
+	err    error
 }
 
-func (s *ringSinkImpl) Write(batch sinkBatch, done sinkDone) error {
-	if len(batch.Records) == 0 && batch.Index.empty() {
-		if done != nil {
-			done(nil)
-		}
-		return nil
-	}
-	tag := s.handle.NextTag()
-	if writerHook != nil {
-		writerHook()
-	}
-	ops := make([]uringOp, 0, len(batch.Records)+2)
-	link := !s.durable // an async batch chains its index write after its record write
-	for _, w := range batch.Records {
-		ops = append(ops, uringOp{Kind: uringOpWrite, File: s.log, Buf: w.P, Off: w.Off, Link: link, Tag: tag})
-	}
-	var indexBuf *pooledBuf
-	if !batch.Index.empty() {
-		indexBuf = getBuf(len(batch.Index.Positions) * rawIndexEntrySize)
-		encodeIndexInto(indexBuf.b, batch.Index)
-		ops = append(ops, uringOp{Kind: uringOpWrite, File: s.idx, Buf: indexBuf.b, Off: batch.Index.Start, Tag: tag})
-	}
-	if s.durable {
-		ops = append(ops, uringOp{Kind: uringOpFsync, File: s.log, DataSync: true, Drain: true, Tag: tag})
-	}
-	releaseIndex := func() {
-		if indexBuf != nil {
-			indexBuf.release(maxIndexKeepBytes)
-		}
-	}
-	if done != nil {
-		err := s.handle.Submit(ops, func(err error) {
-			releaseIndex()
-			done(err)
-		})
-		if err != nil {
-			releaseIndex()
-		}
+// Write submits one batch's buffers and the fsync it owes under DataSync.
+func (w *ringWriter) Write(ctx context.Context, batch []Write, done func(error)) error {
+	if err := w.currentError(); err != nil {
+		w.order.settle(w.order.reserve(), err, done)
 		return err
 	}
-	err := s.handle.Submit(ops, nil)
-	if err == nil {
-		err = s.handle.Wait(tag)
+	if err := ctx.Err(); err != nil {
+		w.order.settle(w.order.reserve(), err, done)
+		return err
 	}
-	releaseIndex()
-	return err
+	select {
+	case w.slots <- struct{}{}:
+	default:
+		select {
+		case w.slots <- struct{}{}:
+		case <-ctx.Done():
+			w.order.settle(w.order.reserve(), ctx.Err(), done)
+			return ctx.Err()
+		}
+	}
+
+	seq := w.order.reserve()
+	tag := w.handle.nextTag()
+	ops := make([]op, 0, len(batch)+2)
+	for _, b := range batch {
+		ops = append(ops, op{Kind: opWrite, File: b.F, Buf: b.Buf, Off: b.Off, Tag: tag})
+	}
+	if w.durable {
+		for _, f := range w.syncTargets(batch) {
+			ops = append(ops, op{Kind: opFsync, File: f, DataSync: true, Drain: true, Tag: tag})
+		}
+	}
+
+	err := w.handle.submit(ops, func(err error) {
+		<-w.slots
+		if err != nil {
+			w.setError(err)
+		}
+		w.order.settle(seq, err, done)
+	})
+	if err != nil {
+		<-w.slots
+		w.order.settle(seq, err, done)
+		return err
+	}
+	if len(ops) == 0 {
+		<-w.slots
+		w.order.settle(seq, nil, done)
+	}
+	return nil
 }
 
-func (s *ringSinkImpl) Sync() error  { return s.handle.fsync(s.log) }
-func (s *ringSinkImpl) Close() error { return s.handle.Close() }
+// Sync waits for outstanding batches, then submits a data-sync fsync over the sync targets.
+func (w *ringWriter) Sync() error {
+	if err := w.currentError(); err != nil {
+		return err
+	}
+	w.order.waitDrained()
+	for _, f := range w.syncTargets(nil) {
+		if err := w.handle.fsync(f); err != nil {
+			w.setError(err)
+			return err
+		}
+	}
+	return nil
+}
+
+// Close waits for outstanding batches and deregisters the handle; the files stay the caller's.
+func (w *ringWriter) Close() error {
+	w.order.waitDrained()
+	w.mu.Lock()
+	w.closed = true
+	w.mu.Unlock()
+	return w.handle.close()
+}
+
+// syncTargets lists the files a batch must fsync, falling back to the files written by the batch.
+func (w *ringWriter) syncTargets(batch []Write) []*os.File {
+	if len(w.syncSet) > 0 {
+		return w.syncSet
+	}
+	targets := make([]*os.File, 0, len(batch))
+	for _, b := range batch {
+		if b.F != nil && !slices.Contains(targets, b.F) {
+			targets = append(targets, b.F)
+		}
+	}
+	return targets
+}
+
+// setError records the first fatal batch error.
+func (w *ringWriter) setError(err error) {
+	w.mu.Lock()
+	if w.err == nil {
+		w.err = err
+	}
+	w.mu.Unlock()
+}
+
+// currentError reports the first fatal error, treating a closed writer as finished.
+func (w *ringWriter) currentError() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.err != nil {
+		return w.err
+	}
+	if w.closed {
+		return ErrClosed
+	}
+	return nil
+}

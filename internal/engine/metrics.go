@@ -9,7 +9,7 @@ import (
 
 // Gauge names the engine publishes for every live queue.
 const (
-	GaugeRecords   = "messages"
+	GaugeRecords    = "messages"
 	GaugeSegments   = "segments"
 	GaugeSizeBytes  = "size_bytes"
 	GaugeLastOffset = "last_offset"
@@ -80,12 +80,14 @@ func newWALMetrics(scope *metrics.Scope) *walMetrics {
 	}
 }
 
-// scopeOf returns the single optional scope, or nil.
+// scopeOf returns the first non-nil optional scope, or nil.
 func scopeOf(scopes []*metrics.Scope) *metrics.Scope {
-	if len(scopes) == 0 {
-		return nil
+	for _, s := range scopes {
+		if s != nil {
+			return s
+		}
 	}
-	return scopes[0]
+	return nil
 }
 
 // Collect walks every live queue and fills its views plus the storage aggregate.

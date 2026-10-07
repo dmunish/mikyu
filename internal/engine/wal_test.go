@@ -68,7 +68,7 @@ func TestWALBatch(t *testing.T) {
 
 	recs := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
 	positions := []int64{0, 1, 2}
-	seq, wake, err := w.pushBatch(recs, positions, -1)
+	seq, wake, err := w.pushBatch(recs, positions)
 	require.NoError(t, err)
 	assert.Equal(t, int64(3), seq)
 	assert.True(t, wake, "the byte budget was reached")
@@ -214,6 +214,7 @@ func TestWALWakeTokenLossRace(t *testing.T) {
 	cfg.FlushLinger = 10 * time.Millisecond
 
 	synctest.Test(t, func(t *testing.T) {
+		useSyncWriter(t)
 		w := newWAL(seg, cfg, 0, nil)
 		w.start()
 		defer w.stop()

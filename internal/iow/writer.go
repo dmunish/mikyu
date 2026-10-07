@@ -49,10 +49,17 @@ type Writer interface {
 // ErrClosed reports a Write after Close or after a fatal batch error.
 var ErrClosed = errors.New("iow: writer is closed")
 
-// New returns the best Writer the platform offers, falling back to the pool.
+// New returns the best Writer the platform offers: the ring, else the port under Buffered, else the pool.
 func New(files []*os.File, opts Options) (Writer, error) {
-	if w, ok := newPlatformWriter(files, opts); ok {
-		return w, nil
+	if os.Getenv("MIKYU_FORCE_SYSCALL_WAL") == "" {
+		if w, ok := newRingWriter(files, opts); ok {
+			return w, nil
+		}
+		if opts.Durability == Buffered {
+			if w, ok := newIOCPWriter(files, opts); ok {
+				return w, nil
+			}
+		}
 	}
 	return newPool(files, opts), nil
 }

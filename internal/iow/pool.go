@@ -21,12 +21,6 @@ type job struct {
 	done   func(error)
 }
 
-// completion is a finished job awaiting in-order delivery.
-type completion struct {
-	err  error
-	done func(error)
-}
-
 // pool writes batches through a bounded worker pool and delivers done in submission order.
 type pool struct {
 	files     []*os.File
@@ -40,8 +34,7 @@ type pool struct {
 	cond      *sync.Cond
 	closed    bool
 	submitted uint64
-	delivered uint64
-	pending   map[uint64]completion
+	order     *order
 	err       error
 
 	closeOnce sync.Once
@@ -66,7 +59,7 @@ func newPool(files []*os.File, opts Options) *pool {
 		durable:   opts.Durability == DataSync,
 		jobs:      make(chan *job, outstanding),
 		workers:   workers,
-		pending:   make(map[uint64]completion, outstanding),
+		order:     newOrder(),
 		closing:   make(chan struct{}),
 	}
 	p.cond = sync.NewCond(&p.mu)
@@ -87,11 +80,11 @@ func (p *pool) Write(ctx context.Context, batch []Write, done func(error)) error
 	if err == nil {
 		err = ctx.Err()
 	}
-	seq := p.submitted
-	p.submitted++
+	seq := p.order.reserve()
+	p.submitted = seq + 1
 	if err != nil {
 		p.mu.Unlock()
-		p.complete(seq, err, done)
+		p.order.settle(seq, err, done)
 		return err
 	}
 	p.submitWG.Add(1)
@@ -104,11 +97,11 @@ func (p *pool) Write(ctx context.Context, batch []Write, done func(error)) error
 		return nil
 	case <-p.closing:
 		p.submitWG.Done()
-		p.complete(seq, ErrClosed, done)
+		p.order.settle(seq, ErrClosed, done)
 		return ErrClosed
 	case <-ctx.Done():
 		p.submitWG.Done()
-		p.complete(seq, ctx.Err(), done)
+		p.order.settle(seq, ctx.Err(), done)
 		return ctx.Err()
 	}
 }
@@ -116,14 +109,12 @@ func (p *pool) Write(ctx context.Context, batch []Write, done func(error)) error
 // Sync waits for the submitted prefix to drain, then fsyncs every owned file.
 func (p *pool) Sync() error {
 	p.mu.Lock()
-	for p.submitted > p.delivered && p.err == nil {
-		p.cond.Wait()
-	}
 	err := p.err
 	p.mu.Unlock()
 	if err != nil {
 		return err
 	}
+	p.order.waitDrained()
 	for _, f := range p.files {
 		if serr := syncData(f); serr != nil {
 			return serr
@@ -172,49 +163,21 @@ func (p *pool) Close() error {
 // run executes jobs until close, then drains whatever is already queued.
 func (p *pool) run() {
 	defer p.wg.Done()
-	var ready []completion
-	handle := func(j *job) {
-		ready = p.enqueue(j.seq, p.execute(j), j.done, ready[:0])
-		fireReady(ready)
-	}
 	for {
 		select {
 		case j := <-p.jobs:
-			handle(j)
+			p.order.settle(j.seq, p.execute(j), j.done)
 		case <-p.closing:
 			for {
 				select {
 				case j := <-p.jobs:
-					handle(j)
+					p.order.settle(j.seq, p.execute(j), j.done)
 				default:
 					return
 				}
 			}
 		}
 	}
-}
-
-// enqueue records one completion and returns every completion now deliverable in order.
-func (p *pool) enqueue(seq uint64, err error, done func(error), buf []completion) []completion {
-	p.mu.Lock()
-	p.pending[seq] = completion{err: err, done: done}
-	for {
-		c, ok := p.pending[p.delivered]
-		if !ok {
-			break
-		}
-		delete(p.pending, p.delivered)
-		p.delivered++
-		buf = append(buf, c)
-	}
-	p.cond.Broadcast()
-	p.mu.Unlock()
-	return buf
-}
-
-// complete records one inline completion and fires whatever became deliverable.
-func (p *pool) complete(seq uint64, err error, done func(error)) {
-	fireReady(p.enqueue(seq, err, done, nil))
 }
 
 // execute writes every buffer in the batch, then fsyncs the sync targets under DataSync.
@@ -268,13 +231,4 @@ func (p *pool) currentError() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.err
-}
-
-// fireReady invokes done callbacks outside the pool lock.
-func fireReady(ready []completion) {
-	for _, c := range ready {
-		if c.done != nil {
-			c.done(c.err)
-		}
-	}
 }
