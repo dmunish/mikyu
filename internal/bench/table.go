@@ -41,7 +41,6 @@ type Workload struct {
 	Batch           int
 	Keys            int
 	Preload         int64
-	Warmup          time.Duration
 	AckRate         float64
 	CrashAfterBytes int64
 	Seed            uint32
@@ -92,9 +91,6 @@ func buildTable() []Param {
 		{Key: "preload", Kind: spec.KindBytes, Modes: []Mode{ModeConsume}, Default: "0",
 			Doc:   "Bytes written before measurement (populate phase)",
 			Apply: func(w *Workload, v spec.Value) { w.Preload = v.Bytes() }},
-		{Key: "warmup", Kind: spec.KindDuration, Default: "5s",
-			Doc:   "Warmup duration excluded from measurement",
-			Apply: func(w *Workload, v spec.Value) { w.Warmup = v.Duration() }},
 		{Key: "ack_rate", Kind: spec.KindFloat, Modes: []Mode{ModeConsume, ModeMix}, Default: "0.9",
 			Doc:   "Fraction of task dequeues that Ack (rest Nack)",
 			Apply: func(w *Workload, v spec.Value) { w.AckRate = v.Float() }},
@@ -186,8 +182,6 @@ func (w Workload) Validate() error {
 		return errRule("workers", "1 or greater", w.Workers)
 	case w.Batch < 1:
 		return errRule("batch", "1 or greater", w.Batch)
-	case w.Warmup < 0:
-		return errRule("warmup", "0 or greater", w.Warmup)
 	case w.Keys < 0:
 		return errRule("keys", "0 or greater", w.Keys)
 	case w.Keys > 0 && w.Kind != KindLog:
@@ -244,7 +238,6 @@ func (w Workload) View() result.WorkloadView {
 		Batch:        w.Batch,
 		Keys:         w.Keys,
 		Preload:      w.Preload,
-		Warmup:       w.Warmup.String(),
 		AckRate:      w.AckRate,
 		CrashAfter:   w.CrashAfterBytes,
 		Seed:         w.Seed,

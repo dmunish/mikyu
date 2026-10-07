@@ -112,7 +112,7 @@ func TestBenchFlagsOverrideEnv(t *testing.T) {
 }
 
 func TestBenchScenarioOverridesEnvAndFlagsOverrideScenario(t *testing.T) {
-	path := writeScenario(t, "workload:\n  kind: log\n  queues: 1\n  msg_size: 128\n  bytes: 65536\n  warmup: 0s\n  workers: 2\n  batch: 1\n")
+	path := writeScenario(t, "workload:\n  kind: log\n  queues: 1\n  msg_size: 128\n  bytes: 65536\n  workers: 2\n  batch: 1\n")
 	env := map[string]string{"MIKYU_BENCH_WORKERS": "7", "MIKYU_BENCH_MSG_SIZE": "512"}
 
 	opts, err := resolveBench([]string{"--dir", "d", "--file", path},
@@ -128,7 +128,7 @@ func TestBenchScenarioOverridesEnvAndFlagsOverrideScenario(t *testing.T) {
 }
 
 func TestBenchScenarioCarriesTheQueueSpec(t *testing.T) {
-	path := writeScenario(t, "mode: produce\nspec:\n  storage:\n    durability: async\nworkload:\n  kind: log\n  queues: 1\n  msg_size: 256\n  bytes: 1024\n  warmup: 0s\n  workers: 1\n  batch: 1\n")
+	path := writeScenario(t, "mode: produce\nspec:\n  storage:\n    durability: async\nworkload:\n  kind: log\n  queues: 1\n  msg_size: 256\n  bytes: 1024\n  workers: 1\n  batch: 1\n")
 
 	opts, err := resolveBench([]string{"--dir", "d", "--file", path},
 		spec.BuiltinSession(), envLookup(nil))
@@ -300,10 +300,9 @@ func TestClamp01BoundsTheFraction(t *testing.T) {
 }
 
 // newTestProgress builds a progress bar writing to buf, bypassing the TTY gate.
-func newTestProgress(buf *bytes.Buffer, warmup, measure time.Duration) *benchProgress {
+func newTestProgress(buf *bytes.Buffer, measure time.Duration) *benchProgress {
 	return &benchProgress{
 		w:       buf,
-		warmup:  warmup,
 		measure: measure,
 		done:    make(chan struct{}),
 		bar: progress.New(
@@ -317,7 +316,7 @@ func newTestProgress(buf *bytes.Buffer, warmup, measure time.Duration) *benchPro
 
 func TestProgressBarRendersPhasesOnAnyWriter(t *testing.T) {
 	var buf bytes.Buffer
-	p := newTestProgress(&buf, 0, 0)
+	p := newTestProgress(&buf, 0)
 
 	p.event(bench.ProgressEvent{Kind: bench.ProgressStart, Phase: bench.PhaseMeasure})
 	start := buf.String()
@@ -340,7 +339,7 @@ func TestProgressBarRendersPhasesOnAnyWriter(t *testing.T) {
 
 func TestProgressBarScalesToBytes(t *testing.T) {
 	var buf bytes.Buffer
-	p := newTestProgress(&buf, 0, 0)
+	p := newTestProgress(&buf, 0)
 	p.started = time.Now().Add(-time.Second)
 	p.event(bench.ProgressEvent{Kind: bench.ProgressStart, Phase: bench.PhaseMeasure, Total: 200})
 
@@ -353,7 +352,7 @@ func TestProgressBarScalesToBytes(t *testing.T) {
 
 func TestProgressBarFallsBackToDuration(t *testing.T) {
 	var buf bytes.Buffer
-	p := newTestProgress(&buf, 0, 4*time.Second)
+	p := newTestProgress(&buf, 4*time.Second)
 	p.event(bench.ProgressEvent{Kind: bench.ProgressStart, Phase: bench.PhaseMeasure})
 	p.started = time.Now().Add(-2 * time.Second)
 

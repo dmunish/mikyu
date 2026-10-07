@@ -184,7 +184,6 @@ func TestProgressEventsSpanTheRun(t *testing.T) {
 	opts := baseOptions(t, ModeProduce)
 	opts.Spec = asyncSpec()
 	opts.Workload.Duration = 2 * time.Second
-	opts.Workload.Warmup = time.Second
 
 	var mu sync.Mutex
 	started := map[Phase]int{}
@@ -205,7 +204,6 @@ func TestProgressEventsSpanTheRun(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	assert.Equal(t, 1, started[PhaseWarmup])
 	assert.Equal(t, 1, started[PhaseMeasure])
 	assert.Equal(t, 1, started[PhaseDrain])
 	assert.Positive(t, ticks, "a duration-bound run reports progress every second")

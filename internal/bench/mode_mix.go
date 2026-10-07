@@ -7,23 +7,11 @@ import (
 	"time"
 )
 
-// runMix drives producers and consumers concurrently: warmup, measured window, then drain.
+// runMix drives producers and consumers concurrently: a measured window, then drain.
 func runMix(ctx context.Context, r *runner) error {
-	w := r.opts.Workload
-	r.beginPhase(PhaseWarmup)
-	if w.Warmup > 0 {
-		deadline := time.Now().Add(w.Warmup)
-		if err := r.mix(ctx, func() bool {
-			return r.limitReached(r.written.Load()) || !time.Now().Before(deadline)
-		}, false); err != nil {
-			return err
-		}
-	}
-	r.endPhase(time.Now())
-
 	r.beginPhase(PhaseMeasure)
 	r.beginMeasure()
-	if err := r.mix(ctx, func() bool { return r.limitReached(r.written.Load()) }, true); err != nil {
+	if err := r.mix(ctx, func() bool { return r.limitReached(r.written.Load()) }); err != nil {
 		return err
 	}
 	r.endMeasure(time.Now())
@@ -35,7 +23,7 @@ func runMix(ctx context.Context, r *runner) error {
 }
 
 // mix runs the producer and consumer worker pools against one shared bound.
-func (r *runner) mix(ctx context.Context, until func() bool, record bool) error {
+func (r *runner) mix(ctx context.Context, until func() bool) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
@@ -43,13 +31,13 @@ func (r *runner) mix(ctx context.Context, until func() bool, record bool) error 
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := r.produce(runCtx, until, record); err != nil && !errors.Is(err, context.Canceled) {
+		if err := r.produce(runCtx, until); err != nil && !errors.Is(err, context.Canceled) {
 			errCh <- err
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		if err := r.consume(runCtx, until, record, false); err != nil && !errors.Is(err, context.Canceled) {
+		if err := r.consume(runCtx, until, false); err != nil && !errors.Is(err, context.Canceled) {
 			errCh <- err
 		}
 	}()

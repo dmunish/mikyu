@@ -10,23 +10,11 @@ import (
 	"github.com/dmunish/mikyu"
 )
 
-// runProduce drives the write path: warmup, measured window, then drain.
+// runProduce drives the write path: a measured window, then drain.
 func runProduce(ctx context.Context, r *runner) error {
-	w := r.opts.Workload
-	r.beginPhase(PhaseWarmup)
-	if w.Warmup > 0 {
-		deadline := time.Now().Add(w.Warmup)
-		if err := r.produce(ctx, func() bool {
-			return r.limitReached(r.written.Load()) || !time.Now().Before(deadline)
-		}, false); err != nil {
-			return err
-		}
-	}
-	r.endPhase(time.Now())
-
 	r.beginPhase(PhaseMeasure)
 	r.beginMeasure()
-	if err := r.produce(ctx, func() bool { return r.limitReached(r.written.Load()) }, true); err != nil {
+	if err := r.produce(ctx, func() bool { return r.limitReached(r.written.Load()) }); err != nil {
 		return err
 	}
 	r.endMeasure(time.Now())
@@ -38,7 +26,7 @@ func runProduce(ctx context.Context, r *runner) error {
 }
 
 // produce runs one set of producer workers until until reports true or the context ends.
-func (r *runner) produce(ctx context.Context, until func() bool, record bool) error {
+func (r *runner) produce(ctx context.Context, until func() bool) error {
 	w := r.opts.Workload
 	var wg sync.WaitGroup
 	errCh := make(chan error, w.Workers)
@@ -55,7 +43,7 @@ func (r *runner) produce(ctx context.Context, until func() bool, record bool) er
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if err := r.openProduceWorker(schedCtx, tickets, record); err != nil && !errors.Is(err, context.Canceled) {
+				if err := r.openProduceWorker(schedCtx, tickets); err != nil && !errors.Is(err, context.Canceled) {
 					errCh <- err
 				}
 			}()
@@ -68,7 +56,7 @@ func (r *runner) produce(ctx context.Context, until func() bool, record bool) er
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if err := r.closedProduceWorker(ctx, until, record); err != nil && !errors.Is(err, context.Canceled) {
+				if err := r.closedProduceWorker(ctx, until); err != nil && !errors.Is(err, context.Canceled) {
 					errCh <- err
 				}
 			}()
@@ -85,7 +73,7 @@ func (r *runner) produce(ctx context.Context, until func() bool, record bool) er
 }
 
 // closedProduceWorker appends as fast as the engine accepts until until fires.
-func (r *runner) closedProduceWorker(ctx context.Context, until func() bool, record bool) error {
+func (r *runner) closedProduceWorker(ctx context.Context, until func() bool) error {
 	w := r.opts.Workload
 	bufs := makePayloadBuffers(w.Batch, w.MsgSize)
 	for {
@@ -100,33 +88,26 @@ func (r *runner) closedProduceWorker(ctx context.Context, until func() bool, rec
 		if err := r.appendMessages(ctx, start, bufs); err != nil {
 			return err
 		}
-		if record {
-			r.measure.AddMessages(int64(w.Batch))
-			r.measure.Record(time.Since(began))
-		}
+		r.measure.AddMessages(int64(w.Batch))
+		r.measure.Record(time.Since(began))
 	}
 }
 
 // openProduceWorker appends one batch per scheduled ticket, recording corrected and uncorrected latency.
-func (r *runner) openProduceWorker(ctx context.Context, tickets <-chan time.Time, record bool) error {
+func (r *runner) openProduceWorker(ctx context.Context, tickets <-chan time.Time) error {
 	w := r.opts.Workload
 	bufs := makePayloadBuffers(w.Batch, w.MsgSize)
 	for scheduled := range tickets {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		var obs Observation
-		if record {
-			obs = r.measure.Start(scheduled)
-		}
+		obs := r.measure.Start(scheduled)
 		start := r.seq.Add(uint64(w.Batch)) - uint64(w.Batch)
 		if err := r.appendMessages(ctx, start, bufs); err != nil {
 			return err
 		}
-		if record {
-			r.measure.AddMessages(int64(w.Batch))
-			r.measure.Finish(obs)
-		}
+		r.measure.AddMessages(int64(w.Batch))
+		r.measure.Finish(obs)
 	}
 	return nil
 }

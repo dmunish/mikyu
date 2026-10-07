@@ -75,7 +75,7 @@ func TestBenchRunWritesARunWithoutOpeningAClient(t *testing.T) {
 
 	out, err := app.runRaw(t, "bench", "run",
 		"--dir", app.dir, "--out", t.TempDir(),
-		"--bytes", "65536", "--warmup", "0s", "--workers", "1", "--durability", "async")
+		"--bytes", "65536", "--workers", "1", "--durability", "async")
 	require.NoError(t, err)
 
 	assert.Contains(t, out, "spec")
@@ -89,7 +89,7 @@ func TestBenchRunConsumesThroughTheModeFlag(t *testing.T) {
 
 	out, err := app.runRaw(t, "bench", "run", "--mode", "consume",
 		"--dir", app.dir, "--out", t.TempDir(),
-		"--preload", "65536", "--bytes", "32768", "--warmup", "0s", "--workers", "1",
+		"--preload", "65536", "--bytes", "32768", "--workers", "1",
 		"--batch", "16", "--durability", "async", "--verify")
 	require.NoError(t, err)
 
@@ -104,7 +104,7 @@ func TestBenchRunNeedsNoDirectoryFlag(t *testing.T) {
 
 	out, err := app.runRaw(t, "bench", "run",
 		"--out", t.TempDir(),
-		"--bytes", "65536", "--warmup", "0s", "--workers", "1")
+		"--bytes", "65536", "--workers", "1")
 	require.NoError(t, err)
 
 	assert.Contains(t, out, "MSGS/S")

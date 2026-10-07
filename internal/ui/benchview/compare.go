@@ -104,7 +104,6 @@ func configRows(results []result.Result, fm human.Formatter) []compareRow {
 		{"msg size", func(r result.Result) string { return fm.Bytes(int64(r.Workload.MsgSize)) }},
 		{"workers", func(r result.Result) string { return fm.Count(int64(r.Workload.Workers)) }},
 		{"batch", func(r result.Result) string { return strconv.Itoa(r.Workload.Batch) }},
-		{"warmup", func(r result.Result) string { return r.Workload.Warmup }},
 	}
 	rows := make([]compareRow, 0, len(dimensions))
 	for _, d := range dimensions {

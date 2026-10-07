@@ -1476,7 +1476,6 @@ type Workload struct {
     Batch           int
     Keys            int
     Preload         int64
-    Warmup          time.Duration
     AckRate         float64
     CrashAfterBytes int64
     Seed            uint32
@@ -1506,11 +1505,11 @@ func (w Workload) Validate() error
 func (w Workload) View() result.WorkloadView
 ```
 
-`Table` rows in order: `kind`, `queues`, `msg_size`, `bytes`, `duration`, `rate` (produce/mix), `rate_schedule` (produce/mix), `workers`, `batch`, `keys` (produce/mix), `preload` (consume), `warmup`, `ack_rate` (consume/mix), `crash_after_bytes` (recovery), `seed`. Every row carries a `Doc`; name derivation is automatic (`EnvName = "MIKYU_BENCH_" + UPPER(key)`, `FlagName = key` with `_→-`). A mode-scoped row is registered on one flag set and rejected when a run sets it in another mode; `ScopeNames` is what help and the error message render.
+`Table` rows in order: `kind`, `queues`, `msg_size`, `bytes`, `duration`, `rate` (produce/mix), `rate_schedule` (produce/mix), `workers`, `batch`, `keys` (produce/mix), `preload` (consume), `ack_rate` (consume/mix), `crash_after_bytes` (recovery), `seed`. Every row carries a `Doc`; name derivation is automatic (`EnvName = "MIKYU_BENCH_" + UPPER(key)`, `FlagName = key` with `_→-`). A mode-scoped row is registered on one flag set and rejected when a run sets it in another mode; `ScopeNames` is what help and the error message render.
 
 `EnsureBound` is the fallback bound: a run that named none of bytes/duration/crash_after_bytes measures for `DefaultDuration`, and recovery is left alone because it has no measure window to fill.
 
-`Workload.Validate` enforces: known kind, positive queues/msg_size/workers/batch, non-negative warmup/keys, `keys=0` for task queues, `ack_rate ∈ [0,1]`, `rate` XOR `rate_schedule`, one bound (bytes XOR duration XOR crash_after_bytes), and a schedule anchored at 0 s with strictly rising timestamps.
+`Workload.Validate` enforces: known kind, positive queues/msg_size/workers/batch, non-negative keys, `keys=0` for task queues, `ack_rate ∈ [0,1]`, `rate` XOR `rate_schedule`, one bound (bytes XOR duration XOR crash_after_bytes), and a schedule anchored at 0 s with strictly rising timestamps.
 
 `ParseRateSchedule("0:0,30s:100k,60s:10k")` and `DecodeRateScheduleYAML` produce the same `[]RatePoint`; suffix `k`=1000, `M`=1e6, `G`=1e9, plus `1.5k` fractional rates.
 
@@ -1520,7 +1519,6 @@ func (w Workload) View() result.WorkloadView
 type Phase string
 const (
     PhasePopulate Phase = "populate"
-    PhaseWarmup   Phase = "warmup"
     PhaseMeasure  Phase = "measure"
     PhaseDrain    Phase = "drain"
     PhaseAbort    Phase = "abort"
@@ -1532,7 +1530,7 @@ func (b *boundary) add(n int64)
 func (b boundary) close(now time.Time) result.PhaseView
 ```
 
-`phaseSequence` returns: produce/mix → `[warmup, measure, drain]`; consume with preload → `[populate, warmup, measure, drain]`; consume without → `[warmup, measure, drain]`; recovery → `[populate, abort]`.
+`phaseSequence` returns: produce/mix → `[measure, drain]`; consume with preload → `[populate, measure, drain]`; consume without → `[measure, drain]`; recovery → `[populate, abort]`.
 
 ### Runner
 
@@ -1571,11 +1569,11 @@ type runner struct {
 
 ### Modes
 
-**`runProduce`** (`mode_produce.go`): warmup, then measured window, then drain. `produce` dispatches to `closedProduceWorker` (tight loop, per-batch latency) or `openProduceWorker` (one append per scheduled ticket; records corrected and uncorrected latency). `dispatchRate` paces tickets at the offered rate, interpolating through `RateSchedule`. `appendMessages` writes seeded payloads; log queues use `AppendBatch`, task queues enqueue one at a time. `keyFor(offset, keys)` renders `key-<offset%keys>` when `keys>0`.
+**`runProduce`** (`mode_produce.go`): measured window, then drain. `produce` dispatches to `closedProduceWorker` (tight loop, per-batch latency) or `openProduceWorker` (one append per scheduled ticket; records corrected and uncorrected latency). `dispatchRate` paces tickets at the offered rate, interpolating through `RateSchedule`. `appendMessages` writes seeded payloads; log queues use `AppendBatch`, task queues enqueue one at a time. `keyFor(offset, keys)` renders `key-<offset%keys>` when `keys>0`.
 
-**`runConsume`** (`mode_consume.go`): optional `populate`, then warmup, measure, drain. `consumeLog` builds one `queueCursor` per log queue (anchored at `MinOffset`), workers `claim` exclusive ranges, `readBatch`, verify if `opts.Verify`, count bytes; a run stops on `until()` or all workers going idle. `consumeTask` dequeues with `TryDequeue` and acks or nacks based on `ackDecision(offset)` (deterministic PRNG from seed + offset and `AckRate`).
+**`runConsume`** (`mode_consume.go`): optional `populate`, then measure, drain. `consumeLog` builds one `queueCursor` per log queue (anchored at `MinOffset`), workers `claim` exclusive ranges, `readBatch`, verify if `opts.Verify`, count bytes; a run stops on `until()` or all workers going idle. `consumeTask` dequeues with `TryDequeue` and acks or nacks based on `ackDecision(offset)` (deterministic PRNG from seed + offset and `AckRate`).
 
-**`runMix`** (`mode_mix.go`): producer and consumer worker pools run concurrently against one shared bound. Both use the same `until` and `record` flags; the run cancels both when either finishes.
+**`runMix`** (`mode_mix.go`): producer and consumer worker pools run concurrently against one shared bound. Both use the same `until`; the run cancels both when either finishes.
 
 **`runRecovery`** (`mode_recovery.go`): `recoveryPopulate` writes `CrashAfterBytes` through the run's own client, `recoveryCrash` releases the client and spawns a detached child (via `spawnDetached`) writing into the same queue, kills it after `childWriteWindow = 200 ms`, then `recoveryMeasure` reopens the directory and records `TimeToOpenNS`, `TimeToFirstReadNS`, `TimeToFullRecoveryNS`. The first read is `MinOffset`+`Read` for a log queue and `TryDequeue` for a task queue; full recovery is `LastOffset` (log) or `DeadLetters` (task).
 
@@ -1785,7 +1783,7 @@ type Result struct {
     Notes        []string
 }
 type WorkloadView struct {
-    Kind, Duration, Warmup, RateSchedule...
+    Kind, Duration, RateSchedule...
     Queues, MsgSize, Bytes, Rate, Workers, Batch, Keys, Preload, AckRate, CrashAfter, Seed...
 }
 type RatePoint struct{ At string; Rate uint64 }

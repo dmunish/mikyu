@@ -27,7 +27,7 @@ func TestParamNames(t *testing.T) {
 func TestTableKeyOrder(t *testing.T) {
 	want := []string{
 		"kind", "queues", "msg_size", "bytes", "duration", "rate", "rate_schedule",
-		"workers", "batch", "keys", "preload", "warmup", "ack_rate", "crash_after_bytes", "seed",
+		"workers", "batch", "keys", "preload", "ack_rate", "crash_after_bytes", "seed",
 	}
 	got := make([]string, len(Table))
 	for i, p := range Table {
@@ -73,7 +73,6 @@ func TestDefaultWorkload(t *testing.T) {
 		MsgSize:  1024,
 		Workers:  8,
 		Batch:    64,
-		Warmup:   5 * time.Second,
 		AckRate:  0.9,
 		Duration: 0,
 		Seed:     0,
@@ -104,7 +103,6 @@ func TestValidate(t *testing.T) {
 		{"zero msg_size", func(w *Workload) { w.MsgSize = 0 }, "msg_size"},
 		{"no workers", func(w *Workload) { w.Workers = 0 }, "workers"},
 		{"zero batch", func(w *Workload) { w.Batch = 0 }, "batch"},
-		{"negative warmup", func(w *Workload) { w.Warmup = -time.Second }, "warmup"},
 		{"negative keys", func(w *Workload) { w.Keys = -1 }, "keys"},
 		{"keyed task", func(w *Workload) { w.Kind, w.Keys = KindTask, 4 }, "keys"},
 		{"ack rate high", func(w *Workload) { w.AckRate = 1.5 }, "ack_rate"},
@@ -209,7 +207,6 @@ func TestWorkloadView(t *testing.T) {
 	view := w.View()
 	assert.Equal(t, "log", view.Kind)
 	assert.Equal(t, "5s", view.Duration)
-	assert.Equal(t, "5s", view.Warmup)
 	assert.Equal(t, 1024, view.MsgSize)
 	assert.Equal(t, 64, view.Batch)
 	assert.Equal(t, 8, view.Workers)

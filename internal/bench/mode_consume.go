@@ -13,7 +13,7 @@ import (
 	"github.com/dmunish/mikyu"
 )
 
-// runConsume drives the read path: optional populate, warmup, measured window, then drain.
+// runConsume drives the read path: optional populate, a measured window, then drain.
 func runConsume(ctx context.Context, r *runner) error {
 	w := r.opts.Workload
 	if w.Preload > 0 {
@@ -26,20 +26,9 @@ func runConsume(ctx context.Context, r *runner) error {
 		fmt.Fprintln(r.opts.Stderr, "note: consuming from an empty queue; use --preload to measure against a backlog")
 	}
 
-	r.beginPhase(PhaseWarmup)
-	if w.Warmup > 0 {
-		deadline := time.Now().Add(w.Warmup)
-		if err := r.consume(ctx, func() bool {
-			return r.limitReached(r.consumed.Load()) || !time.Now().Before(deadline)
-		}, false, true); err != nil {
-			return err
-		}
-	}
-	r.endPhase(time.Now())
-
 	r.beginPhase(PhaseMeasure)
 	r.beginMeasure()
-	if err := r.consume(ctx, func() bool { return r.limitReached(r.consumed.Load()) }, true, true); err != nil {
+	if err := r.consume(ctx, func() bool { return r.limitReached(r.consumed.Load()) }, true); err != nil {
 		return err
 	}
 	r.endMeasure(time.Now())
@@ -80,11 +69,11 @@ func (r *runner) populate(ctx context.Context) error {
 }
 
 // consume dispatches to the log or task reader.
-func (r *runner) consume(ctx context.Context, until func() bool, record, stopWhenIdle bool) error {
+func (r *runner) consume(ctx context.Context, until func() bool, stopWhenIdle bool) error {
 	if r.isLog() {
-		return r.consumeLog(ctx, until, record, stopWhenIdle)
+		return r.consumeLog(ctx, until, stopWhenIdle)
 	}
-	return r.consumeTask(ctx, until, record)
+	return r.consumeTask(ctx, until)
 }
 
 // queueCursor hands out distinct read ranges for one log queue.
@@ -107,7 +96,7 @@ func (c *queueCursor) claim(batch int, total uint64) (uint64, bool) {
 }
 
 // consumeLog reads every queue with a shared cursor so workers never duplicate a range.
-func (r *runner) consumeLog(ctx context.Context, until func() bool, record, stopWhenIdle bool) error {
+func (r *runner) consumeLog(ctx context.Context, until func() bool, stopWhenIdle bool) error {
 	w := r.opts.Workload
 	r.ensureCursors(ctx)
 	var idle atomic.Int64
@@ -120,7 +109,7 @@ func (r *runner) consumeLog(ctx context.Context, until func() bool, record, stop
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := r.logConsumeWorker(ctx, combined, record, &idle); err != nil && !errors.Is(err, context.Canceled) {
+			if err := r.logConsumeWorker(ctx, combined, &idle); err != nil && !errors.Is(err, context.Canceled) {
 				errCh <- err
 			}
 		}()
@@ -135,7 +124,7 @@ func (r *runner) consumeLog(ctx context.Context, until func() bool, record, stop
 }
 
 // logConsumeWorker claims and reads batches until the run's bound fires.
-func (r *runner) logConsumeWorker(ctx context.Context, until func() bool, record bool, idle *atomic.Int64) error {
+func (r *runner) logConsumeWorker(ctx context.Context, until func() bool, idle *atomic.Int64) error {
 	w := r.opts.Workload
 	for {
 		if ctx.Err() != nil {
@@ -168,7 +157,7 @@ func (r *runner) logConsumeWorker(ctx context.Context, until func() bool, record
 		}
 		idle.Store(0)
 		for _, rec := range records {
-			if r.opts.Verify && record {
+			if r.opts.Verify {
 				if verr := verifyPayload(w.Seed, rec.Offset, rec.Payload); verr != nil {
 					return verr
 				}
@@ -176,7 +165,7 @@ func (r *runner) logConsumeWorker(ctx context.Context, until func() bool, record
 			r.consumed.Add(int64(len(rec.Payload)))
 			r.addPhaseBytes(int64(len(rec.Payload)))
 		}
-		if record && len(records) > 0 {
+		if len(records) > 0 {
 			r.measure.AddMessages(int64(len(records)))
 			r.measure.Record(time.Since(began))
 		}
@@ -205,7 +194,7 @@ func (r *runner) pickCursor() *queueCursor {
 }
 
 // consumeTask dequeues, verifies, and acknowledges tasks from every queue.
-func (r *runner) consumeTask(ctx context.Context, until func() bool, record bool) error {
+func (r *runner) consumeTask(ctx context.Context, until func() bool) error {
 	w := r.opts.Workload
 	var wg sync.WaitGroup
 	errCh := make(chan error, w.Workers)
@@ -214,7 +203,7 @@ func (r *runner) consumeTask(ctx context.Context, until func() bool, record bool
 		go func(i int) {
 			defer wg.Done()
 			q := r.taskQueues[i%len(r.taskQueues)]
-			if err := r.taskConsumeWorker(ctx, q, until, record); err != nil && !errors.Is(err, context.Canceled) {
+			if err := r.taskConsumeWorker(ctx, q, until); err != nil && !errors.Is(err, context.Canceled) {
 				errCh <- err
 			}
 		}(i)
@@ -229,7 +218,7 @@ func (r *runner) consumeTask(ctx context.Context, until func() bool, record bool
 }
 
 // taskConsumeWorker dequeues one task at a time and acks or nacks it.
-func (r *runner) taskConsumeWorker(ctx context.Context, q mikyu.TaskQueue, until func() bool, record bool) error {
+func (r *runner) taskConsumeWorker(ctx context.Context, q mikyu.TaskQueue, until func() bool) error {
 	w := r.opts.Workload
 	for {
 		if ctx.Err() != nil {
@@ -249,7 +238,7 @@ func (r *runner) taskConsumeWorker(ctx context.Context, q mikyu.TaskQueue, until
 			return err
 		}
 		began := time.Now()
-		if r.opts.Verify && record {
+		if r.opts.Verify {
 			if verr := verifyPayload(w.Seed, task.Offset, task.Payload); verr != nil {
 				return verr
 			}
@@ -263,10 +252,8 @@ func (r *runner) taskConsumeWorker(ctx context.Context, q mikyu.TaskQueue, until
 		}
 		r.consumed.Add(int64(len(task.Payload)))
 		r.addPhaseBytes(int64(len(task.Payload)))
-		if record {
-			r.measure.AddMessages(1)
-			r.measure.Record(time.Since(began))
-		}
+		r.measure.AddMessages(1)
+		r.measure.Record(time.Since(began))
 	}
 }
 

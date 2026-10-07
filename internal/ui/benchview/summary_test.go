@@ -32,7 +32,7 @@ func sampleResult() result.Result {
 		},
 		Workload: result.WorkloadView{
 			Kind: "log", Queues: 1, MsgSize: 256, Duration: "5s",
-			Workers: 8, Batch: 1, Warmup: "0s", Seed: 42,
+			Workers: 8, Batch: 1, Seed: 42,
 		},
 		Environment: result.EnvironmentView{CacheState: "warm"},
 		Phases:      []result.PhaseView{{Name: "measure", Duration: "5s", Bytes: 1 << 30}},

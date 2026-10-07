@@ -346,7 +346,6 @@ type benchProgress struct {
 	mu      sync.Mutex
 	w       io.Writer
 	bar     progress.Model
-	warmup  time.Duration
 	measure time.Duration
 
 	active   bench.Phase
@@ -366,7 +365,6 @@ func startProgressPrinter(errw io.Writer, opts bench.Options) *benchProgress {
 	}
 	p := &benchProgress{
 		w:       errw,
-		warmup:  opts.Workload.Warmup,
 		measure: opts.Workload.Duration,
 		done:    make(chan struct{}),
 		bar: progress.New(
@@ -455,15 +453,8 @@ func (p *benchProgress) percentLocked() float64 {
 		byBytes = clamp01(float64(p.bytes) / float64(p.total))
 	}
 	var haveTime bool
-	switch p.active {
-	case bench.PhaseMeasure:
-		if p.measure > 0 {
-			byTime, haveTime = clamp01(elapsed/p.measure.Seconds()), true
-		}
-	case bench.PhaseWarmup:
-		if p.warmup > 0 {
-			byTime, haveTime = clamp01(elapsed/p.warmup.Seconds()), true
-		}
+	if p.active == bench.PhaseMeasure && p.measure > 0 {
+		byTime, haveTime = clamp01(elapsed/p.measure.Seconds()), true
 	}
 
 	switch {
