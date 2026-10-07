@@ -66,7 +66,7 @@ func TestWALBatch(t *testing.T) {
 
 	recs := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
 	positions := []int64{0, 1, 2}
-	seq, wake, err := w.pushBatch(recs, positions)
+	seq, wake, err := w.pushBatch(recs, positions, -1)
 	require.NoError(t, err)
 	assert.Equal(t, int64(3), seq)
 	assert.True(t, wake, "the byte budget was reached")

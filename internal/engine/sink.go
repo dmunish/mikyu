@@ -44,7 +44,7 @@ type sinkDone func(err error)
 // newSink returns the sink a WAL with the given durability needs writes through; a nil ring falls back silently to the portable sinks.
 func newSink(log, idx *os.File, cfg Config, ring *uringRing) sink {
 	if cfg.Async() {
-		return newAsyncSink(log, idx, max(1, int(cfg.MaxFlushBytes)/4096))
+		return newAsyncSinkOf(log, idx, max(1, int(cfg.MaxFlushBytes)/4096), ring)
 	}
 	return newDurableSink(log, idx, ring)
 }

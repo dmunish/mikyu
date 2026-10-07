@@ -25,7 +25,7 @@ A queue's **kind is structural**: it is the name of its parent directory under t
 12. **Auth is one handshake per connection.** Credentials declared once in `OpAuth`, verified once.
 13. **The bench harness is a client, not a driver.** `internal/bench` opens embedded nodes, spawns daemons, or dials remotes through the public SDK and measures only what the SDK exposes. The engine and drivers carry no bench-specific code paths.
 14. **Reader gate on the ring cache.** Task-style drivers that read back their own appends leave `GateCache` off; log-queue writes only populate the cache after the first read, saving the per-append copy on produce-only workloads.
-15. **Single writer for WAL bytes and index.** One goroutine (`wal.syncLoop`) writes both the WAL segment file and the index entries. Producers stage via `push`/`pushBatch` (sync) or `pushAsyncBatch` (async); only the flusher calls `writeAt` and `writeIndexBatchAt`. Test hooks assert the invariant.
+15. **Single writer for WAL bytes and index.** One goroutine writes both the WAL segment file and the index entries: the syscall WAL's `wal.syncLoop` (default), or the ring reaper on hosts with io_uring, where producers submit batches directly through the sink (see `internal/engine/sink.go`, `wal_ring.go`). Producers stage via `push`/`pushBatch` (sync) or `pushAsyncBatch` (async). Test hooks assert the invariant.
 
 ### Guarantees
 
@@ -517,6 +517,8 @@ When `KeyedCompaction()` is true, `keyIndex map[string]uint64` maps group → ne
 Key index warn limit is `keyIndexWarnLimit = 1_000_000`; over the limit logs a warning and the `key_index` gauge reports the live size.
 
 ### WAL (updated)
+
+On hosts with io_uring (Linux kernel ≥ 5.13, `MIKYU_DISABLE_URING` unset), `newWAL` builds the **ring WAL** (`wal_ring.go`) instead: producers submit every batch directly to one ring per data directory (`internal/manager` opens it, `engine.Ring`), a single reaper goroutine completes all of a directory's queues, and the flusher/channel/double-buffer machinery below is bypassed. Sync batches wait on a completion watermark that turns out-of-order ring completions back into the byte-based `wait(seq)` guarantee; async batches are bounded by a slot semaphore (`MaxFlushBytes/MaxPayload`). `MIKYU_FORCE_SYSCALL_WAL=1` restores the syscall WAL. Every write, both paths, goes through a **sink** (`sink.go`): `syncSink` (portable pwrite+fdatasync), `asyncSink` (channel-drained), or `ringSink` (io_uring SQEs).
 
 ```go
 type wal struct {

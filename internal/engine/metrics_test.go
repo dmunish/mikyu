@@ -303,7 +303,7 @@ func TestWALFillRatioBounded(t *testing.T) {
 	cfg.MaxFlushBytes = 8192
 	w := newWAL(&segment{}, cfg, 0, nil)
 
-	_, _, err := w.pushBatch([][]byte{make([]byte, 512)}, []int64{0})
+	_, _, err := w.pushBatch([][]byte{make([]byte, 512)}, []int64{0}, -1)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, w.byteFill(), 0.0)
 	require.LessOrEqual(t, w.byteFill(), 1.0)

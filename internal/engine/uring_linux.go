@@ -297,6 +297,7 @@ func (r *uringRing) Register() *uringSinkHandle {
 	h.cond = sync.NewCond(&h.mu)
 	h.pend = make(map[uint32]int32)
 	h.res = make(map[uint32]int64)
+	h.dones = make(map[uint32]sinkDone)
 	r.handles[id] = h
 	return h
 }
@@ -343,12 +344,7 @@ func (r *uringRing) loop() {
 		}
 		n, err := r.waitCQEs(cqes)
 		if err != nil {
-			select {
-			case <-r.stop:
-				return
-			default:
-				continue
-			}
+			return
 		}
 		for i := 0; i < n; i++ {
 			r.dispatch(cqes[i])
@@ -392,8 +388,9 @@ func (r *uringRing) dispatch(cqe rawCQE) {
 	}
 }
 
-// uringSinkHandle tracks one sink's outstanding tags. Sync sinks wait on cond;
-// async sinks install a notify callback and are driven by the reaper.
+// uringSinkHandle tracks one sink's outstanding tags. A tag submitted with a
+// nil done is waited on through cond; a tag submitted with a done callback is
+// driven by the reaper.
 type uringSinkHandle struct {
 	ring *uringRing
 	id   uint32
@@ -403,24 +400,38 @@ type uringSinkHandle struct {
 	cond   *sync.Cond
 	pend   map[uint32]int32
 	res    map[uint32]int64
-	notify func(tag uint32, err error)
+	dones  map[uint32]sinkDone
 	closed bool
 }
 
 // NextTag returns a fresh tag for the next submission.
 func (h *uringSinkHandle) NextTag() uint32 { return h.next.Add(1) - 1 }
 
-// Submit registers the tag before the ring takes the ops and rolls the registration back if the submission fails.
-func (h *uringSinkHandle) Submit(ops []uringOp) error {
+// Submit registers the tag — with its optional completion callback — before the ring takes the ops, and rolls the registration back if the submission fails.
+func (h *uringSinkHandle) Submit(ops []uringOp, done sinkDone) error {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		if done != nil {
+			done(ErrQueueClosed)
+		}
+		return ErrQueueClosed
+	}
 	if len(ops) == 0 {
+		h.mu.Unlock()
+		if done != nil {
+			done(nil)
+		}
 		return nil
 	}
 	for i := range ops {
 		ops[i].Sink = h.id
 	}
 	tag := ops[0].Tag
-	h.mu.Lock()
 	h.pend[tag] += int32(len(ops))
+	if done != nil {
+		h.dones[tag] = done
+	}
 	h.mu.Unlock()
 	if err := h.ring.Submit(ops); err != nil {
 		h.mu.Lock()
@@ -428,6 +439,7 @@ func (h *uringSinkHandle) Submit(ops []uringOp) error {
 		if h.pend[tag] <= 0 {
 			delete(h.pend, tag)
 			delete(h.res, tag)
+			delete(h.dones, tag)
 		}
 		h.mu.Unlock()
 		return err
@@ -478,10 +490,11 @@ func (h *uringSinkHandle) complete(tag uint32, res int64) {
 	}
 	delete(h.pend, tag)
 	delete(h.res, tag)
-	notify := h.notify
+	done := h.dones[tag]
+	delete(h.dones, tag)
 	h.mu.Unlock()
-	if notify != nil {
-		notify(tag, err)
+	if done != nil {
+		done(err)
 		return
 	}
 	h.cond.Broadcast()
@@ -491,7 +504,7 @@ func (h *uringSinkHandle) complete(tag uint32, res int64) {
 func (h *uringSinkHandle) fsync(f *os.File) error {
 	tag := h.NextTag()
 	ops := []uringOp{{Kind: uringOpFsync, File: f, DataSync: true, Tag: tag}}
-	if err := h.Submit(ops); err != nil {
+	if err := h.Submit(ops, nil); err != nil {
 		return err
 	}
 	return h.Wait(tag)
