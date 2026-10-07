@@ -59,28 +59,27 @@ func parkFlusher(t *testing.T, q *Queue) (release func()) {
 	}
 }
 
-// fillAsyncChan fills the WAL async channel with filler slices that carry no reservations.
-func fillAsyncChan(t *testing.T, q *Queue) {
+// fillAsyncSlots fills every async slot with batches a blocking writer holds, so the next producer blocks on slot admission.
+func fillAsyncSlots(t *testing.T, q *Queue) {
 	t.Helper()
 	base := q.nextOffset + 10_000 // out-of-stream offsets: valid index slots, never published
-	for i := range cap(q.w.asyncChan) {
-		q.w.asyncChan <- []asyncEntry{{
+	for i := range cap(q.w.slots) {
+		require.NoError(t, q.w.pushAsyncBatch(t.Context(), []asyncEntry{{
 			seg:    q.active,
 			rec:    make([]byte, 8),
 			pos:    1<<20 + int64(i)*8,
 			recLen: 8,
 			offset: base + uint64(i),
-		}}
+		}}))
 	}
 }
 
 // TestAppendBatchDoesNotHoldLockOnChannelBlock pins the phase contract: a
-// producer blocked on a full async channel must not hold q.mu.
+// producer blocked on a full async slot budget must not hold q.mu.
 func TestAppendBatchDoesNotHoldLockOnChannelBlock(t *testing.T) {
+	useBlockingWriter(t)
 	q := openAsyncQueue(t, "blocked", nil)
-	release := parkFlusher(t, q)
-	defer release()
-	fillAsyncChan(t, q)
+	fillAsyncSlots(t, q)
 
 	posBefore := q.active.pos
 	ctx, cancel := context.WithCancel(context.Background())
@@ -106,7 +105,7 @@ func TestAppendBatchDoesNotHoldLockOnChannelBlock(t *testing.T) {
 	select {
 	case <-acquired:
 	case <-time.After(10 * time.Millisecond):
-		t.Fatal("q.mu is held while a producer is blocked on the async channel")
+		t.Fatal("q.mu is held while a producer is blocked on an async slot")
 	}
 
 	cancel()
@@ -124,10 +123,9 @@ func TestAppendBatchDoesNotHoldLockOnChannelBlock(t *testing.T) {
 // TestAppendBatchRollbackOnCtxCancel pins the rollback: canceling mid-push
 // consumes no segment space and leaves the active segment untouched.
 func TestAppendBatchRollbackOnCtxCancel(t *testing.T) {
+	useBlockingWriter(t)
 	q := openAsyncQueue(t, "rollback", nil)
-	release := parkFlusher(t, q)
-	defer release()
-	fillAsyncChan(t, q)
+	fillAsyncSlots(t, q)
 
 	posBefore := q.active.pos
 	ctx, cancel := context.WithCancel(context.Background())

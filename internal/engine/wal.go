@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dmunish/mikyu/internal/iow"
 	"github.com/dmunish/mikyu/internal/metrics"
 )
 
@@ -23,27 +24,28 @@ type asyncEntry struct {
 	buf    *pooledBuf
 }
 
-// wal writes segment bytes through a sink. Two implementations share the
-// struct and are chosen at construction: the syscall WAL stages sync batches
-// in byte-budgeted buffers behind one flusher goroutine with micro-linger
-// group commits, and hands async batches to the sink's drain loop; the ring
-// WAL (hosts with io_uring) submits every batch directly to the shared ring
-// and has no flusher at all — one reaper per data directory completes every
-// queue's operations.
+// wal writes segment bytes through an iow.Writer. Two paths share the struct:
+// the sync path stages byte-budgeted groups behind one flusher goroutine with
+// micro-linger group commits, and the async path submits every producer batch
+// straight to the writer's bounded worker pool; on hosts with io_uring the ring
+// path submits to the shared ring instead, with one reaper per data directory
+// completing every queue's operations.
 //
-// Single writer: exactly one goroutine writes the segment files — the
-// syscall WAL's syncLoop for staged batches and the sink's drain loop for
-// async batches, or the ring reaper. Producers only stage records via
-// push/pushBatch (sync path) or pushAsyncBatch (async path). Sequencing is
-// byte-based: pushedBytes and publishedBytes count staged and durable bytes,
-// and wait(seq) blocks until publishedBytes reaches the byte offset the push
-// returned. Async backpressure is bounded by the WAL's channel depth
-// (MaxFlushBytes/4096) or the ring path's slot semaphore.
+// Single writer per batch: a batch is written by exactly one writer goroutine —
+// the pool's worker, or the ring reaper — and completions arrive in submission
+// order, so the byte watermark below only ever advances over a contiguous
+// durable prefix. Producers only stage records via push/pushBatch (sync path)
+// or pushAsyncBatch (async path). Sequencing is byte-based: pushedBytes and
+// publishedBytes count staged and durable bytes, and wait(seq) blocks until
+// publishedBytes reaches the byte offset the push returned. Async
+// backpressure is bounded by the WAL's slot channel.
 type wal struct {
-	cfg  Config
-	sink sink
-	ring *uringRing // nil on the syscall path
-	m    *walMetrics
+	cfg    Config
+	files  *sink      // log+idx adapter for the pool path
+	writer iow.Writer // nil on the ring path
+	sink   ringSink   // nil on the pool path
+	ring   *uringRing // nil on the syscall path
+	m      *walMetrics
 
 	mu             sync.Mutex
 	cond           *sync.Cond
@@ -53,20 +55,21 @@ type wal struct {
 	publishedBytes int64
 	pendingBytes   int64
 
-	// syscall-path state: staged sync batches, the flusher's double buffers,
-	// and the producer-to-flusher async handoff.
-	buf           []byte
-	pending       []pendingEntry
-	swapBuf       []byte
-	swapPending   []pendingEntry
-	asyncChan     chan []asyncEntry
+	// pool-path state: the sync path's staged group, buffers reclaimed from
+	// completed batches, and the producer-to-writer submission context.
+	stage         staged
+	free          []staged
+	flushInFlight bool
+	flushCtx      context.Context
+	flushCancel   context.CancelFunc
 	wake          chan struct{}
+	// configChanged carries UpdateConfig to the flusher's ticker.
 	configChanged chan struct{}
+	// slots bounds async batches submitted to the writer but not yet complete.
+	slots chan struct{}
 
-	// ring-path state: a slot semaphore bounds outstanding batches, and a
-	// submission-sequence watermark turns out-of-order ring completions back
-	// into the byte-based durable guarantee.
-	slots      chan struct{}
+	// ring-path state: a submission-sequence watermark turns out-of-order ring
+	// completions back into the byte-based durable guarantee.
 	inflightWG sync.WaitGroup
 	submitSeq  uint64
 	watermark  uint64
@@ -151,14 +154,8 @@ func (w *wal) bytes() (pushed, published, pending int64) {
 
 // channelFill reports the async backlog occupancy as a fraction in [0,1].
 func (w *wal) channelFill() float64 {
-	if w.ring != nil {
-		if capacity := cap(w.slots); capacity > 0 {
-			return min(float64(len(w.slots))/float64(capacity), 1)
-		}
-		return 0
-	}
-	if capacity := cap(w.asyncChan); capacity > 0 {
-		return min(float64(len(w.asyncChan))/float64(capacity), 1)
+	if capacity := cap(w.slots); capacity > 0 {
+		return min(float64(len(w.slots))/float64(capacity), 1)
 	}
 	return 0
 }
@@ -192,13 +189,16 @@ func (w *wal) currentError() error {
 }
 
 func (w *wal) setError(err error) {
-	if err == nil {
+	w.mu.Lock()
+	w.setErrorLocked(err)
+	w.mu.Unlock()
+}
+
+// setErrorLocked records the first fatal error and wakes every waiter.
+func (w *wal) setErrorLocked(err error) {
+	if err == nil || w.err != nil {
 		return
 	}
-	w.mu.Lock()
-	if w.err == nil {
-		w.err = err
-	}
+	w.err = err
 	w.cond.Broadcast()
-	w.mu.Unlock()
 }

@@ -295,6 +295,14 @@ func (q *Queue) roll() error {
 			return ErrQueueClosed
 		}
 	}
+	// Waiting released the lock, so a concurrent producer may have rolled in the
+	// meantime. Roll only a segment that can no longer hold a full record, or
+	// every producer at the boundary would seal a fresh segment behind the first.
+	headroom := int64(minRecordSize) + q.cfg.MaxPayload
+	if q.active.pos+q.reservedPos+headroom <= q.cfg.MaxSegment &&
+		time.Since(q.active.createdAt) <= q.cfg.MaxSegmentAge {
+		return nil
+	}
 
 	if err := q.w.stop(); err != nil {
 		return err

@@ -5,11 +5,13 @@ package engine
 import "os"
 
 // uringRing is a stub on every platform without io_uring: newUringRing always
-// fails, so Ring is always nil and durable sinks take the syncSink path.
+// fails, so Ring is always nil and the WAL always takes the pool path.
 type uringRing struct{}
 type uringSinkHandle struct{}
 
 func newUringRing() (*uringRing, error) { return nil, errUringUnsupported }
+
+func newRingSink(_, _ *os.File, _ bool, _ *uringRing) ringSink { return nil }
 
 func (*uringRing) Submit([]uringOp) error     { return errUringUnsupported }
 func (*uringRing) Register() *uringSinkHandle { return nil }

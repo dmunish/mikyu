@@ -8,6 +8,13 @@ import (
 // errUringUnsupported reports that the host has no usable io_uring.
 var errUringUnsupported = errors.New("io_uring unavailable")
 
+// ringSink is the io_uring write contract the ring WAL submits its batches through; only io_uring hosts have an implementation.
+type ringSink interface {
+	Write(batch sinkBatch, done sinkDone) error
+	Sync() error
+	Close() error
+}
+
 // Ring is a per-data-directory io_uring submission ring; NewRing returns nil on hosts without io_uring.
 type Ring struct{ ring *uringRing }
 

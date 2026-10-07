@@ -226,7 +226,12 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 					return nil, err
 				}
 			}
-			reset(i)
+			// A concurrent producer may roll while this one was unlocked pushing
+			// its committed group; the rest of the append belongs to the segment
+			// that is active now, not the one it staged against.
+			if rollRequired || staged.seg != q.active {
+				reset(i)
+			}
 		}
 
 		staged.recs = append(staged.recs, recs[i])

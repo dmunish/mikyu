@@ -220,20 +220,12 @@ func (s *segment) writeIndexAt(idxPos, pos, len int64) error {
 }
 
 // writeIndexBatch writes consecutive index entries in one syscall; the
-// segment's batch writer and the sinks share it.
+// segment's batch writer and the WAL's index writes share it.
 func writeIndexBatch(idxFile *os.File, s sinkIndex) error {
 	if s.empty() {
 		return nil
 	}
-	buf := getBuf(len(s.Positions) * rawIndexEntrySize)
-	for i := range s.Positions {
-		var ent [rawIndexEntrySize]byte
-		rawIndexEntry{pos: s.Positions[i], len: s.Lengths[i]}.MarshalBinary(&ent)
-		copy(buf.b[i*rawIndexEntrySize:], ent[:])
-	}
-	if indexWriteHook != nil {
-		indexWriteHook(s.Start, len(buf.b))
-	}
+	buf := encodeIndexBatch(s)
 	_, err := idxFile.WriteAt(buf.b, s.Start)
 	buf.release(maxIndexKeepBytes)
 	return err

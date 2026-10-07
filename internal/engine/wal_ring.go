@@ -18,7 +18,7 @@ func ringSlotCapacity(cfg Config) int {
 func newRingWAL(seg *segment, cfg Config, startOffset uint64, ring *uringRing, scopes ...*metrics.Scope) *wal {
 	w := &wal{
 		cfg:       cfg,
-		sink:      newSink(seg.logFile, seg.idxFile, cfg, ring),
+		sink:      newRingSink(seg.logFile, seg.idxFile, !cfg.Async(), ring),
 		ring:      ring,
 		asyncNext: startOffset,
 		slots:     make(chan struct{}, ringSlotCapacity(cfg)),

@@ -629,6 +629,7 @@ func TestQueueVelocityPreallocationScaling(t *testing.T) {
 	require.NoError(t, err)
 
 	q.mu.Lock()
+	q.active.pos = q.cfg.MaxSegment - 1
 	err = q.roll()
 	q.mu.Unlock()
 	require.NoError(t, err)
@@ -637,6 +638,7 @@ func TestQueueVelocityPreallocationScaling(t *testing.T) {
 
 	// 2. Slow fill (> 5m): Artificially age active segment's createdAt time
 	q.mu.Lock()
+	q.active.pos = q.cfg.MaxSegment - 1
 	q.active.createdAt = time.Now().Add(-6 * time.Minute)
 	err = q.roll()
 	q.mu.Unlock()
@@ -644,6 +646,30 @@ func TestQueueVelocityPreallocationScaling(t *testing.T) {
 
 	// Target should decay back down to the 8 MB floor
 	assert.Equal(t, int64(minSegmentPrealloc), q.nextPreallocBytes)
+}
+
+// TestRollDeclinesWhenTheSegmentHasRoom pins the re-validation: a producer that
+// waited on a pending reservation must not seal a segment a peer already rolled.
+func TestRollDeclinesWhenTheSegmentHasRoom(t *testing.T) {
+	dir := t.TempDir()
+	store, err := openOffsetStore(dir)
+	require.NoError(t, err)
+	defer store.Close()
+
+	q, err := openQueue(dir, "roll-declines", testConfig(), store, nil)
+	require.NoError(t, err)
+	defer q.Close()
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	base := q.active.baseOff
+	require.NoError(t, q.roll())
+	require.Equal(t, base, q.active.baseOff, "an empty segment must not be sealed")
+	require.Len(t, q.segments, 1)
+
+	q.active.pos = q.cfg.MaxSegment - 1
+	require.NoError(t, q.roll())
+	require.Len(t, q.segments, 2, "a full segment must be sealed")
 }
 
 func TestSegmentPreallocationTruncatedOnClose(t *testing.T) {

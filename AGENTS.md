@@ -25,7 +25,7 @@ A queue's **kind is structural**: it is the name of its parent directory under t
 12. **Auth is one handshake per connection.** Credentials declared once in `OpAuth`, verified once.
 13. **The bench harness is a client, not a driver.** `internal/bench` opens embedded nodes, spawns daemons, or dials remotes through the public SDK and measures only what the SDK exposes. The engine and drivers carry no bench-specific code paths.
 14. **Reader gate on the ring cache.** Task-style drivers that read back their own appends leave `GateCache` off; log-queue writes only populate the cache after the first read, saving the per-append copy on produce-only workloads.
-15. **Single writer for WAL bytes and index.** One goroutine writes both the WAL segment file and the index entries: the syscall WAL's `wal.syncLoop` (default), or the ring reaper on hosts with io_uring, where producers submit batches directly through the sink (see `internal/engine/sink.go`, `wal_ring.go`). Producers stage via `push`/`pushBatch` (sync) or `pushAsyncBatch` (async). Test hooks assert the invariant.
+15. **One writer goroutine per batch, ordered completion.** A batch is written by exactly one writer — an `iow.Writer` pool worker (`GOMAXPROCS` under `Buffered`, 1 under `DataSync`) or the io_uring ring reaper on hosts that have it — and completions arrive in submission order, which is what lets the WAL advance a byte watermark without a reorder buffer of its own. Producers stage via `push`/`pushBatch` (sync) or `pushAsyncBatch` (async). Test hooks assert the invariant.
 
 ### Guarantees
 
@@ -521,22 +521,31 @@ Key index warn limit is `keyIndexWarnLimit = 1_000_000`; over the limit logs a w
 
 ### WAL (updated)
 
-On hosts with io_uring (Linux kernel ≥ 5.13, `MIKYU_DISABLE_URING` unset), `newWAL` builds the **ring WAL** (`wal_ring.go`) instead: producers submit every batch directly to one ring per data directory (`internal/manager` opens it, `engine.Ring`), a single reaper goroutine completes all of a directory's queues, and the flusher/channel/double-buffer machinery below is bypassed. Sync batches wait on a completion watermark that turns out-of-order ring completions back into the byte-based `wait(seq)` guarantee; async batches are bounded by a slot semaphore (`MaxFlushBytes/MaxPayload`). `MIKYU_FORCE_SYSCALL_WAL=1` restores the syscall WAL. Every write, both paths, goes through a **sink** (`sink.go`): `syncSink` (portable pwrite+fdatasync), `asyncSink` (channel-drained), or `ringSink` (io_uring SQEs).
+The syscall WAL writes through `iow.Writer` (`internal/iow`): `internal/engine/sink.go` is a pure adapter that renders a batch as the flat `[]iow.Write` the writer consumes, and the writer owns bounded concurrency, ordered completion, and the fsync boundary. `newWAL` passes no files — the segment owns its handles — and names the log in `SyncFiles`, because the index is rebuilt from the log on crash. `Workers` is `GOMAXPROCS` under `Buffered` and **1** under `DataSync`, since the kernel serializes fsyncs per file anyway.
+
+On hosts with io_uring (Linux kernel ≥ 5.13, `MIKYU_DISABLE_URING` unset), `newWAL` builds the **ring WAL** (`wal_ring.go`) instead: producers submit every batch directly to one ring per data directory (`internal/manager` opens it, `engine.Ring`), a single reaper goroutine completes all of a directory's queues, and the flusher and staging machinery below are bypassed. Sync batches wait on a completion watermark that turns out-of-order ring completions back into the byte-based `wait(seq)` guarantee; async batches are bounded by a slot semaphore (`MaxFlushBytes/MaxPayload`). `MIKYU_FORCE_SYSCALL_WAL=1` restores the syscall WAL. The ring path submits through `ringSink` (io_uring SQEs, `uring_linux.go`) and is removed once `iow` grows its own ring.
 
 ```go
 type wal struct {
-    cfg Config; file *os.File
+    cfg    Config
+    files  *sink      // log+idx adapter for the pool path
+    writer iow.Writer // nil on the ring path
+    sink   ringSink   // nil on the pool path
+    ring   *uringRing // nil on the syscall path
+
     mu sync.Mutex; cond *sync.Cond
-    buf, swapBuf             []byte
-    pending, swapPending     []pendingEntry
+    stage                     staged     // the sync path's unflushed group
+    free                      []staged   // buffers reclaimed from completed batches
+    flushInFlight             bool
+    flushCtx, flushCancel     context.Context
     pendingBytes, pushedBytes, publishedBytes int64
-    asyncNext                uint64
-    err                      error
-    asyncChan                chan []asyncEntry   // one slice per producer batch
-    wake, configChanged      chan struct{}
-    shutdown, done           chan struct{}
-    stopOnce                 sync.Once
-    m                        *walMetrics
+    asyncNext                 uint64
+    err                       error
+    slots                     chan struct{} // async batches admitted but not complete
+    wake, configChanged       chan struct{}
+    shutdown, done            chan struct{}
+    stopOnce                  sync.Once
+    m                         *walMetrics
 }
 
 type asyncEntry struct {
@@ -548,22 +557,26 @@ type asyncEntry struct {
     buf    *pooledBuf
 }
 
-var writerHook func()             // fires before every WAL write (single-writer test)
-var writeAtHook func(off, n int)  // receives every WAL byte write
+var writerHook func()             // fires before every submitted batch
+var writeAtHook func(off, n int)  // receives every submitted log write
 var indexWriteHook func(off, n int)// receives every index write
 ```
 
-**Byte-based sequencing**: `push(rec, pos) (seq, wake, err)` returns `seq = pushedBytes + len(rec)`; `wait(seq)` blocks until `publishedBytes ≥ seq` or `err != nil`.
+**Byte-based sequencing**: `push(rec, pos) (seq, wake, err)` returns `seq = pushedBytes + len(rec)`; `wait(seq)` blocks until `publishedBytes ≥ seq` or `err != nil`. The writer's ordered completion is what makes this safe: batch *N*'s callback fires only after batch *N-1*'s, so `publishedBytes` only ever advances over a contiguous durable prefix.
 
-**Sync path.** `push`/`pushBatch` stage bytes + pending entries under lock. `syncLoop` selects over `asyncChan`, `ticker.C` (`MaxFlushWait`), `wake`, `configChanged`, `shutdown`. `adaptiveFlush` sleeps `FlushLinger` before flushing when the batch is below `MaxFlushBytes`. `flush` swaps buffers, drains the wake token under lock, calls `writeAt`, `syncData` if sync durability, and broadcasts on `cond`.
+**Sync path.** `push`/`pushBatch` stage bytes + pending entries under lock. `syncLoop` selects over `ticker.C` (`MaxFlushWait`), `wake`, `configChanged`, `shutdown`, and **parks between batches** (`waitFlushSlot`) so the select never spends a wake token on a batch it cannot write yet. `adaptiveFlush` sleeps `FlushLinger` before flushing when the batch is below `MaxFlushBytes`. `flush` swaps the staging group out of a free list, drains the wake token under lock, submits one `[]iow.Write` (log, coalesced to a single write when the entries tile it), and advances `publishedBytes` from the completion. **Only one flush is in flight**: producers are released by its completion, so a flusher that runs ahead would flush each producer's batch alone and trade group commits for fsyncs.
 
-**Async path.** `pushAsyncBatch(ctx, entries)` sends one `[]asyncEntry` slice per producer batch on `asyncChan`; a full channel blocks the producer (`wal_block_events` counter and `wal_blocked_producers` gauge). `drainAndFlushAsync(first)` groups entries up to `MaxFlushBytes`, then calls `writeRun` per contiguous same-segment run. `writeRun` writes the run's bytes in **one** `writeAt` (using a pooled slab when `len(run) > 1`), writes the run's index entries via `seg.writeIndexBatchAt` in **one** syscall, advances `asyncNext` for entries whose `offset == *next`, and releases the pooled buffers (`e.buf.release(encodeKeep)` with `encodeKeep = 4 * MaxPayload`).
+**Async path.** `pushAsyncBatch(ctx, entries)` takes one of the `slots` (`wal_block_events` counter, `wal_blocked_producers` gauge) and submits the batch's records as one slab write plus one index write; its completion recycles the slab and the entry buffers, releases the slot, and advances `asyncNext`. Producers block on the slot, not inside the writer.
 
-**Async backpressure**: `asyncChan` capacity = `max(1, MaxFlushBytes/4096)` slots, each holding a batch.
+**Async backpressure**: `slots` capacity = `max(1, MaxFlushBytes/4096)` batches; the writer's queue is at least as deep so the blocking point stays measurable.
 
 **Wake-token correctness.** `wake` has buffer 1 and is drained inside `flush()` under lock, preventing producer hangs when `adaptiveFlush` is mid-linger.
 
-**Platform `syncData`:** Darwin uses `F_FULLFSYNC`; Linux/BSD use `Fdatasync`; Windows uses `File.Sync()`.
+**Platform `syncData`:** Darwin uses `F_FULLFSYNC`; Linux uses `Fdatasync`; Windows and other platforms use `File.Sync()` (the iow package owns these; the engine keeps its own copy for segment-level syncs).
+
+### Rolling Segments (updated)
+
+`roll()` waits for pending async reservations, then **re-checks the condition**: waiting releases the lock, so a concurrent producer may have rolled in the meantime, and rolling again would seal a fresh segment behind it. It seals only when the active segment can no longer hold a full record (`minRecordSize + MaxPayload`). Symmetrically, a producer that was unlocked pushing its committed group re-stages the rest of its append against whatever segment is active now (`append.go`), or its offsets would land in the new segment's coordinate space while its bytes went to the old one.
 
 ### Segment (updated)
 
@@ -1990,7 +2003,9 @@ func exitCode(err error) int {
 - `TestPrometheusCoversSnapshot` requires every `Snapshot` leaf to be exported or explicitly skipped with a reason.
 - `cmd/mikyu/main_test.go` covers the exit-code contract (0/1/2/3).
 - Engine-specific perf tests:
-  - `TestWALByteBackpressure`, `TestWALAsyncBatchesWrites`, `TestWALAsyncBatchesIndexWrites`, `TestOverlappedSingleSyscall`, `TestCommitSyncBatchesIndexWrites`, `TestWALWakeTokenLossRace` (synctest).
+- `TestWALByteBackpressure`, `TestWALAsyncBatchWrites`, `TestWALAsyncBatchIndexWrites`, `TestOverlappedSingleSyscall`,
+    `TestCommitSyncBatchesIndexWrites`, `TestWALWakeTokenLossRace` (synctest), `TestConcurrentWritesDoNotInterleave`,
+    `TestRollDeclinesWhenTheSegmentHasRoom`.
   - `TestAppendBatchDoesNotHoldLockOnChannelBlock`, `TestAppendBatchRollbackOnCtxCancel`, `TestAppendBatchPreservesOffsetsUnderContention`.
   - `TestRingCacheConcurrentReaderWriter`, `TestRingCacheGetUnderEviction`.
   - `TestReadBatchBulksLogReads`, `TestReadBatchMatchesRead`.

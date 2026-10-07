@@ -230,6 +230,7 @@ func TestInFlightAppendsResetOnError(t *testing.T) {
 }
 
 func TestWALBlockEvents(t *testing.T) {
+	useBlockingWriter(t)
 	reg := metrics.NewRegistry(metrics.Config{})
 	cfg := testConfig()
 	cfg.Durability = spec.DurabilityAsync
@@ -237,9 +238,7 @@ func TestWALBlockEvents(t *testing.T) {
 	w := newWAL(&segment{}, cfg, 0, nil, reg.Scope("w"))
 	scope := reg.Scope("w")
 
-	for range cap(w.asyncChan) {
-		require.NoError(t, w.pushAsync(t.Context(), asyncEntry{rec: []byte("x")}))
-	}
+	fillSlots(t, w, &segment{})
 	require.Zero(t, scope.Counter("wal_block_events").Load())
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -259,6 +258,7 @@ func TestWALBlockEvents(t *testing.T) {
 }
 
 func TestWALBlockedGaugeDecreases(t *testing.T) {
+	useBlockingWriter(t)
 	reg := metrics.NewRegistry(metrics.Config{})
 	cfg := testConfig()
 	cfg.Durability = spec.DurabilityAsync
@@ -266,9 +266,7 @@ func TestWALBlockedGaugeDecreases(t *testing.T) {
 	w := newWAL(&segment{}, cfg, 0, nil, reg.Scope("w"))
 	scope := reg.Scope("w")
 
-	for range cap(w.asyncChan) {
-		require.NoError(t, w.pushAsync(t.Context(), asyncEntry{rec: []byte("x")}))
-	}
+	fillSlots(t, w, &segment{})
 	ctx, cancel := context.WithCancel(t.Context())
 	go func() { _ = w.pushAsync(ctx, asyncEntry{rec: []byte("y")}) }()
 	require.Eventually(t, func() bool {
@@ -281,6 +279,7 @@ func TestWALBlockedGaugeDecreases(t *testing.T) {
 }
 
 func TestWALBlockedCanceledContext(t *testing.T) {
+	useBlockingWriter(t)
 	reg := metrics.NewRegistry(metrics.Config{})
 	cfg := testConfig()
 	cfg.Durability = spec.DurabilityAsync
@@ -288,9 +287,7 @@ func TestWALBlockedCanceledContext(t *testing.T) {
 	w := newWAL(&segment{}, cfg, 0, nil, reg.Scope("w"))
 	scope := reg.Scope("w")
 
-	for range cap(w.asyncChan) {
-		require.NoError(t, w.pushAsync(t.Context(), asyncEntry{rec: []byte("x")}))
-	}
+	fillSlots(t, w, &segment{})
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	require.ErrorIs(t, w.pushAsync(ctx, asyncEntry{rec: []byte("y")}), context.Canceled)
@@ -298,6 +295,7 @@ func TestWALBlockedCanceledContext(t *testing.T) {
 }
 
 func TestWALFillRatioBounded(t *testing.T) {
+	useBlockingWriter(t)
 	cfg := testConfig()
 	cfg.Durability = spec.DurabilityAsync
 	cfg.MaxFlushBytes = 8192
@@ -308,11 +306,10 @@ func TestWALFillRatioBounded(t *testing.T) {
 	require.GreaterOrEqual(t, w.byteFill(), 0.0)
 	require.LessOrEqual(t, w.byteFill(), 1.0)
 
-	for range cap(w.asyncChan) {
-		require.NoError(t, w.pushAsync(t.Context(), asyncEntry{rec: []byte("x")}))
-	}
+	fillSlots(t, w, &segment{})
 	require.GreaterOrEqual(t, w.channelFill(), 0.0)
 	require.LessOrEqual(t, w.channelFill(), 1.0)
+	require.Positive(t, w.channelFill(), "a full slot budget must report occupancy")
 }
 
 func TestStorageSnapshotShape(t *testing.T) {
