@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -79,22 +80,23 @@ func (d *Duration) parseNanos(text string) error {
 	return nil
 }
 
-// byteUnits are the suffixes a byte count may carry: SI decimal steps and IEC binary steps.
+// byteUnits are the suffixes a byte count may carry; every spelling of a step is one magnitude.
 var byteUnits = []struct {
-	suffix string
-	scale  int64
+	suffixes []string
+	scale    int64
 }{
-	{"TIB", 1 << 40}, {"GIB", 1 << 30}, {"MIB", 1 << 20}, {"KIB", 1 << 10},
-	{"TB", 1_000_000_000_000}, {"GB", 1_000_000_000}, {"MB", 1_000_000}, {"KB", 1_000},
-	{"T", 1_000_000_000_000}, {"G", 1_000_000_000}, {"M", 1_000_000}, {"K", 1_000},
-	{"B", 1},
+	{[]string{"TIB", "TB", "T"}, 1 << 40},
+	{[]string{"GIB", "GB", "G"}, 1 << 30},
+	{[]string{"MIB", "MB", "M"}, 1 << 20},
+	{[]string{"KIB", "KB", "K"}, 1 << 10},
+	{[]string{"B"}, 1},
 }
 
 // parseBytes reads "1048576", "64MB", or "64 MiB" as a byte count; the suffix is optional.
 func parseBytes(text string) (int64, error) {
 	digits, unit := splitByteUnit(text)
 	if digits == "" {
-		return 0, fmt.Errorf("%w: bad byte count %q: want \"64MB\", \"64 MiB\", or bytes", ErrInvalidConfig, text)
+		return 0, fmt.Errorf("%w: bad byte count %q: want \"64MB\", \"64MiB\", or a byte count", ErrInvalidConfig, text)
 	}
 	scale, err := byteUnitScale(unit)
 	if err != nil {
@@ -102,7 +104,7 @@ func parseBytes(text string) (int64, error) {
 	}
 	n, err := strconv.ParseInt(digits, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("%w: bad byte count %q: want \"64MB\", \"64 MiB\", or bytes", ErrInvalidConfig, text)
+		return 0, fmt.Errorf("%w: bad byte count %q: want \"64MB\", \"64MiB\", or a byte count", ErrInvalidConfig, text)
 	}
 	return n * scale, nil
 }
@@ -121,7 +123,7 @@ func splitByteUnit(text string) (digits, unit string) {
 // byteUnitScale resolves a byte suffix, or reports the ones this build knows.
 func byteUnitScale(unit string) (int64, error) {
 	for _, u := range byteUnits {
-		if u.suffix == unit {
+		if slices.Contains(u.suffixes, unit) {
 			return u.scale, nil
 		}
 	}

@@ -265,7 +265,7 @@ func TestBenchByteFlagsAcceptUnits(t *testing.T) {
 		[]string{"--dir", "d", "--bytes", "256MB", "--msg-size", "4 KiB"},
 		spec.BuiltinSession(), envLookup(nil))
 	require.NoError(t, err)
-	assert.Equal(t, int64(256_000_000), opts.Workload.Bytes)
+	assert.Equal(t, int64(256<<20), opts.Workload.Bytes)
 	assert.Equal(t, 4096, opts.Workload.MsgSize)
 }
 

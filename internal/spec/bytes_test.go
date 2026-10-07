@@ -18,22 +18,22 @@ func TestParseBytesAcceptsCountsAndUnits(t *testing.T) {
 		{"1B", 1},
 		{"1b", 1},
 		{"64B", 64},
-		{"64MB", 64_000_000},
-		{"64 MB", 64_000_000},
-		{"64_MB", 64_000_000},
-		{"1kb", 1_000},
-		{"1KB", 1_000},
-		{"1k", 1_000},
-		{"1M", 1_000_000},
-		{"2GB", 2_000_000_000},
-		{"1TB", 1_000_000_000_000},
+		{"64MB", 64 << 20},
+		{"64 MB", 64 << 20},
+		{"64_MB", 64 << 20},
+		{"1kb", 1 << 10},
+		{"1KB", 1 << 10},
+		{"1k", 1 << 10},
+		{"1M", 1 << 20},
+		{"2GB", 2 << 30},
+		{"1TB", 1 << 40},
 		{"64MiB", 64 << 20},
 		{"64 MiB", 64 << 20},
 		{"64mib", 64 << 20},
 		{"512KiB", 512 << 10},
 		{"1GiB", 1 << 30},
 		{"1TiB", 1 << 40},
-		{"-5MB", -5_000_000},
+		{"-5MB", -(5 << 20)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.text, func(t *testing.T) {
@@ -66,7 +66,7 @@ func TestByteParamParsesUnits(t *testing.T) {
 
 	v, err := p.Parse("256MB")
 	require.NoError(t, err)
-	assert.Equal(t, int64(256_000_000), v.Bytes())
+	assert.Equal(t, int64(256<<20), v.Bytes())
 
 	v, err = p.Parse("256 MiB")
 	require.NoError(t, err)
@@ -76,13 +76,21 @@ func TestByteParamParsesUnits(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidConfig)
 }
 
-// TestByteUnitsDistinguishSIFromIEC pins the one distinction a reader can get wrong.
-func TestByteUnitsDistinguishSIFromIEC(t *testing.T) {
-	si, err := parseBytes("1MB")
-	require.NoError(t, err)
-	iec, err := parseBytes("1MiB")
-	require.NoError(t, err)
-	assert.Equal(t, int64(1_000_000), si)
-	assert.Equal(t, int64(1<<20), iec)
-	assert.NotEqual(t, si, iec)
+// TestByteUnitsTreatEverySpellingAsBinary pins the one rule a reader can get wrong.
+func TestByteUnitsTreatEverySpellingAsBinary(t *testing.T) {
+	for _, mag := range []struct {
+		spellings []string
+		scale     int64
+	}{
+		{[]string{"1MB", "1MiB", "1M", "1m"}, 1 << 20},
+		{[]string{"1GB", "1GiB", "1G", "1g"}, 1 << 30},
+		{[]string{"1TB", "1TiB", "1T", "1t"}, 1 << 40},
+		{[]string{"1KB", "1KiB", "1K", "1k"}, 1 << 10},
+	} {
+		for _, text := range mag.spellings {
+			got, err := parseBytes(text)
+			require.NoErrorf(t, err, text)
+			assert.Equalf(t, mag.scale, got, "%s is a binary step", text)
+		}
+	}
 }

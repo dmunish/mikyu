@@ -303,6 +303,8 @@ type MetricsConfig struct {
 
 **Codec:** `CurrentSpecVersion = 5`, `MaxSpecPayload = 1<<20`. `Duration` accepts Go duration strings or int64 nanos. `DecodeSpec` uses `DisallowUnknownFields` + trailing-data rejection. `CheckSpecVersion(version) error` returns `ErrSpecTooNew`.
 
+**Byte units** (`codec.go`): every suffix is a binary step, so `1G`, `1GB`, and `1GiB` all mean `1<<30`. A space or `_` between digits and suffix is optional, and parsing is case-insensitive. This matches the rendering side, where `human.Bytes` only ever emits binary units.
+
 **Built-in defaults** (`spec.go → Builtin()`):
 
 | Key | Value |
