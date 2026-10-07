@@ -232,34 +232,23 @@ func u32At(buf []byte, off uint32) *uint32 {
 
 // uringKernelSupported reports whether the host kernel is new enough for the operations the ring submits.
 func uringKernelSupported() bool {
-	var u unix.Utsname
-	if err := unix.Uname(&u); err != nil {
-		return false
-	}
-	majorText, minorText, found := strings.Cut(utsnameString(u.Release[:]), ".")
-	if !found {
-		return false
-	}
-	major, err := strconv.Atoi(majorText)
+	release, err := os.ReadFile("/proc/sys/kernel/osrelease")
 	if err != nil {
 		return false
 	}
-	minor, err := strconv.Atoi(minorText)
+	fields := strings.SplitN(strings.TrimSpace(string(release)), ".", 3)
+	if len(fields) < 2 {
+		return false
+	}
+	major, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return false
+	}
+	minor, err := strconv.Atoi(fields[1])
 	if err != nil {
 		return false
 	}
 	return major > uringMinKernelMajor || (major == uringMinKernelMajor && minor >= uringMinKernelMinor)
-}
-
-func utsnameString(field []byte) string {
-	out := make([]byte, 0, len(field))
-	for _, c := range field {
-		if c == 0 {
-			break
-		}
-		out = append(out, byte(c))
-	}
-	return string(out)
 }
 
 // submit writes the SQEs and issues one io_uring_enter per chunk, holding submitMu so concurrent producers never interleave their SQE writes.
