@@ -11,7 +11,7 @@ A queue's **kind is structural**: it is the name of its parent directory under t
 
 ## 1. Architectural Principles
 
-1. **Layer purity** — enforced by `.go-arch-lint.yml`. `spec`, `protocol`, `group`, `enginetest`, `style`, `human` are bottoms.
+1. **Layer purity** — enforced by `.go-arch-lint.yml`. `spec`, `protocol`, `group`, `enginetest`, `style`, `human`, `iow` are bottoms.
 2. **One storage engine, two structural kinds.** `engine.Storage` is the only contract drivers see. `manager.Manager` owns two `*engine.Manager` roots — `log/` and `task/`.
 3. **Kind is structural.** `manager.GetOf(name, kind)` refuses a queue under the wrong kind (`manager.ErrWrongKind`).
 4. **One configuration table.** `spec.Table` drives every surface (SDK, CLI, env, YAML, wire, storage). Each row carries a `Doc`.
@@ -63,6 +63,7 @@ github.com/dmunish/mikyu/
     ├── bench/                     # Benchmark harness (modes, phases, measure, envelope, verify)
     │   └── result/                # On-disk envelope of one bench run (result.json, series.csv)
     ├── spec/                      # THE config schema (spec, table, derive, codec, env, validate, enums, errors)
+    ├── iow/                       # Bounded, ordered concurrent writes: Writer, pool, platform stubs
     ├── config/config.go           # mikyu.yaml loader, legacy-key/env rejection, bootstrap
     ├── engine/                    # Storage engine (storage, manager, queue, append, read, fetch,
     │                              # wal, segment, compaction, cache, offsets, metrics, sync_*, encrypt_*,
@@ -102,9 +103,9 @@ github.com/dmunish/mikyu/
 ### Allowed Dependency Edges
 
 ```
-bottoms:          spec, protocol, group, enginetest, style, human
+bottoms:          spec, protocol, group, enginetest, style, human, iow
 metrics        →  spec
-engine         →  spec, metrics
+engine         →  spec, metrics, iow
 manager        →  engine, metrics
 ipc            →  protocol
 logqueue       →  engine, group

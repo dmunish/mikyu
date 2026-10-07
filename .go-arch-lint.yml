@@ -19,6 +19,7 @@ excludeFiles:
 
 components:
   spec:       { in: internal/spec }
+  iow:        { in: internal/iow }
   metrics:    { in: internal/metrics }
   errs:       { in: internal/errs }
   engine:     { in: internal/engine }
@@ -51,6 +52,8 @@ components:
 deps:
   # ---- bottoms ---- (anyVendorDeps: stdlib allowed, no internal deps)
   spec:
+    anyVendorDeps: true
+  iow:
     anyVendorDeps: true
   metrics:
     mayDependOn: [spec]
