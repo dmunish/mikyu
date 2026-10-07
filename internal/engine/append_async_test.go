@@ -199,11 +199,11 @@ func TestAppendBatchPreservesOffsetsUnderContention(t *testing.T) {
 	require.Zero(t, reserved)
 	require.Equal(t, uint64(total), published, "published offset must cover every record")
 	require.Len(t, got, total)
-	for o := uint64(0); o < total; o++ {
+	for o := range uint64(total) {
 		require.True(t, got[o], "offset %d missing from the stream", o)
 	}
 
-	for o := uint64(0); o < total; o++ {
+	for o := range uint64(total) {
 		_, err := q.Read(t.Context(), o)
 		require.NoError(t, err, "offset %d must be readable", o)
 	}
