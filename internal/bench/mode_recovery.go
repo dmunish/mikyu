@@ -46,7 +46,7 @@ func (r *runner) recoveryPopulate(ctx context.Context) error {
 		return fmt.Errorf("%w: crash_after_bytes must cover at least one message", ErrUsage)
 	}
 	buf := make([]byte, w.MsgSize)
-	for i := int64(0); i < total; i++ {
+	for i := range total {
 		payloadFor(w.Seed, uint64(i), buf)
 		if r.isLog() {
 			if _, err := r.logQueues[0].Append(ctx, buf); err != nil {

@@ -39,8 +39,7 @@ func TestTableKeyOrder(t *testing.T) {
 // TestTableCoversWorkload proves no Workload field is orphaned: applying one row moves exactly that field.
 func TestTableCoversWorkload(t *testing.T) {
 	rt := reflect.TypeFor[Workload]()
-	for i := range rt.NumField() {
-		field := rt.Field(i)
+	for field := range rt.Fields() {
 		var owners []string
 		for _, p := range Table {
 			w := Workload{}

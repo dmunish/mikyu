@@ -40,26 +40,22 @@ func (r *runner) produce(ctx context.Context, until func() bool) error {
 			r.dispatchRate(schedCtx, tickets, until)
 		}()
 		for range w.Workers {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				if err := r.openProduceWorker(schedCtx, tickets); err != nil && !errors.Is(err, context.Canceled) {
 					errCh <- err
 				}
-			}()
+			})
 		}
 		wg.Wait()
 		cancel()
 		<-schedDone
 	} else {
 		for range w.Workers {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				if err := r.closedProduceWorker(ctx, until); err != nil && !errors.Is(err, context.Canceled) {
 					errCh <- err
 				}
-			}()
+			})
 		}
 		wg.Wait()
 	}

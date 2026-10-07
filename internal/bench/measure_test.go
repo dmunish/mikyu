@@ -45,14 +45,12 @@ func TestConcurrentRecord(t *testing.T) {
 	m := NewMeasure()
 	var wg sync.WaitGroup
 	for range 100 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range 1000 {
 				m.Record(time.Duration(i+1) * time.Microsecond)
 				m.AddMessages(1)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 
