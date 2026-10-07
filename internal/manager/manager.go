@@ -13,11 +13,12 @@ import (
 	"github.com/dmunish/mikyu/internal/metrics"
 )
 
-// Manager owns a data directory: its log/ and task/ storage roots and the kind-partitioned queues inside them.
+// Manager owns a data directory: its log/ and task/ storage roots, the queues inside them, and the shared io_uring ring.
 type Manager struct {
 	dir  string
 	log  *engine.Manager
 	task *engine.Manager
+	ring *engine.Ring
 }
 
 // Open creates the data directory and opens both kind roots, applying per-queue configs.
@@ -35,16 +36,19 @@ func Open(dir string, defaultCfg engine.Config, perQueue map[Key]engine.Config, 
 			taskCfg[key.Name] = cfg
 		}
 	}
-	logMgr, err := engine.OpenManager(filepath.Join(dir, KindLog.String()), defaultCfg, logCfg, regs...)
+	ring := engine.NewRing()
+	logMgr, err := engine.OpenManagerRing(filepath.Join(dir, KindLog.String()), defaultCfg, logCfg, ring, regs...)
 	if err != nil {
+		_ = ring.Close()
 		return nil, err
 	}
-	taskMgr, err := engine.OpenManager(filepath.Join(dir, KindTask.String()), defaultCfg, taskCfg, regs...)
+	taskMgr, err := engine.OpenManagerRing(filepath.Join(dir, KindTask.String()), defaultCfg, taskCfg, ring, regs...)
 	if err != nil {
 		_ = logMgr.Close()
+		_ = ring.Close()
 		return nil, err
 	}
-	return &Manager{dir: dir, log: logMgr, task: taskMgr}, nil
+	return &Manager{dir: dir, log: logMgr, task: taskMgr, ring: ring}, nil
 }
 
 // Dir returns the data directory the manager owns.
@@ -162,12 +166,16 @@ func (m *Manager) Collect(ctx context.Context, dst *metrics.Snapshot) {
 	dst.Storage.DataDir = m.dir
 }
 
-// Close shuts down the task root first (final checkpoints) and then the log root.
+// Close shuts down the task root first (final checkpoints), then the log root, and tears the shared ring down last.
 func (m *Manager) Close() error {
 	taskErr := m.task.Close()
 	logErr := m.log.Close()
+	ringErr := m.ring.Close()
 	if taskErr != nil {
 		return taskErr
 	}
-	return logErr
+	if logErr != nil {
+		return logErr
+	}
+	return ringErr
 }

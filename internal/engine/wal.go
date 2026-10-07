@@ -2,19 +2,11 @@ package engine
 
 import (
 	"context"
-	"os"
 	"sync"
 	"time"
 
 	"github.com/dmunish/mikyu/internal/metrics"
-	"github.com/dmunish/mikyu/internal/spec"
 )
-
-// writerHook, when non-nil, runs before every WAL file write so tests can assert the single-writer invariant.
-var writerHook func()
-
-// writeAtHook, when non-nil, receives every WAL log write's offset and length so tests can assert batching.
-var writeAtHook func(off int64, n int)
 
 type pendingEntry struct {
 	pos int64
@@ -31,19 +23,23 @@ type asyncEntry struct {
 }
 
 // wal manages write-ahead logging using byte-budgeted flusher batching with
-// micro-linger group commits to minimize fsync overhead.
+// micro-linger group commits to minimize fsync overhead. All writes go through
+// a sink, which owns the segment's two files; sync durability waits for the
+// sink to make each batch durable, async durability publishes and lets the
+// sink flush in the background.
 //
-// Single writer: exactly one goroutine (the syncLoop) writes bytes to the WAL
-// segment file. Producers only stage records via push/pushBatch (sync path) or
-// pushAsyncBatch (async path); flush and drainAndFlushAsync are the sole callers of
-// writeAt. Sequencing is byte-based: pushedBytes/publishedBytes count staged
-// and flushed bytes, and wait(seq) blocks until publishedBytes reaches the
-// byte offset the push returned. Async backpressure is bounded: asyncChan
-// holds MaxFlushBytes/4096 slices (a byte-to-slot approximation), a full
-// channel blocks the producer, and a canceled context yields ctx.Err().
+// Single writer: exactly one goroutine writes the segment files — the syncLoop
+// for staged sync batches and the sink's drain loop for async batches.
+// Producers only stage records via push/pushBatch (sync path) or
+// pushAsyncBatch (async path). Sequencing is byte-based: pushedBytes and
+// publishedBytes count staged and flushed bytes, and wait(seq) blocks until
+// publishedBytes reaches the byte offset the push returned. Async backpressure
+// is bounded: asyncChan holds MaxFlushBytes/4096 slices (a byte-to-slot
+// approximation), a full channel blocks the producer, and a canceled context
+// yields ctx.Err().
 type wal struct {
 	cfg  Config
-	file *os.File
+	sink sink
 
 	mu             sync.Mutex
 	cond           *sync.Cond
@@ -67,11 +63,12 @@ type wal struct {
 	m *walMetrics
 }
 
-func newWAL(f *os.File, cfg Config, startOffset uint64, scopes ...*metrics.Scope) *wal {
+// newWAL builds the WAL for one segment; ring may be nil on hosts without io_uring.
+func newWAL(seg *segment, cfg Config, startOffset uint64, ring *uringRing, scopes ...*metrics.Scope) *wal {
 	flushBytes := max(cfg.MaxFlushBytes, 4096)
 	w := &wal{
-		file:          f,
 		cfg:           cfg,
+		sink:          newSink(seg.logFile, seg.idxFile, cfg, ring),
 		asyncNext:     startOffset,
 		buf:           make([]byte, 0, flushBytes),
 		pending:       make([]pendingEntry, 0, 64),
@@ -145,9 +142,6 @@ func (w *wal) UpdateConfig(maxFlushBytes int64, maxFlushWait, flushLinger time.D
 func (w *wal) shutdownFlush() {
 	w.drainRemainingAsync()
 	w.flush()
-	if err := syncData(w.file); err != nil {
-		w.setError(err)
-	}
 }
 
 func (w *wal) push(rec []byte, pos int64) (seq int64, wake bool, err error) {
@@ -191,18 +185,6 @@ func (w *wal) pushBatch(recs [][]byte, positions []int64) (seq int64, wake bool,
 
 	wake = w.pendingBytes >= w.cfg.MaxFlushBytes
 	return seq, wake, nil
-}
-
-// writeAt is the only writer of the WAL segment file; flush and drainAndFlushAsync call it.
-func (w *wal) writeAt(p []byte, off int64) (int, error) {
-	if writerHook != nil {
-		writerHook()
-	}
-	n, err := w.file.WriteAt(p, off)
-	if writeAtHook != nil {
-		writeAtHook(off, n)
-	}
-	return n, err
 }
 
 // pushAsync stages one record on the async path (see pushAsyncBatch).
@@ -322,14 +304,7 @@ func (w *wal) flush() {
 	w.mu.Unlock()
 
 	start := time.Now()
-	var writeErr error
-	if _, err := w.writeAt(data, entries[0].pos); err != nil {
-		writeErr = err
-	} else if w.cfg.Durability != spec.DurabilityAsync {
-		if err := syncData(w.file); err != nil {
-			writeErr = err
-		}
-	}
+	writeErr := w.sink.Write(sinkBatch{Records: flushWrites(data, entries)}, nil)
 	w.m.flushes.Inc()
 	w.m.flushDur.Observe(time.Since(start).Seconds())
 
@@ -355,6 +330,25 @@ func (w *wal) flush() {
 
 	w.cond.Broadcast()
 	w.mu.Unlock()
+}
+
+// flushWrites renders the staged buffer as one contiguous write when the
+// entries tile it, and as per-entry writes at their own offsets otherwise.
+func flushWrites(data []byte, entries []pendingEntry) []sinkWrite {
+	writes := make([]sinkWrite, len(entries))
+	var off int
+	contiguous := true
+	for i, e := range entries {
+		writes[i] = sinkWrite{P: data[off : off+int(e.len)], Off: e.pos}
+		off += int(e.len)
+		if i > 0 && e.pos != entries[i-1].pos+entries[i-1].len {
+			contiguous = false
+		}
+	}
+	if contiguous {
+		return []sinkWrite{{P: data, Off: entries[0].pos}}
+	}
+	return writes
 }
 
 func (w *wal) drainAndFlushAsync(first []asyncEntry) {
@@ -383,7 +377,6 @@ func (w *wal) drainAndFlushAsync(first []asyncEntry) {
 WRITE:
 	w.mu.Lock()
 	failed := w.err
-	next := w.asyncNext
 	w.mu.Unlock()
 	if failed != nil {
 		return
@@ -396,7 +389,7 @@ WRITE:
 			entries[j].pos == entries[j-1].pos+entries[j-1].recLen {
 			j++
 		}
-		if err := w.writeRun(entries[i:j], &next); err != nil {
+		if err := w.writeRun(entries[i:j]); err != nil {
 			w.setError(err)
 			return
 		}
@@ -404,17 +397,15 @@ WRITE:
 	}
 	w.m.flushes.Inc()
 	w.m.flushDur.Observe(time.Since(start).Seconds())
-
-	w.mu.Lock()
-	if next > w.asyncNext {
-		w.asyncNext = next
-	}
-	w.cond.Broadcast()
-	w.mu.Unlock()
 }
 
-// writeRun coalesces one contiguous same-segment run into a single log write and writes its index entries.
-func (w *wal) writeRun(run []asyncEntry, next *uint64) error {
+// writeRun submits one contiguous same-segment run to the sink as a single
+// log write with the run's index entries alongside it; the sink's completion
+// advances asyncNext and recycles the run's buffers.
+func (w *wal) writeRun(run []asyncEntry) error {
+	if writerHook != nil {
+		writerHook()
+	}
 	data := run[0].rec
 	var slab *pooledBuf
 	if len(run) > 1 {
@@ -430,29 +421,46 @@ func (w *wal) writeRun(run []asyncEntry, next *uint64) error {
 		}
 		data = slab.b
 	}
-	_, err := w.writeAt(data, run[0].pos)
+	batch := sinkBatch{
+		Records: []sinkWrite{{P: data, Off: run[0].pos}},
+		Index:   asyncIndex(run),
+	}
+	encodeKeep := 4 * int(w.cfg.MaxPayload)
+	done := func(err error) {
+		if slab != nil {
+			slab.release(2 * int(w.cfg.MaxFlushBytes))
+		}
+		for _, e := range run {
+			if e.buf != nil {
+				e.buf.release(encodeKeep)
+			}
+		}
+		if err != nil {
+			w.setError(err)
+			return
+		}
+		w.mu.Lock()
+		if last := run[len(run)-1].offset + 1; last > w.asyncNext {
+			w.asyncNext = last
+		}
+		w.cond.Broadcast()
+		w.mu.Unlock()
+	}
+	return w.sink.Write(batch, done)
+}
+
+// asyncIndex renders one async run's index entries for the sink.
+func asyncIndex(run []asyncEntry) sinkIndex {
 	positions := make([]int64, len(run))
 	lengths := make([]int64, len(run))
 	for i, e := range run {
 		positions[i], lengths[i] = e.pos, e.recLen
-		if e.offset == *next {
-			*next++
-		}
 	}
-	if err == nil {
-		idxPos := int64(run[0].offset-run[0].seg.baseOff) * rawIndexEntrySize
-		err = run[0].seg.writeIndexBatchAt(idxPos, positions, lengths)
+	return sinkIndex{
+		Start:     int64(run[0].offset-run[0].seg.baseOff) * rawIndexEntrySize,
+		Positions: positions,
+		Lengths:   lengths,
 	}
-	if slab != nil {
-		slab.release(2 * int(w.cfg.MaxFlushBytes))
-	}
-	encodeKeep := 4 * int(w.cfg.MaxPayload)
-	for _, e := range run {
-		if e.buf != nil {
-			e.buf.release(encodeKeep)
-		}
-	}
-	return err
 }
 
 func (w *wal) setError(err error) {
@@ -482,6 +490,8 @@ func (w *wal) stop() error {
 	w.stopOnce.Do(func() {
 		close(w.shutdown)
 		<-w.done
+		w.setError(w.sink.Close())
+		w.setError(w.sink.Sync())
 	})
 	return w.err
 }

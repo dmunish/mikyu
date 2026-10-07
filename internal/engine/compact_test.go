@@ -28,7 +28,7 @@ func newTestQueue(t *testing.T, maxSegBytes int64) (*Queue, string) {
 	cfg.MaxSegment = maxSegBytes
 	cfg.Durability = spec.DurabilityAsync // Async for fast test execution
 
-	q, err := openQueue(dir, "compact-test-queue", cfg, store)
+	q, err := openQueue(dir, "compact-test-queue", cfg, store, nil)
 	if err != nil {
 		t.Fatalf("failed to open queue: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestCompact_CrashRecoveryAfterTruncation(t *testing.T) {
 	cfg.MaxSegment = 256
 	cfg.Durability = spec.DurabilityAsync
 
-	q, err := openQueue(dir, "crash-queue", cfg, store)
+	q, err := openQueue(dir, "crash-queue", cfg, store, nil)
 	if err != nil {
 		t.Fatalf("openQueue failed: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestCompact_CrashRecoveryAfterTruncation(t *testing.T) {
 	_ = q.Close()
 
 	// Re-open queue from same directory
-	qReopened, err := openQueue(dir, "crash-queue", cfg, store)
+	qReopened, err := openQueue(dir, "crash-queue", cfg, store, nil)
 	if err != nil {
 		t.Fatalf("re-opening queue failed: %v", err)
 	}
@@ -502,7 +502,7 @@ func TestFloorForSizeDropsWholeSegments(t *testing.T) {
 	cfg := testConfig()
 	cfg.MaxSegment = 256
 
-	q, err := openQueue(dir, "floor-for-size-queue", cfg, store)
+	q, err := openQueue(dir, "floor-for-size-queue", cfg, store, nil)
 	if err != nil {
 		t.Fatalf("openQueue failed: %v", err)
 	}

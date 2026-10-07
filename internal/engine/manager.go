@@ -13,14 +13,28 @@ type Manager struct {
 	mu      sync.RWMutex
 	dir     string
 	root    *os.Root
+	ring    *uringRing
 	cfg     Config
 	queues  map[string]*Queue
 	offsets *OffsetStore
 	reg     *metrics.Registry
 }
 
-// OpenManager creates a Manager and loads existing queues.
+// OpenManager creates a Manager and loads existing queues; queues opened by it use no io_uring ring.
 func OpenManager(dir string, cfg Config, perQueue map[string]Config, regs ...*metrics.Registry) (*Manager, error) {
+	return openManager(dir, cfg, perQueue, nil, regs...)
+}
+
+// OpenManagerRing creates a Manager whose queues submit WAL writes through ring (nil falls back to the portable sinks); the caller owns ring's lifecycle.
+func OpenManagerRing(dir string, cfg Config, perQueue map[string]Config, ring *Ring, regs ...*metrics.Registry) (*Manager, error) {
+	var inner *uringRing
+	if ring != nil {
+		inner = ring.ring
+	}
+	return openManager(dir, cfg, perQueue, inner, regs...)
+}
+
+func openManager(dir string, cfg Config, perQueue map[string]Config, ring *uringRing, regs ...*metrics.Registry) (*Manager, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -39,6 +53,7 @@ func OpenManager(dir string, cfg Config, perQueue map[string]Config, regs ...*me
 	m := &Manager{
 		dir:     dir,
 		root:    root,
+		ring:    ring,
 		cfg:     cfg,
 		queues:  make(map[string]*Queue),
 		offsets: store,
@@ -60,7 +75,7 @@ func OpenManager(dir string, cfg Config, perQueue map[string]Config, regs ...*me
 		if override, ok := perQueue[name]; ok {
 			qCfg = override
 		}
-		q, err := openQueue(dir, name, qCfg, store, m.scopeFor(name))
+		q, err := openQueue(dir, name, qCfg, store, ring, m.scopeFor(name))
 		if err != nil {
 			_ = m.Close()
 			return nil, err
@@ -82,7 +97,7 @@ func (m *Manager) Create(name string, opts ...Config) (Storage, error) {
 	if len(opts) > 0 {
 		cfg = opts[0]
 	}
-	q, err := openQueue(m.dir, name, cfg, m.offsets, m.scopeFor(name))
+	q, err := openQueue(m.dir, name, cfg, m.offsets, m.ring, m.scopeFor(name))
 	if err != nil {
 		return nil, err
 	}

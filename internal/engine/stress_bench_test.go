@@ -20,7 +20,7 @@ func newBenchQueue(b *testing.B, cfg Config) (*Queue, *OffsetStore) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	q, err := openQueue(dir, "bench", cfg, store)
+	q, err := openQueue(dir, "bench", cfg, store, nil)
 	if err != nil {
 		b.Fatal(err)
 	}

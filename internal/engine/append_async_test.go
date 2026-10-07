@@ -23,7 +23,7 @@ func openAsyncQueue(t *testing.T, name string, mutate func(*Config)) *Queue {
 	if mutate != nil {
 		mutate(&cfg)
 	}
-	q, err := openQueue(dir, name, cfg, store)
+	q, err := openQueue(dir, name, cfg, store, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = q.Close() })
 	return q

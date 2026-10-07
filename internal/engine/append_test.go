@@ -23,7 +23,7 @@ func TestSyncAppendWakeDrivesFlushCadence(t *testing.T) {
 	cfg := testConfig()
 	cfg.MaxFlushWait = time.Second // the ticker must never drive the cadence
 	reg := metrics.NewRegistry(metrics.Config{})
-	q, err := openQueue(dir, "wake", cfg, store, reg.Scope("wake"))
+	q, err := openQueue(dir, "wake", cfg, store, nil, reg.Scope("wake"))
 	require.NoError(t, err)
 	defer q.Close()
 
