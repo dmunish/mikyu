@@ -332,14 +332,14 @@ func splitCSV(text string) []string {
 	return out
 }
 
-// bench bar geometry and the warm end of the banner gradient.
+// bench bar geometry.
 const (
 	progressWidth      = 24
 	progressLabelWidth = 10
 )
 
-// benchBarColors fills the progress bar with the banner gradient's warm end.
-var benchBarColors = style.Default.Gradient[:3]
+// benchBarColors fills the progress bar with the banner gradient, darkest ramp stop excluded.
+var benchBarColors = style.Default.Gradient[:len(style.Default.Gradient)-1]
 
 // benchProgress draws a once-per-second progress bar for a running bench.
 type benchProgress struct {
