@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -332,9 +333,27 @@ func TestProgressBarRendersPhasesOnAnyWriter(t *testing.T) {
 	end := buf.String()
 	assert.Contains(t, end, "100%")
 	assert.Contains(t, end, "\n", "a finished phase commits its line")
+	assert.Empty(t, p.active, "a finished phase is no longer live")
 
 	p.stop()
 	assert.Contains(t, buf.String(), "[measure]")
+}
+
+// A finished phase must not be repainted by the ticker, or a run ends with a stale second bar.
+func TestProgressBarDoesNotRepaintAFinishedPhase(t *testing.T) {
+	var buf bytes.Buffer
+	p := newTestProgress(&buf, 0)
+
+	p.event(bench.ProgressEvent{Kind: bench.ProgressStart, Phase: bench.PhaseDrain})
+	p.event(bench.ProgressEvent{Kind: bench.ProgressEnd, Phase: bench.PhaseDrain})
+	before := buf.String()
+
+	p.mu.Lock()
+	p.paintTickLocked()
+	p.mu.Unlock()
+
+	assert.Equal(t, before, buf.String(), "no tick may redraw a phase that already ended")
+	assert.Equal(t, 1, strings.Count(before, "\n"), "one committed line per phase, not two")
 }
 
 func TestProgressBarScalesToBytes(t *testing.T) {

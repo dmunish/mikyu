@@ -388,12 +388,18 @@ func (p *benchProgress) loop() {
 			return
 		case <-ticker.C:
 			p.mu.Lock()
-			if p.active != "" {
-				p.repaintLocked()
-			}
+			p.paintTickLocked()
 			p.mu.Unlock()
 		}
 	}
+}
+
+// paintTickLocked repaints only while a phase is live; a finished phase is never redrawn.
+func (p *benchProgress) paintTickLocked() {
+	if p.active == "" {
+		return
+	}
+	p.repaintLocked()
 }
 
 // stop ends the printer and closes the line it may have left open.
@@ -425,6 +431,7 @@ func (p *benchProgress) event(e bench.ProgressEvent) {
 		fmt.Fprint(p.w, "\r\x1b[2K", p.renderLocked(1))
 		fmt.Fprintln(p.w)
 		p.lineOpen = false
+		p.active = ""
 	case bench.ProgressTick:
 		p.bytes = e.Bytes
 		if e.Total > 0 {
