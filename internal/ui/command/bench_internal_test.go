@@ -249,7 +249,7 @@ func TestSplitCSVTrimsAndDropsEmpties(t *testing.T) {
 func TestModeScopeDocNamesEveryScopedMode(t *testing.T) {
 	preload, ok := bench.Lookup("preload")
 	require.True(t, ok)
-	assert.Equal(t, "consume", modeScopeDoc(preload))
+	assert.Equal(t, "consume|mix", modeScopeDoc(preload))
 
 	rate, ok := bench.Lookup("rate")
 	require.True(t, ok)

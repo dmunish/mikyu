@@ -108,7 +108,7 @@ func TestBenchHelpMarksModeScopedFlags(t *testing.T) {
 	require.NoError(t, command.WriteVerb(&buf, v, command.RenderOptions{Mode: command.ModeCLI, Color: false}))
 	out := buf.String()
 
-	assert.Contains(t, out, "(consume only)")
+	assert.Contains(t, out, "(consume|mix only)")
 	assert.Contains(t, out, "(produce|mix only)")
 	assert.Contains(t, out, "(recovery only)")
 }

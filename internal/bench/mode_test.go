@@ -62,6 +62,32 @@ func TestEnsureBoundMeasuresForTheDefaultDuration(t *testing.T) {
 	require.NoError(t, w.Validate())
 }
 
+// A reading mode with no backlog measures nothing, so a bare run must backfill one.
+func TestEnsureBoundBackfillsTheReadingModes(t *testing.T) {
+	for _, mode := range []Mode{ModeConsume, ModeMix} {
+		w := DefaultWorkload()
+		w.EnsureBound(mode)
+		assert.Equal(t, int64(DefaultPreload), w.Preload, mode)
+		assert.Equal(t, int64(DefaultPreload), w.Bytes, "%s drains exactly its own backlog", mode)
+		require.NoError(t, w.Validate(), mode)
+	}
+}
+
+func TestEnsureBoundLeavesAWriteModeUnbackfilled(t *testing.T) {
+	for _, mode := range []Mode{ModeProduce, ModeRecovery} {
+		w := DefaultWorkload()
+		w.EnsureBound(mode)
+		assert.Zero(t, w.Preload, "%s has nothing to read back", mode)
+	}
+}
+
+func TestEnsureBoundKeepsAnExplicitPreload(t *testing.T) {
+	w := DefaultWorkload()
+	w.Preload = 4096
+	w.EnsureBound(ModeConsume)
+	assert.Equal(t, int64(4096), w.Preload)
+}
+
 func TestEnsureBoundLeavesANamedBoundAlone(t *testing.T) {
 	tests := []struct {
 		name  string
