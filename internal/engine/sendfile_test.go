@@ -18,7 +18,7 @@ func TestPayloadSpansMatchReadBatch(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.MaxSegment = 256 << 10
-	q, err := openQueue(dir, "spans", cfg, store)
+	q, err := openQueue(dir, "spans", cfg, store, nil)
 	require.NoError(t, err)
 	defer q.Close()
 
@@ -77,7 +77,7 @@ func TestPayloadSpansDeclineOnCompaction(t *testing.T) {
 
 	cfg := testConfig()
 	cfg.Compaction = spec.CompactionKeys
-	q, err := openQueue(dir, "spans-compact", cfg, store)
+	q, err := openQueue(dir, "spans-compact", cfg, store, nil)
 	require.NoError(t, err)
 	defer q.Close()
 
@@ -99,7 +99,7 @@ func TestPayloadSpansDeclineWhenUnflushed(t *testing.T) {
 	cfg.Durability = spec.DurabilityAsync
 	cfg.MaxFlushBytes = 1 << 30
 	cfg.MaxFlushWait = time.Hour
-	q, err := openQueue(dir, "spans-unflushed", cfg, store)
+	q, err := openQueue(dir, "spans-unflushed", cfg, store, nil)
 	require.NoError(t, err)
 	defer q.Close()
 
@@ -117,7 +117,7 @@ func TestPayloadSpansDeclineBelowThreshold(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	q, err := openQueue(dir, "spans-small", testConfig(), store)
+	q, err := openQueue(dir, "spans-small", testConfig(), store, nil)
 	require.NoError(t, err)
 	defer q.Close()
 

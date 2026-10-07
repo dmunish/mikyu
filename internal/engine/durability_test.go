@@ -3,8 +3,6 @@ package engine
 import (
 	"bytes"
 	"context"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -32,13 +30,13 @@ func goroutineID() uint64 {
 // TestSingleWriter drives concurrent producers and asserts one goroutine wrote the WAL file.
 func TestSingleWriter(t *testing.T) {
 	dir := t.TempDir()
-	f, err := os.Create(filepath.Join(dir, "single.log"))
+	seg, err := openSegment(dir, 0, 0)
 	require.NoError(t, err)
-	defer f.Close()
+	defer seg.Close()
 
 	cfg := testConfig()
 	cfg.MaxFlushWait = time.Millisecond
-	w := newWAL(f, cfg, 0)
+	w := newWAL(seg, cfg, 0, nil)
 	w.start()
 	defer w.stop()
 
@@ -81,15 +79,15 @@ func TestSingleWriter(t *testing.T) {
 // TestBackpressureBlocksProducer fills the bounded async channel and asserts the next push blocks until canceled.
 func TestBackpressureBlocksProducer(t *testing.T) {
 	dir := t.TempDir()
-	f, err := os.Create(filepath.Join(dir, "backpressure.log"))
+	seg, err := openSegment(dir, 0, 0)
 	require.NoError(t, err)
-	defer f.Close()
+	defer seg.Close()
 
 	// The WAL is never started, so nothing drains the channel and
 	// MaxFlushBytes/4096 is the exact capacity.
 	cfg := testConfig()
 	cfg.MaxFlushBytes = 8192
-	w := newWAL(f, cfg, 0)
+	w := newWAL(seg, cfg, 0, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	entry := asyncEntry{seg: &segment{}, rec: []byte("x"), pos: 0, recLen: 1, offset: 0}
 
@@ -120,7 +118,7 @@ func TestShutdownWakesParkedFetch(t *testing.T) {
 	store, err := openOffsetStore(dir)
 	require.NoError(t, err)
 	defer store.Close()
-	q, err := openQueue(dir, "fetch-park", testConfig(), store)
+	q, err := openQueue(dir, "fetch-park", testConfig(), store, nil)
 	require.NoError(t, err)
 
 	errCh := make(chan error, 1)
@@ -157,7 +155,7 @@ func TestDirectoryFsyncSites(t *testing.T) {
 	cfg.MaxSegment = 256
 	cfg.MaxPayload = 128
 	cfg.MaxFlushWait = time.Millisecond
-	q, err := openQueue(dir, "durable", cfg, store)
+	q, err := openQueue(dir, "durable", cfg, store, nil)
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, count.Load(), int64(1), "creating a segment must fsync its directory")
 

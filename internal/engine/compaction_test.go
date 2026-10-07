@@ -24,7 +24,7 @@ func newCompactionQueue(t *testing.T, dir string, maxSegBytes int64) *Queue {
 	cfg.MaxSegment = maxSegBytes
 	cfg.Durability = spec.DurabilityAsync
 	cfg.Compaction = spec.CompactionKeys
-	q, err := openQueue(dir, "compaction-queue", cfg, store)
+	q, err := openQueue(dir, "compaction-queue", cfg, store, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = q.Close() })
 	return q
@@ -151,14 +151,14 @@ func TestKeyIndexRebuildsOnOpen(t *testing.T) {
 	cfg.MaxSegment = 256
 	cfg.Durability = spec.DurabilityAsync
 	cfg.Compaction = spec.CompactionKeys
-	q, err := openQueue(dir, "rebuild-queue", cfg, store)
+	q, err := openQueue(dir, "rebuild-queue", cfg, store, nil)
 	require.NoError(t, err)
 	key := []byte("user-42")
 	offs := appendVersioned(t, q, key)
 	require.NoError(t, q.Close())
 
 	// Reopen the same directory: the key index is rebuilt from disk.
-	q2, err := openQueue(dir, "rebuild-queue", cfg, store)
+	q2, err := openQueue(dir, "rebuild-queue", cfg, store, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = q2.Close() })
 	ctx := t.Context()

@@ -56,7 +56,7 @@ func TestApplyConfigLiveEffect(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	q, err := openQueue(dir, "live", testConfig(), store)
+	q, err := openQueue(dir, "live", testConfig(), store, nil)
 	require.NoError(t, err)
 	defer q.Close()
 
@@ -89,7 +89,7 @@ func TestApplyConfigIgnoresImmutable(t *testing.T) {
 	require.NoError(t, err)
 	defer store.Close()
 
-	q, err := openQueue(dir, "immutable", testConfig(), store)
+	q, err := openQueue(dir, "immutable", testConfig(), store, nil)
 	require.NoError(t, err)
 	defer q.Close()
 
@@ -122,7 +122,7 @@ func TestMaxAppendPayloadBytes(t *testing.T) {
 	cfg := testConfig()
 	cfg.MaxPayload = 1 << 20
 	cfg.MaxSegment = 1<<20 + 36
-	q, err := openQueue(dir, "bounds", cfg, store)
+	q, err := openQueue(dir, "bounds", cfg, store, nil)
 	require.NoError(t, err)
 	defer q.Close()
 

@@ -234,7 +234,7 @@ func TestWALBlockEvents(t *testing.T) {
 	cfg := testConfig()
 	cfg.Durability = spec.DurabilityAsync
 	cfg.MaxFlushBytes = 4096
-	w := newWAL(nil, cfg, 0, reg.Scope("w"))
+	w := newWAL(&segment{}, cfg, 0, nil, reg.Scope("w"))
 	scope := reg.Scope("w")
 
 	for range cap(w.asyncChan) {
@@ -263,7 +263,7 @@ func TestWALBlockedGaugeDecreases(t *testing.T) {
 	cfg := testConfig()
 	cfg.Durability = spec.DurabilityAsync
 	cfg.MaxFlushBytes = 4096
-	w := newWAL(nil, cfg, 0, reg.Scope("w"))
+	w := newWAL(&segment{}, cfg, 0, nil, reg.Scope("w"))
 	scope := reg.Scope("w")
 
 	for range cap(w.asyncChan) {
@@ -285,7 +285,7 @@ func TestWALBlockedCanceledContext(t *testing.T) {
 	cfg := testConfig()
 	cfg.Durability = spec.DurabilityAsync
 	cfg.MaxFlushBytes = 4096
-	w := newWAL(nil, cfg, 0, reg.Scope("w"))
+	w := newWAL(&segment{}, cfg, 0, nil, reg.Scope("w"))
 	scope := reg.Scope("w")
 
 	for range cap(w.asyncChan) {
@@ -301,9 +301,9 @@ func TestWALFillRatioBounded(t *testing.T) {
 	cfg := testConfig()
 	cfg.Durability = spec.DurabilityAsync
 	cfg.MaxFlushBytes = 8192
-	w := newWAL(nil, cfg, 0)
+	w := newWAL(&segment{}, cfg, 0, nil)
 
-	_, _, err := w.pushBatch([][]byte{make([]byte, 512)}, []int64{0})
+	_, _, err := w.pushBatch([][]byte{make([]byte, 512)}, []int64{0}, -1)
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, w.byteFill(), 0.0)
 	require.LessOrEqual(t, w.byteFill(), 1.0)

@@ -2,8 +2,6 @@ package engine
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 	"testing"
@@ -31,14 +29,13 @@ func testWithTimeout(t *testing.T, timeout time.Duration) {
 func TestWALPushAndWait(t *testing.T) {
 	testWithTimeout(t, 2*time.Second)
 	dir := t.TempDir()
-	logPath := filepath.Join(dir, "wal.log")
-	f, err := os.Create(logPath)
+	seg, err := openSegment(dir, 0, 0)
 	require.NoError(t, err)
-	defer f.Close()
+	defer seg.Close()
 
 	cfg := testConfig()
 	cfg.MaxFlushWait = time.Millisecond
-	w := newWAL(f, cfg, 0)
+	w := newWAL(seg, cfg, 0, nil)
 	w.start()
 	defer w.stop()
 
@@ -58,19 +55,18 @@ func TestWALPushAndWait(t *testing.T) {
 func TestWALBatch(t *testing.T) {
 	testWithTimeout(t, 2*time.Second)
 	dir := t.TempDir()
-	logPath := filepath.Join(dir, "wal.log")
-	f, _ := os.Create(logPath)
-	defer f.Close()
+	seg, _ := openSegment(dir, 0, 0)
+	defer seg.Close()
 	cfg := testConfig()
 	cfg.MaxFlushBytes = 3 // bytes, so three one-byte records hit the budget
 	cfg.MaxFlushWait = time.Hour
-	w := newWAL(f, cfg, 0)
+	w := newWAL(seg, cfg, 0, nil)
 	w.start()
 	defer w.stop()
 
 	recs := [][]byte{[]byte("a"), []byte("b"), []byte("c")}
 	positions := []int64{0, 1, 2}
-	seq, wake, err := w.pushBatch(recs, positions)
+	seq, wake, err := w.pushBatch(recs, positions, -1)
 	require.NoError(t, err)
 	assert.Equal(t, int64(3), seq)
 	assert.True(t, wake, "the byte budget was reached")
@@ -90,12 +86,12 @@ func TestWALBatch(t *testing.T) {
 func TestWALErrorPropagation(t *testing.T) {
 	testWithTimeout(t, 2*time.Second)
 	dir := t.TempDir()
-	logPath := filepath.Join(dir, "wal.log")
-	f, _ := os.Create(logPath)
-	f.Close() // force write error
+	seg, _ := openSegment(dir, 0, 0)
+	seg.logFile.Close() // force write error
+	defer seg.Close()
 	cfg := testConfig()
 	cfg.MaxFlushWait = time.Millisecond
-	w := newWAL(f, cfg, 0)
+	w := newWAL(seg, cfg, 0, nil)
 	w.start()
 	defer w.stop()
 
@@ -108,29 +104,27 @@ func TestWALErrorPropagation(t *testing.T) {
 func TestWALStopFlushesPending(t *testing.T) {
 	testWithTimeout(t, 2*time.Second)
 	dir := t.TempDir()
-	logPath := filepath.Join(dir, "wal.log")
-	f, _ := os.Create(logPath)
-	defer f.Close()
+	seg, _ := openSegment(dir, 0, 0)
+	defer seg.Close()
 	cfg := testConfig()
 	cfg.MaxFlushWait = time.Hour
-	w := newWAL(f, cfg, 0)
+	w := newWAL(seg, cfg, 0, nil)
 	w.start()
 	_, _, _ = w.push([]byte("data"), 0)
 	stopErr := w.stop()
 	assert.NoError(t, stopErr)
-	info, _ := f.Stat()
+	info, _ := seg.logFile.Stat()
 	assert.Equal(t, int64(4), info.Size())
 }
 
 func TestWALConcurrentPush(t *testing.T) {
 	testWithTimeout(t, 5*time.Second)
 	dir := t.TempDir()
-	logPath := filepath.Join(dir, "wal.log")
-	f, _ := os.Create(logPath)
-	defer f.Close()
+	seg, _ := openSegment(dir, 0, 0)
+	defer seg.Close()
 	cfg := testConfig()
 	cfg.MaxFlushWait = time.Millisecond
-	w := newWAL(f, cfg, 0)
+	w := newWAL(seg, cfg, 0, nil)
 	w.start()
 	defer w.stop()
 
@@ -167,16 +161,15 @@ func TestWALConcurrentPush(t *testing.T) {
 func TestWALByteBackpressure(t *testing.T) {
 	testWithTimeout(t, 2*time.Second)
 	dir := t.TempDir()
-	logPath := filepath.Join(dir, "backpressure.log")
-	f, err := os.Create(logPath)
+	seg, err := openSegment(dir, 0, 0)
 	require.NoError(t, err)
-	defer f.Close()
+	defer seg.Close()
 
 	// The WAL is never started, so nothing drains the channel and
 	// MaxFlushBytes/4096 is the exact capacity.
 	cfg := testConfig()
 	cfg.MaxFlushBytes = 8192
-	w := newWAL(f, cfg, 0)
+	w := newWAL(seg, cfg, 0, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	entry := asyncEntry{seg: &segment{}, rec: []byte("x"), pos: 0, recLen: 1, offset: 0}
 
@@ -209,10 +202,9 @@ func TestWALByteBackpressure(t *testing.T) {
 func TestWALWakeTokenLossRace(t *testing.T) {
 	testWithTimeout(t, 2*time.Second)
 	dir := t.TempDir()
-	logPath := filepath.Join(dir, "wal_race.log")
-	f, err := os.Create(logPath)
+	seg, err := openSegment(dir, 0, 0)
 	require.NoError(t, err)
-	defer f.Close()
+	defer seg.Close()
 
 	// MaxFlushWait set to 5s so the ticker won't hide the missing wake signal
 	cfg := testConfig()
@@ -221,7 +213,7 @@ func TestWALWakeTokenLossRace(t *testing.T) {
 	cfg.FlushLinger = 10 * time.Millisecond
 
 	synctest.Test(t, func(t *testing.T) {
-		w := newWAL(f, cfg, 0)
+		w := newWAL(seg, cfg, 0, nil)
 		w.start()
 		defer w.stop()
 
@@ -285,7 +277,7 @@ func TestWALAsyncBatchesWrites(t *testing.T) {
 	seg, err := openSegment(dir, 0, 0)
 	require.NoError(t, err)
 	defer seg.Close()
-	w := newWAL(seg.logFile, cfg, 0)
+	w := newWAL(seg, cfg, 0, nil)
 
 	const count = 1000
 	const recLen = 4
@@ -334,7 +326,7 @@ func TestWALAsyncBatchesIndexWrites(t *testing.T) {
 	seg, err := openSegment(dir, 0, 0)
 	require.NoError(t, err)
 	defer seg.Close()
-	w := newWAL(seg.logFile, cfg, 0)
+	w := newWAL(seg, cfg, 0, nil)
 
 	const count = 1000
 	const recLen = 4
@@ -372,16 +364,15 @@ func TestWALAsyncBatchesIndexWrites(t *testing.T) {
 
 func BenchmarkWALFlushAllocations(b *testing.B) {
 	dir := b.TempDir()
-	logPath := filepath.Join(dir, "bench_wal.log")
-	f, err := os.Create(logPath)
+	seg, err := openSegment(dir, 0, 0)
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer f.Close()
+	defer seg.Close()
 
 	cfg := testConfig()
 	cfg.MaxFlushWait = time.Millisecond
-	w := newWAL(f, cfg, 0)
+	w := newWAL(seg, cfg, 0, nil)
 	w.start()
 	defer w.stop()
 

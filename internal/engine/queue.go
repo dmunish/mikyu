@@ -41,6 +41,7 @@ type Queue struct {
 	name              string
 	dir               string
 	cfg               Config
+	ring              *uringRing
 	active            *segment
 	segments          []*segment
 	nextOffset        uint64
@@ -71,7 +72,8 @@ var _ Storage = (*Queue)(nil)
 // keeps parentDir/name only for read-only directory listing; all file
 // creation, opening, and removal happen through os.Root handles. An optional
 // instrumentation scope records queue operations; without one they are no-ops.
-func openQueue(parentDir, name string, cfg Config, store *OffsetStore, scopes ...*metrics.Scope) (*Queue, error) {
+// ring may be nil on hosts without io_uring.
+func openQueue(parentDir, name string, cfg Config, store *OffsetStore, ring *uringRing, scopes ...*metrics.Scope) (*Queue, error) {
 	parent, err := os.OpenRoot(parentDir)
 	if err != nil {
 		return nil, err
@@ -97,6 +99,7 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore, scopes ..
 		name:              name,
 		dir:               dir,
 		cfg:               cfg,
+		ring:              ring,
 		offsets:           store,
 		cache:             newRingCache(cfg.MaxCache),
 		nextPreallocBytes: initialPrealloc,
@@ -204,7 +207,7 @@ func (q *Queue) loadSegments() error {
 	if len(q.segments) > 0 {
 		q.minOffset = q.segments[0].baseOff
 	}
-	q.w = newWAL(q.active.logFile, q.cfg, q.nextOffset, q.scope)
+	q.w = newWAL(q.active, q.cfg, q.nextOffset, q.ring, q.scope)
 	q.w.start()
 	return nil
 }
@@ -342,7 +345,7 @@ func (q *Queue) roll() error {
 		return err
 	}
 	q.m.segmentRolls.Inc()
-	q.w = newWAL(seg.logFile, q.cfg, q.nextOffset, q.scope)
+	q.w = newWAL(seg, q.cfg, q.nextOffset, q.ring, q.scope)
 	q.w.start()
 	return nil
 }

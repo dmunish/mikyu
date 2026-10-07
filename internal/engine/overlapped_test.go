@@ -23,7 +23,7 @@ func TestOverlappedSingleSyscall(t *testing.T) {
 	seg, err := openSegment(dir, 0, 0)
 	require.NoError(t, err)
 	defer seg.Close()
-	w := newWAL(seg.logFile, cfg, 0)
+	w := newWAL(seg, cfg, 0, nil)
 
 	var writes []span
 	writeAtHook = func(off int64, n int) {

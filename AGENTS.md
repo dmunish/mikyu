@@ -24,17 +24,20 @@ A queue's **kind is structural**: it is the name of its parent directory under t
 11. **Errors are stable sentinels.** Wire codes map 1:1; messages are human text, never contracts.
 12. **Auth is one handshake per connection.** Credentials declared once in `OpAuth`, verified once.
 13. **The bench harness is a client, not a driver.** `internal/bench` opens embedded nodes, spawns daemons, or dials remotes through the public SDK and measures only what the SDK exposes. The engine and drivers carry no bench-specific code paths.
+14. **Reader gate on the ring cache.** Task-style drivers that read back their own appends leave `GateCache` off; log-queue writes only populate the cache after the first read, saving the per-append copy on produce-only workloads.
+15. **Single writer for WAL bytes and index.** One goroutine writes both the WAL segment file and the index entries: the syscall WAL's `wal.syncLoop` (default), or the ring reaper on hosts with io_uring, where producers submit batches directly through the sink (see `internal/engine/sink.go`, `wal_ring.go`). Producers stage via `push`/`pushBatch` (sync) or `pushAsyncBatch` (async). Test hooks assert the invariant.
 
 ### Guarantees
 
 - **Durable-before-ack** by default (`durability: sync`): `Append`/`AppendBatch` block until the WAL flusher has `fsync`'d bytes and index.
 - **Optional async loss window** (`durability: async`): publishes to ring cache + `publishedOffset` immediately, flushes in background.
-- **Zero-copy reads** on closed segments (`mmap` read-only).
-- **Byte-budgeted ring cache** sized from `max_cache`.
-- **Long-poll tailing** via `Fetch` on `notify` channel.
+- **Zero-copy reads** on closed segments (`mmap` read-only) and zero-copy wire sends (`sendfile`/`TransmitFile`) via `PayloadSpan`/`SpanSource`.
+- **Byte-budgeted ring cache** sized from `max_cache`; slots hold `atomic.Pointer[Record]` so readers never take the cache mutex and never observe torn records.
+- **Long-poll tailing** via `Fetch` on the `notify` channel.
 - **Keyed compaction (log only)**: records carry an optional `Group`; when `compaction: keys`, `roll()` rewrites closed segments dropping superseded group versions.
 - **Chunked, self-describing task checkpoints** (`recordCPStart/Chunk/Commit`); newest valid commit wins on recovery.
 - **Deterministic payloads**: bench harness payloads are a function of `(seed, offset)`, so a consumer verifies every record byte for byte.
+- **Reservation FIFO on async appends**: `segment.pos` and `publishedOffset` advance only over committed reservations in order, so a rolled segment is only sealed after every in-flight reservation has resolved.
 
 ### Five Roles, One Binary
 
@@ -62,13 +65,14 @@ github.com/dmunish/mikyu/
     ├── spec/                      # THE config schema (spec, table, derive, codec, env, validate, enums, errors)
     ├── config/config.go           # mikyu.yaml loader, legacy-key/env rejection, bootstrap
     ├── engine/                    # Storage engine (storage, manager, queue, append, read, fetch,
-    │                              # wal, segment, compaction, cache, offsets, metrics, sync_*, encrypt_*)
+    │                              # wal, segment, compaction, cache, offsets, metrics, sync_*, encrypt_*,
+    │                              # pool, sendfile, handle_*, prealloc_*)
     ├── enginetest/memstorage.go   # In-memory engine.Storage for synctest bubbles
     ├── metrics/                   # THE telemetry model (instruments, registry, snapshot, state,
     │                              # history, collector, prometheus, lock, source)
     ├── queue/
     │   ├── group/group.go         # Base: HighWater, Mark, Commit, Close, CommitFn
-    │   ├── logqueue/              # api, logqueue, group, retention, stream
+    │   ├── logqueue/              # api, logqueue, group, retention, stream, spans
     │   ├── taskqueue/             # task, taskqueue, enqueue, dequeue, ack, nack, extend,
     │   │                          # dlq, archive, lease, scheduler, checkpoint, compaction,
     │   │                          # metrics, id
@@ -80,7 +84,8 @@ github.com/dmunish/mikyu/
     ├── node/                      # Process-wide shared node (node, catalog, kind, pool,
     │                              # registry, lock_*, metrics, runtime_source_*)
     ├── errs/errs.go               # Sentinel↔wire-code taxonomy
-    ├── server/                    # Wire server (server, dispatch, errors, auth, tls, handlers_*, metrics)
+    ├── server/                    # Wire server (server, dispatch, errors, auth, tls, handlers_*,
+    │                              # metrics, sendfile_*)
     ├── client/                    # Embedded + remote clients
     ├── daemon/                    # daemon, enum, detach_*, metrics_http
     └── ui/
@@ -360,6 +365,7 @@ type Config struct {
     MaxFlushWait     time.Duration
     FlushLinger      time.Duration
     CompactionPolicy CompactionPolicy
+    GateCache        bool   // ring-cache only after first read
 }
 func (c Config) Async() bool            { return c.Durability == spec.DurabilityAsync }
 func (c Config) KeyedCompaction() bool  { return c.Compaction == spec.CompactionKeys }
@@ -393,7 +399,7 @@ func (m *Manager) Close() error
 
 `manager-offsets.dat` is per root, so consumer groups on `log/events` and `task/events` are independent.
 
-### `Queue`
+### `Queue` (updated)
 
 ```go
 type Queue struct {
@@ -409,6 +415,15 @@ type Queue struct {
     offsets           *OffsetStore
     cache             *ringCache
     nextPreallocBytes int64
+
+    // Async reservation FIFO. Producers reserve segment space + offsets under
+    // q.mu, push onto wal.asyncChan with the lock released, then commit or
+    // abort. segment.pos and publishedOffset advance only over the committed
+    // prefix, in reservation order.
+    reservedPos       int64
+    reservations      []*reservation
+    hasReader         atomic.Bool
+    cacheGated        bool
     closed            bool
     notify            chan struct{}
     keyIndex          map[string]uint64
@@ -416,27 +431,61 @@ type Queue struct {
     scope             *metrics.Scope
     mu                sync.RWMutex
 }
+
+type reservation struct {
+    seg        *segment
+    startPos   int64
+    totalLen   int64
+    lastOffset uint64
+    state      int   // resPending / resCommitted / resAborted
+}
 ```
 
-`openQueue(parentDir, name, cfg, store, scopes...)` opens the queue directory through `os.Root` scoped to `parentDir`, so a hostile name cannot escape.
+`openQueue(parentDir, name, cfg, store, scopes...)` opens the queue directory through `os.Root` scoped to `parentDir`, so a hostile name cannot escape. The initial preallocation is `min(8 MiB, MaxSegment)`.
 
 ### Append Path
 
-`Append` delegates to `AppendBatch`. The batch stages per-segment sub-batches so a WAL write never straddles a roll:
+`Append` delegates to `AppendBatch`. It stages per-segment sub-batches so a WAL write never straddles a roll:
 
 1. Validate `len(payload) ≤ MaxPayload`; encode with `uuid.NewV7()`; reject `recLen > MaxSegment` with `ErrRecordTooLarge`.
-2. Stage into a per-segment `stagedBatch{w, seg, recs, positions, recLens, offsets, ids, totalLen, startIdx}`.
-3. On roll or flush budget: commit through `commitSync` (calls `wal.pushBatch`, unlocks, waits on `wal.wait(seq)`) or `commitAsync` (calls `wal.pushAsync`, clones into ring cache).
-4. Final staged group committed after the loop; `broadcastLocked()` wakes parked readers.
+2. **Choose encodings**: sync or produce-only path uses pooled buffers (`getBuf(recLen)` and `encodeRecord(bb.b, …)`); async + cacheable path allocates fresh `rec []byte` so the ring cache can hold `rec[offBody+groupLen:]` by reference.
+3. Stage into a per-segment `stagedBatch{w, seg, recs, bufs, positions, recLens, offsets, ids, totalLen, startIdx}`.
+4. On roll or flush budget:
+   - **Sync commit (`commitSync`)** — `wal.pushBatch`, release the pooled bufs (with a keep limit), then `seg.writeIndexBatchAt(idxPos, positions, lengths)`; the segment's `pos` advances immediately under the queue lock.
+   - **Async commit (`commitAsyncGroup`)** — `q.reserveLocked` grabs contiguous segment space and per-record positions under the lock; `q.mu` is released and `wal.pushAsyncBatch(ctx, entries)` hand the slice to the flusher as one channel slot; cacheable payloads are `Put` into the ring cache by reference; then `q.mu` is retaken and `commitReservationLocked` (or `abortReservationLocked` on error/close) resolves the reservation.
+5. Sync path wakes the flusher (`select { case staged.w.wake <- struct{}{}: default: }`) and blocks on `wal.wait(seq)` (byte-based sequencing). The async path returns once the reservation is committed.
+6. Final staged group committed after the loop; `broadcastLocked()` wakes parked readers.
+
+`roll()` never seals the active segment while any reservation is pending (`hasPendingReservation()` polls under the lock until the frontier drains). It also doubles/halves `nextPreallocBytes` by fill speed and truncates the sealed segment to `pos` before `enableMMap`.
+
+### Reservation Frontier (`queue.go`)
+
+```go
+func (q *Queue) reserveLocked(b *stagedBatch) *reservation
+func (q *Queue) commitReservationLocked(node *reservation)
+func (q *Queue) abortReservationLocked(node *reservation)
+func (q *Queue) drainReservationsLocked()
+func (q *Queue) hasPendingReservation() bool
+```
+
+`drainReservationsLocked` walks the FIFO from the head while the front is resolved: for each committed node it advances `node.seg.pos` if the node's end is beyond it, and raises `q.publishedOffset` to `node.lastOffset+1`. An aborted node consumes offsets (they were already handed out) but contributes no bytes — its reserved region becomes a hole in the segment.
 
 ### Read Path
 
-1. `q.cache.Get(offset)` — byte-budget ring, O(1).
-2. `q.locateSegment(offset)` — `slices.BinarySearchFunc`; `offset < minOffset` → `ErrOffsetTruncated`; `offset ≥ publishedOffset` → `ErrOffsetNotFound`.
+1. `q.cache.Get(offset)` — lock-free through `atomic.Pointer[Record]`; returns only if `rec.Offset == offset && !rec.Timestamp.IsZero()`.
+2. `q.locateSegment(offset)` — `slices.BinarySearchFunc` over `q.segments`; `offset < minOffset` → `ErrOffsetTruncated`; `offset ≥ publishedOffset` → `ErrOffsetNotFound`.
 3. `readFromSegment` — reads from `seg.mmapData` when mapped, else `seg.logFile.ReadAt`; `decodeRecord` validates CRC and length. A zeroed slot in a compactable queue returns `ErrRecordCompacted`.
 4. `q.superseded(group, offset)` when compaction is on → `ErrRecordCompacted`.
 
-`ReadBatch` reuses the current segment between consecutive offsets; compacted offsets are skipped.
+`ReadBatch` walks segment by segment. For each run it calls `readBatchRun`:
+
+- `readBatchMaxRun = 4096`, `readBatchMaxSpan = 4 << 20`.
+- `takeCachedRange(off, count, msgs)` first drains the ring cache hit flag for each offset in the chunk (lock-free `Get`), then returns the miss positions.
+- `readIndexRun(seg, off, count)` reads the chunk's 16-byte index entries in one shot from `seg.idxMMap` when mapped, else one `ReadAt`.
+- The dense span `[first.pos, last.pos+last.length)` is read once (from the log mmap or one `ReadAt` under `batchReadAtHook`), then each record is decoded out of that slice.
+- Compacted offsets are skipped; a span exceeding `readBatchMaxSpan` is trimmed to the largest fit.
+
+`batchReadAtHook func(n int)` (test) receives each bulk log read's byte count.
 
 ### Fetch
 
@@ -444,9 +493,9 @@ type Queue struct {
 func (q *Queue) Fetch(ctx, offset uint64, maxCount int, maxWait time.Duration) ([]Record, error)
 ```
 - `maxCount ≤ 0` → `nil, nil`; `offset < minOffset` → `ErrOffsetTruncated`.
-- `offset < publishedOffset` → `ReadBatch`; if window held only compacted records, advance past it; else `ErrNoData`.
+- `offset < publishedOffset` → `ReadBatch`; if the window held only compacted records, advance past it; else `ErrNoData`.
 - `maxWait ≤ 0` → `ErrNoData` immediately.
-- Otherwise parks on `ctx.Done()`, `notify`, or `timer.C`. `broadcastLocked()` swaps `q.notify` and closes the old one.
+- Otherwise parks on `ctx.Done()`, `notify`, or `timer.C`; `broadcastLocked()` swaps `q.notify` and closes the old one. `fetch_park_events` and `parked_fetch` are updated around the park.
 
 ### Segment Rolling & Preallocation
 
@@ -459,14 +508,17 @@ func (q *Queue) Fetch(ctx, offset uint64, maxCount int, maxWait time.Duration) (
 
 When `KeyedCompaction()` is true, `keyIndex map[string]uint64` maps group → newest offset; `buildKeyIndex` walks every record on open. After each `roll()`, `compactClosedLocked` rewrites each closed segment in place:
 
-1. Walk index entries; drop records whose group has a newer offset (corrupt records are **kept** — dropping could remove the newest).
-2. Unmap, rewrite `.log` with kept records concatenated, zero dropped index slots.
-3. `cache.Evict(evicted...)`.
-4. `supersededLocked` checked on every `Read` so a superseded record still in a mapping returns `ErrRecordCompacted`.
+1. Walk index entries via `seg.readIndexEntry`; drop records whose group has a newer offset (corrupt records are **kept** — dropping could remove the newest).
+2. `seg.unmap()`, rewrite `.log` with kept records concatenated, zero dropped index slots with `writeIndexAt(idxPos, 0, 0)`.
+3. `q.cache.Evict(evicted...)`.
+4. `seg.enableMMap()` re-maps the rewritten files.
+5. `supersededLocked` checked on every `Read` so a superseded record still in a mapping returns `ErrRecordCompacted`.
 
 Key index warn limit is `keyIndexWarnLimit = 1_000_000`; over the limit logs a warning and the `key_index` gauge reports the live size.
 
-### WAL
+### WAL (updated)
+
+On hosts with io_uring (Linux kernel ≥ 5.13, `MIKYU_DISABLE_URING` unset), `newWAL` builds the **ring WAL** (`wal_ring.go`) instead: producers submit every batch directly to one ring per data directory (`internal/manager` opens it, `engine.Ring`), a single reaper goroutine completes all of a directory's queues, and the flusher/channel/double-buffer machinery below is bypassed. Sync batches wait on a completion watermark that turns out-of-order ring completions back into the byte-based `wait(seq)` guarantee; async batches are bounded by a slot semaphore (`MaxFlushBytes/MaxPayload`). `MIKYU_FORCE_SYSCALL_WAL=1` restores the syscall WAL. Every write, both paths, goes through a **sink** (`sink.go`): `syncSink` (portable pwrite+fdatasync), `asyncSink` (channel-drained), or `ringSink` (io_uring SQEs).
 
 ```go
 type wal struct {
@@ -477,47 +529,70 @@ type wal struct {
     pendingBytes, pushedBytes, publishedBytes int64
     asyncNext                uint64
     err                      error
-    asyncChan                chan asyncEntry
+    asyncChan                chan []asyncEntry   // one slice per producer batch
     wake, configChanged      chan struct{}
     shutdown, done           chan struct{}
     stopOnce                 sync.Once
     m                        *walMetrics
 }
+
+type asyncEntry struct {
+    seg    *segment
+    rec    []byte
+    pos    int64
+    recLen int64
+    offset uint64
+    buf    *pooledBuf
+}
+
+var writerHook func()             // fires before every WAL write (single-writer test)
+var writeAtHook func(off, n int)  // receives every WAL byte write
+var indexWriteHook func(off, n int)// receives every index write
 ```
 
 **Byte-based sequencing**: `push(rec, pos) (seq, wake, err)` returns `seq = pushedBytes + len(rec)`; `wait(seq)` blocks until `publishedBytes ≥ seq` or `err != nil`.
 
 **Sync path.** `push`/`pushBatch` stage bytes + pending entries under lock. `syncLoop` selects over `asyncChan`, `ticker.C` (`MaxFlushWait`), `wake`, `configChanged`, `shutdown`. `adaptiveFlush` sleeps `FlushLinger` before flushing when the batch is below `MaxFlushBytes`. `flush` swaps buffers, drains the wake token under lock, calls `writeAt`, `syncData` if sync durability, and broadcasts on `cond`.
 
-**Async path.** `AppendBatch` publishes records onto `wal.asyncChan` and clones into the ring cache. `drainAndFlushAsync(first)` groups up to `MaxFlushBytes` entries, writes each at its `pos`, writes the `.idx` entry, and advances `asyncNext` contiguously; `publishedOffset` is bumped separately in `commitAsync`.
+**Async path.** `pushAsyncBatch(ctx, entries)` sends one `[]asyncEntry` slice per producer batch on `asyncChan`; a full channel blocks the producer (`wal_block_events` counter and `wal_blocked_producers` gauge). `drainAndFlushAsync(first)` groups entries up to `MaxFlushBytes`, then calls `writeRun` per contiguous same-segment run. `writeRun` writes the run's bytes in **one** `writeAt` (using a pooled slab when `len(run) > 1`), writes the run's index entries via `seg.writeIndexBatchAt` in **one** syscall, advances `asyncNext` for entries whose `offset == *next`, and releases the pooled buffers (`e.buf.release(encodeKeep)` with `encodeKeep = 4 * MaxPayload`).
 
-**Single writer.** `writeAt` is the only writer of the WAL segment file; `writerHook` (test) asserts the invariant.
+**Async backpressure**: `asyncChan` capacity = `max(1, MaxFlushBytes/4096)` slots, each holding a batch.
 
 **Wake-token correctness.** `wake` has buffer 1 and is drained inside `flush()` under lock, preventing producer hangs when `adaptiveFlush` is mid-linger.
 
-**Async backpressure**: `asyncChan` capacity = `MaxFlushBytes/4096` slots.
-
 **Platform `syncData`:** Darwin uses `F_FULLFSYNC`; Linux/BSD use `Fdatasync`; Windows uses `File.Sync()`.
 
-### Segment
+### Segment (updated)
 
 ```go
 type segment struct {
-    baseOff uint64
-    dir, logName, idxName string
-    logFile, idxFile *os.File
-    pos, preallocSize int64
-    createdAt time.Time
-    mmapData, idxMMap mmap.MMap
+    baseOff      uint64
+    dir          string
+    logName      string
+    idxName      string
+    logFile      *os.File
+    idxFile      *os.File
+    pos          int64
+    preallocSize int64
+    createdAt    time.Time
+    mapMu        sync.RWMutex
+    mmapData     mmap.MMap
+    idxMMap      mmap.MMap
+    sendMu       sync.Mutex
+    sendFile     *os.File
 }
 ```
 
 - `openSegment(dir, baseOff, preallocSize)` preallocates the `.log` if empty.
+- `views()` returns the current `mmapData` and `idxMMap` under `mapMu.RLock`; readers copy out of the returned slice without further locking, which is safe because mapping replacement only happens under `mapMu.Lock` (compaction, roll).
 - `enableMMap()` maps both files read-only only if `Stat().Size() > 0`.
+- `sendFD()` lazily opens one read-only log handle under `mapMu` for zero-copy sends; `sendMu` serializes `Seek + CopyN` pairs.
 - `recover()` tries `tryFastRecovery` (validates last index entry); on failure `rebuild()` re-walks the `.log`, validates CRC, rewrites `.idx`, truncates torn tails.
 - `readIndexEntry(offset)` reads 16 bytes from `idxMMap` (closed) or `idxFile.ReadAt`.
-- `lastTimestamp()` returns the newest record's timestamp (`FloorOlderThan`).
-- `destroy()` unmaps, closes, unlinks through `os.Root`.
+- `writeIndexAt(idxPos, pos, len)` writes one entry; `writeIndexBatchAt(idxPos, positions, lengths)` writes a run of entries into a single pooled buffer and one `WriteAt`.
+- `readBytes(dst, pos)` copies a small span from the log mapping or `ReadAt`.
+- `indexCount()` and `lastTimestamp()` walk the tail via mapping-or-`ReadAt`.
+- `unmap()` releases both mappings; `destroy()` unmaps, closes, unlinks through `os.Root`; `Close()` unmaps first, then truncates the active segment to `pos`, `syncData`, `syncDir`, closes files.
 
 ### Record Format
 
@@ -525,15 +600,70 @@ type segment struct {
 [4B Body Length][4B CRC32][2B ID Length=16][16B Raw UUID v7][8B Unix Nanos][2B Group Length][Group][Payload]
 ```
 
-CRC-32/IEEE covers the body (`rec[8:]`).
+CRC-32/IEEE covers the body (`rec[8:]`). Fixed offsets in `encode.go`: `offLength=0, offCRC=4, offIDLen=8, offUUID=10, offTS=26, offGroupLen=34, offBody=36`.
 
-### Ring Cache
+### Ring Cache (updated)
 
-`ringCache` sized from `max_cache` (round up to power of two; floor 64 slots, cap 65536; avg 256 B + 36 B overhead). `Put` evicts FIFO from `head` while `curBytes > maxBytes`. `Get` validates `msg.Offset == offset` and non-zero timestamp. `EvictBefore(minOffset)` and `Evict(offsets...)` adjust `curBytes`. `SetMaxBytes` moves the budget and evicts from head.
+```go
+type cacheSlot struct { rec atomic.Pointer[Record] }
+type ringCache struct {
+    mu       sync.Mutex
+    slots    []cacheSlot
+    mask     uint64
+    maxBytes int64
+    curBytes int64
+    head     uint64
+    started  bool
+}
+```
+
+- Sized from `max_cache` (round up to power of two; floor 64 slots, cap 65536; avg 256 B + 36 B overhead).
+- `Put` takes the mutex, stores the record pointer, raises `curBytes`, and evicts FIFO from `head` while over budget.
+- `Get` is **lock-free** (atomic load + offset/timestamp validation) so a torn reader never sees a partially-cleared slot.
+- `EvictBefore(minOffset)` and `Evict(offsets...)` adjust `curBytes` and clear slots for evicted offsets.
+- `SetMaxBytes` moves the budget and evicts from head.
 
 ### Offset Store
 
 One `manager-offsets.dat` per engine root persists `(queue:group) → uint64` as `[2B keyLen][key][8B offset]`. `Commit` writes, flushes, `Sync`s; every `compactAppendsThreshold = 5000` appends triggers `compactLocked`, which rewrites atomically via `os.Rename` from `manager-offsets.dat.tmp` and `syncDir(root)`.
+
+### Buffer Pool (`pool.go`)
+
+```go
+const maxIndexKeepBytes = 1 << 20
+type pooledBuf struct{ b []byte }
+var bufPool sync.Pool
+func getBuf(n int) *pooledBuf
+func (pb *pooledBuf) release(maxKeep int)
+```
+
+`getBuf` grows or reuses a `pooledBuf`; `release` skips returning oversized buffers, so the pool cannot grow past `maxKeep`.
+
+### Zero-copy Sends (`sendfile.go`)
+
+```go
+const sendfileMinPayload = 16 << 10
+
+type PayloadSpan struct {
+    Offset     uint64
+    ID         string
+    Timestamp  time.Time
+    Group      []byte
+    PayloadLen int
+    Payload    []byte      // set only when the payload is inlined below the send threshold
+    File       *os.File
+    FileOff    int64
+    SendMu     *sync.Mutex
+}
+
+type SpanSource interface {
+    PayloadSpans(start uint64, count int) ([]PayloadSpan, error)
+}
+func (q *Queue) PayloadSpans(start uint64, count int) ([]PayloadSpan, error)
+func payloadSpan(segs []*segment, off uint64) (PayloadSpan, bool)
+```
+
+`PayloadSpans` declines (returns `nil, nil`) when the queue has keyed compaction, when the request cannot be fully served from closed segments, when no span reaches `sendfileMinPayload`, or when the requested prefix extends past `publishedOffset`. On a hit it decodes each small record inline (via `readBytes`) and resolves each large one as a `File`/`FileOff`/`SendMu` tuple drawn from `seg.sendFD()`.
 
 ### Retention Primitives
 
@@ -582,16 +712,20 @@ func ResolveAppendOptions(opts ...AppendOption) (key []byte)
 
 Internal `queue{name string, storage engine.Storage, mu sync.RWMutex, groups map[string]*queueGroup}`.
 
-**Consumer group** (`group.go`):
-```go
-type Group interface { io.Closer; Name() string; Mark(offset uint64); Commit(ctx) error; Committed(ctx) (uint64, error) }
-type queueGroup struct { group.Base; q *queue }
-```
-`group.Base` holds a `sync.Mutex`-guarded `HighWater uint64`, a `Closed` flag, and `CommitFn func(ctx, offset) error`. `Mark` advances to `offset+1` monotonically. `Close` is idempotent and commits the final high water.
+**Consumer group** (`group.go`): `Group` interface, `queueGroup{group.Base, q *queue}`. `group.Base` holds a `sync.Mutex`-guarded `HighWater uint64`, a `Closed` flag, and `CommitFn func(ctx, offset) error`. `Mark` advances to `offset+1` monotonically. `Close` is idempotent and commits the final high water.
 
 **Stream & Tail** (`stream.go`): `streamBatch = 1024`, `tailWait = 30s`. `Stream` uses `maxWait=0` (non-blocking drain). `Tail` blocks in `Fetch` per iteration; `ErrNoData` re-arms.
 
 **Retention** (`retention.go`): `TruncateFloor` returns `min(HighWater)` and a `constrained` flag. `Truncate(ctx, 0)` uses the driver's own floor when constrained; else no-op.
+
+**Zero-copy spans** (`spans.go`):
+
+```go
+type SpanSource interface { PayloadSpans(start uint64, count int) ([]engine.PayloadSpan, error) }
+func (q *queue) PayloadSpans(start uint64, count int) ([]engine.PayloadSpan, error)
+```
+
+The driver type-asserts its `engine.Storage` to `engine.SpanSource` and forwards.
 
 ---
 
@@ -827,14 +961,32 @@ If the first frame is not `OpAuth` and the server requires auth, the connection 
 
 Over-limit connections are answered with `OpError(ErrCodeTooManyConnections)` after waiting up to `rejectGrace = 1s` for the first frame, then closed.
 
-### Handlers
+### Dispatch and Handlers (updated)
+
+`dispatch` returns `(respOp byte, respBody []byte, shouldShutdown bool, streamed bool)`. When `streamed` is true the handler has already written its own response frame — used by the zero-copy send path in `handleReadBatch` and `handleFetch`. Otherwise the dispatcher writes the frame.
 
 - `handleCreate` reads `u8 kind, bytes(name), u16 specVersion, bytes(json)` and dispatches to `node.CreateLogQueue`/`node.CreateTaskQueue`.
-- `handleFetch` clamps the client's wait at `maxFetchWait = 5 min`.
+- `handleFetch` clamps the client's wait at `maxFetchWait = 5 min`. It calls `s.streamSpans(conn, q, protocol.OpFetch, start, count)` first; if the span source resolves, the handler streams the response itself and returns `streamed=true`; otherwise it falls back to `q.Fetch` and returns a `OpFetch` record-list body.
+- `handleReadBatch` mirrors this for `OpReadBatch`.
 - `handleDequeue` caps the server-side long-poll at `maxDequeueWait = 5 min`; on context deadline with no task → `ErrCodeTaskNotAvailable`.
 - `handleMinOffset` returns a bare `u64`.
 - `handleSchema` returns `u16 specVersion + bytes(json []Param)`.
 - `handleMetrics` returns `u16 specVersion + bytes(json Snapshot)`.
+
+### Zero-copy send path (`sendfile.go`)
+
+```go
+var sendfileHook func(n int)
+
+func (s *Server) streamSpans(conn net.Conn, q logqueue.Log, op byte, start uint64, count int) bool
+func streamRecordSpans(conn net.Conn, op byte, spans []engine.PayloadSpan) error
+func flushBuf(conn net.Conn, buf *protocol.Buffer) error
+func sendPayload(conn net.Conn, sp *engine.PayloadSpan) error
+```
+
+`streamSpans` declines when the connection is not a `*net.TCPConn`, when `sendfileSupported()` is false, when `count <= 0`, or when `q.PayloadSpans(start, count)` returns no spans. On acceptance it writes a single record-list frame whose header is computed from the span metadata; small payloads are inlined from `sp.Payload`; large payloads are written by seeking the segment's read handle (`sp.FileOff`) and `io.CopyN(conn, sp.File, sp.PayloadLen)` under `sp.SendMu`. `sendfileHook` (test) receives each sent payload's byte count.
+
+`sendfileSupported()` returns true on all `unix` builds; on Windows it is a `sync.OnceValue` that returns false on NT Workstation editions (`verNTWorkstation = 0x1`).
 
 ### Auth
 
@@ -901,7 +1053,7 @@ type Node struct {
 **Lifecycle** (`openNode`):
 1. `MkdirAll` the data directory; acquire the directory lock (`flock`/`LockFileEx`).
 2. `loadRegistry(dir)` + `reconcileRegistry` against the filesystem.
-3. Build per-queue engine configs from the effective spec, keyed by `manager.Key`.
+3. Build per-queue engine configs from the effective spec, keyed by `manager.Key`; set `cfg.GateCache = (kind == KindLog)`.
 4. `manager.Open`.
 5. `List` on-disk queues; reconcile the registry.
 6. Build metrics registry, collector, register runtime source + manager + `configSource{n}`.
@@ -1275,13 +1427,11 @@ func ParseMode(text string) (Mode, error)   // trims; rejects anything not in Mo
 
 type Access string
 const (
-    AccessEmbedded Access = "embedded"   // in-process engine, no network
-    AccessDaemon   Access = "daemon"     // spawns a daemon subprocess this run owns
-    AccessRemote   Access = "remote"     // dials an existing target
+    AccessEmbedded Access = "embedded"
+    AccessDaemon   Access = "daemon"
+    AccessRemote   Access = "remote"
 )
 ```
-
-A run's mode is a `--mode` value on `bench run`, not a verb; `normalizeOptions` falls back to `DefaultMode` when a caller passes none.
 
 ### Options and Progress Events
 
@@ -1350,6 +1500,7 @@ func (p Param) Parse(text string) (spec.Value, error)
 func Lookup(key string) (Param, bool)
 func DefaultWorkload() Workload
 const DefaultDuration = time.Minute
+const DefaultByteCap  = 5 << 30
 func (w *Workload) EnsureBound(mode Mode)
 func (w Workload) Validate() error
 func (w Workload) View() result.WorkloadView
@@ -1514,7 +1665,7 @@ func (o *observer) Start(ctx context.Context)
 func (o *observer) Stop()
 ```
 
-`run` ticks once per second; each tick samples `client.Metrics`, computes deltas since the previous tick, and appends a `SeriesRow`. `Stop` cancels and records the observer's own `Metrics` call p99 as a note. `systemCols` aggregates the run's queues; `hostCols` converts the current `HostStats`. The observer is skipped entirely in recovery mode and when `DisableObservation` is set.
+`run` ticks once per second; each tick samples `client.Metrics`, computes deltas since the previous tick via `m.SnapshotSince`, and appends a `SeriesRow`. The observer's own `Metrics` call latency is recorded in `o.calls` and reported as a note on `Stop`. `systemCols` aggregates the run's queues; `hostCols` converts the current `HostStats`. The observer is skipped entirely in recovery mode and when `DisableObservation` is set.
 
 ### Measure — `measure.go`
 
@@ -1673,7 +1824,7 @@ const CurrentVersion = 1
 
 Series layout (`seriesHeader`): `t, phase, client_*, system_*, host_*` in this fixed order. `WriteResult` writes to `.result.json.tmp`, fsyncs, renames, fsyncs the directory. `SeriesWriter.Append` builds the row into a reused buffer and issues one unbuffered write per row, so a killed run loses nothing already flushed.
 
-`sentinel`s: `ErrNotARun`, `ErrEnvelopeVersion`, `ErrCompareMismatch`.
+Sentinels: `ErrNotARun`, `ErrEnvelopeVersion`, `ErrCompareMismatch`.
 
 ---
 
@@ -1786,10 +1937,12 @@ func exitCode(err error) int {
 
 | Structure | Lock | Protects | Notes |
 |---|---|---|---|
-| `engine.Queue.mu` (RWMutex) | read for `Read`/`ReadBatch`/`Fetch`; write for `AppendBatch`, `roll`, `Close`, `TruncateBefore` | `segments`, `active`, offsets, `closed`, `notify`, `keyIndex` | `broadcastLocked` only under write lock. |
-| `engine.wal.mu` (Mutex + cond) | staged buffers, pending entries, `pushedBytes`, `publishedBytes`, `asyncNext`, `err` | `pushedBytes > publishedBytes` while a flush is in flight; `wait(seq)` blocks until `publishedBytes ≥ seq` or `err`; async path advances `asyncNext`. |
+| `engine.Queue.mu` (RWMutex) | read for `Read`/`ReadBatch`/`Fetch`; write for `AppendBatch`, `roll`, `Close`, `TruncateBefore` | `segments`, `active`, offsets, `closed`, `notify`, `keyIndex`, reservations | `broadcastLocked` only under write lock. `roll()` polls `hasPendingReservation()` under lock until the frontier drains. |
+| `engine.wal.mu` (Mutex + cond) | staged buffers, pending entries, `pushedBytes`, `publishedBytes`, `asyncNext`, `err` | `pushedBytes > publishedBytes` while a flush is in flight; `wait(seq)` blocks until `publishedBytes ≥ seq` or `err`; async path advances `asyncNext` under the same lock after `writeRun`. |
 | `engine.OffsetStore.mu` (`metrics.RWLockObserver`) | in-memory offsets + append-only writer | `Commit` serialized; `compactLocked` under write lock; registered as `engine.offsets`. |
-| `engine.ringCache.mu` (Mutex) | slots, byte accounting, head | Slot matches offset and has non-zero timestamp. |
+| `engine.ringCache.mu` (Mutex) | `Put`, `Evict*`, `SetMaxBytes`, `curBytes`, `head` | `Get` is lock-free; slot matches offset and has non-zero timestamp. |
+| `engine.segment.mapMu` (RWMutex) | `mmapData`, `idxMMap`, `sendFile` | `views()` readers copy out under RLock; `enableMMap`/`unmap`/`sendFD` take the write lock. |
+| `engine.segment.sendMu` (Mutex) | zero-copy send position | Serializes `Seek + CopyN` pairs on the same file handle. |
 | `logqueue.queue.mu` (RWMutex) | `groups` map | Group creation under write lock; reads under read lock. |
 | `taskqueue.queue.mu` (Mutex) | `active`, `dlq`, `dlqUncheckpointed`, `schedule`, `scanNext`, `checkpointOffset`, `dirty`, `notify`, `closing`/`closed` | Every state mutation in one critical section; metric counters bumped inside it. |
 | `retention.Coordinator.mu` (`metrics.RWLockObserver`) + `Target.mu` | targets map; each target's policy + driver | `ReconcileAt` holds target lock while reading policy and calling driver floor. |
@@ -1825,7 +1978,7 @@ func exitCode(err error) int {
 - `go test ./...` with `goleak.VerifyTestMain` in every package that owns goroutines.
 - `testing/synctest` bubbles for time-dependent behavior (WAL wake tokens, task lease expiry, metrics tickers, retention age floors).
 - `enginetest.MemStorage` provides an in-memory `engine.Storage` for driver tests with a deterministic clock.
-- Test hooks: `engine.SyncDirHook`, `engine.writerHook`, `config.executablePath`, `client.SessionConfig.testFrameSent`, `daemon.daemonHelperEnv`, `bench.childEnvName`, `bench.raceEnabled`.
+- Test hooks: `engine.SyncDirHook`, `engine.writerHook`, `engine.writeAtHook`, `engine.indexWriteHook`, `engine.batchReadAtHook`, `server.sendfileHook`, `config.executablePath`, `client.SessionConfig.testFrameSent`, `daemon.daemonHelperEnv`, `bench.childEnvName`, `bench.raceEnabled`.
 - `internal/audit`:
   - `TestNoLegacyNames` scans every non-test Go file for banned identifiers (with whitelisting for the SDK surface and selector/method positions).
   - `TestInternalCommentStyle` enforces at-most-one-line doc comments on internal packages and exported symbols (root `mikyu` is exempt).
@@ -1835,16 +1988,19 @@ func exitCode(err error) int {
 - `TestSpecTagsIdentical` and `TestTableMatches{Spec,Session}Fields` require the table, struct, and wire/YAML codec to agree field for field.
 - `TestPrometheusCoversSnapshot` requires every `Snapshot` leaf to be exported or explicitly skipped with a reason.
 - `cmd/mikyu/main_test.go` covers the exit-code contract (0/1/2/3).
+- Engine-specific perf tests:
+  - `TestWALByteBackpressure`, `TestWALAsyncBatchesWrites`, `TestWALAsyncBatchesIndexWrites`, `TestOverlappedSingleSyscall`, `TestCommitSyncBatchesIndexWrites`, `TestWALWakeTokenLossRace` (synctest).
+  - `TestAppendBatchDoesNotHoldLockOnChannelBlock`, `TestAppendBatchRollbackOnCtxCancel`, `TestAppendBatchPreservesOffsetsUnderContention`.
+  - `TestRingCacheConcurrentReaderWriter`, `TestRingCacheGetUnderEviction`.
+  - `TestReadBatchBulksLogReads`, `TestReadBatchMatchesRead`.
+  - `TestPayloadSpansMatchReadBatch`, `TestPayloadSpansDeclineOnCompaction`, `TestPayloadSpansDeclineWhenUnflushed`, `TestPayloadSpansDeclineBelowThreshold`.
+  - `TestEncodeBufferReused`, `TestPooledRecordsRoundTrip`.
+  - `TestCacheGatedOnFirstRead`, `TestCachePayloadAliasesEncodedRecord`.
+  - `TestStreamRecordSpansMatchesWriteRecordList`, `TestFetchOverTCPPrefersSendfile`.
 - Bench tests:
-  - `internal/bench/table_test.go` — `TestEveryParamHasDoc`, `TestParamNames`, `TestTableKeyOrder`, `TestTableCoversWorkload` (one row per `Workload` field), `TestDefaultWorkload`, `TestValidate`, `TestAppliesTo`, `TestRateScheduleParse`, `TestRateScheduleRejectsGarbage`, `TestRateSuffixes`, `TestParseRejectsBadText`, `TestWorkloadView`, `TestEveryRowAppliesItsDefault`.
-  - `internal/bench/bench_test.go` — `TestProduceClosedLoop`, `TestProduceBatch`, `TestProduceOpenLoop`, `TestConsumeWithPreload`, `TestProduceTaskQueue`, `TestMixSymmetric`, `TestAbortOnCancel`, `TestEnvelopeShape`, `TestEnvelopeStreaming`, `TestAccessValidation`, `TestProgressEventsSpanTheRun`.
-  - `internal/bench/measure_test.go` — `TestHistogramAccuracy`, `TestCOCorrection`, `TestConcurrentRecord`, `TestHistogramMerge`, `TestSnapshotSinceDeltas`, `TestTimerOverhead`.
-  - `internal/bench/verify_test.go` — `TestPayloadDeterministic`, `TestPayloadShort`, `TestVerifyCatchesCorruption`, `TestVerifyOverhead` (skipped when `raceEnabled`).
-  - `internal/bench/access_test.go`, `mode_test.go`, `mode_recovery_test.go`, `lifecycle_test.go`, `defaults_test.go`, `host_test.go`, `cache_test.go`, `metrics_test.go`, `observe_test.go`, `phases_test.go`.
-  - `internal/bench/result/result_test.go` — round-trip, golden, version check, unknown-field rejection, streaming series, `IsRun`.
-  - `internal/node/bench_test.go` — `BenchmarkLookupTaskQueue`, `BenchmarkSharedCheckpointSweep` (build-tagged `bench`).
-  - `internal/engine/stress_bench_test.go` — produce-only, read-only, mixed, batch, high-concurrency benchmarks (build-tagged `bench`).
-  - `internal/queue/taskqueue/bench_test.go` — enqueue / dequeue+ack / dequeue-with-metrics (build-tagged `bench`).
+  - `internal/bench/table_test.go`, `bench_test.go`, `measure_test.go`, `verify_test.go`, `access_test.go`, `mode_*_test.go`, `lifecycle_test.go`, `defaults_test.go`, `host_test.go`, `cache_test.go`, `metrics_test.go`, `observe_test.go`, `phases_test.go`.
+  - `internal/bench/result/result_test.go`.
+  - `internal/node/bench_test.go`, `internal/engine/stress_bench_test.go`, `internal/queue/taskqueue/bench_test.go` — build-tagged `bench`.
 
 ---
 
@@ -1880,3 +2036,12 @@ func exitCode(err error) int {
 | Recovery mode spawns a detached child | The parent can kill mid-write without terminating the harness itself; `MIKYU_BENCH_CHILD` marks the child. |
 | `raceEnabled` build tag | Timing-sensitive tests (verify overhead) are skipped under the race detector. |
 | Bench modes are a `--mode` flag, not verbs | One run page covers all four modes, the mode default stays visible in help, and the retired-vocabulary rule applies to every verb path. |
+| **Cache slot is `atomic.Pointer[Record]` (seqlock-style)** | Readers never take `ringCache.mu`, so cached reads are ~10 ns; a torn reader sees either a valid record or a miss, never partially-cleared bytes. |
+| **Async commits reserve segment space under the queue lock, then push with the lock released** | A full `asyncChan` must not stall other producers or hold `q.mu`; the reservation FIFO keeps segment end and `publishedOffset` monotonic without blocking writers. |
+| **`writeRun` coalesces same-segment async entries into one log write and one index write batch** | Turns per-record syscalls into per-run syscalls, cutting flush syscall count by the batch size. |
+| **Sync commit batches index writes via `writeIndexBatchAt`** | A 1000-record sync batch writes ~1 index syscall instead of 1000. |
+| **`readBatchRun` reads one contiguous span per chunk** | One log `ReadAt` per ≤ 4096 records or 4 MiB, plus one index `ReadAt`. |
+| **Compacted records are skipped inside the batch run, not via a second pass** | A fully-compacted window advances past the window rather than stalling. |
+| **Reader gate on the ring cache** | Produce-only workloads skip the async append's payload copy; a log queue that later gets a reader starts populating from the first read. |
+| **Zero-copy wire send via `PayloadSpan`** | Payloads ≥ 16 KiB stream from the segment's read handle (sendfile/TransmitFile) instead of through userland; declined for keyed compaction and unflushed windows. |
+| **`spawnDetached` uses a separate child env, not a flag** | `MIKYU_BENCH_CHILD=1` is unambiguous in the process table and survives both parent and `os.Executable` re-exec. |
