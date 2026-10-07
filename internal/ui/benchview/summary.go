@@ -127,8 +127,8 @@ func workloadLine(fm human.Formatter, w result.WorkloadView) string {
 func latencyLine(fm human.Formatter, m *result.MetricsView) string {
 	h := m.LatencyUncorrected
 	return fmt.Sprintf("p50 %s · p90 %s · p99 %s · max %s",
-		fm.Duration(time.Duration(h.P50)), fm.Duration(time.Duration(h.P90)),
-		fm.Duration(time.Duration(h.P99)), fm.Duration(time.Duration(h.Max)))
+		fm.Measured(time.Duration(h.P50)), fm.Measured(time.Duration(h.P90)),
+		fm.Measured(time.Duration(h.P99)), fm.Measured(time.Duration(h.Max)))
 }
 
 // recoveryLine renders the three crash-recovery milestones.
