@@ -86,7 +86,6 @@ func DecodeWorkloadYAML(data []byte) (Workload, error) {
 		Batch:           doc.Batch,
 		Keys:            doc.Keys,
 		Preload:         doc.Preload,
-		Warmup:          doc.Warmup.Duration(),
 		AckRate:         doc.AckRate,
 		CrashAfterBytes: doc.CrashAfterBytes,
 		Seed:            doc.Seed,
@@ -106,7 +105,6 @@ type workloadDoc struct {
 	Batch           int                 `yaml:"batch"`
 	Keys            int                 `yaml:"keys"`
 	Preload         int64               `yaml:"preload"`
-	Warmup          spec.Duration       `yaml:"warmup"`
 	AckRate         float64             `yaml:"ack_rate"`
 	CrashAfterBytes int64               `yaml:"crash_after_bytes"`
 	Seed            uint32              `yaml:"seed"`

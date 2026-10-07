@@ -108,7 +108,7 @@ func TestBenchHelpMarksModeScopedFlags(t *testing.T) {
 	require.NoError(t, command.WriteVerb(&buf, v, command.RenderOptions{Mode: command.ModeCLI, Color: false}))
 	out := buf.String()
 
-	assert.Contains(t, out, "(consume only)")
+	assert.Contains(t, out, "(consume|mix only)")
 	assert.Contains(t, out, "(produce|mix only)")
 	assert.Contains(t, out, "(recovery only)")
 }
@@ -195,7 +195,7 @@ func TestRunBenchWritesASummaryAndNoProgressBar(t *testing.T) {
 	run, err := command.RunBench(t.Context(),
 		[]string{
 			"--dir", dataDir, "--out", outDir,
-			"--bytes", "65536", "--warmup", "0s", "--workers", "1",
+			"--bytes", "65536", "--workers", "1",
 			"--durability", "async",
 		},
 		&stdout, &stderr, spec.BuiltinSession())
@@ -217,7 +217,7 @@ func TestRunBenchDefaultsToProduce(t *testing.T) {
 	run, err := command.RunBench(t.Context(),
 		[]string{
 			"--dir", t.TempDir(), "--out", t.TempDir(),
-			"--bytes", "65536", "--warmup", "0s", "--workers", "1",
+			"--bytes", "65536", "--workers", "1",
 			"--durability", "async",
 		},
 		&stdout, &stderr, spec.BuiltinSession())
@@ -250,7 +250,7 @@ func TestRunBenchRunsWithoutADirectory(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
 	run, err := command.RunBench(t.Context(),
-		[]string{"--out", t.TempDir(), "--bytes", "65536", "--warmup", "0s", "--workers", "1"},
+		[]string{"--out", t.TempDir(), "--bytes", "65536", "--workers", "1"},
 		&stdout, &stderr, spec.BuiltinSession())
 	require.NoError(t, err)
 

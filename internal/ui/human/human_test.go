@@ -106,6 +106,26 @@ func TestDuration(t *testing.T) {
 	}
 }
 
+// A measured zero is below the smallest unit, not an absent measurement.
+func TestMeasured(t *testing.T) {
+	tests := []struct {
+		name string
+		in   time.Duration
+		want string
+	}{
+		{"zero reads as sub-nanosecond", 0, "<1ns"},
+		{"one nanosecond is a real reading", time.Nanosecond, "1ns"},
+		{"sub-microsecond", 12 * time.Nanosecond, "12ns"},
+		{"milliseconds", 350 * time.Millisecond, "350ms"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, Formatter{}.Measured(tt.in))
+		})
+	}
+	assert.Equal(t, "0", Formatter{Raw: true}.Measured(0), "raw output stays machine-readable")
+}
+
 func TestPercent(t *testing.T) {
 	tests := []struct {
 		in   float64

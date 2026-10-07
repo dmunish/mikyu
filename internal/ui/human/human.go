@@ -107,6 +107,14 @@ func (f Formatter) Duration(d time.Duration) string {
 	return sign + text + " " + strconv.FormatUint(rem/uint64(next.size), 10) + next.name
 }
 
+// Measured renders a measured duration, reading a zero as below the smallest unit rather than as nothing.
+func (f Formatter) Measured(d time.Duration) string {
+	if d == 0 && !f.Raw {
+		return "<1ns"
+	}
+	return f.Duration(d)
+}
+
 // Percent renders a fraction as a percentage, dropping the unit when Raw.
 func (f Formatter) Percent(frac float64) string {
 	if f.Raw {

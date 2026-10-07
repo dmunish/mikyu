@@ -19,7 +19,6 @@
     "duration": "5s",
     "workers": 8,
     "batch": 1,
-    "warmup": "5s",
     "seed": 42
   },
   "environment": {
@@ -34,11 +33,6 @@
     "timer_overhead_ns": 42
   },
   "phases": [
-    {
-      "name": "warmup",
-      "duration": "5s",
-      "bytes": 1024
-    },
     {
       "name": "measure",
       "duration": "5s",

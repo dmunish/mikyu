@@ -41,7 +41,6 @@ type Workload struct {
 	Batch           int
 	Keys            int
 	Preload         int64
-	Warmup          time.Duration
 	AckRate         float64
 	CrashAfterBytes int64
 	Seed            uint32
@@ -89,12 +88,9 @@ func buildTable() []Param {
 		{Key: "keys", Kind: spec.KindInt, Modes: []Mode{ModeProduce, ModeMix}, Default: "0",
 			Doc:   "Distinct key cardinality; 0 = unkeyed",
 			Apply: func(w *Workload, v spec.Value) { w.Keys = v.Int() }},
-		{Key: "preload", Kind: spec.KindBytes, Modes: []Mode{ModeConsume}, Default: "0",
+		{Key: "preload", Kind: spec.KindBytes, Modes: []Mode{ModeConsume, ModeMix}, Default: "0",
 			Doc:   "Bytes written before measurement (populate phase)",
 			Apply: func(w *Workload, v spec.Value) { w.Preload = v.Bytes() }},
-		{Key: "warmup", Kind: spec.KindDuration, Default: "5s",
-			Doc:   "Warmup duration excluded from measurement",
-			Apply: func(w *Workload, v spec.Value) { w.Warmup = v.Duration() }},
 		{Key: "ack_rate", Kind: spec.KindFloat, Modes: []Mode{ModeConsume, ModeMix}, Default: "0.9",
 			Doc:   "Fraction of task dequeues that Ack (rest Nack)",
 			Apply: func(w *Workload, v spec.Value) { w.AckRate = v.Float() }},
@@ -162,15 +158,22 @@ func DefaultWorkload() Workload {
 const (
 	DefaultDuration = time.Minute
 	DefaultByteCap  = 5 << 30
+	// DefaultPreload backfills a reading mode's source queue so it can measure for the whole window.
+	DefaultPreload = 5 << 30
 )
 
-// EnsureBound installs Duration and Byte defaults when none is explicitly set
+// EnsureBound installs the defaults a bare run needs: a measure bound, and a backlog for a reading mode.
 func (w *Workload) EnsureBound(mode Mode) {
-	if mode == ModeRecovery || w.Bytes > 0 || w.Duration > 0 || w.CrashAfterBytes > 0 {
+	if mode == ModeRecovery {
 		return
 	}
-	w.Duration = DefaultDuration
-	w.Bytes = DefaultByteCap
+	if w.Bytes == 0 && w.Duration == 0 && w.CrashAfterBytes == 0 {
+		w.Duration = DefaultDuration
+		w.Bytes = DefaultByteCap
+	}
+	if w.Preload == 0 && (mode == ModeConsume || mode == ModeMix) {
+		w.Preload = DefaultPreload
+	}
 }
 
 // Validate checks the workload in isolation; the runner checks the rules that span it and the access.
@@ -186,8 +189,6 @@ func (w Workload) Validate() error {
 		return errRule("workers", "1 or greater", w.Workers)
 	case w.Batch < 1:
 		return errRule("batch", "1 or greater", w.Batch)
-	case w.Warmup < 0:
-		return errRule("warmup", "0 or greater", w.Warmup)
 	case w.Keys < 0:
 		return errRule("keys", "0 or greater", w.Keys)
 	case w.Keys > 0 && w.Kind != KindLog:
@@ -244,7 +245,6 @@ func (w Workload) View() result.WorkloadView {
 		Batch:        w.Batch,
 		Keys:         w.Keys,
 		Preload:      w.Preload,
-		Warmup:       w.Warmup.String(),
 		AckRate:      w.AckRate,
 		CrashAfter:   w.CrashAfterBytes,
 		Seed:         w.Seed,

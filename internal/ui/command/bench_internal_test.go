@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,7 +113,7 @@ func TestBenchFlagsOverrideEnv(t *testing.T) {
 }
 
 func TestBenchScenarioOverridesEnvAndFlagsOverrideScenario(t *testing.T) {
-	path := writeScenario(t, "workload:\n  kind: log\n  queues: 1\n  msg_size: 128\n  bytes: 65536\n  warmup: 0s\n  workers: 2\n  batch: 1\n")
+	path := writeScenario(t, "workload:\n  kind: log\n  queues: 1\n  msg_size: 128\n  bytes: 65536\n  workers: 2\n  batch: 1\n")
 	env := map[string]string{"MIKYU_BENCH_WORKERS": "7", "MIKYU_BENCH_MSG_SIZE": "512"}
 
 	opts, err := resolveBench([]string{"--dir", "d", "--file", path},
@@ -128,7 +129,7 @@ func TestBenchScenarioOverridesEnvAndFlagsOverrideScenario(t *testing.T) {
 }
 
 func TestBenchScenarioCarriesTheQueueSpec(t *testing.T) {
-	path := writeScenario(t, "mode: produce\nspec:\n  storage:\n    durability: async\nworkload:\n  kind: log\n  queues: 1\n  msg_size: 256\n  bytes: 1024\n  warmup: 0s\n  workers: 1\n  batch: 1\n")
+	path := writeScenario(t, "mode: produce\nspec:\n  storage:\n    durability: async\nworkload:\n  kind: log\n  queues: 1\n  msg_size: 256\n  bytes: 1024\n  workers: 1\n  batch: 1\n")
 
 	opts, err := resolveBench([]string{"--dir", "d", "--file", path},
 		spec.BuiltinSession(), envLookup(nil))
@@ -248,7 +249,7 @@ func TestSplitCSVTrimsAndDropsEmpties(t *testing.T) {
 func TestModeScopeDocNamesEveryScopedMode(t *testing.T) {
 	preload, ok := bench.Lookup("preload")
 	require.True(t, ok)
-	assert.Equal(t, "consume", modeScopeDoc(preload))
+	assert.Equal(t, "consume|mix", modeScopeDoc(preload))
 
 	rate, ok := bench.Lookup("rate")
 	require.True(t, ok)
@@ -264,7 +265,7 @@ func TestBenchByteFlagsAcceptUnits(t *testing.T) {
 		[]string{"--dir", "d", "--bytes", "256MB", "--msg-size", "4 KiB"},
 		spec.BuiltinSession(), envLookup(nil))
 	require.NoError(t, err)
-	assert.Equal(t, int64(256_000_000), opts.Workload.Bytes)
+	assert.Equal(t, int64(256<<20), opts.Workload.Bytes)
 	assert.Equal(t, 4096, opts.Workload.MsgSize)
 }
 
@@ -300,10 +301,9 @@ func TestClamp01BoundsTheFraction(t *testing.T) {
 }
 
 // newTestProgress builds a progress bar writing to buf, bypassing the TTY gate.
-func newTestProgress(buf *bytes.Buffer, warmup, measure time.Duration) *benchProgress {
+func newTestProgress(buf *bytes.Buffer, measure time.Duration) *benchProgress {
 	return &benchProgress{
 		w:       buf,
-		warmup:  warmup,
 		measure: measure,
 		done:    make(chan struct{}),
 		bar: progress.New(
@@ -317,7 +317,7 @@ func newTestProgress(buf *bytes.Buffer, warmup, measure time.Duration) *benchPro
 
 func TestProgressBarRendersPhasesOnAnyWriter(t *testing.T) {
 	var buf bytes.Buffer
-	p := newTestProgress(&buf, 0, 0)
+	p := newTestProgress(&buf, 0)
 
 	p.event(bench.ProgressEvent{Kind: bench.ProgressStart, Phase: bench.PhaseMeasure})
 	start := buf.String()
@@ -333,14 +333,32 @@ func TestProgressBarRendersPhasesOnAnyWriter(t *testing.T) {
 	end := buf.String()
 	assert.Contains(t, end, "100%")
 	assert.Contains(t, end, "\n", "a finished phase commits its line")
+	assert.Empty(t, p.active, "a finished phase is no longer live")
 
 	p.stop()
 	assert.Contains(t, buf.String(), "[measure]")
 }
 
+// A finished phase must not be repainted by the ticker, or a run ends with a stale second bar.
+func TestProgressBarDoesNotRepaintAFinishedPhase(t *testing.T) {
+	var buf bytes.Buffer
+	p := newTestProgress(&buf, 0)
+
+	p.event(bench.ProgressEvent{Kind: bench.ProgressStart, Phase: bench.PhaseDrain})
+	p.event(bench.ProgressEvent{Kind: bench.ProgressEnd, Phase: bench.PhaseDrain})
+	before := buf.String()
+
+	p.mu.Lock()
+	p.paintTickLocked()
+	p.mu.Unlock()
+
+	assert.Equal(t, before, buf.String(), "no tick may redraw a phase that already ended")
+	assert.Equal(t, 1, strings.Count(before, "\n"), "one committed line per phase, not two")
+}
+
 func TestProgressBarScalesToBytes(t *testing.T) {
 	var buf bytes.Buffer
-	p := newTestProgress(&buf, 0, 0)
+	p := newTestProgress(&buf, 0)
 	p.started = time.Now().Add(-time.Second)
 	p.event(bench.ProgressEvent{Kind: bench.ProgressStart, Phase: bench.PhaseMeasure, Total: 200})
 
@@ -353,7 +371,7 @@ func TestProgressBarScalesToBytes(t *testing.T) {
 
 func TestProgressBarFallsBackToDuration(t *testing.T) {
 	var buf bytes.Buffer
-	p := newTestProgress(&buf, 0, 4*time.Second)
+	p := newTestProgress(&buf, 4*time.Second)
 	p.event(bench.ProgressEvent{Kind: bench.ProgressStart, Phase: bench.PhaseMeasure})
 	p.started = time.Now().Add(-2 * time.Second)
 

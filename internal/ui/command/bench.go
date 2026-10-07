@@ -332,21 +332,20 @@ func splitCSV(text string) []string {
 	return out
 }
 
-// bench bar geometry and the warm end of the banner gradient.
+// bench bar geometry.
 const (
 	progressWidth      = 24
 	progressLabelWidth = 10
 )
 
-// benchBarColors fills the progress bar with the banner gradient's warm end.
-var benchBarColors = style.Default.Gradient[:3]
+// benchBarColors fills the progress bar with the banner gradient, darkest ramp stop excluded.
+var benchBarColors = style.Default.Gradient[:len(style.Default.Gradient)-1]
 
 // benchProgress draws a once-per-second progress bar for a running bench.
 type benchProgress struct {
 	mu      sync.Mutex
 	w       io.Writer
 	bar     progress.Model
-	warmup  time.Duration
 	measure time.Duration
 
 	active   bench.Phase
@@ -366,7 +365,6 @@ func startProgressPrinter(errw io.Writer, opts bench.Options) *benchProgress {
 	}
 	p := &benchProgress{
 		w:       errw,
-		warmup:  opts.Workload.Warmup,
 		measure: opts.Workload.Duration,
 		done:    make(chan struct{}),
 		bar: progress.New(
@@ -390,12 +388,18 @@ func (p *benchProgress) loop() {
 			return
 		case <-ticker.C:
 			p.mu.Lock()
-			if p.active != "" {
-				p.repaintLocked()
-			}
+			p.paintTickLocked()
 			p.mu.Unlock()
 		}
 	}
+}
+
+// paintTickLocked repaints only while a phase is live; a finished phase is never redrawn.
+func (p *benchProgress) paintTickLocked() {
+	if p.active == "" {
+		return
+	}
+	p.repaintLocked()
 }
 
 // stop ends the printer and closes the line it may have left open.
@@ -427,6 +431,7 @@ func (p *benchProgress) event(e bench.ProgressEvent) {
 		fmt.Fprint(p.w, "\r\x1b[2K", p.renderLocked(1))
 		fmt.Fprintln(p.w)
 		p.lineOpen = false
+		p.active = ""
 	case bench.ProgressTick:
 		p.bytes = e.Bytes
 		if e.Total > 0 {
@@ -455,15 +460,8 @@ func (p *benchProgress) percentLocked() float64 {
 		byBytes = clamp01(float64(p.bytes) / float64(p.total))
 	}
 	var haveTime bool
-	switch p.active {
-	case bench.PhaseMeasure:
-		if p.measure > 0 {
-			byTime, haveTime = clamp01(elapsed/p.measure.Seconds()), true
-		}
-	case bench.PhaseWarmup:
-		if p.warmup > 0 {
-			byTime, haveTime = clamp01(elapsed/p.warmup.Seconds()), true
-		}
+	if p.active == bench.PhaseMeasure && p.measure > 0 {
+		byTime, haveTime = clamp01(elapsed/p.measure.Seconds()), true
 	}
 
 	switch {

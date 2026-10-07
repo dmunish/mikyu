@@ -13,8 +13,6 @@ type Phase string
 const (
 	// PhasePopulate writes the backlog a consume run measures against.
 	PhasePopulate Phase = "populate"
-	// PhaseWarmup drives the path without recording so caches and pools settle.
-	PhaseWarmup Phase = "warmup"
 	// PhaseMeasure records the observations the envelope reports.
 	PhaseMeasure Phase = "measure"
 	// PhaseDrain lets in-flight work finish after the bound fires.
@@ -28,13 +26,13 @@ func phaseSequence(m Mode, preload int64) []Phase {
 	switch m {
 	case ModeConsume:
 		if preload > 0 {
-			return []Phase{PhasePopulate, PhaseWarmup, PhaseMeasure, PhaseDrain}
+			return []Phase{PhasePopulate, PhaseMeasure, PhaseDrain}
 		}
-		return []Phase{PhaseWarmup, PhaseMeasure, PhaseDrain}
+		return []Phase{PhaseMeasure, PhaseDrain}
 	case ModeRecovery:
 		return []Phase{PhasePopulate, PhaseAbort}
 	default:
-		return []Phase{PhaseWarmup, PhaseMeasure, PhaseDrain}
+		return []Phase{PhaseMeasure, PhaseDrain}
 	}
 }
 
@@ -88,14 +86,13 @@ func (r *runner) startProgress(ctx context.Context) func() {
 				return
 			case <-ticker.C:
 				switch r.phaseOf() {
-				case PhaseWarmup, PhaseMeasure, PhaseDrain:
+				case PhaseMeasure, PhaseDrain:
 					emitProgress(r.opts, ProgressEvent{
 						Kind:  ProgressTick,
 						Phase: r.phaseOf(),
 						Bytes: r.phaseBytes(),
 						Total: r.byteBound(),
 					})
-
 				}
 			}
 		}

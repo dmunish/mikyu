@@ -38,7 +38,6 @@ type WorkloadView struct {
 	Batch        int         `json:"batch"`
 	Keys         int         `json:"keys,omitempty"`
 	Preload      int64       `json:"preload,omitempty"`
-	Warmup       string      `json:"warmup"`
 	AckRate      float64     `json:"ack_rate,omitempty"`
 	CrashAfter   int64       `json:"crash_after_bytes,omitempty"`
 	Seed         uint32      `json:"seed"`

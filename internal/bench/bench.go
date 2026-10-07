@@ -281,7 +281,7 @@ func (r *runner) limitReached(moved int64) bool {
 	return w.Duration > 0 && r.elapsedMeasure() >= w.Duration
 }
 
-// boundFired names the bound that stopped the run.
+// boundFired names the bound that stopped the run, or "drained" when the source ran out first.
 func (r *runner) boundFired() string {
 	w := r.opts.Workload
 	switch {
@@ -289,10 +289,10 @@ func (r *runner) boundFired() string {
 		return "crash"
 	case w.Bytes > 0 && r.moved() >= w.Bytes:
 		return "bytes"
-	case w.Duration > 0:
+	case w.Duration > 0 && r.elapsedMeasure() >= w.Duration:
 		return "duration"
-	case w.Bytes > 0:
-		return "bytes"
+	case w.Bytes > 0 || w.Duration > 0:
+		return "drained"
 	default:
 		return ""
 	}

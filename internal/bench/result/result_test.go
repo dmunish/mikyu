@@ -62,7 +62,6 @@ func sampleResult() Result {
 			Duration: "5s",
 			Workers:  8,
 			Batch:    1,
-			Warmup:   "5s",
 			Seed:     42,
 		},
 		Environment: EnvironmentView{
@@ -77,7 +76,6 @@ func sampleResult() Result {
 			TimerOverheadNS: 42,
 		},
 		Phases: []PhaseView{
-			{Name: "warmup", Duration: "5s", Bytes: 1024},
 			{Name: "measure", Duration: "5s", Bytes: 4096},
 		},
 		Metrics: &MetricsView{
@@ -158,7 +156,7 @@ func TestSeriesStreaming(t *testing.T) {
 	require.NoError(t, err)
 
 	want := []SeriesRow{
-		{T: 1, Phase: "warmup", Client: ClientCols{MsgsInFlight: 3, Throughput: 1000.5, P50NS: 10, P90NS: 20, P99NS: 30}},
+		{T: 1, Phase: "populate", Client: ClientCols{MsgsInFlight: 3, Throughput: 1000.5, P50NS: 10, P90NS: 20, P99NS: 30}},
 		{T: 2, Phase: "measure", Client: ClientCols{MsgsInFlight: 5, Throughput: 2000.25, P50NS: 40, P90NS: 50, P99NS: 60}},
 		{T: 3, Phase: "measure", System: SystemCols{QueueDepth: 900, WALChannelFill: 0.25}, Host: HostCols{RSSBytes: 1 << 30, CPUPercent: 87.5, Threads: 32}},
 	}

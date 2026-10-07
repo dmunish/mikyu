@@ -83,6 +83,21 @@ func TestConsumeWithPreload(t *testing.T) {
 	assert.Equal(t, int64((1<<20)/256), res.Metrics.Messages)
 }
 
+// A run that stops because its source ran out did not hit any declared bound, and must not claim one did.
+func TestConsumeReportsDrainedWhenTheBacklogRunsOut(t *testing.T) {
+	opts := baseOptions(t, ModeConsume)
+	opts.Spec = asyncSpec()
+	opts.Workload.Preload = 1 << 20
+	opts.Workload.Duration = time.Minute
+	opts.Workload.Bytes = 0
+
+	res, err := Run(t.Context(), opts)
+	require.NoError(t, err)
+	require.True(t, res.Complete)
+	assert.Equal(t, "drained", res.Metrics.BoundFired)
+	assert.Positive(t, res.Metrics.Messages, "a drained backlog still produced observations")
+}
+
 func TestProduceTaskQueue(t *testing.T) {
 	opts := baseOptions(t, ModeProduce)
 	opts.Spec = asyncSpec()
@@ -184,7 +199,6 @@ func TestProgressEventsSpanTheRun(t *testing.T) {
 	opts := baseOptions(t, ModeProduce)
 	opts.Spec = asyncSpec()
 	opts.Workload.Duration = 2 * time.Second
-	opts.Workload.Warmup = time.Second
 
 	var mu sync.Mutex
 	started := map[Phase]int{}
@@ -205,7 +219,6 @@ func TestProgressEventsSpanTheRun(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	assert.Equal(t, 1, started[PhaseWarmup])
 	assert.Equal(t, 1, started[PhaseMeasure])
 	assert.Equal(t, 1, started[PhaseDrain])
 	assert.Positive(t, ticks, "a duration-bound run reports progress every second")
