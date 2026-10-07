@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,32 +38,82 @@ func runConsume(ctx context.Context, r *runner) error {
 	return nil
 }
 
-// populate writes the preload backlog as seeded payloads, keeping each queue's offsets aligned.
+// populate writes the preload backlog as seeded payloads, one goroutine per queue.
 func (r *runner) populate(ctx context.Context) error {
 	w := r.opts.Workload
 	total := w.Preload / int64(w.MsgSize)
 	if total <= 0 {
 		return nil
 	}
-	buf := make([]byte, w.MsgSize)
-	next := make([]uint64, len(r.queueNames))
-	for i := int64(0); i < total; i++ {
-		qi := int(i) % len(r.queueNames)
-		payloadFor(w.Seed, next[qi], buf)
-		payload := slices.Clone(buf)
-		if r.isLog() {
-			if _, err := r.logQueues[qi].Append(ctx, payload); err != nil {
-				return err
+
+	queues := len(r.queueNames)
+	if int64(queues) > total {
+		queues = int(total)
+	}
+	perQueue := total / int64(queues)
+
+	var (
+		wg       sync.WaitGroup
+		errOnce  sync.Once
+		firstErr error
+	)
+	base := int64(0)
+	for qi := range queues {
+		count := perQueue
+		if qi == queues-1 {
+			count = total - base // the last queue takes the remainder
+		}
+		start := uint64(base)
+		base += count
+		wg.Add(1)
+		go func(qi int, start uint64, count int64) {
+			defer wg.Done()
+			if err := r.populateQueue(ctx, qi, start, count); err != nil {
+				errOnce.Do(func() { firstErr = err })
 			}
-		} else if _, err := r.taskQueues[qi].Enqueue(ctx, payload); err != nil {
+		}(qi, start, count)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	emitProgress(r.opts, ProgressEvent{Kind: ProgressEnd, Phase: PhasePopulate,
+		Bytes: total * int64(w.MsgSize), Total: w.Preload})
+	return nil
+}
+
+// populateQueue writes count seeded payloads to one queue
+func (r *runner) populateQueue(ctx context.Context, qi int, start uint64, count int64) error {
+	w := r.opts.Workload
+	batch := w.Batch
+	if int64(batch) > count {
+		batch = int(count)
+	}
+	bufs := makePayloadBuffers(batch, w.MsgSize)
+	for i := int64(0); i < count; i += int64(batch) {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-		next[qi]++
-		if i%1024 == 0 {
-			emitProgress(r.opts, ProgressEvent{Kind: ProgressTick, Phase: PhasePopulate, Bytes: i * int64(w.MsgSize), Total: w.Preload})
+		n := batch
+		if int64(n) > count-i {
+			n = int(count - i)
 		}
+		for j := range n {
+			payloadFor(w.Seed, start+uint64(i)+uint64(j), bufs[j])
+		}
+		if r.isLog() {
+			if _, err := r.logQueues[qi].AppendBatch(ctx, bufs[:n]); err != nil {
+				return err
+			}
+		} else {
+			for j := range n {
+				if _, err := r.taskQueues[qi].Enqueue(ctx, bufs[j]); err != nil {
+					return err
+				}
+			}
+		}
+		r.addPhaseBytes(int64(n) * int64(w.MsgSize))
 	}
-	emitProgress(r.opts, ProgressEvent{Kind: ProgressEnd, Phase: PhasePopulate, Bytes: total * int64(w.MsgSize), Total: w.Preload})
 	return nil
 }
 
@@ -106,13 +155,11 @@ func (r *runner) consumeLog(ctx context.Context, until func() bool, stopWhenIdle
 	var wg sync.WaitGroup
 	errCh := make(chan error, w.Workers)
 	for range w.Workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			if err := r.logConsumeWorker(ctx, combined, &idle); err != nil && !errors.Is(err, context.Canceled) {
 				errCh <- err
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	select {

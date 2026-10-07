@@ -86,7 +86,7 @@ func (r *runner) startProgress(ctx context.Context) func() {
 				return
 			case <-ticker.C:
 				switch r.phaseOf() {
-				case PhaseMeasure, PhaseDrain:
+				case PhasePopulate, PhaseMeasure, PhaseDrain:
 					emitProgress(r.opts, ProgressEvent{
 						Kind:  ProgressTick,
 						Phase: r.phaseOf(),
