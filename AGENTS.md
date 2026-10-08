@@ -1,6 +1,6 @@
 # Mikyu — Architecture & Implementation Specification
 
-Mikyu is a log-structured message queue written from scratch in Go. It presents **two structurally distinct queue kinds over one shared storage engine**:
+Mikyu is a log-structured message queue in Go that presents **two structurally distinct queue kinds over one shared storage engine**:
 
 - **Log queues** (`log/<name>`) — append-only streams with consumer-group offsets, replay, streaming, tailing, keyed compaction, per-queue retention.
 - **Task queues** (`task/<name>`) — at-least-once delivery with visibility leases, exponential backoff, scheduling, stale-lease protection, a durable per-queue DLQ, an optional archive log, chunked checkpoint recovery, and per-queue in-flight/DLQ bounds.
@@ -26,6 +26,7 @@ A queue's **kind is structural**: it is the name of its parent directory under t
 13. **The bench harness is a client, not a driver.** `internal/bench` opens embedded nodes, spawns daemons, or dials remotes through the public SDK and measures only what the SDK exposes. The engine and drivers carry no bench-specific code paths.
 14. **Reader gate on the ring cache.** Task-style drivers that read back their own appends leave `GateCache` off; log-queue writes only populate the cache after the first read, saving the per-append copy on produce-only workloads.
 15. **One writer goroutine per batch, ordered completion.** A batch is written by exactly one writer — an `iow.Writer` pool worker (`GOMAXPROCS` under `Buffered`, 1 under `DataSync`) or the io_uring ring reaper on hosts that have it — and completions arrive in submission order, which is what lets the WAL advance a byte watermark without a reorder buffer of its own. Producers stage via `push`/`pushBatch` (sync) or `pushAsyncBatch` (async). Test hooks assert the invariant.
+16. **One writer per batch, bounded by `iow.slots`.** The async path's slot channel is the *only* backpressure point producers observe; the writer's internal queue is at least as deep so producers never stall inside the writer.
 
 ### Guarantees
 
@@ -163,8 +164,9 @@ flowchart TB
     GROUP["queue/group"]:::bottom
     MGR["manager"]:::driver
   end
-  subgraph L1["L1 — Engine & Transport"]
+  subgraph L1["L1 — Engine, Transport, Write Primitives"]
     ENG["engine"]:::bottom
+    IOW["iow"]:::bottom
     MET["metrics"]:::bottom
     PROTO["transport/protocol"]:::bottom
     IPC["transport/ipc"]:::driver
@@ -184,7 +186,7 @@ flowchart TB
   LOGQ --> ENG & GROUP
   TASKQ --> ENG & MET
   RET --> ENG & MET
-  ENG --> MET & SPEC
+  ENG --> MET & SPEC & IOW
   MET --> SPEC
   MGR --> ENG
   CONFIG --> SPEC & MGR
@@ -201,7 +203,221 @@ flowchart TB
 
 ---
 
-## 3. Public SDK — `mikyu` Package
+## 3. `internal/iow` — Bounded, Ordered, Concurrent Writes
+
+`iow` is the durable-write primitive used by the engine's WAL. It owns one contract: *a batch is written by exactly one writer; completions arrive in submission order; a caller can therefore advance a monotonic durable watermark without its own reorder buffer.*
+
+```go
+type Write struct {
+    F   *os.File
+    Buf []byte
+    Off int64
+}
+
+type Durability int
+const ( Buffered Durability = iota; DataSync )
+
+type Options struct {
+    Workers     int          // writer goroutines; 0 = GOMAXPROCS
+    Outstanding int          // submitted-but-incomplete batches; 0 = Workers*4
+    Durability  Durability
+    SyncFiles   []*os.File   // files a DataSync batch fsyncs; empty = files in the batch
+}
+
+type Writer interface {
+    Write(ctx context.Context, batch []Write, done func(error)) error
+    Sync() error
+    Close() error
+}
+
+var ErrClosed = errors.New("iow: writer is closed")
+
+func New(files []*os.File, opts Options) (Writer, error)
+```
+
+**Contract.** Every accepted submission gets a sequence number and its `done` callback fires exactly once, in submission order. A submission that returns an error (closed, failed, or cancelled) still has its `done` called with that error. `Close` is idempotent.
+
+**`New` picks the best writer the host offers**, in this order:
+
+1. The io_uring ring (`ring_linux.go`) unless `MIKYU_DISABLE_URING` is set — Linux only, kernel ≥ 5.13, serves every mode.
+2. The IOCP port (`iocp_windows.go`) under `Buffered` unless `MIKYU_DISABLE_IOCP` is set — Windows only. Under `DataSync` a Windows batch serializes on its own fsync, so overlapped submission costs more than it saves; `New` skips the port.
+3. The pool (`pool.go`) on every platform.
+
+`MIKYU_FORCE_SYSCALL_WAL` disables both kernel paths.
+
+### 3.1 `order` — submission-order completion
+
+```go
+type completion struct {
+    err  error
+    done func(error)
+}
+
+type order struct {
+    mu        sync.Mutex
+    cond      *sync.Cond
+    reserved  uint64
+    delivered uint64
+    pending   map[uint64]completion
+}
+
+func newOrder() *order
+func (o *order) reserve() uint64
+func (o *order) settle(seq uint64, err error, done func(error))
+func (o *order) waitDrained()
+```
+
+`reserve` takes the next delivery slot before submission. `settle` records one outcome and delivers every callback the frontier has reached — `pump` invokes a callback *before* advancing the frontier, so no later batch's callback can start before an earlier one's. That is what turns out-of-order kernel completions (io_uring's CQ, IOCP's completion queue) back into a monotonic durable prefix for the WAL.
+
+### 3.2 `pool` — portable worker pool
+
+```go
+type pool struct {
+    files     []*os.File
+    syncFiles []*os.File
+    durable   bool
+    jobs      chan *job
+    workers   int
+    order     *order
+    mu        sync.Mutex
+    cond      *sync.Cond
+    submitted uint64
+    err       error
+    closing   chan struct{}
+    submitWG  sync.WaitGroup
+    wg        sync.WaitGroup
+}
+
+type job struct {
+    seq    uint64
+    writes []Write
+    done   func(error)
+}
+
+var (
+    syncData = syncDataDefault
+    writeAt  = func(f *os.File, buf []byte, off int64) (int, error) { return f.WriteAt(buf, off) }
+)
+```
+
+- `Write` takes the next order slot, blocks on the `jobs` channel (bounded by `Outstanding`), or settles inline on a closed/failed/cancelled writer.
+- `execute(j)` runs `writeAt` for each buffer, then — under `DataSync` — fsyncs each of `syncTargets(j.writes)` (from `SyncFiles` if set, otherwise the batch's files, deduplicated first-seen).
+- `run` drains `jobs` until the `closing` channel fires, then drains whatever is already queued before exiting.
+- `Sync` waits for the ordered frontier to drain, then fsyncs every owned file.
+- `Close` waits for accepted submissions, drains, fsyncs, and closes the files exactly once.
+
+### 3.3 `ring_linux.go` — process-wide io_uring
+
+```go
+type op struct {
+    Kind     opKind   // opWrite, opFsync, opNop
+    File     *os.File
+    Buf      []byte
+    Off      int64
+    DataSync bool
+    Link     bool
+    Drain    bool
+    Sink     uint32   // handle id
+    Tag      uint32   // batch id within the handle
+}
+
+type ring struct {
+    fd      int
+    entries uint32
+    sqRing  []byte
+    cqRing  []byte
+    sqes    []byte
+
+    sqHead, sqTail *uint32
+    sqMask         uint32
+    sqArray        *uint32
+    cqHead, cqTail *uint32
+    cqMask         uint32
+    cqBase         unsafe.Pointer
+
+    submitMu sync.Mutex
+
+    mu      sync.Mutex
+    handles []*ringHandle
+    free    []uint32
+    stop    chan struct{}
+    done    chan struct{}
+}
+
+type ringHandle struct {
+    ring *ring
+    id   uint32
+    next atomic.Uint32
+
+    mu     sync.Mutex
+    cond   *sync.Cond
+    pend   map[uint32]int32
+    res    map[uint32]int64
+    dones  map[uint32]func(error)
+    closed bool
+}
+```
+
+- One ring per process (`sharedRing = sync.OnceValue(newRing)`), one reaper goroutine (`r.loop`).
+- `newRing` opens the ring via `SYS_IO_URING_SETUP`, maps the SQ ring/CQ ring/SQE array at their protocol offsets, and returns nil on any failure — callers fall back to the pool.
+- Kernel support is checked by reading `/proc/sys/kernel/osrelease` and comparing major/minor against 5.13. (An earlier `uname`-based parser split only on the first `.` and silently declined every 3-component release like `5.15.0-generic`.)
+- `submit` writes SQEs under `submitMu` (concurrent producers never interleave their SQE writes), issuing one `io_uring_enter` per chunk when the ring is full.
+- `loop` reaps CQEs and dispatches them by `Sink` to the registered `ringHandle`. A completion whose sink id is no longer registered is dropped — no one is listening.
+- A `ringHandle` tracks per-tag outstanding count, per-tag first error, and a completion callback. A tag submitted with a nil callback is waited on through the cond var; a tag submitted with a callback is driven by the reaper.
+- `wakeReaper` submits an `opNop` with `uringSinkIDNone` so a reaper parked in `enter` returns and observes the stop signal.
+- `close` stops the reaper, closes the fd, unmaps the rings.
+
+### 3.4 `iocp_windows.go` — process-wide completion port
+
+```go
+type iocpPort struct {
+    handle   windows.Handle
+    mu       sync.Mutex
+    inflight map[*iocpOp]struct{}
+    writers  map[uintptr]*iocpWriter
+    keys     uintptr
+    stop     chan struct{}
+    done     chan struct{}
+    once     sync.Once
+}
+
+type iocpOp struct {
+    overlapped windows.Overlapped
+    batch      *iocpBatch
+    length     int
+}
+
+type iocpBatch struct {
+    writer  *iocpWriter
+    seq     uint64
+    syncs   []*os.File
+    done    func(error)
+    mu      sync.Mutex
+    writes  int
+    err     error
+    settled bool
+}
+```
+
+- One port per process (`sharedPort = sync.OnceValue(newPort)`), one reaper goroutine (`p.loop`).
+- `newPort` loads `SetFileCompletionNotificationModes` and opens the port. `newIOCPWriter` returns false when `MIKYU_DISABLE_IOCP` is set or the host has no usable port.
+- `Write` submits one batch, one overlapped op per buffer, using `windows.WriteFile` with a `FILE_SKIP_COMPLETION_PORT_ON_SUCCESS`-mode handle. A synchronous success completes the batch inline (the kernel posts no packet); a synchronous failure is recorded but the overlapped stays rooted until the reaper sees the failure packet.
+- `attach` associates a file handle with the port once and enables the skip modes; a handle that refuses overlapped I/O falls back to `WriteAt` on that buffer.
+- `advance` moves the batch toward completion; when nothing is outstanding, `syncs` are flushed with `FlushFileBuffers` and the batch settles through `order.settle`.
+- `max` in a saturated run is device writeback latency, not steady-state append latency; it does not rank writers.
+
+### 3.5 Sync primitives
+
+| OS | `syncDataDefault` |
+|---|---|
+| Linux | `unix.Fdatasync(int(f.Fd()))` |
+| Darwin | `F_FULLFSYNC` fcntl, falling back to `File.Sync()` |
+| Windows | `File.Sync()` |
+| Other | `File.Sync()` |
+
+---
+
+## 4. Public SDK — `mikyu` Package
 
 ```go
 type Client interface {
@@ -227,6 +443,7 @@ const SpecVersion = spec.CurrentSpecVersion   // 5
 **Type aliases** (`mikyu.go`): `LogQueue = logqueue.Log`, `TaskQueue = client.TaskQueue`, `Record = engine.Record`, `Group = logqueue.Group`, `Task = taskqueue.Task`, `TaskRef = taskqueue.Ref`, `TaskID = taskqueue.ID`, `QueueKind = node.Kind`, `QueueInfo = node.QueueInfo`, `QueueDescription = client.QueueDescription`, `Metrics = metrics.Snapshot`, `Param/Kind/Layer/Scope/Session = spec.*`.
 
 **Typed wrapper** (`typed.go`):
+
 ```go
 type Codec[T any] struct { Marshal func(T) ([]byte, error); Unmarshal func([]byte, *T) error }
 type Typed[T any] struct { queue LogQueue; codec Codec[T] }
@@ -241,7 +458,7 @@ func (t *Typed[T]) Read(ctx context.Context, offset uint64) (T, error)
 
 ---
 
-## 4. Configuration & Schema — `internal/spec`
+## 5. Configuration & Schema — `internal/spec`
 
 `spec.Table` is the canonical parameter list (`internal/spec/table.go`).
 
@@ -266,6 +483,7 @@ type Param struct {
 **Kinds:** `KindInt, KindUint32, KindDuration, KindBytes, KindBool, KindString, KindTime, KindEnum, KindFloat`. **Layers:** `LayerCall, LayerSpec, LayerSession`. **Scopes:** `ScopeClient, ScopeServer, ScopeBoth`. **Mutability:** `MutMutable, MutCreateOnly, MutNotApplicable`.
 
 **Spec types** (sparse, pointer fields):
+
 ```go
 type Spec struct {
     Storage   StorageSpec   `json:"storage,omitzero"`
@@ -284,6 +502,7 @@ type TaskSpec      struct { Lease *Duration; MaxAttempts, MaxInFlight, MaxDeadLe
 ```
 
 **Session type** (server-scoped, no `json`):
+
 ```go
 type Session struct {
     Target, DataDir string
@@ -327,9 +546,9 @@ type MetricsConfig struct {
 
 ---
 
-## 5. Storage Engine — `internal/engine`
+## 6. Storage Engine — `internal/engine`
 
-### `Storage` interface
+### 6.1 `Storage` interface
 
 ```go
 type Storage interface {
@@ -351,7 +570,7 @@ type Storage interface {
 }
 ```
 
-### `Record` / `Config`
+### 6.2 `Record` / `Config`
 
 ```go
 type Record struct { Offset uint64; ID string; Timestamp time.Time; Group, Payload []byte }
@@ -368,18 +587,18 @@ type Config struct {
     MaxFlushWait     time.Duration
     FlushLinger      time.Duration
     CompactionPolicy CompactionPolicy
-    GateCache        bool   // ring-cache only after first read
+    GateCache        bool
 }
 func (c Config) Async() bool            { return c.Durability == spec.DurabilityAsync }
 func (c Config) KeyedCompaction() bool  { return c.Compaction == spec.CompactionKeys }
 func (c Config) EncryptedStorage() bool { return c.Encryption == spec.EncryptionOS }
 ```
 
-### Sentinels
+### 6.3 Sentinels
 
 `ErrQueueExists, ErrQueueNotFound, ErrOffsetNotFound, ErrMessageTooLarge, ErrRecordTooLarge, ErrOffsetTruncated, ErrQueueClosed, ErrNoData, ErrRecordCompacted, ErrDiskFull, ErrCorruptRecord`.
 
-### `Manager` (per kind)
+### 6.4 `Manager` (per kind)
 
 ```go
 type Manager struct {
@@ -402,7 +621,7 @@ func (m *Manager) Close() error
 
 `manager-offsets.dat` is per root, so consumer groups on `log/events` and `task/events` are independent.
 
-### `Queue` (updated)
+### 6.5 `Queue` (updated)
 
 ```go
 type Queue struct {
@@ -446,11 +665,11 @@ type reservation struct {
 
 `openQueue(parentDir, name, cfg, store, scopes...)` opens the queue directory through `os.Root` scoped to `parentDir`, so a hostile name cannot escape. The initial preallocation is `min(8 MiB, MaxSegment)`.
 
-### Append Path
+### 6.6 Append Path
 
 `Append` delegates to `AppendBatch`. It stages per-segment sub-batches so a WAL write never straddles a roll:
 
-1. Validate `len(payload) ≤ MaxPayload`; encode with `uuid.NewV7()`; reject `recLen > MaxSegment` with `ErrRecordTooLarge`.
+1. Validate `len(payload) ≤ MaxPayload`; encode with `newRecordID()`; reject `recLen > MaxSegment` with `ErrRecordTooLarge`.
 2. **Choose encodings**: sync or produce-only path uses pooled buffers (`getBuf(recLen)` and `encodeRecord(bb.b, …)`); async + cacheable path allocates fresh `rec []byte` so the ring cache can hold `rec[offBody+groupLen:]` by reference.
 3. Stage into a per-segment `stagedBatch{w, seg, recs, bufs, positions, recLens, offsets, ids, totalLen, startIdx}`.
 4. On roll or flush budget:
@@ -461,7 +680,7 @@ type reservation struct {
 
 `roll()` never seals the active segment while any reservation is pending (`hasPendingReservation()` polls under the lock until the frontier drains). It also doubles/halves `nextPreallocBytes` by fill speed and truncates the sealed segment to `pos` before `enableMMap`.
 
-### Reservation Frontier (`queue.go`)
+### 6.7 Reservation Frontier (`queue.go`)
 
 ```go
 func (q *Queue) reserveLocked(b *stagedBatch) *reservation
@@ -473,7 +692,7 @@ func (q *Queue) hasPendingReservation() bool
 
 `drainReservationsLocked` walks the FIFO from the head while the front is resolved: for each committed node it advances `node.seg.pos` if the node's end is beyond it, and raises `q.publishedOffset` to `node.lastOffset+1`. An aborted node consumes offsets (they were already handed out) but contributes no bytes — its reserved region becomes a hole in the segment.
 
-### Read Path
+### 6.8 Read Path
 
 1. `q.cache.Get(offset)` — lock-free through `atomic.Pointer[Record]`; returns only if `rec.Offset == offset && !rec.Timestamp.IsZero()`.
 2. `q.locateSegment(offset)` — `slices.BinarySearchFunc` over `q.segments`; `offset < minOffset` → `ErrOffsetTruncated`; `offset ≥ publishedOffset` → `ErrOffsetNotFound`.
@@ -490,24 +709,26 @@ func (q *Queue) hasPendingReservation() bool
 
 `batchReadAtHook func(n int)` (test) receives each bulk log read's byte count.
 
-### Fetch
+### 6.9 Fetch
 
 ```go
 func (q *Queue) Fetch(ctx, offset uint64, maxCount int, maxWait time.Duration) ([]Record, error)
 ```
+
 - `maxCount ≤ 0` → `nil, nil`; `offset < minOffset` → `ErrOffsetTruncated`.
 - `offset < publishedOffset` → `ReadBatch`; if the window held only compacted records, advance past it; else `ErrNoData`.
 - `maxWait ≤ 0` → `ErrNoData` immediately.
 - Otherwise parks on `ctx.Done()`, `notify`, or `timer.C`; `broadcastLocked()` swaps `q.notify` and closes the old one. `fetch_park_events` and `parked_fetch` are updated around the park.
 
-### Segment Rolling & Preallocation
+### 6.10 Segment Rolling & Preallocation
 
 `nextPreallocBytes` starts at `min(8 MiB, MaxSegment)` and adapts inside `roll()`:
+
 - Filled in under 10 s → double, capped at `min(256 MiB, MaxSegment)`.
 - Filled after 5 min → halve, floored at 8 MiB.
 - Active segment truncated to written `pos` before `enableMMap`.
 
-### Compaction (log only)
+### 6.11 Compaction (log only)
 
 When `KeyedCompaction()` is true, `keyIndex map[string]uint64` maps group → newest offset; `buildKeyIndex` walks every record on open. After each `roll()`, `compactClosedLocked` rewrites each closed segment in place:
 
@@ -519,15 +740,13 @@ When `KeyedCompaction()` is true, `keyIndex map[string]uint64` maps group → ne
 
 Key index warn limit is `keyIndexWarnLimit = 1_000_000`; over the limit logs a warning and the `key_index` gauge reports the live size.
 
-### WAL (updated)
+### 6.12 WAL (updated for `iow`)
 
 The WAL writes through an `iow.Writer` (`internal/iow`): a small sink adapter in `wal.go` renders a batch as the flat `[]iow.Write` the writer consumes, and the writer owns bounded concurrency, ordered completion, and the fsync boundary. `newWAL` passes no files — the segment owns its handles — and names the log in `SyncFiles`, because the index is rebuilt from the log on crash. `Workers` is `GOMAXPROCS` under `Buffered` and **1** under `DataSync`, since the kernel serializes fsyncs per file anyway.
 
 Which writer runs is `iow.New`'s business, never the WAL's: the portable pool everywhere; on Linux a process-wide io_uring ring (kernel ≥ 5.13, `MIKYU_DISABLE_URING` unset) whose single reaper completes every queue's batches; on Windows a process-wide completion port (`MIKYU_DISABLE_IOCP` unset) whose handles join on first use and whose synchronous completions settle inline. The ring gates on the kernel version read from `/proc/sys/kernel/osrelease`, splitting on `.` and comparing major/minor — an earlier `uname`-based parser cut only on the first dot and so declined every 3+ component release like `5.15.0-generic`, silently leaving Linux on the pool. Both reapers deliver through the shared `order` layer, which advances its frontier only after each callback starts, so batch *N*'s done can never start before batch *N-1*'s — that is what turns out-of-order kernel completions back into the byte-based `wait(seq)` guarantee. A submission that fails partway settles the batch through the same frontier with the recorded error and returns nil, matching the pool's "done carries the outcome" contract.
 
-**The ring serves both modes; the completion port serves `Buffered` only.** On Linux the ring wins outright, so `New` hands it every batch: 8 GiB async runs reach 121–147k msg/s at p99 12–15ms against the pool's 93–113k at 23–31ms, and sync runs reach 25–27k msg/s at p50 13.5–15.2ms against the pool's 24–27k at 17.9–21.5ms — the fsync rides in-band as an SQE instead of a user-space flush on the completion path. On Windows a `DataSync` batch serializes on its own fsync, so overlapped submission buys nothing and the measurements say it costs: ~55k msg/s at p50 8.6–9.6ms against the pool's ~63–67k at 6.8–7.1ms, so `New` skips the port under `DataSync`. Under `Buffered` the port is the best Windows writer: ~250k msg/s against the pool's ~183–193k, with p90 1.1ms against 3.0–3.3ms and p99 1.7–1.8ms against 7.4–8.7ms.
-
-**The port's `max` is device writeback, not steady state.** Every configuration shows multi-second worst-case appends in a saturating run, because a segment roll flushes a sealed 256 MiB segment while the device has whatever else queued: ~30 such events per 8 GiB run (32 rolls) in every writer. `max` is one sample of 8.4M and swings 5.9s–8.7s across identical binaries, so it does not rank the writers. The counts that do: per 8.4M appends the port has ~205 samples over 100ms against the pool's ~260 and the pre-Phase-1 sink's ~280, and the best p99 (1.7–1.8ms against 7.4–8.7ms and 10.3ms) and p999 (790–807ms against 683–958ms and ~915ms). Capping the async slot budget to shrink the kernel queue was measured and rejected: it left `max` untouched and moved p90/p99 from 1.1ms/1.8ms to 1.6ms/3.6ms.
+**The ring serves both modes; the completion port serves `Buffered` only.** On Linux the ring wins outright, so `New` hands it every batch. On Windows a `DataSync` batch serializes on its own fsync, so overlapped submission buys nothing and the measurements say it costs, so `New` skips the port under `DataSync`.
 
 ```go
 type wal struct {
@@ -576,11 +795,11 @@ var indexWriteHook func(off, n int)// receives every index write
 
 **Platform `syncData`:** Darwin uses `F_FULLFSYNC`; Linux uses `Fdatasync`; Windows and other platforms use `File.Sync()` (the iow package owns these; the engine keeps its own copy for segment-level syncs).
 
-### Rolling Segments (updated)
+### 6.13 Rolling Segments (updated)
 
 `roll()` waits for pending async reservations, then **re-checks the condition**: waiting releases the lock, so a concurrent producer may have rolled in the meantime, and rolling again would seal a fresh segment behind it. It seals only when the active segment can no longer hold a full record (`minRecordSize + MaxPayload`). Symmetrically, a producer that was unlocked pushing its committed group re-stages the rest of its append against whatever segment is active now (`append.go`), or its offsets would land in the new segment's coordinate space while its bytes went to the old one.
 
-### Segment (updated)
+### 6.14 Segment (updated)
 
 ```go
 type segment struct {
@@ -612,15 +831,15 @@ type segment struct {
 - `indexCount()` and `lastTimestamp()` walk the tail via mapping-or-`ReadAt`.
 - `unmap()` releases both mappings; `destroy()` unmaps, closes, unlinks through `os.Root`; `Close()` unmaps first, then truncates the active segment to `pos`, `syncData`, `syncDir`, closes files.
 
-### Record Format
+### 6.15 Record Format
 
 ```
-[4B Body Length][4B CRC32][2B ID Length=16][16B Raw UUID v7][8B Unix Nanos][2B Group Length][Group][Payload]
+[4B Body Length][4B CRC32][2B ID Length=16][16B Raw ID][8B Unix Nanos][2B Group Length][Group][Payload]
 ```
 
-CRC-32/IEEE covers the body (`rec[8:]`). Fixed offsets in `encode.go`: `offLength=0, offCRC=4, offIDLen=8, offUUID=10, offTS=26, offGroupLen=34, offBody=36`.
+The 16-byte raw ID is `[8B random prefix][8B counter]` — process-stable prefix (from `crypto/rand` at init), monotonically increasing counter per process. Not a UUID; `formatRecordID` renders it in the canonical 8-4-4-4-12 hex layout. CRC-32/IEEE covers the body (`rec[8:]`). Fixed offsets in `encode.go`: `offLength=0, offCRC=4, offIDLen=8, offUUID=10, offTS=26, offGroupLen=34, offBody=36`.
 
-### Ring Cache (updated)
+### 6.16 Ring Cache (updated)
 
 ```go
 type cacheSlot struct { rec atomic.Pointer[Record] }
@@ -641,11 +860,11 @@ type ringCache struct {
 - `EvictBefore(minOffset)` and `Evict(offsets...)` adjust `curBytes` and clear slots for evicted offsets.
 - `SetMaxBytes` moves the budget and evicts from head.
 
-### Offset Store
+### 6.17 Offset Store
 
 One `manager-offsets.dat` per engine root persists `(queue:group) → uint64` as `[2B keyLen][key][8B offset]`. `Commit` writes, flushes, `Sync`s; every `compactAppendsThreshold = 5000` appends triggers `compactLocked`, which rewrites atomically via `os.Rename` from `manager-offsets.dat.tmp` and `syncDir(root)`.
 
-### Buffer Pool (`pool.go`)
+### 6.18 Buffer Pool (`pool.go`)
 
 ```go
 const maxIndexKeepBytes = 1 << 20
@@ -657,7 +876,7 @@ func (pb *pooledBuf) release(maxKeep int)
 
 `getBuf` grows or reuses a `pooledBuf`; `release` skips returning oversized buffers, so the pool cannot grow past `maxKeep`.
 
-### Zero-copy Sends (`sendfile.go`)
+### 6.19 Zero-copy Sends (`sendfile.go`)
 
 ```go
 const sendfileMinPayload = 16 << 10
@@ -683,17 +902,17 @@ func payloadSpan(segs []*segment, off uint64) (PayloadSpan, bool)
 
 `PayloadSpans` declines (returns `nil, nil`) when the queue has keyed compaction, when the request cannot be fully served from closed segments, when no span reaches `sendfileMinPayload`, or when the requested prefix extends past `publishedOffset`. On a hit it decodes each small record inline (via `readBytes`) and resolves each large one as a `File`/`FileOff`/`SendMu` tuple drawn from `seg.sendFD()`.
 
-### Retention Primitives
+### 6.20 Retention Primitives
 
 - `FloorOlderThan(ctx, olderThan)` walks **closed** segments oldest→newest; a segment qualifies only if its last record is strictly before `olderThan`. Active segment never included.
 - `FloorForSize(ctx, maxBytes)` drops whole oldest closed segments while total size > `maxBytes`.
 - `TruncateBefore(ctx, targetOffset)` unlinks closed segments with `nextOffset ≤ targetOffset`; stops at the first straddling segment; updates `minOffset`; calls `cache.EvictBefore`.
 
-### Durability Sites
+### 6.21 Durability Sites
 
 `SyncDirHook` fires at four sites: new segment file, offset-store compaction rename, `queues.json` rename, active-segment close-time truncation.
 
-### Kernel Directory Encryption
+### 6.22 Kernel Directory Encryption
 
 | OS | Mechanism |
 |---|---|
@@ -703,7 +922,7 @@ func payloadSpan(segs []*segment, off uint64) (PayloadSpan, bool)
 
 ---
 
-## 6. Log Queue — `internal/queue/logqueue`
+## 7. Log Queue — `internal/queue/logqueue`
 
 ```go
 type Log interface {
@@ -747,7 +966,7 @@ The driver type-asserts its `engine.Storage` to `engine.SpanSource` and forwards
 
 ---
 
-## 7. Task Queue — `internal/queue/taskqueue`
+## 8. Task Queue — `internal/queue/taskqueue`
 
 ```go
 type Queue interface {
@@ -798,6 +1017,7 @@ type ArchiveLogFor func(ctx, source string) (ArchiveAppender, error)
 Lifecycle: `New` opens storage, `loadCheckpointLocked`, `scanNext = MinOffset()`, `refreshLocked` replays post-checkpoint records. `Close` stops any checkpoint work, writes a final checkpoint if dirty, marks closed. The node's `catalog.go` sweeps dirty task queues every `checkpointSweepInterval = 5s` via `taskqueue.Checkpoint`.
 
 **Types** (`task.go`):
+
 ```go
 type Task struct {
     ID, DeliveryID string
@@ -810,6 +1030,7 @@ type Task struct {
 type Ref interface { taskRef(); taskID() string }
 type ID string
 ```
+
 Constants: `defaultLease=30s`, `defaultMaxAttempts=5`, `defaultRetryDelay=1s`, `defaultMaxRetryDelay=5min`, `checkpointEvery=128`, `checkpointChunkBytes=64KiB`.
 
 **Enqueue** appends `recordTask`, installs a `taskState{task, nextAt: scheduledAt, lease: visibilityTimeout}`, pushes onto schedule, sets `scanNext = offset+1`, `dirty++`, broadcasts.
@@ -817,9 +1038,11 @@ Constants: `defaultLease=30s`, `defaultMaxAttempts=5`, `defaultRetryDelay=1s`, `
 **Dequeue** loops on `takeDueLocked(ctx, now)`: pop stale entries, dead-letter a final-attempt in-flight task, else assign a fresh `DeliveryID`, `Attempts++`, `Lease=now+lease`, bump version, re-push, broadcast, return. `TryDequeue` is one non-blocking pass.
 
 **Lease resolution** (`lease.go`):
+
 ```go
 func (q *queue) resolveLeaseLocked(ref Ref) (*taskState, error)
 ```
+
 - `nil` → `ErrInvalidTask`; not in `active` → `ErrTaskNotFound`; not `inFlight` → `ErrTaskNotInflight`; visibility expired → `ErrTaskStale`.
 - **Strict mode** (`ref` is `Task`): requires `Offset`, `Attempts`, non-empty `DeliveryID` to match exactly.
 - **Loose mode** (`ref` is `TaskID`): skips strict comparison; visibility still applies.
@@ -827,6 +1050,7 @@ func (q *queue) resolveLeaseLocked(ref Ref) (*taskState, error)
 `broadcastLocked()` closes `q.notify` and allocates a fresh channel.
 
 **Ack / Nack / Extend / DLQ / Archive:**
+
 - **Ack** — `resolveLeaseLocked`, delete from `active`, `dirty++`, broadcast, prune, `acks++`.
 - **Nack** — `resolveLeaseLocked`; on `Attempts ≥ MaxAttempts` → dead-letter (with DLQ overflow drop of the oldest when `MaxDLQ` exceeded); else reset `inFlight`, clear `DeliveryID`, `nextAt = now + retryAfter`, bump version, re-push.
 - **Extend** — extends `Lease` forward only; never increments `Attempts`.
@@ -838,6 +1062,7 @@ func (q *queue) resolveLeaseLocked(ref Ref) (*taskState, error)
 **Checkpointing** (`checkpoint.go`): record kinds `recordTask=1`, `recordCPStart=2`, `recordCPChunk=3`, `recordCPCommit=4`, `recordDLQ=5`, `recordDLQAck=6`. `checkpointVersion=3`, `maxCheckpointChunks=1<<20`, `maxCheckpointBytes=512<<20`.
 
 `checkpointLocked`:
+
 1. `refreshLocked`; snapshot `active` (offset-sorted) + `dlq`.
 2. Append `recordCPStart(coveredThrough)`.
 3. Split snapshot into ≤ `min(MaxAppendPayloadBytes()-header, checkpointChunkBytes)` chunks; append `recordCPChunk(i, data)`.
@@ -851,9 +1076,11 @@ func (q *queue) resolveLeaseLocked(ref Ref) (*taskState, error)
 
 **Task metrics** (`metrics.go`): `enqueues, dequeues, acks, nacks, extends, dlq_acks, dlq_overflow, task_stalls, dequeue_park_events, queue_full_events, retry_budget_drops, enqueue_duration, dequeue_wait, in_flight_enqueue, parked_dequeue, active, in_flight, scheduled, dead_letters, uncheckpointed, schedule_heap, checkpoint_lsn, dirty, checkpoint_lag`. `publishLocked()` mirrors `viewLocked()` into the scope.
 
+**Truncate floor** (`compaction.go`): `TruncateFloor` reports the highest offset this task queue allows `Storage.TruncateBefore` to reach: the checkpoint, lowered by every in-flight task and every uncheckpointed dead letter that still anchors its record.
+
 ---
 
-## 8. Cross-Driver Retention — `internal/queue/retention`
+## 9. Cross-Driver Retention — `internal/queue/retention`
 
 ```go
 type FloorProvider interface { TruncateFloor(ctx) (floor uint64, constrained bool, err error) }
@@ -881,7 +1108,7 @@ func (c *Coordinator) Start(ctx)
 
 ---
 
-## 9. Transport — `internal/transport`
+## 10. Transport — `internal/transport`
 
 ### Frames
 
@@ -890,6 +1117,7 @@ func (c *Coordinator) Start(ctx)
 | Length (uint32) | Opcode (u8) | Payload (Length-1)   |
 +-----------------+-------------+----------------------+
 ```
+
 `MaxFrameBytes = 256 MiB`. `WriteFrame` grabs a pooled `[]byte` (32 KiB seed), grows in-place while retaining the pointer, writes, returns to pool. `ReadFrame` validates length, allocates exactly `length-1` bytes, reads in one `io.ReadFull`. `ReadFrameInto` supports buffer reuse.
 
 ### Bytes
@@ -950,7 +1178,7 @@ func EncodeTaskRef / DecodeTaskRef / WriteMode / ReadMode
 
 ---
 
-## 10. Server — `internal/server`
+## 11. Server — `internal/server`
 
 ```go
 type Server struct {
@@ -979,7 +1207,7 @@ If the first frame is not `OpAuth` and the server requires auth, the connection 
 
 Over-limit connections are answered with `OpError(ErrCodeTooManyConnections)` after waiting up to `rejectGrace = 1s` for the first frame, then closed.
 
-### Dispatch and Handlers (updated)
+### Dispatch and Handlers
 
 `dispatch` returns `(respOp byte, respBody []byte, shouldShutdown bool, streamed bool)`. When `streamed` is true the handler has already written its own response frame — used by the zero-copy send path in `handleReadBatch` and `handleFetch`. Otherwise the dispatcher writes the frame.
 
@@ -1042,7 +1270,7 @@ type serverMetrics struct {
 
 ---
 
-## 11. Node — `internal/node`
+## 12. Node — `internal/node`
 
 ```go
 type Node struct {
@@ -1069,6 +1297,7 @@ type Node struct {
 **Catalog** (`catalog.go`): `logEntry{ready chan struct{}; q logqueue.Log; err error}` and `taskEntry{ready chan struct{}; q taskqueue.Queue; err error}`. Install builds the driver **outside** `n.mu` and `close(e.ready)` when done. `logEntryFor`/`taskEntryFor` wait on `ready`. Faults are recorded via `recordFault(name, err)`, incrementing `queue_faults` and logging — one bad queue does not fail the node.
 
 **Lifecycle** (`openNode`):
+
 1. `MkdirAll` the data directory; acquire the directory lock (`flock`/`LockFileEx`).
 2. `loadRegistry(dir)` + `reconcileRegistry` against the filesystem.
 3. Build per-queue engine configs from the effective spec, keyed by `manager.Key`; set `cfg.GateCache = (kind == KindLog)`.
@@ -1082,6 +1311,7 @@ type Node struct {
 `Acquire(dir, defaults, opts...)` in `pool.go` — ref-counted process pool keyed by absolute path. `ErrSessionDefaultsMismatch` for mismatched defaults; release is `sync.Once`-guarded.
 
 **Queue operations:**
+
 - **`CreateLogQueue`** — validate, refuse duplicates, create engine queue under `log/`, persist spec to `queues.json`, cache the driver, register retention target, set policy.
 - **`CreateTaskQueue`** — same, under `task/`. Rejects `compaction=keys` with `spec.ErrInvalidConfig`. Wires `archiveLogFor()` and the per-queue metrics scope.
 - **`UpdateQueue`** — validate, merge patch over stored, persist, apply mutable engine config, sync cached driver + retention target, push updated defaults into a live task queue, and launch a bounded immediate reconcile when the policy shrank.
@@ -1092,15 +1322,18 @@ type Node struct {
 **Archive wiring** (`archiveLogFor`): looks up `<source>-archive`; if log → wraps as `archiveAppender`; if task → `ErrWrongKind`; if absent → `CreateLogQueue` with empty spec.
 
 **Registry** (`queues.json`):
+
 ```go
 type QueueEntry struct { Name string; Kind manager.Kind; Spec spec.Spec }
 type registry    struct { Version int; Queues map[string]QueueEntry } // keyed "kind/name"
 ```
+
 `loadRegistry` uses `DisallowUnknownFields`; missing file → empty; corrupt → `ErrRegistryCorrupt`. `saveRegistry` writes atomically via temp + rename + `SyncDir`. `reconcileRegistry` purges missing entries, adopts orphan directories with the kind their path declares, rewrites cached kinds that disagree with the path.
 
 **Lock** (`lock.go`): `acquireDirLock(dir)` opens `<dir>/mikyu.lock` and tries an exclusive non-blocking flock; contention → `ErrLocked`.
 
 **Metrics config** (`metrics.go`):
+
 ```go
 type MetricsConfig struct { Enabled bool; Interval time.Duration; History int; Histograms bool }
 type AcquireOption func(*MetricsConfig)
@@ -1110,9 +1343,11 @@ func preregisterServerMetrics(reg *metrics.Registry)
 func newRegistry(mc MetricsConfig) *metrics.Registry
 func newCollector(reg *metrics.Registry, mc MetricsConfig, sources ...metrics.Source) *metrics.Collector
 ```
+
 `Acquire` applies `WithMetrics` only when opening a **new** node; a second `Acquire` on the same dir reuses the existing collector.
 
 **Runtime source** (`runtime_source.go`): filters the runtime metric names actually available in this Go build; reads scheduler/GC/memory stats each tick. `cpuPercent` converts cumulative CPU into a percent against wall-clock delta; the first sample establishes the baseline and reports zero. Platform readers:
+
 - Unix: `getrusage(RUSAGE_SELF)`; `Maxrss` is 1 KiB on Linux/BSD and bytes on Darwin.
 - Linux: `/proc/self/stat`, `/proc/self/status`, `/proc/self/fd`, cached 5 s.
 - Darwin: `/dev/fd` cached 5 s.
@@ -1122,7 +1357,7 @@ func newCollector(reg *metrics.Registry, mc MetricsConfig, sources ...metrics.So
 
 ---
 
-## 12. Client — `internal/client`
+## 13. Client — `internal/client`
 
 ### Session Config
 
@@ -1152,6 +1387,7 @@ func applyQueueOptions(opts []QueueOption) spec.Spec
 type embeddedClient struct{ node *node.Node; release func() error }
 func NewEmbedded(dir string, opts ...Option) (*embeddedClient, error)
 ```
+
 Every method delegates to the node. `Metrics` returns the node snapshot. `Schema` returns a fresh copy of `spec.Table`. `SubscribeSnapshots` delegates to the collector. `NewEmbedded` rejects `WithTarget` with `ErrModeMismatch`, validates resolved spec up front, and `rejectCompaction` enforces compaction is a log-queue setting at the SDK boundary.
 
 ### Remote Client
@@ -1177,6 +1413,7 @@ type clientConn struct{ conn net.Conn; r *bufio.Reader }
 ### Remote Log Queue
 
 `remoteLogQueue`'s internal `fetch(ctx, start, maxCount, maxWait)`:
+
 - Server budget `wait = min(maxWait, ctx deadline remaining)`.
 - Call deadline `wait + pollMargin` (5 s).
 - `Stream` calls `fetch(ctx, curr, 1024, 0)` (non-blocking) and returns on `ErrNoData`.
@@ -1186,6 +1423,7 @@ type clientConn struct{ conn net.Conn; r *bufio.Reader }
 ### Remote Task Queue
 
 `remoteTaskQueue.Dequeue` long-polls:
+
 - Server budget per call: `longPollTimeout = 30s`, capped by ctx.
 - Client deadline: `wait + longPollMargin` (5 s).
 - `ErrTaskNotAvailable` or client-side deadline → re-arm immediately.
@@ -1199,7 +1437,7 @@ type clientConn struct{ conn net.Conn; r *bufio.Reader }
 
 ---
 
-## 13. Metrics — `internal/metrics`
+## 14. Metrics — `internal/metrics`
 
 ### Instruments
 
@@ -1346,7 +1584,7 @@ Emits Prometheus text 0.0.4. Global series (`mikyu_build_info`, `mikyu_runtime_*
 
 ---
 
-## 14. Errors — `internal/errs`
+## 15. Errors — `internal/errs`
 
 ```go
 type Entry struct { Sentinel error; Code byte }
@@ -1365,7 +1603,7 @@ The taxonomy test walks every source file, extracts every `Err*` sentinel declar
 
 ---
 
-## 15. Daemon — `internal/daemon`
+## 16. Daemon — `internal/daemon`
 
 ```go
 func Run(args []string) error
@@ -1381,6 +1619,7 @@ type enumValue struct { param spec.Param; value string; changed bool }   // flag
 **Fail-closed defaults:** on a non-loopback `tcp://` target, `token` requires `--tls-enabled`, `mtls` requires `--tls-enabled` + `--tls-client-ca-file`, and `""`/`none` is refused (opt out with `--auth-method none-insecure`). Loopback, `unix://`, `pipe://` are exempt. `--auth-token` is registered for `--help` but rejects on use (argv leaks via `ps`).
 
 `Run`:
+
 1. `resolveConfig`.
 2. `logEffectiveConfig`.
 3. `node.Acquire` with `node.WithMetrics(node.MetricsFromSession(cfg.Server))`.
@@ -1403,7 +1642,7 @@ type enumValue struct { param spec.Param; value string; changed bool }   // flag
 
 ---
 
-## 16. Config Loader — `internal/config`
+## 17. Config Loader — `internal/config`
 
 ```go
 type Config struct {
@@ -1424,7 +1663,7 @@ The `legacyKeyPattern` matches at key position, so keys that *contain* a legacy 
 
 ---
 
-## 17. Bench Harness — `internal/bench`
+## 18. Bench Harness — `internal/bench`
 
 The bench harness measures what Mikyu does under a declared workload. It is a **client**, opening embedded nodes, spawning daemons, or dialing remotes through the public SDK. It never reaches into the engine or drivers.
 
@@ -1523,7 +1762,7 @@ func (w Workload) Validate() error
 func (w Workload) View() result.WorkloadView
 ```
 
-`Table` rows in order: `kind`, `queues`, `msg_size`, `bytes`, `duration`, `rate` (produce/mix), `rate_schedule` (produce/mix), `workers`, `batch`, `keys` (produce/mix), `preload` (consume), `ack_rate` (consume/mix), `crash_after_bytes` (recovery), `seed`. Every row carries a `Doc`; name derivation is automatic (`EnvName = "MIKYU_BENCH_" + UPPER(key)`, `FlagName = key` with `_→-`). A mode-scoped row is registered on one flag set and rejected when a run sets it in another mode; `ScopeNames` is what help and the error message render.
+`Table` rows in order: `kind`, `queues`, `msg_size`, `bytes`, `duration`, `rate` (produce/mix), `rate_schedule` (produce/mix), `workers`, `batch`, `keys` (produce/mix), `preload` (consume/mix), `ack_rate` (consume/mix), `crash_after_bytes` (recovery), `seed`. Every row carries a `Doc`; name derivation is automatic (`EnvName = "MIKYU_BENCH_" + UPPER(key)`, `FlagName = key` with `_→-`). A mode-scoped row is registered on one flag set and rejected when a run sets it in another mode; `ScopeNames` is what help and the error message render.
 
 `EnsureBound` is the fallback bound: a run that named none of bytes/duration/crash_after_bytes measures for `DefaultDuration`, and recovery is left alone because it has no measure window to fill.
 
@@ -1606,6 +1845,7 @@ var defaultSpecRows = [][2]string{
 }
 func DefaultSpec() spec.Spec
 ```
+
 Rows are looked up in `spec.Table` and applied by `Param.Apply`; unknown or unparseable rows panic (a build-time invariant).
 
 ### Access Handles
@@ -1629,6 +1869,7 @@ func openDaemon(opts) (*accessHandle, error)
 const childEnvName = "MIKYU_BENCH_CHILD"
 func RunChild(args []string) error
 ```
+
 Invoked as `bench-child --dir <dir> --kind log|task --queue <name> --msg-size N --seed S`. Writes seeded payloads until killed. `cmd/mikyu/main.go` dispatches `bench-child` to `bench.RunChild`.
 
 `spawnDetached(args)` (per-OS in `proc_*.go`) re-executes `os.Executable()` with `MIKYU_BENCH_CHILD=1`; POSIX sets `Setsid`, Windows sets `CREATE_NO_WINDOW`. `kill(p)` sends `SIGKILL` (POSIX) or `Kill()` (Windows) and reaps. `terminatePID(pid)` sends `SIGTERM` (POSIX) or `Kill()` (Windows).
@@ -1844,7 +2085,7 @@ Sentinels: `ErrNotARun`, `ErrEnvelopeVersion`, `ErrCompareMismatch`.
 
 ---
 
-## 18. User Surface — `internal/ui`
+## 19. User Surface — `internal/ui`
 
 ### Presentation Layers
 
@@ -1949,7 +2190,7 @@ func exitCode(err error) int {
 
 ---
 
-## 19. Concurrency & Locking — At a Glance
+## 20. Concurrency & Locking — At a Glance
 
 | Structure | Lock | Protects | Notes |
 |---|---|---|---|
@@ -1959,6 +2200,12 @@ func exitCode(err error) int {
 | `engine.ringCache.mu` (Mutex) | `Put`, `Evict*`, `SetMaxBytes`, `curBytes`, `head` | `Get` is lock-free; slot matches offset and has non-zero timestamp. |
 | `engine.segment.mapMu` (RWMutex) | `mmapData`, `idxMMap`, `sendFile` | `views()` readers copy out under RLock; `enableMMap`/`unmap`/`sendFD` take the write lock. |
 | `engine.segment.sendMu` (Mutex) | zero-copy send position | Serializes `Seek + CopyN` pairs on the same file handle. |
+| `iow.order.mu` (Mutex + cond) | `reserved`, `delivered`, `pending` | `reserve`/`settle`/`pump`/`waitDrained`. `pump` invokes a callback before advancing the frontier. |
+| `iow.pool.mu` (Mutex + cond) | `err`, `closed`, `submitted`, `submitWG` | `Write` takes a slot and submits; `Close` waits for accepted batches, drains, fsyncs, closes. |
+| `iow.ring.submitMu` (Mutex) | SQ ring writes | Concurrent producers never interleave their SQE writes. |
+| `iow.ringHandle.mu` (Mutex + cond) | per-tag outstanding count, error, callback | Waits on the cond var; the reaper broadcasts on completion. |
+| `iow.iocpPort.mu` (Mutex) | `inflight`, `writers`, `keys` | Operation rooting and handle registry. |
+| `iow.iocpBatch.mu` (Mutex) | `writes`, `err`, `settled` | Moves the batch toward completion; settles exactly once. |
 | `logqueue.queue.mu` (RWMutex) | `groups` map | Group creation under write lock; reads under read lock. |
 | `taskqueue.queue.mu` (Mutex) | `active`, `dlq`, `dlqUncheckpointed`, `schedule`, `scanNext`, `checkpointOffset`, `dirty`, `notify`, `closing`/`closed` | Every state mutation in one critical section; metric counters bumped inside it. |
 | `retention.Coordinator.mu` (`metrics.RWLockObserver`) + `Target.mu` | targets map; each target's policy + driver | `ReconcileAt` holds target lock while reading policy and calling driver floor. |
@@ -1979,6 +2226,7 @@ func exitCode(err error) int {
 ### Durability Sites
 
 `syncData` called by the WAL flusher on every batch (`durability: sync`) and by `segment.Close` when truncating an active segment. `syncDir` called:
+
 1. When a new segment file is created.
 2. When `OffsetStore.compactLocked` renames the temp file.
 3. When `node.saveRegistry` renames `queues.json.tmp`.
@@ -1989,12 +2237,12 @@ func exitCode(err error) int {
 
 ---
 
-## 20. Testing & Enforcement
+## 21. Testing & Enforcement
 
 - `go test ./...` with `goleak.VerifyTestMain` in every package that owns goroutines.
 - `testing/synctest` bubbles for time-dependent behavior (WAL wake tokens, task lease expiry, metrics tickers, retention age floors).
 - `enginetest.MemStorage` provides an in-memory `engine.Storage` for driver tests with a deterministic clock.
-- Test hooks: `engine.SyncDirHook`, `engine.writerHook`, `engine.writeAtHook`, `engine.indexWriteHook`, `engine.batchReadAtHook`, `server.sendfileHook`, `config.executablePath`, `client.SessionConfig.testFrameSent`, `daemon.daemonHelperEnv`, `bench.childEnvName`, `bench.raceEnabled`.
+- Test hooks: `engine.SyncDirHook`, `engine.writerHook`, `engine.writeAtHook`, `engine.indexWriteHook`, `engine.batchReadAtHook`, `server.sendfileHook`, `config.executablePath`, `client.SessionConfig.testFrameSent`, `daemon.daemonHelperEnv`, `bench.childEnvName`, `bench.raceEnabled`, `iow`'s `writeAt`/`syncData` stubs.
 - `internal/audit`:
   - `TestNoLegacyNames` scans every non-test Go file for banned identifiers (with whitelisting for the SDK surface and selector/method positions).
   - `TestInternalCommentStyle` enforces at-most-one-line doc comments on internal packages and exported symbols (root `mikyu` is exempt).
@@ -2005,7 +2253,7 @@ func exitCode(err error) int {
 - `TestPrometheusCoversSnapshot` requires every `Snapshot` leaf to be exported or explicitly skipped with a reason.
 - `cmd/mikyu/main_test.go` covers the exit-code contract (0/1/2/3).
 - Engine-specific perf tests:
-- `TestWALByteBackpressure`, `TestWALAsyncBatchWrites`, `TestWALAsyncBatchIndexWrites`, `TestOverlappedSingleSyscall`,
+  - `TestWALByteBackpressure`, `TestWALAsyncBatchWrites`, `TestWALAsyncBatchIndexWrites`, `TestOverlappedSingleSyscall`,
     `TestCommitSyncBatchesIndexWrites`, `TestWALWakeTokenLossRace` (synctest), `TestConcurrentWritesDoNotInterleave`,
     `TestRollDeclinesWhenTheSegmentHasRoom`.
   - `TestAppendBatchDoesNotHoldLockOnChannelBlock`, `TestAppendBatchRollbackOnCtxCancel`, `TestAppendBatchPreservesOffsetsUnderContention`.
@@ -2015,6 +2263,10 @@ func exitCode(err error) int {
   - `TestEncodeBufferReused`, `TestPooledRecordsRoundTrip`.
   - `TestCacheGatedOnFirstRead`, `TestCachePayloadAliasesEncodedRecord`.
   - `TestStreamRecordSpansMatchesWriteRecordList`, `TestFetchOverTCPPrefersSendfile`.
+- iow-specific tests:
+  - `TestWriterDeliversDoneInSubmissionOrder`, `TestWriterWritesEveryBufferOfABatch`, `TestWriterRejectsWorkAfterClose`, `TestWriterRejectsCancelledContext`, `TestWriterFiresDoneOnceForEveryAcceptedBatch`, `TestParityEveryImplementation` (runs against every implementation the host can run: pool, ring on Linux, IOCP on Windows).
+  - `TestOrderedDelivery`, `TestBoundedSubmissionBlocksAndCancels`, `TestFailurePropagation`, `TestWriteErrorEntersFailedState`, `TestCloseDuringFlight`, `TestCloseIsIdempotent`, `TestDataSyncBoundary`, `TestSyncFailsAfterBatchError`, `TestSyncWaitsForInFlightWrites`, `TestDoneMaySubmitAnotherBatch`.
+  - `iow`'s `TestMain` ignores the process-wide ring/iocp reapers by design (they outlive the test binary).
 - Bench tests:
   - `internal/bench/table_test.go`, `bench_test.go`, `measure_test.go`, `verify_test.go`, `access_test.go`, `mode_*_test.go`, `lifecycle_test.go`, `defaults_test.go`, `host_test.go`, `cache_test.go`, `metrics_test.go`, `observe_test.go`, `phases_test.go`.
   - `internal/bench/result/result_test.go`.
@@ -2022,7 +2274,7 @@ func exitCode(err error) int {
 
 ---
 
-## 21. Design Decision Log (short)
+## 22. Design Decision Log
 
 | Decision | Rationale |
 |---|---|
@@ -2054,12 +2306,20 @@ func exitCode(err error) int {
 | Recovery mode spawns a detached child | The parent can kill mid-write without terminating the harness itself; `MIKYU_BENCH_CHILD` marks the child. |
 | `raceEnabled` build tag | Timing-sensitive tests (verify overhead) are skipped under the race detector. |
 | Bench modes are a `--mode` flag, not verbs | One run page covers all four modes, the mode default stays visible in help, and the retired-vocabulary rule applies to every verb path. |
-| **Cache slot is `atomic.Pointer[Record]` (seqlock-style)** | Readers never take `ringCache.mu`, so cached reads are ~10 ns; a torn reader sees either a valid record or a miss, never partially-cleared bytes. |
-| **Async commits reserve segment space under the queue lock, then push with the lock released** | A full `asyncChan` must not stall other producers or hold `q.mu`; the reservation FIFO keeps segment end and `publishedOffset` monotonic without blocking writers. |
-| **`writeRun` coalesces same-segment async entries into one log write and one index write batch** | Turns per-record syscalls into per-run syscalls, cutting flush syscall count by the batch size. |
-| **Sync commit batches index writes via `writeIndexBatchAt`** | A 1000-record sync batch writes ~1 index syscall instead of 1000. |
+| **`iow.Writer` owns ordered completion** | The WAL advances a byte watermark without a reorder buffer; every platform implementation (`pool`, `ring`, `iocp`) delivers through the same `order` layer. |
+| **`iow.New` picks the writer** | The WAL never branches on platform; `New` returns the ring on Linux, the port under `Buffered` on Windows, the pool everywhere. `MIKYU_FORCE_SYSCALL_WAL` overrides both. |
+| **`iow.pool` uses `GOMAXPROCS` workers** | Under `Buffered` concurrency scales; under `DataSync` `iow.New` requests one worker because the kernel serializes fsyncs per file. |
+| **`iow.ring` gates on kernel version from `/proc/sys/kernel/osrelease`** | Splitting on `.` and comparing major/minor handles 3-component releases like `5.15.0-generic`; an earlier `uname`-based parser declined them silently. |
+| **`iow.ring` serves both modes; `iocp` serves `Buffered` only** | A Windows `DataSync` batch serializes on its own fsync, so overlapped submission costs more than it saves. |
+| **WAL `slots` are the only async backpressure** | The writer's queue is at least as deep so producers never block inside the writer where the dirty-page throttle would stall them invisibly. |
+| **WAL flusher parks between batches** | `waitFlushSlot` prevents the select from spending a wake token on a batch it cannot write yet; producers are released by the previous completion, which is what makes the next group a group commit. |
+| **`flushWrites` coalesces contiguous entries** | When a batch's staged entries tile the segment, one `iow.Write` is submitted instead of one per record. |
+| **`writeIndexBatchAt` batches index writes** | A 1000-record sync batch writes ~1 index syscall instead of 1000. |
 | **`readBatchRun` reads one contiguous span per chunk** | One log `ReadAt` per ≤ 4096 records or 4 MiB, plus one index `ReadAt`. |
 | **Compacted records are skipped inside the batch run, not via a second pass** | A fully-compacted window advances past the window rather than stalling. |
 | **Reader gate on the ring cache** | Produce-only workloads skip the async append's payload copy; a log queue that later gets a reader starts populating from the first read. |
 | **Zero-copy wire send via `PayloadSpan`** | Payloads ≥ 16 KiB stream from the segment's read handle (sendfile/TransmitFile) instead of through userland; declined for keyed compaction and unflushed windows. |
+| **Record ID is `[8B random prefix][8B counter]`, not UUIDv7** | Process-stable prefix from `crypto/rand` at init, monotonic per-process counter; unique across restarts, sortable, no per-record entropy cost. |
 | **`spawnDetached` uses a separate child env, not a flag** | `MIKYU_BENCH_CHILD=1` is unambiguous in the process table and survives both parent and `os.Executable` re-exec. |
+| **Async append commits in three steps: reserve, push, commit** | A full `asyncChan` must not stall other producers or hold `q.mu`; the reservation FIFO keeps segment end and `publishedOffset` monotonic without blocking writers. |
+| **`node.mu` is an `RWLockObserver`** | Contention is real telemetry; the fast path only pays `TryLock` and only contended acquisitions are timed. |
