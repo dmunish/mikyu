@@ -23,10 +23,8 @@ func TestRingCacheConcurrentReaderWriter(t *testing.T) {
 	var written atomic.Uint64
 	stop := make(chan struct{})
 	var writerWG sync.WaitGroup
-	writerWG.Add(1)
-	go func() {
-		defer writerWG.Done()
-		for off := uint64(0); off < ops; off++ {
+	writerWG.Go(func() {
+		for off := range uint64(ops) {
 			select {
 			case <-stop:
 				return
@@ -37,7 +35,7 @@ func TestRingCacheConcurrentReaderWriter(t *testing.T) {
 			r.Put(Record{Offset: off, Timestamp: testNow(off), Payload: payload})
 			written.Store(off + 1)
 		}
-	}()
+	})
 
 	var wg sync.WaitGroup
 	for w := range workers {
@@ -70,25 +68,19 @@ func TestRingCacheGetUnderEviction(t *testing.T) {
 	const count = 200_000
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for off := uint64(0); off < count; off++ {
+	wg.Go(func() {
+		for off := range uint64(count) {
 			payload := make([]byte, 16)
 			binary.BigEndian.PutUint64(payload, off)
 			r.Put(Record{Offset: off, Timestamp: testNow(off), Payload: payload})
 		}
-	}()
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for off := uint64(0); off < count; off++ {
+	})
+	wg.Go(func() {
+		for off := range uint64(count) {
 			r.EvictBefore(off)
 		}
-	}()
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	})
+	wg.Go(func() {
 		rng := rand.New(rand.NewPCG(1, 2))
 		for range count / 4 {
 			off := rng.Uint64N(count)
@@ -97,6 +89,6 @@ func TestRingCacheGetUnderEviction(t *testing.T) {
 				require.Equal(t, off, binary.BigEndian.Uint64(msg.Payload), "torn read: payload mismatch")
 			}
 		}
-	}()
+	})
 	wg.Wait()
 }

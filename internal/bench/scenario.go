@@ -24,7 +24,7 @@ var rateSuffixes = [...]struct {
 // ParseRateSchedule reads "0:0,30s:100k,60s:10k" into its steps; suffix k means 1000, M means 1e6.
 func ParseRateSchedule(text string) ([]RatePoint, error) {
 	var points []RatePoint
-	for _, pair := range strings.Split(text, ",") {
+	for pair := range strings.SplitSeq(text, ",") {
 		at, rate, ok := strings.Cut(strings.TrimSpace(pair), ":")
 		if !ok {
 			return nil, fmt.Errorf("%w: rate_schedule entry %q is not duration:rate", ErrUsage, pair)

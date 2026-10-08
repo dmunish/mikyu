@@ -162,8 +162,8 @@ func percentileFromCounts(counts []uint64, total uint64, p float64) time.Duratio
 
 // maxLatency returns the upper edge of the highest non-empty bucket.
 func maxLatency(counts []uint64) time.Duration {
-	for i := len(counts) - 1; i >= 0; i-- {
-		if counts[i] > 0 {
+	for i, count := range slices.Backward(counts) {
+		if count > 0 {
 			return time.Duration(boundAt(i))
 		}
 	}

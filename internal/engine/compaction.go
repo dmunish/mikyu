@@ -14,7 +14,7 @@ func (q *Queue) buildKeyIndex() error {
 	q.keyIndex = make(map[string]uint64)
 	for _, seg := range q.segments {
 		count := seg.indexCount()
-		for i := 0; i < count; i++ {
+		for i := range count {
 			off := seg.baseOff + uint64(i)
 			pos, recLen, err := seg.readIndexEntry(off)
 			if err != nil || recLen < minRecordSize-recordLengthSize {
@@ -96,7 +96,7 @@ func (q *Queue) compactSegmentLocked(seg *segment) error {
 	var evicted []uint64
 	dropped := false
 
-	for i := 0; i < count; i++ {
+	for i := range count {
 		off := seg.baseOff + uint64(i)
 		pos, recLen, err := seg.readIndexEntry(off)
 		if err != nil || recLen < minRecordSize-recordLengthSize {
@@ -154,7 +154,7 @@ func (q *Queue) compactSegmentLocked(seg *segment) error {
 	}
 	// Zero the slots of dropped records; kept slots were just rewritten and the
 	// file keeps its original size, so the segment's offset span is unchanged.
-	for i := 0; i < count; i++ {
+	for i := range count {
 		if !keptSlot[i] {
 			if err := seg.writeIndexAt(int64(i)*rawIndexEntrySize, 0, 0); err != nil {
 				return err
