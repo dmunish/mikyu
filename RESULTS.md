@@ -18,6 +18,14 @@ reverted, and what we learned. One line per outcome; commit hashes are traceable
 - Bench default workers 4 → 8 (`b1bd19e`)
 - Cheap record IDs — process-scoped counter, no per-record `crypto/rand`: **1.11x async, 1.15x sync** (`39d2741`)
 - Encode outside `q.mu`: **1.16x sync-16**, flat elsewhere (`965da8a`)
+- `iow.Writer` phase 1 — interface + portable pool (`51bde14`)
+- `iow.Writer` phase 2 — WAL routed through the pool: async **+5.7%**,
+  p99 18.2→7ms (`6f8b72b`)
+- `iow.Writer` phase 3 — io_uring + IOCP + WAL collapse (`f6c2479`): Windows
+  async **1.3x** over the pool (250k vs 183–193k), p99 8.7→1.8ms; Linux async
+  **+17–30%**, sync p50 **−30%**
+- Ring gate fix — kernel release read from `/proc`, so the ring engages at all
+  (`4187e29`)
 
 ## Attempted and reverted
 
@@ -33,6 +41,11 @@ reverted, and what we learned. One line per outcome; commit hashes are traceable
   discipline. Design preserved below
 - klauspost CRC32: no gains on noisy benchmark runs, actively slower on isolated BenchmarkEncodeRecord-8
   by ~22% (mean of 10 runs) with more spread
+- IOCP under `DataSync` — overlapped submission buys nothing when a batch
+  serializes on its own fsync: ~55k vs the pool's 63–67k, p50 8.6–9.6 vs
+  6.8–7.1ms. The port now serves `Buffered` only; sync stays on the pool
+- Capping the WAL's async slot budget to shorten the tail — `max` unchanged and
+  p90/p99 worse (1.1/1.8 → 1.6/3.6ms). Reverted
 
 ## Key findings
 
@@ -48,10 +61,33 @@ reverted, and what we learned. One line per outcome; commit hashes are traceable
   bounded by worker-side staging, not fsync parallelism
 - **Bench noise is ±10–20%** (browser/thermal/bimodal scheduler states);
   interleave before/after pairs and compare medians, never single runs
+- **The ring was dead code on every real kernel:** `strings.Cut` on the `uname`
+  release split at the *first* dot, so any 3+ component version
+  (`5.15.0-generic`, `4.19.0-21-amd64`) failed `Atoi` and the factory silently
+  fell back to the pool. A green test run hid it — the parity subtest for the
+  ring simply did not appear. Read `/proc/sys/kernel/osrelease` now, which also
+  fixes the linux/arm64 build
+- **`max` does not rank writers:** it is one sample of 8.4M and swung 5.9s→8.7s
+  across identical binaries. Per 8.4M appends the port had ~205 samples over
+  100ms against the pool's ~260 and the pre-Phase-1 sink's ~280, with the best
+  p99 and p999. Counts and percentiles decide, not the worst sample
+- **Multi-second tails are device writeback, not the write path:** ~30 per 8 GiB
+  run in every writer, matching the 32 segment rolls that flush a sealed 256 MiB
+  segment
+- **Micro-benchmarks hide engine interactions:** the two Windows writers were
+  equal in isolation (7.2 vs 7.5 ms per batch) and 20% apart inside the engine
+- **Ordered delivery must advance its frontier after invoking:** firing callbacks
+  outside the lock let a preempted setter's batch be overtaken, breaking the
+  one invariant the WAL's byte watermark depends on
 
 ## Where things stand (this machine)
 
 - Produce: ~30k → ~160–180k msgs/s async (~6x); ~95–123k sync (was 25k)
+- Windows produce now splits by writer: async **246–250k** on the completion
+  port (pool 183–193k, pre-Phase-1 241k); sync **63–67k** on the pool, port
+  declined for `DataSync`
+- Linux produce (WSL2, virtual disk): ring **121–147k** async, **25–27k** sync
+  at p50 13.5–15.2ms; pool 93–113k async at p99 23–31ms
 - Consume (cold 512 MiB backlog): 343k → **1.35M+ msgs/s** (~4x)
 - Sync path fsync latency floor (~2.7 ms) is now the per-generation cost;
   worker-side staging (`q.mu` hold, encode) is the remaining serialization point
@@ -66,3 +102,14 @@ reverted, and what we learned. One line per outcome; commit hashes are traceable
   staging-path change
 - 18b's sibling idea: expose sharding through `spec.Table` only when a real
   deployment target exists
+- **Linux numbers are from WSL2's virtual disk** (`/dev/sdd`); its tails are poor
+  across the board, so read them as writer-vs-writer on identical storage.
+  Confirm on bare metal before quoting them
+- **The Windows sync regression's root cause is still unexplained:** equal in
+  isolation, −20% inside the engine. Bounded out of `DataSync` rather than
+  understood
+- The IOCP `max` exceeds the pool's (5.9–8.7s vs 2.9s) on saturating runs;
+  writeback explains it by inference, not by instrumentation
+- `IORING_SETUP_SQPOLL`, registered buffers, and `IOSQE_IO_LINK` fsync are not
+  shipped; the ring currently uses plain `io_uring_enter` submits, so its Linux
+  win has headroom left
