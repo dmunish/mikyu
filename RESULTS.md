@@ -31,6 +31,8 @@ reverted, and what we learned. One line per outcome; commit hashes are traceable
 - Phase 18 (range-chunked sharding) — built, measured 1.00x (group commit already
   amortizes fsyncs; the reservation path stays one lock), reverted per plan
   discipline. Design preserved below
+- klauspost CRC32: no gains on noisy benchmark runs, actively slower on isolated BenchmarkEncodeRecord-8
+  by ~22% (mean of 10 runs) with more spread
 
 ## Key findings
 
