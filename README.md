@@ -210,7 +210,8 @@ mikyu's core is built in a way that you don't have to choose between performance
 
 <details>
 <summary>Details</summary>
-These numbers are derived from the built-in test harness as the best of 2 back-to-back runs.
+
+These numbers are derived from the built-in test harness as the mean of 2 back-to-back runs at its default settings. The benchmark can be run with `./mikyu bench run` on the binary.
 
 ### Device
 - OS    : macOS 26.6.2 (25G83)
@@ -219,11 +220,14 @@ These numbers are derived from the built-in test harness as the best of 2 back-t
 - Disk  : 512GB SSD
 
 ### Test configuration
-- Workers   : 8
-- Access    : embedded
-- Durability: async
-- Bytes     : 5 GiB
-- Queues    : 1
+- Workers     : 8
+- Access      : embedded
+- Durability  : async
+- Message size: 1 KiB
+- Total bytes : 5 GiB
+- Batch size  : 64
+- Queues      : 1
+
 </details>
 
 ## <img src="https://api.iconify.design/lucide/box.svg?color=%23ffca86" width="20" height="20">&nbsp; Features
