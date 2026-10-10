@@ -16,21 +16,11 @@
 
 <br>
 
-## <img src="https://api.iconify.design/lucide/telescope.svg?color=%23ffca86" width="20" height="20">&nbsp; The Problem
-Durable messaging is powerful, but using it often means operating a cluster, configuring brokers, and learning a pile of distributed-systems concepts. That complexity is fine when you need it. It is a lot when you just want a queue. Tools like Kafka and NATS solve big problems. They also ask you to run infrastructure before you can write your first message.
+mikyu is an embedded-first durable message queue. You point it at a directory, open a log queue or a task queue, and start using it. It can run inside your own process the way SQLite does, or as a separate daemon that other processes talk to over TCP, Unix sockets, or Windows named pipes.
 
-mikyu asks a different question:
+Underneath sits a log-structured storage engine: a write-ahead log for appends, memory-mapped segments for reads, a small ring cache for recent records, and consumer offsets in a side file. The goal is to give you replay, durability, and consumer groups without asking you to run a cluster.
 
-> Can an application get the useful parts of a durable log or task queue, while feeling as simple as a local database?
-
-<br>
-
-## <img src="https://api.iconify.design/lucide/cpu.svg?color=%23ffca86" width="20" height="20">&nbsp; The Solution
-mikyu is a local-first, single-node messaging system. It is not a Kafka replacement and not a NATS clone. It is a durable storage engine with log and task semantics on top.
-
-You start with a directory. You get a log queue, a task queue, or both.
-
-### How it works
+## <img src="https://api.iconify.design/lucide/layers.svg?color=%23ffca86" width="20" height="20">&nbsp; Architecture
 
 ```mermaid
 ---
@@ -112,59 +102,74 @@ flowchart LR
     linkStyle default stroke:#e33f6a,stroke-width:1.5px
 ```
 
-The same engine runs in two modes:
+Log queues and task queues sit on the same engine. A queue's kind comes from where it lives on disk, so `log/events` and `task/events` are two different queues that happen to share a filesystem. You pick the semantics you want per queue without running two systems.
 
-- **Embedded**: the engine lives in your process, like SQLite.
-- **Daemon**: the engine runs in a separate process, reachable over TCP, Unix sockets, or named pipes. The daemon can be local or on another machine. The URL is the only thing that changes.
+**Log queues** are append-only streams. You append, you read from any offset, you can tail. Consumer groups track their own progress. Old segments get compacted by key or dropped by a retention rule.
 
-The application code stays the same. You point it at a directory or a daemon target.
+**Task queues** are at-least-once work queues. Dequeue hands you a task with a visibility lease. Ack it and it's done. Let the lease expire and it comes back, with backoff, until it hits the attempt limit and lands in a per-queue dead-letter queue.
 
-Internally, mikyu uses a write-ahead log, memory-mapped reads, a ring cache, adaptive flushing, and careful batching. The goal is not to beat Kafka on distributed throughput. The goal is excellent performance from one process, with far less to operate.
-
-<br>
-
-## <img src="https://api.iconify.design/lucide/layers.svg?color=%23ffca86" width="20" height="20">&nbsp; What mikyu Provides
+## <img src="https://api.iconify.design/lucide/box.svg?color=%23ffca86" width="20" height="20">&nbsp; Features
 
 **Log queues**
-
-- Append-only streams
-- Replay from any offset
+- Append-only streams, replay from any offset
 - Tailing and streaming
 - Consumer groups with persistent offsets
-- Retention by age and size
+- Keyed compaction, retention by age or size
 
 **Task queues**
+- At-least-once delivery with visibility leases
+- Ack, nack, and delayed retries with backoff
+- Scheduling and stale-lease protection
+- A durable dead-letter queue per queue
 
-- At-least-once delivery
-- Visibility leases
-- Acknowledgements and negative acknowledgements
-- Retries with backoff
-- Scheduling
-- Stale-lease protection
-- Dead-letter queues
-- Crash-recoverable task state
+**Across both**
+- WAL-backed durability, sync or async
+- mmap reads and an in-memory cache
+- Embedded, daemon, TCP, Unix, pipe, TLS
+- Rich metrics available across HTTP, SDK and CLI
+- One configuration surface for every mode
 
-**Storage and deployment**
+## <img src="https://api.iconify.design/lucide/scale.svg?color=%23ffca86" width="20" height="20">&nbsp; Comparison
 
-- WAL-backed durability
-- Synchronous and asynchronous write modes
-- mmap-backed reads
-- In-memory caching
-- Crash recovery
-- Embedded, daemon, TCP, Unix sockets, Windows named pipes
-- CLI, REPL, and a simple operator interface
+The closest peers are log brokers on one side and task queue systems on the other. mikyu overlaps with both without fully replacing either.
 
-<br>
+### Log and event streaming
 
-## <img src="https://api.iconify.design/lucide/rocket.svg?color=%23ffca86" width="20" height="20">&nbsp; Getting Started
+| | mikyu | Kafka | NATS JetStream | Iggy | Redpanda |
+|---|---|---|---|---|---|
+| Embeddable in your process | yes | no | yes | no | no |
+| Runs on Linux, macOS, Windows | yes | Linux and macOS (Windows community) | yes | Linux (Docker or WSL elsewhere) | Linux (Docker or WSL elsewhere) |
+| Standalone binary | yes | no | yes | yes | yes |
+| Distributed consensus | no | yes | yes | yes | yes |
+| Replay with offsets | yes | yes | yes | yes | yes |
+| Task queue semantics | built in | no | no | no | no |
+| Operates well on one machine | yes | possible, not the goal | yes | yes | possible, not the goal |
+
+### Task and work queues
+
+| | mikyu | RabbitMQ | Asynq | Beanstalkd | Redis Streams |
+|---|---|---|---|---|---|
+| Embeddable in your process | yes | no | Go library only | no | client library only |
+| Runs on Linux, macOS, Windows | yes | yes | yes | Unix only | yes |
+| Standalone binary | yes | no | no | yes | no |
+| Distributed consensus | no | yes | no | no | no |
+| Dead letter queue | built in | via DLX | built in | no | no |
+| Delayed retries with backoff | built in | via plugin | built in | built in | no |
+| Long-poll dequeue | built in | no | no | no | XREAD BLOCK only |
+
+None of this is a claim that mikyu beats any of them. Most of those systems solve problems mikyu doesn't touch at all, like replication, consensus, and multi-node failover. If you need those, use them. mikyu is for the case where you don't, and you'd rather not run a cluster just to get a queue.
+
+## <img src="https://api.iconify.design/lucide/rocket.svg?color=%23ffca86" width="20" height="20">&nbsp; Getting started
 
 ### Install
+
+As a library:
 
 ```bash
 go get github.com/dmunish/mikyu
 ```
 
-Or build the binary:
+As a CLI/daemon, build it from source:
 
 ```bash
 git clone https://github.com/dmunish/mikyu
@@ -172,8 +177,9 @@ cd mikyu
 go build ./cmd/mikyu
 ```
 
-### Embedded usage
+### Usage
 
+#### Embedded
 ```go
 package main
 
@@ -188,14 +194,14 @@ import (
 func main() {
     ctx := context.Background()
 
-    db, err := mikyu.Open("./data")
+    mq, err := mikyu.Open("./data")
     if err != nil {
         log.Fatal(err)
     }
-    defer db.Close()
+    defer mq.Close()
 
     // Log queue
-    logQ, _ := db.CreateLogQueue(ctx, "events")
+    logQ, _ := mq.CreateLogQueue(ctx, "events")
     offset, _ := logQ.Append(ctx, []byte("hello"))
     fmt.Println("appended at", offset)
 
@@ -203,7 +209,7 @@ func main() {
     fmt.Println("read:", string(record.Payload))
 
     // Task queue
-    taskQ, _ := db.CreateTaskQueue(ctx, "jobs")
+    taskQ, _ := mq.CreateTaskQueue(ctx, "jobs")
     task, _ := taskQ.Enqueue(ctx, []byte("send email"))
     delivered, _ := taskQ.Dequeue(ctx)
     fmt.Println("got task:", delivered.ID)
@@ -214,23 +220,23 @@ func main() {
 }
 ```
 
-### Daemon usage
+#### Daemon
 
-Start a daemon:
+Start one:
 
 ```bash
 mikyu daemon --target tcp://127.0.0.1:7420 --data-dir ./data
 ```
 
-Then connect from another process:
+Connect to it from another process:
 
 ```go
-db, err := mikyu.Dial("tcp://127.0.0.1:7420")
+mq, err := mikyu.Dial("tcp://127.0.0.1:7420")
 ```
 
-The rest of the code remains the same.
+`Open` and `Dial` return the same interface, so the rest of your code doesn't change. Where the daemon actually runs is up to you. Same machine, another machine, a container, the client doesn't care.
 
-### CLI
+#### CLI
 
 ```bash
 mikyu create --type log events
@@ -241,25 +247,6 @@ mikyu create --type task jobs
 mikyu enqueue jobs "send email"
 mikyu dequeue jobs
 ```
-
-<br>
-
-## <img src="https://api.iconify.design/lucide/scale.svg?color=%23ffca86" width="20" height="20">&nbsp; How It Compares
-
-| | **mikyu** | **Kafka** | **NATS** | **SQLite** |
-|---|---|---|---|---|
-| Primary goal | Durable local messaging | Distributed log | Lightweight messaging | Embedded database |
-| Deployment | One binary, one directory | Cluster | Server or cluster | One library |
-| Operational complexity | Very low | High | Medium | Very low |
-| Distributed | No | Yes | Yes | No |
-| Replay and offsets | Yes | Yes | Limited | N/A |
-| Task queues | Yes | No (needs extra tooling) | No (needs extra tooling) | N/A |
-| Embedded mode | Yes | No | No | Yes |
-| Daemon mode | Yes | Yes | Yes | No |
-
-mikyu is not trying to replace Kafka or NATS. It is trying to make durable messaging feel like something you have, not something you operate.
-
-<br>
 
 ## <img src="https://api.iconify.design/lucide/map.svg?color=%23ffca86" width="20" height="20">&nbsp; Roadmap
 
@@ -277,13 +264,11 @@ mikyu is not trying to replace Kafka or NATS. It is trying to make durable messa
 - [x] Performance improvements, platform-specific optimizations
 - [ ] Encryption of data on-disk
 - [ ] Block-striping experiment
-- [ ] Btop-like TUI dashboard for observability/maintainence
+- [ ] Btop-like TUI dashboard for observability and maintenance
 - [ ] SDKs for Python, JS/TS, Rust and others
 - [ ] More performance optimizations
-- [ ] Automatic and dynamic configuration experiment
+- [ ] Automatic and dynamic system configuration experiment
 - [ ] Web dashboard
-
-<br>
 
 ## <img src="https://api.iconify.design/lucide/alert-triangle.svg?color=%23ffca86" width="20" height="20">&nbsp; Disclaimer
 
@@ -291,16 +276,13 @@ mikyu is not trying to replace Kafka or NATS. It is trying to make durable messa
 
 That's why I am not offering pre-built binaries for now. Bear with me while I am actively expanding test coverage, refining the API, and improving the on-disk format. Performance, stability and footprint are still being worked on. I would still welcome you to try it out, stress-test it, and report any bugs or issues.
 
-<br>
-
 ## <img src="https://api.iconify.design/lucide/heart-handshake.svg?color=%23ffca86" width="20" height="20">&nbsp; Acknowledgements
+
 - [憂鬱](https://yu-utsu.bandcamp.com/), whose work directly influenced the aesthetics of mikyu
-- Universtock for the banner background on [Unsplash](https://unsplash.com/photos/abstract-background-with-vertical-lines-and-glowing-circle-k-UAid_8pMY)
+- [Universtock](https://unsplash.com/photos/abstract-background-with-vertical-lines-and-glowing-circle-k-UAid_8pMY) for the image used in the banner
 - The Go community for the tools and libraries that make this possible
 
 mikyu is released under the [Apache License 2.0](LICENSE).
-
-<br>
 
 <p align="center">
   <sub>Made with &nbsp;<sub><img src="https://api.iconify.design/lucide/heart.svg?color=%23ffca86" width="14" height="14"></sub>&nbsp; by dmunish</sub>
