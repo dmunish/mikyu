@@ -55,6 +55,8 @@ flowchart LR
         DIAL(["Dial"])
     end
 
+    CLI(["CLI/REPL"])
+
     DMN(["Daemon"])
 
     subgraph CORE["Core"]
@@ -87,6 +89,7 @@ flowchart LR
     APP --> DIAL
     OPEN --> DRV
     DIAL --> DMN
+    CLI --> DMN
     DMN --> DRV
     LOG --> WAL
     TASK --> WAL
@@ -98,7 +101,7 @@ flowchart LR
     classDef storage fill:transparent,stroke:#ffca86,color:#ffffff,stroke-width:1.5px
 
     class APP interface
-    class OPEN,DIAL,DMN,LOG,TASK runtime
+    class OPEN,DIAL,CLI,DMN,LOG,TASK runtime
     class WAL,SEG,IDX,CACHE storage
 
     style SDK fill:#170d44,stroke:#5b0f89,color:#ffffff
