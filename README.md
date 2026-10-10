@@ -118,12 +118,10 @@ As a library:
 go get github.com/dmunish/mikyu
 ```
 
-As a CLI/daemon, build it from source:
+For the CLI/daemon, install from source:
 
 ```bash
-git clone https://github.com/dmunish/mikyu
-cd mikyu
-go build ./cmd/mikyu
+go install github.com/dmunish/mikyu/cmd/mikyu@latest
 ```
 
 ### Usage
