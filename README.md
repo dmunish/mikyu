@@ -20,6 +20,94 @@ mikyu is an embedded-first durable message queue. You point it at a directory, o
 
 Underneath sits a log-structured storage engine: a write-ahead log for appends, memory-mapped segments for reads, a small ring cache for recent records, and consumer offsets in a side file. The goal is to give you replay, durability, and consumer groups without asking you to run a cluster.
 
+## <img src="https://api.iconify.design/lucide/layers.svg?color=%23ffca86" width="20" height="20">&nbsp; Architecture
+
+```mermaid
+---
+config:
+  layout: elk
+  theme: base
+  themeVariables:
+    background: "#170d44"
+    primaryTextColor: "#ffffff"
+    lineColor: "#e33f6a"
+    clusterBkg: "#170d44"
+    clusterBorder: "#5b0f89"
+    edgeLabelBackground: "#170d44"
+    fontFamily: "IBM Plex Mono, monospace"
+---
+flowchart LR
+    APP["Application"]
+
+    subgraph SDK["SDK"]
+        direction TB
+        OPEN(["Open"])
+        DIAL(["Dial"])
+    end
+
+    CLI(["CLI/REPL"])
+
+    DMN(["Daemon"])
+
+    subgraph CORE["Core"]
+        direction TB
+
+        subgraph DRV["Drivers"]
+            direction LR
+            LOG["Log Queue"]
+            TASK["Task Queue"]
+        end
+
+        subgraph ENG["Storage Engine"]
+            direction LR
+            WAL((("WAL
+            (batched writes)")))
+            SEG[("Segments
+            (append-only files)")]
+            IDX[("Index
+            (segment offset lookup)")]
+            CACHE((("Ring Cache")))
+
+            WAL ==> SEG
+            WAL ==> IDX
+            SEG -.-> CACHE
+            IDX -.-> CACHE
+        end
+    end
+
+    APP --> OPEN
+    APP --> DIAL
+    OPEN --> DRV
+    DIAL --> DMN
+    CLI --> DMN
+    DMN --> DRV
+    LOG --> WAL
+    TASK --> WAL
+    CACHE -.-> LOG
+    CACHE -.-> TASK
+
+    classDef interface fill:#170d44,stroke:#5b0f89,color:#ffffff,stroke-width:1.5px
+    classDef runtime fill:#e33f6a,stroke:#e33f6a,color:#ffffff,stroke-width:1.5px
+    classDef storage fill:transparent,stroke:#ffca86,color:#ffffff,stroke-width:1.5px
+
+    class APP interface
+    class OPEN,DIAL,CLI,DMN,LOG,TASK runtime
+    class WAL,SEG,IDX,CACHE storage
+
+    style SDK fill:#170d44,stroke:#5b0f89,color:#ffffff
+    style CORE fill:#170d44,stroke:#5b0f89,color:#ffffff
+    style DRV fill:#170d44,stroke:#5b0f89,color:#ffffff
+    style ENG fill:#170d44,stroke:#5b0f89,color:#ffffff
+
+    linkStyle default stroke:#e33f6a,stroke-width:1.5px
+```
+
+Log queues and task queues sit on the same engine. A queue's kind comes from where it lives on disk, so `log/events` and `task/events` are two different queues that happen to share a filesystem. You pick the semantics you want per queue without running two systems.
+
+**Log queues** are append-only streams. You append, you read from any offset, you can tail. Consumer groups track their own progress. Old segments get compacted by key or dropped by a retention rule.
+
+**Task queues** are at-least-once work queues. Dequeue hands you a task with a visibility lease. Ack it and it's done. Let the lease expire and it comes back, with backoff, until it hits the attempt limit and lands in a per-queue dead-letter queue.
+
 ## <img src="https://api.iconify.design/lucide/rocket.svg?color=%23ffca86" width="20" height="20">&nbsp; Quickstart
 
 ### Install
@@ -108,95 +196,6 @@ mikyu create --type task jobs
 mikyu enqueue jobs "send email"
 mikyu dequeue jobs
 ```
-
-
-## <img src="https://api.iconify.design/lucide/layers.svg?color=%23ffca86" width="20" height="20">&nbsp; Architecture
-
-```mermaid
----
-config:
-  layout: elk
-  theme: base
-  themeVariables:
-    background: "#170d44"
-    primaryTextColor: "#ffffff"
-    lineColor: "#e33f6a"
-    clusterBkg: "#170d44"
-    clusterBorder: "#5b0f89"
-    edgeLabelBackground: "#170d44"
-    fontFamily: "IBM Plex Mono, monospace"
----
-flowchart LR
-    APP["Application"]
-
-    subgraph SDK["SDK"]
-        direction TB
-        OPEN(["Open"])
-        DIAL(["Dial"])
-    end
-
-    CLI(["CLI/REPL"])
-
-    DMN(["Daemon"])
-
-    subgraph CORE["Core"]
-        direction TB
-
-        subgraph DRV["Drivers"]
-            direction LR
-            LOG["Log Queue"]
-            TASK["Task Queue"]
-        end
-
-        subgraph ENG["Storage Engine"]
-            direction LR
-            WAL((("WAL
-            (batched writes)")))
-            SEG[("Segments
-            (append-only files)")]
-            IDX[("Index
-            (segment offset lookup)")]
-            CACHE((("Ring Cache")))
-
-            WAL ==> SEG
-            WAL ==> IDX
-            SEG -.-> CACHE
-            IDX -.-> CACHE
-        end
-    end
-
-    APP --> OPEN
-    APP --> DIAL
-    OPEN --> DRV
-    DIAL --> DMN
-    CLI --> DMN
-    DMN --> DRV
-    LOG --> WAL
-    TASK --> WAL
-    CACHE -.-> LOG
-    CACHE -.-> TASK
-
-    classDef interface fill:#170d44,stroke:#5b0f89,color:#ffffff,stroke-width:1.5px
-    classDef runtime fill:#e33f6a,stroke:#e33f6a,color:#ffffff,stroke-width:1.5px
-    classDef storage fill:transparent,stroke:#ffca86,color:#ffffff,stroke-width:1.5px
-
-    class APP interface
-    class OPEN,DIAL,CLI,DMN,LOG,TASK runtime
-    class WAL,SEG,IDX,CACHE storage
-
-    style SDK fill:#170d44,stroke:#5b0f89,color:#ffffff
-    style CORE fill:#170d44,stroke:#5b0f89,color:#ffffff
-    style DRV fill:#170d44,stroke:#5b0f89,color:#ffffff
-    style ENG fill:#170d44,stroke:#5b0f89,color:#ffffff
-
-    linkStyle default stroke:#e33f6a,stroke-width:1.5px
-```
-
-Log queues and task queues sit on the same engine. A queue's kind comes from where it lives on disk, so `log/events` and `task/events` are two different queues that happen to share a filesystem. You pick the semantics you want per queue without running two systems.
-
-**Log queues** are append-only streams. You append, you read from any offset, you can tail. Consumer groups track their own progress. Old segments get compacted by key or dropped by a retention rule.
-
-**Task queues** are at-least-once work queues. Dequeue hands you a task with a visibility lease. Ack it and it's done. Let the lease expire and it comes back, with backoff, until it hits the attempt limit and lands in a per-queue dead-letter queue.
 
 ## <img src="https://api.iconify.design/lucide/box.svg?color=%23ffca86" width="20" height="20">&nbsp; Features
 
