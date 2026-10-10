@@ -86,9 +86,9 @@ flowchart LR
     CACHE -.-> LOG
     CACHE -.-> TASK
 
-    classDef interface fill:#170d44,stroke:#5b0f89,color:#ffffff,stroke-width:1.5px
-    classDef runtime fill:#e33f6a,stroke:#e33f6a,color:#ffffff,stroke-width:1.5px
-    classDef storage fill:transparent,stroke:#ffca86,color:#ffffff,stroke-width:1.5px
+    classDef interface fill:#170d44,stroke:#5b0f89,color:#ffffff,stroke-width:2px
+    classDef runtime fill:#e33f6a,stroke:#e33f6a,color:#ffffff,stroke-width:2px
+    classDef storage fill:transparent,stroke:#ffca86,color:#ffffff,stroke-width:2px
 
     class APP interface
     class OPEN,DIAL,CLI,DMN,LOG,TASK runtime
@@ -99,7 +99,7 @@ flowchart LR
     style DRV fill:#170d44,stroke:#5b0f89,color:#ffffff
     style ENG fill:#170d44,stroke:#5b0f89,color:#ffffff
 
-    linkStyle default stroke:#e33f6a,stroke-width:1.5px
+    linkStyle default stroke:#e33f6a,stroke-width:2px
 ```
 
 Log queues and task queues sit on the same engine. A queue's kind comes from where it lives on disk, so `log/events` and `task/events` are two different queues that happen to share a filesystem. You pick the semantics you want per queue without running two systems.
