@@ -8,7 +8,7 @@
 
 <div align="center">
 
-  <img src="https://img.shields.io/badge/Status-Prototype-ffca86?style=for-the-badge&labelColor=e33f6a" alt="Status" />
+  <img src="https://img.shields.io/badge/Status-Alpha-ffca86?style=for-the-badge&labelColor=e33f6a" alt="Status" />
   <img src="https://img.shields.io/badge/Stack-Go-ffca86?style=for-the-badge&labelColor=e33f6a" alt="Stack" />
   <img src="https://img.shields.io/badge/Platforms-Linux%20%7C%20macOS%20%7C%20Windows-ffca86?style=for-the-badge&labelColor=e33f6a" alt="Platforms" />
 
