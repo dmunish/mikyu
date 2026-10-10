@@ -20,6 +20,96 @@ mikyu is an embedded-first durable message queue. You point it at a directory, o
 
 Underneath sits a log-structured storage engine: a write-ahead log for appends, memory-mapped segments for reads, a small ring cache for recent records, and consumer offsets in a side file. The goal is to give you replay, durability, and consumer groups without asking you to run a cluster.
 
+## <img src="https://api.iconify.design/lucide/rocket.svg?color=%23ffca86" width="20" height="20">&nbsp; Quickstart
+
+### Install
+
+As a library:
+
+```bash
+go get github.com/dmunish/mikyu
+```
+
+As a CLI/daemon, build it from source:
+
+```bash
+git clone https://github.com/dmunish/mikyu
+cd mikyu
+go build ./cmd/mikyu
+```
+
+### Usage
+
+#### Embedded
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/dmunish/mikyu"
+)
+
+func main() {
+    ctx := context.Background()
+
+    mq, err := mikyu.Open("./data")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer mq.Close()
+
+    // Log queue
+    logQ, _ := mq.CreateLogQueue(ctx, "events")
+    offset, _ := logQ.Append(ctx, []byte("hello"))
+    fmt.Println("appended at", offset)
+
+    record, _ := logQ.Read(ctx, offset)
+    fmt.Println("read:", string(record.Payload))
+
+    // Task queue
+    taskQ, _ := mq.CreateTaskQueue(ctx, "jobs")
+    task, _ := taskQ.Enqueue(ctx, []byte("send email"))
+    delivered, _ := taskQ.Dequeue(ctx)
+    fmt.Println("got task:", delivered.ID)
+
+    if err := taskQ.Ack(ctx, delivered); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+#### Daemon
+
+Start one:
+
+```bash
+mikyu daemon --target tcp://127.0.0.1:7420 --data-dir ./data
+```
+
+Connect to it from another process:
+
+```go
+mq, err := mikyu.Dial("tcp://127.0.0.1:7420")
+```
+
+`Open` and `Dial` return the same interface, so the rest of your code doesn't change. Where the daemon actually runs is up to you. Same machine, another machine, a container, the client doesn't care.
+
+#### CLI
+
+```bash
+mikyu create --type log events
+mikyu append events "hello world"
+mikyu read events 0
+
+mikyu create --type task jobs
+mikyu enqueue jobs "send email"
+mikyu dequeue jobs
+```
+
+
 ## <img src="https://api.iconify.design/lucide/layers.svg?color=%23ffca86" width="20" height="20">&nbsp; Architecture
 
 ```mermaid
@@ -158,95 +248,6 @@ The closest peers are log brokers on one side and task queue systems on the othe
 | Long-poll dequeue | built in | no | no | no | XREAD BLOCK only |
 
 None of this is a claim that mikyu beats any of them. Most of those systems solve problems mikyu doesn't touch at all, like replication, consensus, and multi-node failover. If you need those, use them. mikyu is for the case where you don't, and you'd rather not run a cluster just to get a queue.
-
-## <img src="https://api.iconify.design/lucide/rocket.svg?color=%23ffca86" width="20" height="20">&nbsp; Getting started
-
-### Install
-
-As a library:
-
-```bash
-go get github.com/dmunish/mikyu
-```
-
-As a CLI/daemon, build it from source:
-
-```bash
-git clone https://github.com/dmunish/mikyu
-cd mikyu
-go build ./cmd/mikyu
-```
-
-### Usage
-
-#### Embedded
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-
-    "github.com/dmunish/mikyu"
-)
-
-func main() {
-    ctx := context.Background()
-
-    mq, err := mikyu.Open("./data")
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer mq.Close()
-
-    // Log queue
-    logQ, _ := mq.CreateLogQueue(ctx, "events")
-    offset, _ := logQ.Append(ctx, []byte("hello"))
-    fmt.Println("appended at", offset)
-
-    record, _ := logQ.Read(ctx, offset)
-    fmt.Println("read:", string(record.Payload))
-
-    // Task queue
-    taskQ, _ := mq.CreateTaskQueue(ctx, "jobs")
-    task, _ := taskQ.Enqueue(ctx, []byte("send email"))
-    delivered, _ := taskQ.Dequeue(ctx)
-    fmt.Println("got task:", delivered.ID)
-
-    if err := taskQ.Ack(ctx, delivered); err != nil {
-        log.Fatal(err)
-    }
-}
-```
-
-#### Daemon
-
-Start one:
-
-```bash
-mikyu daemon --target tcp://127.0.0.1:7420 --data-dir ./data
-```
-
-Connect to it from another process:
-
-```go
-mq, err := mikyu.Dial("tcp://127.0.0.1:7420")
-```
-
-`Open` and `Dial` return the same interface, so the rest of your code doesn't change. Where the daemon actually runs is up to you. Same machine, another machine, a container, the client doesn't care.
-
-#### CLI
-
-```bash
-mikyu create --type log events
-mikyu append events "hello world"
-mikyu read events 0
-
-mikyu create --type task jobs
-mikyu enqueue jobs "send email"
-mikyu dequeue jobs
-```
 
 ## <img src="https://api.iconify.design/lucide/map.svg?color=%23ffca86" width="20" height="20">&nbsp; Roadmap
 
