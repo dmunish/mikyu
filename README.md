@@ -108,7 +108,7 @@ Log queues and task queues sit on the same engine. A queue's kind comes from whe
 
 **Task queues** are at-least-once work queues. Dequeue hands you a task with a visibility lease. Ack it and it's done. Let the lease expire and it comes back, with backoff, until it hits the attempt limit and lands in a per-queue dead-letter queue.
 
-## <img src="https://api.iconify.design/lucide/rocket.svg?color=%23ffca86" width="20" height="20">&nbsp; Quickstart
+## <img src="https://api.iconify.design/lucide/code-xml.svg?color=%23ffca86" width="20" height="20">&nbsp; Quickstart
 
 ### Install
 
@@ -196,6 +196,35 @@ mikyu create --type task jobs
 mikyu enqueue jobs "send email"
 mikyu dequeue jobs
 ```
+
+## <img src="https://api.iconify.design/lucide/rocket.svg?color=%23ffca86" width="20" height="20">&nbsp; Performance
+
+mikyu's core is built in a way that you don't have to choose between performance and simplicity.
+<table>
+  <tr>
+    <td width="33%"><img src="assets/headline-01.jpg" alt="1"></td>
+    <td width="33%"><img src="assets/headline-02.jpg" alt="2"></td>
+    <td width="33%"><img src="assets/headline-03.jpg" alt="3"></td>
+  </tr>
+</table>
+
+<details>
+<summary>Details</summary>
+These numbers are derived from the built-in test harness as the best of 2 back-to-back runs.
+
+### Device
+- OS    : macOS 26.6.2 (25G83)
+- CPU   : Apple M2 Pro (10 cores / 10 threads)
+- RAM   : 16.0 GB Unified Memory
+- Disk  : 512GB SSD
+
+### Test configuration
+- Workers   : 8
+- Access    : embedded
+- Durability: async
+- Bytes     : 5 GiB
+- Queues    : 1
+</details>
 
 ## <img src="https://api.iconify.design/lucide/box.svg?color=%23ffca86" width="20" height="20">&nbsp; Features
 
