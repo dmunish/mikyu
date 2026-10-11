@@ -200,9 +200,9 @@ mikyu dequeue jobs
 mikyu's core is built in a way that you don't have to choose between performance and simplicity.
 <table>
   <tr>
-    <td width="33%"><img src="assets/headline-01.jpg" alt="1"></td>
-    <td width="33%"><img src="assets/headline-02.jpg" alt="2"></td>
-    <td width="33%"><img src="assets/headline-03.jpg" alt="3"></td>
+    <td width="33%"><img src="assets/headline-01.jpg" alt="2.6ms p99 async write latency"></td>
+    <td width="33%"><img src="assets/headline-02.jpg" alt="Peak write throughput of 1M+ messages/sec"></td>
+    <td width="33%"><img src="assets/headline-03.jpg" alt="Zero-copy reads; mmap on sealed segments"></td>
   </tr>
 </table>
 
