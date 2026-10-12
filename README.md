@@ -62,14 +62,17 @@ flowchart LR
             direction LR
             WAL((("WAL
             (batched writes)")))
+            IOW["Platform I/O
+            io_uring · IOCP · pool"]
             SEG[("Segments
             (append-only files)")]
             IDX[("Index
             (segment offset lookup)")]
             CACHE((("Ring Cache")))
 
-            WAL ==> SEG
-            WAL ==> IDX
+            WAL ==> IOW
+            IOW ==> SEG
+            IOW ==> IDX
             SEG -.-> CACHE
             IDX -.-> CACHE
         end
@@ -89,10 +92,12 @@ flowchart LR
     classDef interface fill:#170d44,stroke:#5b0f89,color:#ffffff,stroke-width:2px
     classDef runtime fill:#e33f6a,stroke:#e33f6a,color:#ffffff,stroke-width:2px
     classDef storage fill:transparent,stroke:#ffca86,color:#ffffff,stroke-width:2px
+    classDef platform fill:transparent,stroke:#ffca86,color:#ffffff,stroke-width:2px,stroke-dasharray: 4 3
 
     class APP interface
     class OPEN,DIAL,CLI,DMN,LOG,TASK runtime
     class WAL,SEG,IDX,CACHE storage
+    class IOW platform
 
     style SDK fill:#170d44,stroke:#5b0f89,color:#ffffff
     style CORE fill:#170d44,stroke:#5b0f89,color:#ffffff
