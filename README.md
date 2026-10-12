@@ -197,11 +197,11 @@ mikyu dequeue jobs
 
 ## <img src="https://api.iconify.design/lucide/rocket.svg?color=%23ffca86" width="20" height="20">&nbsp; Performance
 
-mikyu's core is built in a way that you don't have to choose between performance and simplicity.
+mikyu's core is optimized so that you don't have to choose between performance and simplicity.
 <table>
   <tr>
-    <td width="33%"><img src="assets/headline-01.jpg" alt="2.6ms p99 async write latency"></td>
-    <td width="33%"><img src="assets/headline-02.jpg" alt="Peak write throughput of 1M+ messages/sec"></td>
+    <td width="33%"><img src="assets/headline-01.jpg" alt="0.72ms p99 async write latency"></td>
+    <td width="33%"><img src="assets/headline-02.jpg" alt="Peak write throughput of 2M+ messages/sec"></td>
     <td width="33%"><img src="assets/headline-03.jpg" alt="Zero-copy reads; mmap on sealed segments"></td>
   </tr>
 </table>
@@ -209,7 +209,7 @@ mikyu's core is built in a way that you don't have to choose between performance
 <details>
 <summary>Details</summary>
 
-These numbers are derived from the built-in test harness as the mean of 2 back-to-back runs at its default settings. The benchmark can be run with `./mikyu bench run` on the binary.
+These numbers are from the built-in benchmark harness at its default settings (except total data size). They can be reproduced with running `./mikyu bench run --bytes 10GiB` on the binary.
 
 ### Device
 - OS    : macOS 26.6.2 (25G83)
@@ -222,7 +222,7 @@ These numbers are derived from the built-in test harness as the mean of 2 back-t
 - Access      : embedded
 - Durability  : async
 - Message size: 1 KiB
-- Total bytes : 5 GiB
+- Total bytes : 10 GiB
 - Batch size  : 64
 - Queues      : 1
 
