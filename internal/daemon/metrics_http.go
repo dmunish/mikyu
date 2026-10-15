@@ -11,6 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/dmunish/mikyu/internal/node"
 )
@@ -18,15 +21,11 @@ import (
 // topNQueues caps the per-queue series the Prometheus endpoint emits, largest queues first.
 const topNQueues = 50
 
-// prometheusContentType is the media type the Prometheus text format requires.
-const prometheusContentType = "text/plain; version=0.0.4; charset=utf-8"
-
 // metricsServer serves one node's telemetry over HTTP: Prometheus text, JSON snapshot, tick history, and the SSE stream.
 type metricsServer struct {
-	node       *node.Node
-	perQueue   bool
-	histograms bool
-	srv        *http.Server
+	node    *node.Node
+	promReg *prometheus.Registry
+	srv     *http.Server
 }
 
 // startMetricsHTTP binds addr and serves n's telemetry on four fixed routes; the listener is live before it returns.
@@ -37,9 +36,17 @@ func startMetricsHTTP(n *node.Node, perQueue, histograms bool, addr string) (*me
 	}
 	warnIfNotLoopback(ln.Addr())
 
-	ms := &metricsServer{node: n, perQueue: perQueue, histograms: histograms}
+	promReg := prometheus.NewRegistry()
+	promReg.MustRegister(metrics.NewSnapshotCollector(
+		func() (metrics.Snapshot, error) { return n.Metrics(context.Background()) },
+		metrics.CollectOptions{PerQueue: perQueue, TopNQueues: topNQueues, Histograms: histograms},
+	))
+
+	ms := &metricsServer{node: n, promReg: promReg}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /metrics", ms.handlePrometheus)
+	mux.Handle("GET /metrics", promhttp.HandlerFor(promReg, promhttp.HandlerOpts{
+		ErrorHandling: promhttp.ContinueOnError,
+	}))
 	mux.HandleFunc("GET /api/metrics", ms.handleJSON)
 	mux.HandleFunc("GET /api/history", ms.handleHistory)
 	mux.HandleFunc("GET /api/events", ms.handleSSE)
@@ -70,19 +77,6 @@ func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		log.Printf("mikyu daemon: metrics json encode: %v", err)
-	}
-}
-
-// handlePrometheus encodes a fresh snapshot in the Prometheus text format 0.0.4.
-func (ms *metricsServer) handlePrometheus(w http.ResponseWriter, r *http.Request) {
-	snap, err := ms.node.Metrics(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", prometheusContentType)
-	if err := metrics.Encode(w, snap, metrics.EncodeOptions{PerQueue: ms.perQueue, TopNQueues: topNQueues, Histograms: ms.histograms}); err != nil {
-		log.Printf("mikyu daemon: prometheus encode: %v", err)
 	}
 }
 

@@ -2,21 +2,84 @@ package metrics
 
 import (
 	"bytes"
+	"flag"
 	"math"
+	"os"
+	"path/filepath"
 	"reflect"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
-	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
-	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/dmunish/mikyu/internal/spec"
 )
+
+var updateGolden = flag.Bool("update", false, "rewrite golden files")
+
+func goldenSnapshot() Snapshot {
+	age := spec.Duration(24 * time.Hour)
+	segment := int64(64 << 20)
+	return Snapshot{
+		Timestamp: time.Unix(0, 0).UTC(),
+		Runtime: RuntimeView{
+			Goroutines: 7,
+			Heap:       HeapView{Alloc: 1024, Inuse: 2048},
+			UptimeSec:  12.5,
+		},
+		GC:      GCView{Cycles: 3},
+		Process: ProcessView{CPUPercent: 1.25, RSSBytes: 4096},
+		Totals:  TotalsView{Queues: 1, Messages: 10, Bytes: 2048},
+		Queues: []QueueView{{
+			Name:     "events",
+			Kind:     "log",
+			Counters: map[string]int64{"appends": 10, "reads": 4, "queue_faults": 1},
+			Gauges:   map[string]int64{"messages": 10, "size_bytes": 2048, "segments": 1},
+			Histograms: map[string]HistogramView{
+				"append_duration": viewOf(HistogramSnapshot{
+					Bounds: []float64{0.001, 0.01}, Counts: []uint64{5, 3, 2}, Sum: 0.5, Total: 10,
+				}),
+			},
+			Producers:    ProducerView{InFlight: 8, BlockedOnWAL: 2, BlockEvents: 3},
+			Consumers:    ConsumerView{InFlight: 4, ParkedFetch: 2, FetchParkEvents: 42},
+			Backpressure: BackpressureView{WALChannelFill: 0.003, WALByteFill: 0.0006, QueueFullEvents: 1},
+			Effective: spec.Spec{
+				Storage:   spec.StorageSpec{MaxSegment: &segment},
+				Retention: spec.RetentionSpec{MaxAge: &age},
+			},
+		}, {
+			Name:     "jobs",
+			Kind:     "task",
+			Counters: map[string]int64{"enqueues": 5},
+			Gauges:   map[string]int64{"messages": 2, "size_bytes": 1024, "segments": 1},
+			Tasks:    TaskView{Active: 42, InFlight: 8, Scheduled: 34, DeadLetters: 2, CheckpointLag: 3},
+		}},
+	}
+}
+
+// normalizeNewlines makes the golden comparison independent of checkout line endings.
+func normalizeNewlines(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
+
+// TestExpositionGolden: the rendered surface matches the checked-in golden file.
+func TestExpositionGolden(t *testing.T) {
+	out := renderCollector(t, goldenSnapshot(), CollectOptions{PerQueue: true, Histograms: true})
+
+	golden := filepath.Join("testdata", "snapshot.prom")
+	if *updateGolden {
+		require.NoError(t, os.MkdirAll("testdata", 0o755))
+		require.NoError(t, os.WriteFile(golden, []byte(out), 0o644))
+		return
+	}
+	want, err := os.ReadFile(golden)
+	require.NoError(t, err)
+	assert.Equal(t, normalizeNewlines(string(want)), normalizeNewlines(out))
+}
 
 // renderCollector scrapes a SnapshotCollector and renders it as exposition text.
 func renderCollector(t *testing.T, snap Snapshot, opts CollectOptions) string {
@@ -31,63 +94,6 @@ func renderCollector(t *testing.T, snap Snapshot, opts CollectOptions) string {
 		require.NoError(t, err)
 	}
 	return buf.String()
-}
-
-// parseFamilies parses exposition text into metric families, normalized for
-// comparison: label pairs and samples are sorted, and summary sample
-// counts/sums are stripped because expfmt always renders _sum and _count
-// (the hand-rolled encoder did not); their values are asserted separately.
-func parseFamilies(t *testing.T, text string) map[string]*dto.MetricFamily {
-	t.Helper()
-	parser := expfmt.NewTextParser(model.LegacyValidation)
-	families, err := parser.TextToMetricFamilies(strings.NewReader(text))
-	require.NoError(t, err)
-	for _, mf := range families {
-		for _, m := range mf.GetMetric() {
-			slices.SortFunc(m.Label, func(a, b *dto.LabelPair) int {
-				return strings.Compare(a.GetName(), b.GetName())
-			})
-			if s := m.GetSummary(); s != nil {
-				s.SampleCount = nil
-				s.SampleSum = nil
-			}
-		}
-		slices.SortFunc(mf.GetMetric(), func(a, b *dto.Metric) int {
-			return strings.Compare(metricKey(a), metricKey(b))
-		})
-	}
-	return families
-}
-
-// metricKey renders a metric's labels as a canonical comparison key.
-func metricKey(m *dto.Metric) string {
-	parts := make([]string, 0, len(m.Label))
-	for _, lp := range m.Label {
-		parts = append(parts, lp.GetName()+"="+lp.GetValue())
-	}
-	return strings.Join(parts, "\x00")
-}
-
-// TestExpositionParityWithEncoder: the adapter renders the same families as the
-// hand-rolled encoder, sample for sample, before the encoder is retired.
-func TestExpositionParityWithEncoder(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		opts CollectOptions
-	}{
-		{"global only", CollectOptions{}},
-		{"per queue", CollectOptions{PerQueue: true}},
-		{"per queue with histograms", CollectOptions{PerQueue: true, Histograms: true}},
-		{"top n", CollectOptions{PerQueue: true, TopNQueues: 1}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var buf bytes.Buffer
-			require.NoError(t, Encode(&buf, goldenSnapshot(), EncodeOptions(tc.opts)))
-			want := parseFamilies(t, buf.String())
-			got := parseFamilies(t, renderCollector(t, goldenSnapshot(), tc.opts))
-			require.Equal(t, want, got)
-		})
-	}
 }
 
 func TestExpositionGlobalOnlyByDefault(t *testing.T) {
@@ -539,4 +545,76 @@ func TestExpositionLint(t *testing.T) {
 		texts = append(texts, p.Metric+": "+p.Text)
 	}
 	assert.Empty(t, texts, "promlint problems:\n%s", strings.Join(texts, "\n"))
+}
+
+// coveredFields lists every Snapshot leaf the exposition exports, as a series or a label.
+var coveredFields = []string{
+	"Snapshot.Build.SpecVersion", "Snapshot.Build.GoVersion", "Snapshot.Build.OS", "Snapshot.Build.Arch",
+	"Snapshot.Runtime.Goroutines", "Snapshot.Runtime.GOMAXPROCS", "Snapshot.Runtime.UptimeSec",
+	"Snapshot.Runtime.GoroutineStates.Running", "Snapshot.Runtime.GoroutineStates.Runnable", "Snapshot.Runtime.GoroutineStates.Waiting",
+	"Snapshot.Runtime.Heap.Alloc", "Snapshot.Runtime.Heap.Sys", "Snapshot.Runtime.Heap.Inuse",
+	"Snapshot.Runtime.Heap.Idle", "Snapshot.Runtime.Heap.Released", "Snapshot.Runtime.Heap.Objects",
+	"Snapshot.Runtime.Heap.TotalAlloc", "Snapshot.Runtime.Heap.TotalFree",
+	"Snapshot.Runtime.Stack.Inuse", "Snapshot.Runtime.Stack.Sys",
+	"Snapshot.Runtime.Metadata.Inuse", "Snapshot.Runtime.Metadata.Sys",
+	"Snapshot.Process.CPUPercent", "Snapshot.Process.CPUSecondsUser", "Snapshot.Process.CPUSecondsSys",
+	"Snapshot.Process.RSSBytes", "Snapshot.Process.VSZBytes", "Snapshot.Process.Threads", "Snapshot.Process.OpenFDs",
+	"Snapshot.GC.Cycles", "Snapshot.GC.PauseTotalMs", "Snapshot.GC.NextGCBytes", "Snapshot.GC.MemLimitBytes",
+	"Snapshot.GC.Pause.P50Ms", "Snapshot.GC.Pause.P90Ms", "Snapshot.GC.Pause.P99Ms", "Snapshot.GC.Pause.MaxMs",
+	"Snapshot.Scheduler.Latency.P50", "Snapshot.Scheduler.Latency.P90", "Snapshot.Scheduler.Latency.P99",
+	"Snapshot.Locks.GlobalWaitSec",
+	"Snapshot.Locks.Observers[].Name", "Snapshot.Locks.Observers[].Waits", "Snapshot.Locks.Observers[].TotalWaitMs",
+	"Snapshot.Locks.Observers[].MaxWaitMs", "Snapshot.Locks.Observers[].P50WaitMs", "Snapshot.Locks.Observers[].P99WaitMs",
+	"Snapshot.Storage.DataDir", "Snapshot.Storage.Queues", "Snapshot.Storage.Segments", "Snapshot.Storage.SizeBytes",
+	"Snapshot.Storage.CacheBytes", "Snapshot.Storage.CacheLimit", "Snapshot.Storage.CacheHits", "Snapshot.Storage.CacheMisses",
+	"Snapshot.Storage.CommittedBytes", "Snapshot.Storage.FlushedBytes", "Snapshot.Storage.PendingBytes",
+	"Snapshot.Storage.OffsetStoreBytes",
+	"Snapshot.Queues[].Name", "Snapshot.Queues[].Kind", "Snapshot.Queues[].Counters", "Snapshot.Queues[].Gauges",
+	"Snapshot.Queues[].Histograms",
+	"Snapshot.Queues[].Rates.AppendsPerSec", "Snapshot.Queues[].Rates.ReadsPerSec",
+	"Snapshot.Queues[].Rates.EnqueuesPerSec", "Snapshot.Queues[].Rates.DequeuesPerSec",
+	"Snapshot.Queues[].Rates.BytesInPerSec", "Snapshot.Queues[].Rates.BytesOutPerSec",
+	"Snapshot.Queues[].Producers.InFlight", "Snapshot.Queues[].Producers.BlockedOnWAL", "Snapshot.Queues[].Producers.BlockEvents",
+	"Snapshot.Queues[].Consumers.InFlight", "Snapshot.Queues[].Consumers.ParkedFetch", "Snapshot.Queues[].Consumers.ParkedDequeue",
+	"Snapshot.Queues[].Consumers.FetchParkEvents", "Snapshot.Queues[].Consumers.DequeueParkEvents",
+	"Snapshot.Queues[].Backpressure.WALChannelFill", "Snapshot.Queues[].Backpressure.WALByteFill",
+	"Snapshot.Queues[].Backpressure.QueueFullEvents", "Snapshot.Queues[].Backpressure.ProducerBlocks",
+	"Snapshot.Queues[].Backpressure.ConsumerParks", "Snapshot.Queues[].Backpressure.RetryBudgetDrops",
+	"Snapshot.Queues[].Tasks.Active", "Snapshot.Queues[].Tasks.InFlight", "Snapshot.Queues[].Tasks.Scheduled",
+	"Snapshot.Queues[].Tasks.DeadLetters", "Snapshot.Queues[].Tasks.Uncheckpointed", "Snapshot.Queues[].Tasks.ScheduleHeap",
+	"Snapshot.Queues[].Tasks.CheckpointLSN", "Snapshot.Queues[].Tasks.Dirty", "Snapshot.Queues[].Tasks.CheckpointLag",
+	"Snapshot.Queues[].Groups[].Name", "Snapshot.Queues[].Groups[].Committed",
+	"Snapshot.Queues[].Groups[].HighWater", "Snapshot.Queues[].Groups[].Lag",
+	"Snapshot.Totals.Queues", "Snapshot.Totals.Messages", "Snapshot.Totals.Bytes",
+}
+
+// skipFields lists Snapshot paths the exposition deliberately does not export, with a reason.
+var skipFields = map[string]string{
+	"Snapshot.Disabled":           "not a measurement; the exporter emits nothing useful when metrics are off",
+	"Snapshot.Timestamp":          "Prometheus timestamps its own scrapes",
+	"Snapshot.Session":            "static session config; the JSON endpoint's job",
+	"Snapshot.Queues[].Spec":      "static config; collapsed into the mikyu_queue_info labels",
+	"Snapshot.Queues[].Derived":   "static config; collapsed into the mikyu_queue_info labels",
+	"Snapshot.Queues[].Effective": "static config; collapsed into the mikyu_queue_info labels",
+}
+
+// walkLeaves reports every leaf field path of t, using [] for slice elements.
+func walkLeaves(t reflect.Type, path string, fn func(string)) {
+	for f := range t.Fields() {
+		f := f
+		p := path + "." + f.Name
+		ft := f.Type
+		for ft.Kind() == reflect.Pointer {
+			ft = ft.Elem()
+		}
+		switch {
+		case ft.Kind() == reflect.Struct && ft != reflect.TypeFor[time.Time]():
+			walkLeaves(ft, p, fn)
+		case (ft.Kind() == reflect.Slice || ft.Kind() == reflect.Array) &&
+			ft.Elem().Kind() == reflect.Struct && ft.Elem() != reflect.TypeFor[time.Time]():
+			walkLeaves(ft.Elem(), p+"[]", fn)
+		default:
+			fn(p)
+		}
+	}
 }
