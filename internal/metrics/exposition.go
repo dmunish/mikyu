@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -28,11 +29,14 @@ type SnapshotSource func() (Snapshot, error)
 type SnapshotCollector struct {
 	src  SnapshotSource
 	opts CollectOptions
+
+	descMu sync.Mutex
+	descs  map[string]*prometheus.Desc
 }
 
 // NewSnapshotCollector builds a collector that calls src once per scrape.
 func NewSnapshotCollector(src SnapshotSource, opts CollectOptions) *SnapshotCollector {
-	return &SnapshotCollector{src: src, opts: opts}
+	return &SnapshotCollector{src: src, opts: opts, descs: make(map[string]*prometheus.Desc)}
 }
 
 // Describe sends nothing: the collector's families derive from the snapshot.
@@ -44,7 +48,7 @@ func (c *SnapshotCollector) Collect(ch chan<- prometheus.Metric) {
 	if err != nil {
 		return
 	}
-	e := exposition{ch: ch}
+	e := exposition{c: c, ch: ch}
 	e.build(snap)
 	e.runtime(snap)
 	e.process(snap)
@@ -60,6 +64,7 @@ func (c *SnapshotCollector) Collect(ch chan<- prometheus.Metric) {
 
 // exposition emits one snapshot's series through a metric channel.
 type exposition struct {
+	c  *SnapshotCollector
 	ch chan<- prometheus.Metric
 }
 
@@ -121,13 +126,30 @@ func (e exposition) quantiles(name, help string, count uint64, sum float64, qs [
 	e.send(name, help, m)
 }
 
-// send wraps one dto metric for the registry.
+// send wraps one dto metric for the registry. The family descriptor is built
+// once per collector: Gather reads the family's name and help from it, and a
+// family's name, help, and label set never vary across scrapes.
 func (e exposition) send(name, help string, m *dto.Metric) {
-	names := make([]string, len(m.Label))
-	for i, lp := range m.Label {
+	e.ch <- snapshotMetric{desc: e.c.desc(name, help, m.Label), metric: m}
+}
+
+// desc returns the cached family descriptor, building it on first use.
+func (c *SnapshotCollector) desc(name, help string, labels []*dto.LabelPair) *prometheus.Desc {
+	c.descMu.Lock()
+	d, ok := c.descs[name]
+	c.descMu.Unlock()
+	if ok {
+		return d
+	}
+	names := make([]string, len(labels))
+	for i, lp := range labels {
 		names[i] = lp.GetName()
 	}
-	e.ch <- snapshotMetric{desc: prometheus.NewDesc(name, help, names, nil), metric: m}
+	d = prometheus.NewDesc(name, help, names, nil)
+	c.descMu.Lock()
+	c.descs[name] = d
+	c.descMu.Unlock()
+	return d
 }
 
 // snapshotMetric adapts a hand-built dto.Metric to the prometheus.Metric interface.

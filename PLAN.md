@@ -147,6 +147,24 @@ Commit: `[chore] all : finalize prometheus/client_golang migration`
 
 ---
 
+## Performance
+
+The recording layer — instruments, `Registry`/`Scope`, collector tick, JSON snapshot pipeline, and every append/read/enqueue/dequeue call site — is untouched by the migration; the data plane pays nothing.
+
+The one path that changed shape is the per-scrape exposition (`/metrics`): the hand-rolled encoder wrote text directly, while the adapter builds `dto` metrics through the client_golang registry. Measured on the same fixture (i5-8350U, Go 1.27.2, n=10 each, benchstat):
+
+| | legacy encoder | adapter + promhttp | delta |
+|---|---|---|---|
+| sec/op | 254.3µ ± 14% | 608.2µ ± 1% | +139% |
+| B/op | 32.85Ki ± 0% | 137.80Ki ± 0% | +320% |
+| allocs/op | 1.130k ± 0% | 2.039k ± 0% | +80% |
+
+A family-descriptor cache in the collector (descriptors are built once per family, not once per sample) recovered ~20% of the raw regression; the remainder is registry machinery — per-metric xxhash dedup, consistency checks, and `NormalizeMetricFamilies` ordering — that buys duplicate-series and suffix-collision detection on an operator-facing surface.
+
+**Accepted:** scrapes are operator-scheduled (typically every 15 s+), so even a 50-queue node (the `TopNQueues` cap) spends single-digit milliseconds per scrape — well under 0.1% of one core. `BenchmarkSnapshotCollectorScrape` / `BenchmarkSnapshotCollectorGather` in `internal/metrics/exposition_bench_test.go` guard the trend. If scrape cost ever matters at scale, the escape hatch is a custom `prometheus.Gatherer` that builds `MetricFamily`s in one pass (promhttp accepts any `Gatherer`), trading the registry's consistency checks for the legacy encoder's cost profile.
+
+---
+
 ## Failure modes
 
 | Failure | Cause | Fix |
