@@ -23,9 +23,8 @@ const topNQueues = 50
 
 // metricsServer serves one node's telemetry over HTTP: Prometheus text, JSON snapshot, tick history, and the SSE stream.
 type metricsServer struct {
-	node    *node.Node
-	promReg *prometheus.Registry
-	srv     *http.Server
+	node *node.Node
+	srv  *http.Server
 }
 
 // startMetricsHTTP binds addr and serves n's telemetry on four fixed routes; the listener is live before it returns.
@@ -42,7 +41,7 @@ func startMetricsHTTP(n *node.Node, perQueue, histograms bool, addr string) (*me
 		metrics.CollectOptions{PerQueue: perQueue, TopNQueues: topNQueues, Histograms: histograms},
 	))
 
-	ms := &metricsServer{node: n, promReg: promReg}
+	ms := &metricsServer{node: n}
 	mux := http.NewServeMux()
 	mux.Handle("GET /metrics", promhttp.HandlerFor(promReg, promhttp.HandlerOpts{
 		ErrorHandling: promhttp.ContinueOnError,
