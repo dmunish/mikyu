@@ -72,7 +72,7 @@ github.com/dmunish/mikyu/
     │                              # keys, aead, pool, sendfile, handle_*, prealloc_*)
     ├── enginetest/memstorage.go   # In-memory engine.Storage for synctest bubbles
     ├── metrics/                   # THE telemetry model (instruments, registry, snapshot, state,
-    │                              # history, collector, prometheus, lock, source)
+    │                              # history, collector, exposition, lock, source)
     ├── queue/
     │   ├── group/group.go         # Base: HighWater, Mark, Commit, Close, CommitFn
     │   ├── logqueue/              # api, logqueue, group, retention, stream, spans
@@ -1614,11 +1614,11 @@ func (c *Collector) Subscribe() (<-chan Snapshot, func())
 ### Prometheus
 
 ```go
-type EncodeOptions struct { PerQueue bool; TopNQueues int; Histograms bool }
-func Encode(w io.Writer, s Snapshot, opts EncodeOptions) error
+type CollectOptions struct { PerQueue bool; TopNQueues int; Histograms bool }
+func NewSnapshotCollector(src SnapshotSource, opts CollectOptions) *SnapshotCollector
 ```
 
-Emits Prometheus text 0.0.4. Global series (`mikyu_build_info`, `mikyu_runtime_*`, `mikyu_process_*`, `mikyu_gc_*`, `mikyu_scheduler_latency_seconds`, `mikyu_lock_*`, `mikyu_storage_*`, `mikyu_totals_*`) are always present. With `PerQueue`, each queue is rendered as labeled series (`queue="<name>"`), `TopNQueues` bounding cardinality by largest queues first. `mikyu_queue_info` carries effective config as labels; `mikyu_queue_faults_total` reports only faulted queues.
+`exposition.go` renders one `Snapshot` per scrape as `dto` metrics through an unchecked `prometheus.Collector`; the daemon serves it with `promhttp.HandlerFor` over a per-node registry. Global series (`mikyu_build_info`, `mikyu_runtime_*`, `mikyu_process_*`, `mikyu_gc_*`, `mikyu_scheduler_latency_seconds`, `mikyu_lock_*`, `mikyu_storage_*`, `mikyu_totals_*`) are always present. With `PerQueue`, each queue is rendered as labeled series (`queue="<name>"`), `TopNQueues` bounding cardinality by largest queues first. `mikyu_queue_info` carries effective config as labels; `mikyu_queue_faults_total` reports only faulted queues. Quantile summaries carry real `_sum`/`_count` where the snapshot has them; sample values coerce NaN/±Inf to zero; label pairs are sorted by name as the registry's consistency check requires. Family descriptors are cached per collector — `Gather` reads the family's name and help from the `Desc`, and a family's identity never varies across scrapes.
 
 ---
 
@@ -1671,7 +1671,7 @@ type enumValue struct { param spec.Param; value string; changed bool }   // flag
 
 | Route | Response |
 |---|---|
-| `GET /metrics` | Prometheus text 0.0.4. Per-queue series only if `--metrics-per-queue-prometheus`. Capped at `topNQueues = 50`. Histograms only if `--metrics-histograms`. |
+| `GET /metrics` | Prometheus text via `promhttp` over the node's `SnapshotCollector`. Per-queue series only if `--metrics-per-queue-prometheus`. Capped at `topNQueues = 50`. Histograms only if `--metrics-histograms`. |
 | `GET /api/metrics` | Single JSON `metrics.Snapshot`. |
 | `GET /api/history` | `?limit=N` slices the collector's tick history, newest last. |
 | `GET /api/events` | Server-sent events, one `snapshot` event per collector tick. |
@@ -2289,7 +2289,8 @@ func exitCode(err error) int {
 - `TestErrorTaxonomyTotal` requires every declared sentinel to be mapped or explicitly off-wire; every wire code to have a sentinel.
 - `TestEverySpecParamHasDoc` (`ui/command/help_test.go`) requires every `spec.Table` row to carry a `Doc`.
 - `TestSpecTagsIdentical` and `TestTableMatches{Spec,Session}Fields` require the table, struct, and wire/YAML codec to agree field for field.
-- `TestPrometheusCoversSnapshot` requires every `Snapshot` leaf to be exported or explicitly skipped with a reason.
+- `TestExpositionCoversSnapshot` requires every `Snapshot` leaf to be exported or explicitly skipped with a reason.
+- `TestExpositionLintFullSurface` runs promlint over every emitted family, including unknown-key fallbacks; `TestExpositionLabelCardinalityIsBounded` holds every series label to a fixed allowlist; `BenchmarkSnapshotCollectorScrape`/`Gather` guard the exposition path's cost.
 - `cmd/mikyu/main_test.go` covers the exit-code contract (0/1/2/3).
 - Engine-specific perf tests:
   - `TestWALByteBackpressure`, `TestWALAsyncBatchWrites`, `TestWALAsyncBatchIndexWrites`, `TestOverlappedSingleSyscall`,
@@ -2367,3 +2368,4 @@ func exitCode(err error) int {
 | **Envelope encryption: per-queue data key under a master key** | A master key encrypting records directly would share one key across queues, so nonce spaces would collide; per-queue data keys also make master rotation a re-wrap, never a re-encryption. |
 | **`keys.dat` binds the queue name as AAD** | Copying a key store between queues fails authentication, so a key file cannot silently decrypt a different queue's data. |
 | **`encryption` is create-only** | Flipping it after creation would silently mix plaintext and ciphertext records with no way to tell them apart; master-key rotation is the supported change path. |
+| **`Snapshot`, not instruments, feeds Prometheus** | The exposition is a projection of `Snapshot`; instruments stay the nil-safe, allocation-cheap recording layer behind the single observation surface. Replacing them with `client_golang` types would invert the dataflow (rebuilding `Snapshot` from `dto` every tick) and drop the `mikyu_runtime_*`/`mikyu_lock_*`/`mikyu_gc_*`/`mikyu_storage_*` families the standard collectors cannot supply. The adapter renders `Snapshot` through `prometheus.Collector`, and `promhttp` owns the wire format. |
