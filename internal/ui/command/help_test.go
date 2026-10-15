@@ -26,7 +26,6 @@ func TestIndexRendersInEveryMode(t *testing.T) {
 
 func TestEveryVerbRenders(t *testing.T) {
 	for _, v := range command.Verbs {
-		v := v
 		t.Run(v.Name, func(t *testing.T) {
 			var buf bytes.Buffer
 			require.NoError(t, command.WriteVerb(&buf, v, command.RenderOptions{Mode: command.ModeCLI, Color: false}))
@@ -117,7 +116,7 @@ func TestIndexHasNoFlags(t *testing.T) {
 		require.NoError(t, command.WriteIndex(&buf, command.RenderOptions{
 			Mode: mode, Color: false,
 		}))
-		for _, line := range strings.Split(buf.String(), "\n") {
+		for line := range strings.SplitSeq(buf.String(), "\n") {
 			trimmed := strings.TrimLeft(line, " ")
 			assert.False(t, strings.HasPrefix(trimmed, "--"),
 				"the index must not render flag rows (mode %d): %q", mode, line)
@@ -190,7 +189,6 @@ func TestGoldenHelpPages(t *testing.T) {
 		{"bench_run_cli", "bench run", command.ModeCLI},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			opts := command.RenderOptions{Mode: tc.mode, Color: false, Width: 80}
 			var buf bytes.Buffer
@@ -231,7 +229,7 @@ func normalizeNewlines(b []byte) string {
 
 // indexHasVerb reports whether name appears as the first token of a line.
 func indexHasVerb(out, name string) bool {
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) > 0 && fields[0] == name {
 			return true

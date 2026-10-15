@@ -565,10 +565,7 @@ func resolveWidth(w int) int {
 
 // wrapWidth caps the body wrap at 78 columns.
 func wrapWidth(total int) int {
-	w := total - 4
-	if w < 40 {
-		w = 40
-	}
+	w := max(total-4, 40)
 	if w > 78 {
 		w = 78
 	}
@@ -578,13 +575,13 @@ func wrapWidth(total int) int {
 // wrapParagraphs wraps each blank-line-separated paragraph at width columns.
 func wrapParagraphs(text string, width int) []string {
 	var out []string
-	for _, para := range strings.Split(text, "\n\n") {
+	for para := range strings.SplitSeq(text, "\n\n") {
 		para = strings.TrimSpace(para)
 		if para == "" {
 			continue
 		}
 		var line strings.Builder
-		for _, word := range strings.Fields(para) {
+		for word := range strings.FieldsSeq(para) {
 			if line.Len() == 0 {
 				line.WriteString(word)
 				continue

@@ -207,6 +207,23 @@ func TestBenchDefaultsTheDataDirectory(t *testing.T) {
 	assert.Equal(t, runDir, opts.Dir, "a run owns its directory when no session names one")
 }
 
+func TestBenchEncryptionKeyFileLayering(t *testing.T) {
+	sess := spec.BuiltinSession()
+	sess.Encryption.KeyFile = "from-session"
+
+	opts, err := resolveBench([]string{"--duration", "1s"}, sess, envLookup(nil))
+	require.NoError(t, err)
+	assert.Equal(t, "from-session", opts.KeyFile, "the session flag seeds the run")
+
+	opts, err = resolveBench([]string{"--duration", "1s"}, spec.BuiltinSession(), envLookup(map[string]string{"MIKYU_ENCRYPTION_KEY_FILE": "from-env"}))
+	require.NoError(t, err)
+	assert.Equal(t, "from-env", opts.KeyFile, "the environment fills an unset key file")
+
+	opts, err = resolveBench([]string{"--duration", "1s", "--encryption-key-file", "explicit"}, sess, envLookup(map[string]string{"MIKYU_ENCRYPTION_KEY_FILE": "from-env"}))
+	require.NoError(t, err)
+	assert.Equal(t, "explicit", opts.KeyFile, "the run flag wins")
+}
+
 func TestBenchMeasuresForTheDefaultDuration(t *testing.T) {
 	opts, err := resolveBench([]string{"--dir", "d"}, spec.BuiltinSession(), envLookup(nil))
 	require.NoError(t, err)

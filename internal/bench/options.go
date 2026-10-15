@@ -64,6 +64,7 @@ type Options struct {
 	Access             Access
 	Target             string
 	Dir                string
+	KeyFile            string
 	Out                string
 	RunID              string
 	Persist            bool

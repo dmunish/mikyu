@@ -27,7 +27,7 @@ func openClient(_ context.Context, opts Options) (*accessHandle, error) {
 		if err := killStaleDaemons(opts.Dir, nil); err != nil {
 			return nil, err
 		}
-		client, err := mikyu.Open(opts.Dir)
+		client, err := mikyu.Open(opts.Dir, mikyu.WithEncryptionKeyFile(opts.KeyFile))
 		if err != nil {
 			return nil, err
 		}
@@ -50,7 +50,7 @@ func openDaemon(opts Options) (*accessHandle, error) {
 	if err := killStaleDaemons(opts.Dir, nil); err != nil {
 		return nil, err
 	}
-	proc, err := daemon.Spawn(daemon.SpawnOptions{DataDir: opts.Dir})
+	proc, err := daemon.Spawn(daemon.SpawnOptions{DataDir: opts.Dir, EncryptionKeyFile: opts.KeyFile})
 	if err != nil {
 		return nil, err
 	}

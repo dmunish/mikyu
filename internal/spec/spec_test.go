@@ -557,7 +557,6 @@ func collectSessionLeaves(v reflect.Value, prefix string, out *[]string) {
 // collectSessionTypeLeaves walks a Session-shaped type, appending the dotted path of every leaf.
 func collectSessionTypeLeaves(typ reflect.Type, prefix string, out *[]string) {
 	for field := range typ.Fields() {
-		field := field
 		path := prefix + tagName(field.Tag.Get("yaml"))
 		if field.Type.Kind() == reflect.Struct {
 			collectSessionTypeLeaves(field.Type, path+".", out)

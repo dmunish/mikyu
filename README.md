@@ -298,7 +298,7 @@ None of this is a claim that mikyu beats any of them. Most of those systems solv
 - [x] Metrics collection
 - [x] Benchmark utility
 - [x] Performance improvements, platform-specific optimizations
-- [ ] Encryption of data on-disk
+- [x] Encryption of data on-disk
 - [ ] Comprehensive documentation
 - [ ] Block-striping experiment
 - [ ] Btop-like TUI dashboard for observability and maintenance

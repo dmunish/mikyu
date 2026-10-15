@@ -55,6 +55,7 @@
 
     OPTIONS
       --dir                  <string>    Data directory (embedded and daemon access) (default mikyu-bench)
+      --encryption-key-file  <string>    File of hex AES-256 master keys for --encryption aes
       --target               <string>    Remote target to dial
       --access               <string>    How to reach mikyu: embedded, daemon, or remote (default embedded)
       --out                  <string>    Directory the run is written under (default bench)

@@ -31,6 +31,7 @@ func OpenClient(sess spec.Session) (mikyu.Client, error) {
 		if err := spec.ApplyEnv(&s, os.Getenv); err != nil {
 			return nil, err
 		}
+		opts = append(opts, mikyu.WithEncryptionKeyFile(sess.Encryption.KeyFile))
 		return mikyu.Open(sess.DataDir, append(opts, mikyu.WithSessionSpec(s))...)
 	}
 
@@ -51,14 +52,15 @@ func OpenClient(sess spec.Session) (mikyu.Client, error) {
 	)
 
 	if err := daemon.EnsureDaemonRunning(daemon.SpawnOptions{
-		Target:        sess.Target,
-		DataDir:       sess.DataDir,
-		TLSEnabled:    sess.TLS.Enabled,
-		TLSCert:       sess.TLS.Cert,
-		TLSKey:        sess.TLS.Key,
-		AuthMethod:    sess.Auth.Method,
-		AuthTokenFile: sess.Auth.TokenFile,
-		TLSClientCA:   sess.TLS.ClientCA,
+		Target:            sess.Target,
+		DataDir:           sess.DataDir,
+		TLSEnabled:        sess.TLS.Enabled,
+		TLSCert:           sess.TLS.Cert,
+		TLSKey:            sess.TLS.Key,
+		AuthMethod:        sess.Auth.Method,
+		AuthTokenFile:     sess.Auth.TokenFile,
+		TLSClientCA:       sess.TLS.ClientCA,
+		EncryptionKeyFile: sess.Encryption.KeyFile,
 	}); err != nil {
 		return nil, err
 	}

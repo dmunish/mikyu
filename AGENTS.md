@@ -1736,6 +1736,7 @@ type Options struct {
     Access             Access
     Target             string
     Dir                string
+    KeyFile            string
     Out                string
     RunID              string
     Persist            bool
@@ -2158,7 +2159,7 @@ Sentinels: `ErrNotARun`, `ErrEnvelopeVersion`, `ErrCompareMismatch`.
 - **Flags:** `Global`, `SessionFlags`, `ParseGlobal`, `SpecOption`, `OpenClient`, `NewFlagSet`, `QueueFlagSet`, `QueuePatchFlagSet`, `EnqueueFlagSet`, `NackFlagSet`, `ParseAnywhere`, `HasHelpFlag`.
 - **Help:** `RenderOptions`, `WriteIndex`, `WriteVerb`, `collectSpecRows`, `writeFlagGroups`, `defaultString`, `humanBytes`, `formatArgsStyled`, `wrapParagraphs`.
 - **Metrics:** `MetricsOptions`, `MetricsFlagSet`, `RunMetrics`, `presentation`, `renderFrame`, `watchMetrics`, `watchInterval`, `watchModeFor`.
-- **Bench:** `runDir`, `BenchArgs`, `BenchFlagSet`, `PlotFlagSet`, `RunBench`, `Present`, `ShowRun`, `CompareRuns`, `PlotRun`, `resolveBench`, `resolveMode`, `applyBenchEnv`, `checkModeScope`, `dirOrDefault`, `scenarioDoc`, `readScenario`, `applyScenario`, `modeScopeDoc`, `workloadValue`, `modeValue`, `accessValue`, `benchPresentation`, `splitCSV`, `benchProgress`.
+- **Bench:** `runDir`, `BenchArgs`, `BenchFlagSet`, `PlotFlagSet`, `RunBench`, `Present`, `ShowRun`, `CompareRuns`, `PlotRun`, `resolveBench`, `resolveMode`, `applyBenchEnv`, `checkModeScope`, `dirOrDefault`, `scenarioDoc`, `readScenario`, `applyScenario`, `modeScopeDoc`, `workloadValue`, `modeValue`, `accessValue`, `benchPresentation`, `splitCSV`, `benchProgress`. The run's key file layers as the session's `--encryption-key-file` < `MIKYU_ENCRYPTION_KEY_FILE` < `--encryption-key-file` on the run; `openClient` passes it to `mikyu.Open` (embedded) and the spawned daemon (daemon access), and `OpenClient` does the same for embedded CLI sessions.
 
 `command.SpecOption(spec.Spec)` is the single bridge handing a fully-built spec to the SDK. `command.OpenClient(sess)` returns an embedded client if `--dir`, otherwise ensures the daemon is running and dials.
 

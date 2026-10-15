@@ -149,7 +149,7 @@ func (s *screen) text() string {
 // filledRows counts the non-blank rows on the screen.
 func (s *screen) filledRows() int {
 	n := 0
-	for _, l := range strings.Split(s.text(), "\n") {
+	for l := range strings.SplitSeq(s.text(), "\n") {
 		if strings.TrimSpace(l) != "" {
 			n++
 		}

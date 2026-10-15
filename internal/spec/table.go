@@ -441,7 +441,7 @@ func buildTable() []Param {
 			"Token to present; the token file wins"),
 		sessionParam("server.auth.token_file", "auth_token_file", KindString, ScopeBoth,
 			"File to read the token from"),
-		sessionParam("server.encryption.key_file", "encryption_key_file", KindString, ScopeServer,
+		sessionParam("server.encryption.key_file", "encryption_key_file", KindString, ScopeBoth,
 			"File of hex AES-256 master keys, one per line; the last line wraps new data keys"),
 		sessionParam("server.metrics.enabled", "metrics_enabled", KindBool, ScopeBoth,
 			"Enable the collector"),

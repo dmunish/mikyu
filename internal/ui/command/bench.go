@@ -49,6 +49,7 @@ func BenchFlagSet(a *BenchArgs) *flag.FlagSet {
 	}
 	fs.Var(&modeValue{mode: &a.Options.Mode}, "mode", bench.ModeDoc)
 	fs.StringVar(&a.Options.Dir, "dir", a.Options.Dir, "data directory (embedded and daemon access)")
+	fs.StringVar(&a.Options.KeyFile, "encryption-key-file", a.Options.KeyFile, "file of hex AES-256 master keys for --encryption aes")
 	fs.StringVar(&a.Options.Target, "target", a.Options.Target, "remote target to dial")
 	fs.Var(&accessValue{access: &a.Options.Access}, "access", "how to reach mikyu: embedded, daemon, or remote")
 	fs.StringVar(&a.Options.Out, "out", a.Options.Out, "directory the run is written under")
@@ -141,7 +142,7 @@ func PlotRun(w io.Writer, dir string, metrics []string) error {
 
 // resolveBench computes the run options from flags, a scenario file, and the environment.
 func resolveBench(args []string, sess spec.Session, lookup func(string) string) (bench.Options, error) {
-	probe := BenchArgs{Options: bench.Options{Dir: sess.DataDir}}
+	probe := BenchArgs{Options: bench.Options{Dir: sess.DataDir, KeyFile: sess.Encryption.KeyFile}}
 	rest, err := ParseAnywhere(BenchFlagSet(&probe), args)
 	if err != nil {
 		return bench.Options{}, fmt.Errorf("%w: %v", bench.ErrUsage, err)
@@ -163,10 +164,14 @@ func resolveBench(args []string, sess spec.Session, lookup func(string) string) 
 		Mode:     mode,
 		Access:   bench.AccessEmbedded,
 		Dir:      sess.DataDir,
+		KeyFile:  sess.Encryption.KeyFile,
 		Out:      "bench",
 		Workload: bench.DefaultWorkload(),
 	}
 	applyBenchEnv(&opts, lookup)
+	if opts.KeyFile == "" {
+		opts.KeyFile = lookup("MIKYU_ENCRYPTION_KEY_FILE")
+	}
 	if err := applyScenario(doc, &opts); err != nil {
 		return bench.Options{}, err
 	}
@@ -324,7 +329,7 @@ func benchPresentation(w io.Writer) (style.Theme, human.Formatter) {
 // splitCSV splits a comma-separated flag value into its trimmed parts.
 func splitCSV(text string) []string {
 	var out []string
-	for _, part := range strings.Split(text, ",") {
+	for part := range strings.SplitSeq(text, ",") {
 		if part = strings.TrimSpace(part); part != "" {
 			out = append(out, part)
 		}

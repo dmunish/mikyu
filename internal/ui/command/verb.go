@@ -1,5 +1,7 @@
 package command
 
+import "slices"
+
 import "strings"
 
 // VerbKind groups verbs in help output and dispatch.
@@ -387,6 +389,7 @@ func benchVerb() Verb {
 				},
 				ExtraFlags: []FlagDoc{
 					{Name: "dir", Kind: "string", Doc: "Data directory (embedded and daemon access)", Default: runDir},
+					{Name: "encryption-key-file", Kind: "string", Doc: "File of hex AES-256 master keys for --encryption aes"},
 					{Name: "target", Kind: "string", Doc: "Remote target to dial"},
 					{Name: "access", Kind: "string", Doc: "How to reach mikyu: embedded, daemon, or remote", Default: "embedded"},
 					{Name: "out", Kind: "string", Doc: "Directory the run is written under", Default: "bench"},
@@ -466,10 +469,8 @@ func lookupIn(verbs []Verb, name string) (Verb, bool) {
 		if v.Name == name {
 			return v, true
 		}
-		for _, a := range v.Aliases {
-			if a == name {
-				return v, true
-			}
+		if slices.Contains(v.Aliases, name) {
+			return v, true
 		}
 	}
 	return Verb{}, false
