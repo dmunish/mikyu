@@ -3,6 +3,7 @@ package metrics
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -547,6 +548,164 @@ func TestExpositionLint(t *testing.T) {
 	assert.Empty(t, texts, "promlint problems:\n%s", strings.Join(texts, "\n"))
 }
 
+// lintHistogram is a representative shape reused by every histogram family.
+var lintHistogram = HistogramView{
+	Bounds: []float64{0.001, 0.01, 0.1}, Counts: []uint64{3, 2, 1, 1},
+	Sum: 0.9, Total: 7,
+	P50: 0.001, P90: 0.01, P99: 0.05, P999: 0.1, Max: 0.1,
+}
+
+// fullSurfaceSnapshot populates every family the exposition can emit — every
+// name-table key, the unknown-key fallbacks, typed views, groups, rates, and
+// every global view — so the lint pass sees every published name.
+func fullSurfaceSnapshot() Snapshot {
+	gauges := make(map[string]int64, len(gaugeNames)+1)
+	for key := range gaugeNames {
+		gauges[key] = 1
+	}
+	gauges["custom_ratio"] = 2
+
+	counters := make(map[string]int64, len(counterNames)+2)
+	for key := range counterNames {
+		counters[key] = 1
+	}
+	counters["custom_ops"] = 2
+	counters["already_total"] = 3
+
+	histograms := make(map[string]HistogramView, len(histogramNames)+3)
+	for key := range histogramNames {
+		histograms[key] = lintHistogram
+	}
+	histograms["op_append_duration"] = lintHistogram
+	histograms["op_0xff_duration"] = lintHistogram
+	histograms["custom_latency"] = lintHistogram
+
+	logQueue := QueueView{
+		Name:     "events",
+		Kind:     "log",
+		Counters: counters,
+		Gauges:   gauges,
+		Histograms: map[string]HistogramView{
+			"append_duration": lintHistogram,
+		},
+		Rates:        Rates{AppendsPerSec: 1, ReadsPerSec: 2, EnqueuesPerSec: 3, DequeuesPerSec: 4, BytesInPerSec: 5, BytesOutPerSec: 6},
+		Producers:    ProducerView{InFlight: 1, BlockedOnWAL: 2, BlockEvents: 3},
+		Consumers:    ConsumerView{InFlight: 4, ParkedFetch: 5, ParkedDequeue: 6, FetchParkEvents: 7, DequeueParkEvents: 8},
+		Backpressure: BackpressureView{WALChannelFill: 0.1, WALByteFill: 0.2, QueueFullEvents: 3, ProducerBlocks: 4, ConsumerParks: 5, RetryBudgetDrops: 6},
+		Groups:       []GroupView{{Name: "analytics", Committed: 1, HighWater: 2, Lag: 1}},
+	}
+	taskQueue := QueueView{
+		Name:     "jobs",
+		Kind:     "task",
+		Counters: map[string]int64{"enqueues": 1},
+		Gauges:   map[string]int64{"messages": 1},
+		Tasks: TaskView{
+			Active: 1, InFlight: 2, Scheduled: 3, DeadLetters: 4, Uncheckpointed: 5,
+			ScheduleHeap: 6, CheckpointLSN: 7, Dirty: 8, CheckpointLag: 9,
+		},
+	}
+
+	return Snapshot{
+		Timestamp: time.Unix(0, 0).UTC(),
+		Build:     BuildView{SpecVersion: 5, GoVersion: "go1.27", OS: "linux", Arch: "amd64"},
+		Runtime: RuntimeView{
+			Goroutines: 7, GOMAXPROCS: 4, UptimeSec: 12.5,
+			GoroutineStates: GoroutineStates{Running: 1, Runnable: 2, Waiting: 4},
+			Heap:            HeapView{Alloc: 1, Sys: 2, Inuse: 3, Idle: 4, Released: 5, Objects: 6, TotalAlloc: 7, TotalFree: 8},
+			Stack:           MemoryClassView{Inuse: 1, Sys: 2},
+			Metadata:        MemoryClassView{Inuse: 3, Sys: 4},
+		},
+		Process: ProcessView{CPUPercent: 1.25, CPUSecondsUser: 1.5, CPUSecondsSys: 0.5, RSSBytes: 4096, VSZBytes: 8192, Threads: 9, OpenFDs: 21},
+		GC: GCView{
+			Cycles: 3, PauseTotalMs: 4, NextGCBytes: 5, MemLimitBytes: 6,
+			Pause: PauseView{P50Ms: 0.1, P90Ms: 0.2, P99Ms: 0.3, MaxMs: 0.4},
+		},
+		Scheduler: SchedulerView{Latency: LatencyView{P50: 0.1, P90: 0.2, P99: 0.3}},
+		Locks: LocksView{
+			GlobalWaitSec: 0.25,
+			Observers: []LockView{{
+				Name: "node.mu", Waits: 4, TotalWaitMs: 2, MaxWaitMs: 1.5, P50WaitMs: 0.1, P99WaitMs: 1.2,
+			}},
+		},
+		Storage: StorageView{
+			DataDir: "/data/mikyu", Queues: 2, Segments: 3, SizeBytes: 4096,
+			CacheBytes: 1, CacheLimit: 2, CacheHits: 30, CacheMisses: 2,
+			CommittedBytes: 1000, FlushedBytes: 900, PendingBytes: 100, OffsetStoreBytes: 7,
+		},
+		Totals: TotalsView{Queues: 2, Messages: 11, Bytes: 5120},
+		Queues: []QueueView{logQueue, taskQueue},
+	}
+}
+
+// TestExpositionLintFullSurface: every published family name passes promlint,
+// including the unknown-key fallbacks the golden snapshot never exercises.
+func TestExpositionLintFullSurface(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(NewSnapshotCollector(
+		func() (Snapshot, error) { return fullSurfaceSnapshot(), nil },
+		CollectOptions{PerQueue: true, Histograms: true},
+	))
+	problems, err := testutil.GatherAndLint(reg)
+	require.NoError(t, err)
+	var texts []string
+	for _, p := range problems {
+		texts = append(texts, p.Metric+": "+p.Text)
+	}
+	assert.Empty(t, texts, "promlint problems:\n%s", strings.Join(texts, "\n"))
+}
+
+// labelAllowlist is every label name the exposition may place on a series.
+// The only per-sample variable dimensions are queue, group, and lock; the rest
+// are fixed per series, so cardinality stays bounded by the node's queues.
+var labelAllowlist = map[string]bool{
+	// fixed identity and dial labels on mikyu_queue_info
+	"arch": true, "compaction": true, "durability": true, "encryption": true,
+	"go_version": true, "kind": true, "lease": true, "max_attempts": true,
+	"max_cache": true, "max_dead_letters": true, "max_flush_bytes": true,
+	"max_flush_wait": true, "max_in_flight": true, "max_payload": true,
+	"max_retention_age": true, "max_retention_bytes": true, "max_segment": true,
+	"max_segment_age": true, "os": true, "queue": true, "spec_version": true,
+	// variable label dimensions
+	"group": true, "lock": true, "state": true, "quantile": true, "le": true,
+	// fixed single-value labels
+	"data_dir": true,
+}
+
+// TestExpositionLabelCardinalityIsBounded: no series carries a label outside
+// the allowlist, so a scrape cannot grow unbounded per queue.
+func TestExpositionLabelCardinalityIsBounded(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(NewSnapshotCollector(
+		func() (Snapshot, error) { return fullSurfaceSnapshot(), nil },
+		CollectOptions{PerQueue: true, Histograms: true},
+	))
+	families, err := reg.Gather()
+	require.NoError(t, err)
+
+	for _, mf := range families {
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				assert.True(t, labelAllowlist[lp.GetName()],
+					"family %s carries unlisted label %q", mf.GetName(), lp.GetName())
+			}
+		}
+	}
+}
+
+// TestExpositionTopNCap: the daemon's TopN bound keeps per-queue series at 50.
+func TestExpositionTopNCap(t *testing.T) {
+	queues := make([]QueueView, 60)
+	for i := range queues {
+		queues[i] = QueueView{
+			Name:   fmt.Sprintf("queue-%02d", i),
+			Gauges: map[string]int64{"messages": int64(i + 1)},
+		}
+	}
+	out := renderCollector(t, Snapshot{Queues: queues}, CollectOptions{PerQueue: true, TopNQueues: 50})
+
+	assert.Equal(t, 50, strings.Count(out, `mikyu_queue_messages{queue="queue-`))
+}
+
 // coveredFields lists every Snapshot leaf the exposition exports, as a series or a label.
 var coveredFields = []string{
 	"Snapshot.Build.SpecVersion", "Snapshot.Build.GoVersion", "Snapshot.Build.OS", "Snapshot.Build.Arch",
@@ -601,7 +760,6 @@ var skipFields = map[string]string{
 // walkLeaves reports every leaf field path of t, using [] for slice elements.
 func walkLeaves(t reflect.Type, path string, fn func(string)) {
 	for f := range t.Fields() {
-		f := f
 		p := path + "." + f.Name
 		ft := f.Type
 		for ft.Kind() == reflect.Pointer {

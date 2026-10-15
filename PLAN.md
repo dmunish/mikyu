@@ -110,10 +110,11 @@ Commit: `[feat] internal/metrics, internal/daemon : serve /metrics through promh
 
 **Goal:** the exported surface passes `promlint` without breaking the frozen series names.
 
-- Run `TestExpositionLint`; triage every problem:
-  - violations that can be fixed without renaming a published series (help-text style) are fixed;
-  - violations on published names (`*_per_second` rates, `*_max` gauges, `quantile="+Inf"`) are kept and explicitly documented as compatibility exceptions in the lint test, since dashboards built on the old surface must keep working.
-- Confirm the cardinality story: the only label dimensions are `queue` (bounded by the node's queue set), `group` (bounded per queue), and `state`/`quantile`/`le` (fixed). `TopNQueues` keeps the per-queue families capped at 50 for scrapes.
+**Outcome:** every published name is already convention-clean — counters end in `_total`, histograms and summaries in `_seconds`, rates use the documented `_per_second` form, and every help text ends with a period. The full-surface lint (`TestExpositionLintFullSurface`) populates every name-table key, the unknown-key fallbacks, typed views, groups, rates, and all global views, and passes with zero problems. One promlint rule is worth recording: metric names must not embed type words (`gauge`, `counter`, `sum`), so future instrument keys must avoid them; the unknown-key fallback (`sanitize`) passes names through verbatim.
+
+- `TestExpositionLintFullSurface` — lints every family the adapter can emit, not just the golden snapshot's.
+- `TestExpositionLabelCardinalityIsBounded` — asserts every series label is in a fixed allowlist; the only per-sample variable dimensions are `queue`, `group`, and `lock`, so cardinality is bounded by the node's queues.
+- `TestExpositionTopNCap` — pins the daemon's `TopNQueues = 50` behavior.
 
 ### Gate 3
 
@@ -123,7 +124,7 @@ go vet ./...
 go fix ./internal/metrics
 ```
 
-Commit: `[fix] internal/metrics : enforce prometheus naming conventions on the snapshot exposition`
+Commit: `[test] internal/metrics : enforce prometheus naming conventions and bounded label cardinality`
 
 ---
 
