@@ -137,7 +137,7 @@ func TestPrometheusQuantilesAreMonotone(t *testing.T) {
 
 	var prev float64
 	var seen bool
-	for _, line := range strings.Split(buf.String(), "\n") {
+	for line := range strings.SplitSeq(buf.String(), "\n") {
 		if !strings.HasPrefix(line, "mikyu_queue_append_duration_quantiles_seconds{") {
 			continue
 		}
@@ -170,7 +170,7 @@ func TestPrometheusInfoDials(t *testing.T) {
 	open := strings.Index(out[start:], "{")
 	series := out[start+open+1 : start+strings.Index(out[start:], "}")]
 	var keys []string
-	for _, pair := range strings.Split(series, ",") {
+	for pair := range strings.SplitSeq(series, ",") {
 		keys = append(keys, strings.SplitN(pair, "=", 2)[0])
 	}
 	assert.Equal(t, "queue", keys[0])
@@ -209,7 +209,7 @@ func TestPrometheusNoNaNOrInf(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, Encode(&buf, snap, EncodeOptions{PerQueue: true, Histograms: true}))
 
-	for _, line := range strings.Split(buf.String(), "\n") {
+	for line := range strings.SplitSeq(buf.String(), "\n") {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -235,7 +235,7 @@ func TestPrometheusCounterSuffixInvariant(t *testing.T) {
 	require.NoError(t, Encode(&buf, snap, EncodeOptions{PerQueue: true}))
 
 	var counters int
-	for _, line := range strings.Split(buf.String(), "\n") {
+	for line := range strings.SplitSeq(buf.String(), "\n") {
 		if !strings.HasPrefix(line, "# TYPE ") || !strings.HasSuffix(line, " counter") {
 			continue
 		}
@@ -374,8 +374,8 @@ func TestPrometheusCoversSnapshot(t *testing.T) {
 
 // walkLeaves reports every leaf field path of t, using [] for slice elements.
 func walkLeaves(t reflect.Type, path string, fn func(string)) {
-	for i := range t.NumField() {
-		f := t.Field(i)
+	for f := range t.Fields() {
+		f := f
 		p := path + "." + f.Name
 		ft := f.Type
 		for ft.Kind() == reflect.Pointer {
@@ -512,7 +512,7 @@ func TestPrometheusExpositionIsWellFormed(t *testing.T) {
 
 	types := map[string]string{}
 	helps := map[string]bool{}
-	for _, line := range strings.Split(buf.String(), "\n") {
+	for line := range strings.SplitSeq(buf.String(), "\n") {
 		switch {
 		case strings.HasPrefix(line, "# HELP "):
 			helps[strings.Fields(line)[2]] = true
@@ -537,7 +537,7 @@ func TestPrometheusExpositionIsWellFormed(t *testing.T) {
 		assert.True(t, helps[family], "family %s has no HELP line", family)
 	}
 
-	for _, line := range strings.Split(buf.String(), "\n") {
+	for line := range strings.SplitSeq(buf.String(), "\n") {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -563,7 +563,7 @@ func TestPrometheusSummaryCarriesOnlyQuantiles(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, Encode(&buf, goldenSnapshot(), EncodeOptions{PerQueue: true, Histograms: true}))
 
-	for _, line := range strings.Split(buf.String(), "\n") {
+	for line := range strings.SplitSeq(buf.String(), "\n") {
 		if !strings.HasPrefix(line, "mikyu_queue_append_duration_seconds{") {
 			continue
 		}

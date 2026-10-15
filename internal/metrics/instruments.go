@@ -107,8 +107,8 @@ func (h HistogramSnapshot) interval(i int) (lower, upper float64) {
 
 // Max returns the highest bound with a non-zero count, or zero when empty.
 func (h HistogramSnapshot) Max() float64 {
-	for i := len(h.Counts) - 1; i >= 0; i-- {
-		if h.Counts[i] == 0 {
+	for i, v := range slices.Backward(h.Counts) {
+		if v == 0 {
 			continue
 		}
 		if i < len(h.Bounds) {

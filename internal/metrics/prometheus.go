@@ -465,8 +465,8 @@ func queueViewFields(q QueueView) []viewField {
 	return out
 }
 
-// infoLabels renders a queue's identity and effective configuration as labels.
-func infoLabels(q QueueView) []string {
+// infoPairs returns a queue's identity and effective configuration as label pairs.
+func infoPairs(q QueueView) [][2]string {
 	s := spec.Resolve(q.Effective)
 	dials := map[string]string{
 		"compaction":          s.Storage.Compaction.String(),
@@ -485,10 +485,20 @@ func infoLabels(q QueueView) []string {
 		"max_segment":         formatInt64(derefInt64(s.Storage.MaxSegment)),
 		"max_segment_age":     s.Storage.MaxSegmentAge.String(),
 	}
-	labels := make([]string, 0, len(dials)+2)
-	labels = append(labels, label("queue", q.Name), label("kind", q.Kind))
+	pairs := make([][2]string, 0, len(dials)+2)
+	pairs = append(pairs, [2]string{"queue", q.Name}, [2]string{"kind", q.Kind})
 	for _, k := range slices.Sorted(maps.Keys(dials)) {
-		labels = append(labels, label(k, dials[k]))
+		pairs = append(pairs, [2]string{k, dials[k]})
+	}
+	return pairs
+}
+
+// infoLabels renders a queue's identity and effective configuration as labels.
+func infoLabels(q QueueView) []string {
+	pairs := infoPairs(q)
+	labels := make([]string, len(pairs))
+	for i, kv := range pairs {
+		labels[i] = label(kv[0], kv[1])
 	}
 	return labels
 }
