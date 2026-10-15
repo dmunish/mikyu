@@ -17,6 +17,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// prometheusContentType is the media type promhttp serves text exposition with.
+const prometheusContentType = "text/plain; version=0.0.4"
+
 // testClient returns a client without keep-alive so no idle connection goroutine
 // outlives the request for goleak to flag.
 func testClient() *http.Client {

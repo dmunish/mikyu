@@ -27,15 +27,13 @@ func TestLockObserverContended(t *testing.T) {
 	// A held millisecond long guarantees the other contenders block on it.
 	var wg sync.WaitGroup
 	for range 4 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 20 {
 				l.Lock()
 				time.Sleep(time.Millisecond)
 				l.Unlock()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -79,14 +77,12 @@ func TestLockObserverConcurrentSnapshot(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 500 {
 				l.Lock()
 				l.Unlock()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	<-done
@@ -98,14 +94,12 @@ func TestLockObserverMaxMonotonic(t *testing.T) {
 	l := NewLockObserver("test.mu", nil)
 	var wg sync.WaitGroup
 	for range 4 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 2000 {
 				l.Lock()
 				l.Unlock()
 			}
-		}()
+		})
 	}
 	prev := int64(-1)
 	for range 200 {

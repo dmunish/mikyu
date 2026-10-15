@@ -1,184 +1,90 @@
 # HELP mikyu_build_info Build and platform identity of this node.
 # TYPE mikyu_build_info gauge
-mikyu_build_info{spec_version="0",go_version="",os="",arch=""} 1
-# HELP mikyu_runtime_goroutines Goroutines in the process.
-# TYPE mikyu_runtime_goroutines gauge
-mikyu_runtime_goroutines 7
-# HELP mikyu_runtime_goroutines_running Goroutines currently running.
-# TYPE mikyu_runtime_goroutines_running gauge
-mikyu_runtime_goroutines_running 0
-# HELP mikyu_runtime_goroutines_runnable Goroutines runnable but not running.
-# TYPE mikyu_runtime_goroutines_runnable gauge
-mikyu_runtime_goroutines_runnable 0
-# HELP mikyu_runtime_goroutines_waiting Goroutines blocked or idle.
-# TYPE mikyu_runtime_goroutines_waiting gauge
-mikyu_runtime_goroutines_waiting 0
-# HELP mikyu_runtime_gomaxprocs GOMAXPROCS as seen by the runtime.
-# TYPE mikyu_runtime_gomaxprocs gauge
-mikyu_runtime_gomaxprocs 0
-# HELP mikyu_runtime_uptime_seconds Seconds since this node opened.
-# TYPE mikyu_runtime_uptime_seconds gauge
-mikyu_runtime_uptime_seconds 12.5
-# HELP mikyu_runtime_heap_alloc_bytes Bytes of live heap objects.
-# TYPE mikyu_runtime_heap_alloc_bytes gauge
-mikyu_runtime_heap_alloc_bytes 1024
-# HELP mikyu_runtime_heap_sys_bytes Bytes of heap obtained from the OS.
-# TYPE mikyu_runtime_heap_sys_bytes gauge
-mikyu_runtime_heap_sys_bytes 0
-# HELP mikyu_runtime_heap_inuse_bytes Bytes in in-use heap spans.
-# TYPE mikyu_runtime_heap_inuse_bytes gauge
-mikyu_runtime_heap_inuse_bytes 2048
-# HELP mikyu_runtime_heap_idle_bytes Bytes in idle heap spans.
-# TYPE mikyu_runtime_heap_idle_bytes gauge
-mikyu_runtime_heap_idle_bytes 0
-# HELP mikyu_runtime_heap_released_bytes Bytes of heap returned to the OS.
-# TYPE mikyu_runtime_heap_released_bytes gauge
-mikyu_runtime_heap_released_bytes 0
-# HELP mikyu_runtime_heap_objects Live heap objects.
-# TYPE mikyu_runtime_heap_objects gauge
-mikyu_runtime_heap_objects 0
-# HELP mikyu_runtime_heap_total_alloc_bytes_total Bytes of heap objects allocated since start.
-# TYPE mikyu_runtime_heap_total_alloc_bytes_total counter
-mikyu_runtime_heap_total_alloc_bytes_total 0
-# HELP mikyu_runtime_heap_total_free_bytes_total Bytes of heap objects freed since start.
-# TYPE mikyu_runtime_heap_total_free_bytes_total counter
-mikyu_runtime_heap_total_free_bytes_total 0
-# HELP mikyu_runtime_stack_inuse_bytes Bytes in in-use goroutine stacks.
-# TYPE mikyu_runtime_stack_inuse_bytes gauge
-mikyu_runtime_stack_inuse_bytes 0
-# HELP mikyu_runtime_stack_sys_bytes Bytes of stack obtained from the OS.
-# TYPE mikyu_runtime_stack_sys_bytes gauge
-mikyu_runtime_stack_sys_bytes 0
-# HELP mikyu_runtime_metadata_inuse_bytes Bytes of allocator metadata in use.
-# TYPE mikyu_runtime_metadata_inuse_bytes gauge
-mikyu_runtime_metadata_inuse_bytes 0
-# HELP mikyu_runtime_metadata_sys_bytes Bytes of allocator metadata from the OS.
-# TYPE mikyu_runtime_metadata_sys_bytes gauge
-mikyu_runtime_metadata_sys_bytes 0
-# HELP mikyu_process_cpu_percent Process CPU utilization percent, 0-100.
-# TYPE mikyu_process_cpu_percent gauge
-mikyu_process_cpu_percent 1.25
-# HELP mikyu_process_cpu_seconds_total CPU time consumed by the process.
-# TYPE mikyu_process_cpu_seconds_total counter
-mikyu_process_cpu_seconds_total{state="user"} 0
-mikyu_process_cpu_seconds_total{state="sys"} 0
-# HELP mikyu_process_rss_bytes Resident set size in bytes.
-# TYPE mikyu_process_rss_bytes gauge
-mikyu_process_rss_bytes 4096
-# HELP mikyu_process_vsz_bytes Virtual size in bytes.
-# TYPE mikyu_process_vsz_bytes gauge
-mikyu_process_vsz_bytes 0
-# HELP mikyu_process_threads OS threads in the process.
-# TYPE mikyu_process_threads gauge
-mikyu_process_threads 0
-# HELP mikyu_process_open_fds Open file descriptors.
-# TYPE mikyu_process_open_fds gauge
-mikyu_process_open_fds 0
+mikyu_build_info{arch="",go_version="",os="",spec_version="0"} 1
 # HELP mikyu_gc_cycles_total Completed garbage collection cycles.
 # TYPE mikyu_gc_cycles_total counter
 mikyu_gc_cycles_total 3
-# HELP mikyu_gc_pause_total_seconds_total Cumulative stop-the-world pause time.
-# TYPE mikyu_gc_pause_total_seconds_total counter
-mikyu_gc_pause_total_seconds_total 0
+# HELP mikyu_gc_mem_limit_bytes GOMEMLIMIT in bytes, 0 when unlimited.
+# TYPE mikyu_gc_mem_limit_bytes gauge
+mikyu_gc_mem_limit_bytes 0
+# HELP mikyu_gc_next_bytes Heap goal for the next collection.
+# TYPE mikyu_gc_next_bytes gauge
+mikyu_gc_next_bytes 0
 # HELP mikyu_gc_pause_seconds Stop-the-world pause distribution in seconds.
 # TYPE mikyu_gc_pause_seconds summary
 mikyu_gc_pause_seconds{quantile="0.5"} 0
 mikyu_gc_pause_seconds{quantile="0.9"} 0
 mikyu_gc_pause_seconds{quantile="0.99"} 0
+mikyu_gc_pause_seconds_sum 0
+mikyu_gc_pause_seconds_count 0
 # HELP mikyu_gc_pause_seconds_max Worst stop-the-world pause observed.
 # TYPE mikyu_gc_pause_seconds_max gauge
 mikyu_gc_pause_seconds_max 0
-# HELP mikyu_gc_next_bytes Heap goal for the next collection.
-# TYPE mikyu_gc_next_bytes gauge
-mikyu_gc_next_bytes 0
-# HELP mikyu_gc_mem_limit_bytes GOMEMLIMIT in bytes, 0 when unlimited.
-# TYPE mikyu_gc_mem_limit_bytes gauge
-mikyu_gc_mem_limit_bytes 0
-# HELP mikyu_scheduler_latency_seconds Time goroutines spend runnable before running.
-# TYPE mikyu_scheduler_latency_seconds summary
-mikyu_scheduler_latency_seconds{quantile="0.5"} 0
-mikyu_scheduler_latency_seconds{quantile="0.9"} 0
-mikyu_scheduler_latency_seconds{quantile="0.99"} 0
+# HELP mikyu_gc_pause_total_seconds_total Cumulative stop-the-world pause time.
+# TYPE mikyu_gc_pause_total_seconds_total counter
+mikyu_gc_pause_total_seconds_total 0
 # HELP mikyu_lock_global_wait_seconds_total Seconds the runtime spent waiting on all mutexes.
 # TYPE mikyu_lock_global_wait_seconds_total counter
 mikyu_lock_global_wait_seconds_total 0
-# HELP mikyu_storage_info Storage root of this node.
-# TYPE mikyu_storage_info gauge
-mikyu_storage_info{data_dir=""} 1
-# HELP mikyu_storage_queues Queues in this data directory.
-# TYPE mikyu_storage_queues gauge
-mikyu_storage_queues 0
-# HELP mikyu_storage_segments Segments across all queues.
-# TYPE mikyu_storage_segments gauge
-mikyu_storage_segments 0
-# HELP mikyu_storage_size_bytes On-disk bytes across all queues.
-# TYPE mikyu_storage_size_bytes gauge
-mikyu_storage_size_bytes 0
-# HELP mikyu_storage_cache_bytes Bytes held in read caches.
-# TYPE mikyu_storage_cache_bytes gauge
-mikyu_storage_cache_bytes 0
-# HELP mikyu_storage_cache_limit_bytes Byte budget for all read caches.
-# TYPE mikyu_storage_cache_limit_bytes gauge
-mikyu_storage_cache_limit_bytes 0
-# HELP mikyu_storage_cache_hits_total Read cache hits.
-# TYPE mikyu_storage_cache_hits_total counter
-mikyu_storage_cache_hits_total 0
-# HELP mikyu_storage_cache_misses_total Read cache misses.
-# TYPE mikyu_storage_cache_misses_total counter
-mikyu_storage_cache_misses_total 0
-# HELP mikyu_storage_committed_bytes_total Bytes acknowledged to producers.
-# TYPE mikyu_storage_committed_bytes_total counter
-mikyu_storage_committed_bytes_total 0
-# HELP mikyu_storage_flushed_bytes_total Bytes durable on disk.
-# TYPE mikyu_storage_flushed_bytes_total counter
-mikyu_storage_flushed_bytes_total 0
-# HELP mikyu_storage_pending_bytes Bytes acknowledged but not yet durable.
-# TYPE mikyu_storage_pending_bytes gauge
-mikyu_storage_pending_bytes 0
-# HELP mikyu_storage_offset_store_bytes Bytes of consumer-group offset store.
-# TYPE mikyu_storage_offset_store_bytes gauge
-mikyu_storage_offset_store_bytes 0
-# HELP mikyu_totals_queues Queues in the snapshot.
-# TYPE mikyu_totals_queues gauge
-mikyu_totals_queues 1
-# HELP mikyu_totals_messages Messages across queues.
-# TYPE mikyu_totals_messages gauge
-mikyu_totals_messages 10
-# HELP mikyu_totals_bytes On-disk bytes across queues.
-# TYPE mikyu_totals_bytes gauge
-mikyu_totals_bytes 2048
-# HELP mikyu_queue_info Effective configuration of the queue.
-# TYPE mikyu_queue_info gauge
-mikyu_queue_info{queue="events",kind="log",compaction="none",durability="sync",encryption="none",lease="30s",max_attempts="5",max_cache="33554432",max_dead_letters="100000",max_flush_bytes="1048576",max_flush_wait="10ms",max_in_flight="100000",max_payload="1048576",max_retention_age="24h0m0s",max_retention_bytes="0",max_segment="67108864",max_segment_age="1h0m0s"} 1
-mikyu_queue_info{queue="jobs",kind="task",compaction="none",durability="sync",encryption="none",lease="30s",max_attempts="5",max_cache="33554432",max_dead_letters="100000",max_flush_bytes="1048576",max_flush_wait="10ms",max_in_flight="100000",max_payload="1048576",max_retention_age="0s",max_retention_bytes="0",max_segment="67108864",max_segment_age="1h0m0s"} 1
-# HELP mikyu_queue_messages Messages stored in the queue.
-# TYPE mikyu_queue_messages gauge
-mikyu_queue_messages{queue="events"} 10
-mikyu_queue_messages{queue="jobs"} 2
-# HELP mikyu_queue_segments Segments in the queue.
-# TYPE mikyu_queue_segments gauge
-mikyu_queue_segments{queue="events"} 1
-mikyu_queue_segments{queue="jobs"} 1
-# HELP mikyu_queue_size_bytes On-disk bytes used by the queue.
-# TYPE mikyu_queue_size_bytes gauge
-mikyu_queue_size_bytes{queue="events"} 2048
-mikyu_queue_size_bytes{queue="jobs"} 1024
-# HELP mikyu_queue_appends_total Log appends.
-# TYPE mikyu_queue_appends_total counter
-mikyu_queue_appends_total{queue="events"} 10
-# HELP mikyu_queue_enqueues_total Tasks enqueued.
-# TYPE mikyu_queue_enqueues_total counter
-mikyu_queue_enqueues_total{queue="jobs"} 5
-# HELP mikyu_queue_reads_total Log reads.
-# TYPE mikyu_queue_reads_total counter
-mikyu_queue_reads_total{queue="events"} 4
-# HELP mikyu_queue_faults_total Queues whose driver failed to install.
-# TYPE mikyu_queue_faults_total counter
-mikyu_queue_faults_total{queue="events"} 1
+# HELP mikyu_process_cpu_percent Process CPU utilization percent, 0-100.
+# TYPE mikyu_process_cpu_percent gauge
+mikyu_process_cpu_percent 1.25
+# HELP mikyu_process_cpu_seconds_total CPU time consumed by the process.
+# TYPE mikyu_process_cpu_seconds_total counter
+mikyu_process_cpu_seconds_total{state="sys"} 0
+mikyu_process_cpu_seconds_total{state="user"} 0
+# HELP mikyu_process_open_fds Open file descriptors.
+# TYPE mikyu_process_open_fds gauge
+mikyu_process_open_fds 0
+# HELP mikyu_process_rss_bytes Resident set size in bytes.
+# TYPE mikyu_process_rss_bytes gauge
+mikyu_process_rss_bytes 4096
+# HELP mikyu_process_threads OS threads in the process.
+# TYPE mikyu_process_threads gauge
+mikyu_process_threads 0
+# HELP mikyu_process_vsz_bytes Virtual size in bytes.
+# TYPE mikyu_process_vsz_bytes gauge
+mikyu_process_vsz_bytes 0
+# HELP mikyu_queue_append_duration_quantiles_seconds Append latency in seconds.
+# TYPE mikyu_queue_append_duration_quantiles_seconds summary
+mikyu_queue_append_duration_quantiles_seconds{queue="events",quantile="0.5"} 0.001
+mikyu_queue_append_duration_quantiles_seconds{queue="events",quantile="0.9"} 0.01
+mikyu_queue_append_duration_quantiles_seconds{queue="events",quantile="0.99"} 0.01
+mikyu_queue_append_duration_quantiles_seconds{queue="events",quantile="+Inf"} 0.01
+mikyu_queue_append_duration_quantiles_seconds_sum{queue="events"} 0.5
+mikyu_queue_append_duration_quantiles_seconds_count{queue="events"} 10
+# HELP mikyu_queue_append_duration_seconds Append latency in seconds.
+# TYPE mikyu_queue_append_duration_seconds histogram
+mikyu_queue_append_duration_seconds_bucket{queue="events",le="0.001"} 5
+mikyu_queue_append_duration_seconds_bucket{queue="events",le="0.01"} 8
+mikyu_queue_append_duration_seconds_bucket{queue="events",le="+Inf"} 10
+mikyu_queue_append_duration_seconds_sum{queue="events"} 0.5
+mikyu_queue_append_duration_seconds_count{queue="events"} 10
 # HELP mikyu_queue_appends_per_second Appends per second.
 # TYPE mikyu_queue_appends_per_second gauge
 mikyu_queue_appends_per_second{queue="events"} 0
 mikyu_queue_appends_per_second{queue="jobs"} 0
+# HELP mikyu_queue_appends_total Log appends.
+# TYPE mikyu_queue_appends_total counter
+mikyu_queue_appends_total{queue="events"} 10
+# HELP mikyu_queue_backpressure_consumer_parks_total Backpressure signals for the queue.
+# TYPE mikyu_queue_backpressure_consumer_parks_total counter
+mikyu_queue_backpressure_consumer_parks_total{queue="events"} 0
+# HELP mikyu_queue_backpressure_producer_blocks_total Backpressure signals for the queue.
+# TYPE mikyu_queue_backpressure_producer_blocks_total counter
+mikyu_queue_backpressure_producer_blocks_total{queue="events"} 0
+# HELP mikyu_queue_backpressure_queue_full_events_total Backpressure signals for the queue.
+# TYPE mikyu_queue_backpressure_queue_full_events_total counter
+mikyu_queue_backpressure_queue_full_events_total{queue="events"} 1
+# HELP mikyu_queue_backpressure_retry_budget_drops_total Backpressure signals for the queue.
+# TYPE mikyu_queue_backpressure_retry_budget_drops_total counter
+mikyu_queue_backpressure_retry_budget_drops_total{queue="events"} 0
+# HELP mikyu_queue_backpressure_wal_byte_fill Backpressure signals for the queue.
+# TYPE mikyu_queue_backpressure_wal_byte_fill gauge
+mikyu_queue_backpressure_wal_byte_fill{queue="events"} 0.0006
+# HELP mikyu_queue_backpressure_wal_channel_fill Backpressure signals for the queue.
+# TYPE mikyu_queue_backpressure_wal_channel_fill gauge
+mikyu_queue_backpressure_wal_channel_fill{queue="events"} 0.003
 # HELP mikyu_queue_bytes_in_per_second Bytes appended per second.
 # TYPE mikyu_queue_bytes_in_per_second gauge
 mikyu_queue_bytes_in_per_second{queue="events"} 0
@@ -187,24 +93,12 @@ mikyu_queue_bytes_in_per_second{queue="jobs"} 0
 # TYPE mikyu_queue_bytes_out_per_second gauge
 mikyu_queue_bytes_out_per_second{queue="events"} 0
 mikyu_queue_bytes_out_per_second{queue="jobs"} 0
-# HELP mikyu_queue_dequeues_per_second Tasks dequeued per second.
-# TYPE mikyu_queue_dequeues_per_second gauge
-mikyu_queue_dequeues_per_second{queue="events"} 0
-mikyu_queue_dequeues_per_second{queue="jobs"} 0
-# HELP mikyu_queue_enqueues_per_second Tasks enqueued per second.
-# TYPE mikyu_queue_enqueues_per_second gauge
-mikyu_queue_enqueues_per_second{queue="events"} 0
-mikyu_queue_enqueues_per_second{queue="jobs"} 0
-# HELP mikyu_queue_reads_per_second Reads per second.
-# TYPE mikyu_queue_reads_per_second gauge
-mikyu_queue_reads_per_second{queue="events"} 0
-mikyu_queue_reads_per_second{queue="jobs"} 0
-# HELP mikyu_queue_backpressure_wal_byte_fill Backpressure signals for the queue.
-# TYPE mikyu_queue_backpressure_wal_byte_fill gauge
-mikyu_queue_backpressure_wal_byte_fill{queue="events"} 0.0006
-# HELP mikyu_queue_backpressure_wal_channel_fill Backpressure signals for the queue.
-# TYPE mikyu_queue_backpressure_wal_channel_fill gauge
-mikyu_queue_backpressure_wal_channel_fill{queue="events"} 0.003
+# HELP mikyu_queue_consumers_dequeue_park_events_total Consumer-side pressure on the queue.
+# TYPE mikyu_queue_consumers_dequeue_park_events_total counter
+mikyu_queue_consumers_dequeue_park_events_total{queue="events"} 0
+# HELP mikyu_queue_consumers_fetch_park_events_total Consumer-side pressure on the queue.
+# TYPE mikyu_queue_consumers_fetch_park_events_total counter
+mikyu_queue_consumers_fetch_park_events_total{queue="events"} 42
 # HELP mikyu_queue_consumers_in_flight Consumer-side pressure on the queue.
 # TYPE mikyu_queue_consumers_in_flight gauge
 mikyu_queue_consumers_in_flight{queue="events"} 4
@@ -214,12 +108,52 @@ mikyu_queue_consumers_parked_dequeue{queue="events"} 0
 # HELP mikyu_queue_consumers_parked_fetch Consumer-side pressure on the queue.
 # TYPE mikyu_queue_consumers_parked_fetch gauge
 mikyu_queue_consumers_parked_fetch{queue="events"} 2
+# HELP mikyu_queue_dequeues_per_second Tasks dequeued per second.
+# TYPE mikyu_queue_dequeues_per_second gauge
+mikyu_queue_dequeues_per_second{queue="events"} 0
+mikyu_queue_dequeues_per_second{queue="jobs"} 0
+# HELP mikyu_queue_enqueues_per_second Tasks enqueued per second.
+# TYPE mikyu_queue_enqueues_per_second gauge
+mikyu_queue_enqueues_per_second{queue="events"} 0
+mikyu_queue_enqueues_per_second{queue="jobs"} 0
+# HELP mikyu_queue_enqueues_total Tasks enqueued.
+# TYPE mikyu_queue_enqueues_total counter
+mikyu_queue_enqueues_total{queue="jobs"} 5
+# HELP mikyu_queue_faults_total Queues whose driver failed to install.
+# TYPE mikyu_queue_faults_total counter
+mikyu_queue_faults_total{queue="events"} 1
+# HELP mikyu_queue_info Effective configuration of the queue.
+# TYPE mikyu_queue_info gauge
+mikyu_queue_info{compaction="none",durability="sync",encryption="none",kind="log",lease="30s",max_attempts="5",max_cache="33554432",max_dead_letters="100000",max_flush_bytes="1048576",max_flush_wait="10ms",max_in_flight="100000",max_payload="1048576",max_retention_age="24h0m0s",max_retention_bytes="0",max_segment="67108864",max_segment_age="1h0m0s",queue="events"} 1
+mikyu_queue_info{compaction="none",durability="sync",encryption="none",kind="task",lease="30s",max_attempts="5",max_cache="33554432",max_dead_letters="100000",max_flush_bytes="1048576",max_flush_wait="10ms",max_in_flight="100000",max_payload="1048576",max_retention_age="0s",max_retention_bytes="0",max_segment="67108864",max_segment_age="1h0m0s",queue="jobs"} 1
+# HELP mikyu_queue_messages Messages stored in the queue.
+# TYPE mikyu_queue_messages gauge
+mikyu_queue_messages{queue="events"} 10
+mikyu_queue_messages{queue="jobs"} 2
+# HELP mikyu_queue_producers_block_events_total Producer-side pressure on the queue.
+# TYPE mikyu_queue_producers_block_events_total counter
+mikyu_queue_producers_block_events_total{queue="events"} 3
 # HELP mikyu_queue_producers_blocked_on_wal Producer-side pressure on the queue.
 # TYPE mikyu_queue_producers_blocked_on_wal gauge
 mikyu_queue_producers_blocked_on_wal{queue="events"} 2
 # HELP mikyu_queue_producers_in_flight Producer-side pressure on the queue.
 # TYPE mikyu_queue_producers_in_flight gauge
 mikyu_queue_producers_in_flight{queue="events"} 8
+# HELP mikyu_queue_reads_per_second Reads per second.
+# TYPE mikyu_queue_reads_per_second gauge
+mikyu_queue_reads_per_second{queue="events"} 0
+mikyu_queue_reads_per_second{queue="jobs"} 0
+# HELP mikyu_queue_reads_total Log reads.
+# TYPE mikyu_queue_reads_total counter
+mikyu_queue_reads_total{queue="events"} 4
+# HELP mikyu_queue_segments Segments in the queue.
+# TYPE mikyu_queue_segments gauge
+mikyu_queue_segments{queue="events"} 1
+mikyu_queue_segments{queue="jobs"} 1
+# HELP mikyu_queue_size_bytes On-disk bytes used by the queue.
+# TYPE mikyu_queue_size_bytes gauge
+mikyu_queue_size_bytes{queue="events"} 2048
+mikyu_queue_size_bytes{queue="jobs"} 1024
 # HELP mikyu_queue_tasks_active Task occupancy and checkpoint health for the queue.
 # TYPE mikyu_queue_tasks_active gauge
 mikyu_queue_tasks_active{queue="jobs"} 42
@@ -247,37 +181,109 @@ mikyu_queue_tasks_scheduled{queue="jobs"} 34
 # HELP mikyu_queue_tasks_uncheckpointed Task occupancy and checkpoint health for the queue.
 # TYPE mikyu_queue_tasks_uncheckpointed gauge
 mikyu_queue_tasks_uncheckpointed{queue="jobs"} 0
-# HELP mikyu_queue_backpressure_consumer_parks_total Backpressure signals for the queue.
-# TYPE mikyu_queue_backpressure_consumer_parks_total counter
-mikyu_queue_backpressure_consumer_parks_total{queue="events"} 0
-# HELP mikyu_queue_backpressure_producer_blocks_total Backpressure signals for the queue.
-# TYPE mikyu_queue_backpressure_producer_blocks_total counter
-mikyu_queue_backpressure_producer_blocks_total{queue="events"} 0
-# HELP mikyu_queue_backpressure_queue_full_events_total Backpressure signals for the queue.
-# TYPE mikyu_queue_backpressure_queue_full_events_total counter
-mikyu_queue_backpressure_queue_full_events_total{queue="events"} 1
-# HELP mikyu_queue_backpressure_retry_budget_drops_total Backpressure signals for the queue.
-# TYPE mikyu_queue_backpressure_retry_budget_drops_total counter
-mikyu_queue_backpressure_retry_budget_drops_total{queue="events"} 0
-# HELP mikyu_queue_consumers_dequeue_park_events_total Consumer-side pressure on the queue.
-# TYPE mikyu_queue_consumers_dequeue_park_events_total counter
-mikyu_queue_consumers_dequeue_park_events_total{queue="events"} 0
-# HELP mikyu_queue_consumers_fetch_park_events_total Consumer-side pressure on the queue.
-# TYPE mikyu_queue_consumers_fetch_park_events_total counter
-mikyu_queue_consumers_fetch_park_events_total{queue="events"} 42
-# HELP mikyu_queue_producers_block_events_total Producer-side pressure on the queue.
-# TYPE mikyu_queue_producers_block_events_total counter
-mikyu_queue_producers_block_events_total{queue="events"} 3
-# HELP mikyu_queue_append_duration_seconds Append latency in seconds.
-# TYPE mikyu_queue_append_duration_seconds histogram
-mikyu_queue_append_duration_seconds_bucket{queue="events",le="0.001"} 5
-mikyu_queue_append_duration_seconds_bucket{queue="events",le="0.01"} 8
-mikyu_queue_append_duration_seconds_bucket{queue="events",le="+Inf"} 10
-mikyu_queue_append_duration_seconds_sum{queue="events"} 0.5
-mikyu_queue_append_duration_seconds_count{queue="events"} 10
-# HELP mikyu_queue_append_duration_quantiles_seconds Append latency in seconds.
-# TYPE mikyu_queue_append_duration_quantiles_seconds summary
-mikyu_queue_append_duration_quantiles_seconds{queue="events",quantile="0.5"} 0.001
-mikyu_queue_append_duration_quantiles_seconds{queue="events",quantile="0.9"} 0.01
-mikyu_queue_append_duration_quantiles_seconds{queue="events",quantile="0.99"} 0.01
-mikyu_queue_append_duration_quantiles_seconds{queue="events",quantile="+Inf"} 0.01
+# HELP mikyu_runtime_gomaxprocs GOMAXPROCS as seen by the runtime.
+# TYPE mikyu_runtime_gomaxprocs gauge
+mikyu_runtime_gomaxprocs 0
+# HELP mikyu_runtime_goroutines Goroutines in the process.
+# TYPE mikyu_runtime_goroutines gauge
+mikyu_runtime_goroutines 7
+# HELP mikyu_runtime_goroutines_runnable Goroutines runnable but not running.
+# TYPE mikyu_runtime_goroutines_runnable gauge
+mikyu_runtime_goroutines_runnable 0
+# HELP mikyu_runtime_goroutines_running Goroutines currently running.
+# TYPE mikyu_runtime_goroutines_running gauge
+mikyu_runtime_goroutines_running 0
+# HELP mikyu_runtime_goroutines_waiting Goroutines blocked or idle.
+# TYPE mikyu_runtime_goroutines_waiting gauge
+mikyu_runtime_goroutines_waiting 0
+# HELP mikyu_runtime_heap_alloc_bytes Bytes of live heap objects.
+# TYPE mikyu_runtime_heap_alloc_bytes gauge
+mikyu_runtime_heap_alloc_bytes 1024
+# HELP mikyu_runtime_heap_idle_bytes Bytes in idle heap spans.
+# TYPE mikyu_runtime_heap_idle_bytes gauge
+mikyu_runtime_heap_idle_bytes 0
+# HELP mikyu_runtime_heap_inuse_bytes Bytes in in-use heap spans.
+# TYPE mikyu_runtime_heap_inuse_bytes gauge
+mikyu_runtime_heap_inuse_bytes 2048
+# HELP mikyu_runtime_heap_objects Live heap objects.
+# TYPE mikyu_runtime_heap_objects gauge
+mikyu_runtime_heap_objects 0
+# HELP mikyu_runtime_heap_released_bytes Bytes of heap returned to the OS.
+# TYPE mikyu_runtime_heap_released_bytes gauge
+mikyu_runtime_heap_released_bytes 0
+# HELP mikyu_runtime_heap_sys_bytes Bytes of heap obtained from the OS.
+# TYPE mikyu_runtime_heap_sys_bytes gauge
+mikyu_runtime_heap_sys_bytes 0
+# HELP mikyu_runtime_heap_total_alloc_bytes_total Bytes of heap objects allocated since start.
+# TYPE mikyu_runtime_heap_total_alloc_bytes_total counter
+mikyu_runtime_heap_total_alloc_bytes_total 0
+# HELP mikyu_runtime_heap_total_free_bytes_total Bytes of heap objects freed since start.
+# TYPE mikyu_runtime_heap_total_free_bytes_total counter
+mikyu_runtime_heap_total_free_bytes_total 0
+# HELP mikyu_runtime_metadata_inuse_bytes Bytes of allocator metadata in use.
+# TYPE mikyu_runtime_metadata_inuse_bytes gauge
+mikyu_runtime_metadata_inuse_bytes 0
+# HELP mikyu_runtime_metadata_sys_bytes Bytes of allocator metadata from the OS.
+# TYPE mikyu_runtime_metadata_sys_bytes gauge
+mikyu_runtime_metadata_sys_bytes 0
+# HELP mikyu_runtime_stack_inuse_bytes Bytes in in-use goroutine stacks.
+# TYPE mikyu_runtime_stack_inuse_bytes gauge
+mikyu_runtime_stack_inuse_bytes 0
+# HELP mikyu_runtime_stack_sys_bytes Bytes of stack obtained from the OS.
+# TYPE mikyu_runtime_stack_sys_bytes gauge
+mikyu_runtime_stack_sys_bytes 0
+# HELP mikyu_runtime_uptime_seconds Seconds since this node opened.
+# TYPE mikyu_runtime_uptime_seconds gauge
+mikyu_runtime_uptime_seconds 12.5
+# HELP mikyu_scheduler_latency_seconds Time goroutines spend runnable before running.
+# TYPE mikyu_scheduler_latency_seconds summary
+mikyu_scheduler_latency_seconds{quantile="0.5"} 0
+mikyu_scheduler_latency_seconds{quantile="0.9"} 0
+mikyu_scheduler_latency_seconds{quantile="0.99"} 0
+mikyu_scheduler_latency_seconds_sum 0
+mikyu_scheduler_latency_seconds_count 0
+# HELP mikyu_storage_cache_bytes Bytes held in read caches.
+# TYPE mikyu_storage_cache_bytes gauge
+mikyu_storage_cache_bytes 0
+# HELP mikyu_storage_cache_hits_total Read cache hits.
+# TYPE mikyu_storage_cache_hits_total counter
+mikyu_storage_cache_hits_total 0
+# HELP mikyu_storage_cache_limit_bytes Byte budget for all read caches.
+# TYPE mikyu_storage_cache_limit_bytes gauge
+mikyu_storage_cache_limit_bytes 0
+# HELP mikyu_storage_cache_misses_total Read cache misses.
+# TYPE mikyu_storage_cache_misses_total counter
+mikyu_storage_cache_misses_total 0
+# HELP mikyu_storage_committed_bytes_total Bytes acknowledged to producers.
+# TYPE mikyu_storage_committed_bytes_total counter
+mikyu_storage_committed_bytes_total 0
+# HELP mikyu_storage_flushed_bytes_total Bytes durable on disk.
+# TYPE mikyu_storage_flushed_bytes_total counter
+mikyu_storage_flushed_bytes_total 0
+# HELP mikyu_storage_info Storage root of this node.
+# TYPE mikyu_storage_info gauge
+mikyu_storage_info{data_dir=""} 1
+# HELP mikyu_storage_offset_store_bytes Bytes of consumer-group offset store.
+# TYPE mikyu_storage_offset_store_bytes gauge
+mikyu_storage_offset_store_bytes 0
+# HELP mikyu_storage_pending_bytes Bytes acknowledged but not yet durable.
+# TYPE mikyu_storage_pending_bytes gauge
+mikyu_storage_pending_bytes 0
+# HELP mikyu_storage_queues Queues in this data directory.
+# TYPE mikyu_storage_queues gauge
+mikyu_storage_queues 0
+# HELP mikyu_storage_segments Segments across all queues.
+# TYPE mikyu_storage_segments gauge
+mikyu_storage_segments 0
+# HELP mikyu_storage_size_bytes On-disk bytes across all queues.
+# TYPE mikyu_storage_size_bytes gauge
+mikyu_storage_size_bytes 0
+# HELP mikyu_totals_bytes On-disk bytes across queues.
+# TYPE mikyu_totals_bytes gauge
+mikyu_totals_bytes 2048
+# HELP mikyu_totals_messages Messages across queues.
+# TYPE mikyu_totals_messages gauge
+mikyu_totals_messages 10
+# HELP mikyu_totals_queues Queues in the snapshot.
+# TYPE mikyu_totals_queues gauge
+mikyu_totals_queues 1
