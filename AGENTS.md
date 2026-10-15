@@ -36,6 +36,7 @@ A queue's **kind is structural**: it is the name of its parent directory under t
 - **Byte-budgeted ring cache** sized from `max_cache`; slots hold `atomic.Pointer[Record]` so readers never take the cache mutex and never observe torn records.
 - **Long-poll tailing** via `Fetch` on the `notify` channel.
 - **Keyed compaction (log only)**: records carry an optional `Group`; when `compaction: keys`, `roll()` rewrites closed segments dropping superseded group versions.
+- **Sealed payloads (`encryption: aes`)**: record payloads are AES-256-GCM (28 B/record); the ciphertext *is* the payload, so CRC, WAL, segments, mmap, and compaction treat it as opaque bytes. Master keys live outside the data dir; each queue owns a wrapped data key in `keys.dat`.
 - **Chunked, self-describing task checkpoints** (`recordCPStart/Chunk/Commit`); newest valid commit wins on recovery.
 - **Deterministic payloads**: bench harness payloads are a function of `(seed, offset)`, so a consumer verifies every record byte for byte.
 - **Reservation FIFO on async appends**: `segment.pos` and `publishedOffset` advance only over committed reservations in order, so a rolled segment is only sealed after every in-flight reservation has resolved.
@@ -68,7 +69,7 @@ github.com/dmunish/mikyu/
     ├── config/config.go           # mikyu.yaml loader, legacy-key/env rejection, bootstrap
     ├── engine/                    # Storage engine (storage, manager, queue, append, read, fetch,
     │                              # wal, segment, compaction, cache, offsets, metrics, sync_*, encrypt_*,
-    │                              # pool, sendfile, handle_*, prealloc_*)
+    │                              # keys, aead, pool, sendfile, handle_*, prealloc_*)
     ├── enginetest/memstorage.go   # In-memory engine.Storage for synctest bubbles
     ├── metrics/                   # THE telemetry model (instruments, registry, snapshot, state,
     │                              # history, collector, prometheus, lock, source)
@@ -509,10 +510,12 @@ type Session struct {
     MaxConnections  int
     TLS     TLSConfig
     Auth    AuthConfig
+    Encryption EncryptionConfig
     Metrics MetricsConfig
 }
 type TLSConfig     struct { Enabled bool; Cert, Key, ClientCA string }
 type AuthConfig    struct { Method, Token, TokenFile string }
+type EncryptionConfig struct { KeyFile string }
 type MetricsConfig struct {
     Enabled bool; Interval Duration; History int; Listen string
     PerQueuePrometheus, Histograms bool
@@ -535,12 +538,12 @@ type MetricsConfig struct {
 | `max_retention_age` / `max_retention_bytes` | 0 / 0 (unlimited) |
 | `lease` / `max_attempts` / `max_in_flight` / `max_dead_letters` | 30 s / 5 / 100 000 / 100 000 |
 | `target` / `max_connections` | `tcp://127.0.0.1:7420` / 10 |
-| `auth_method` / `tls_enabled` | `none` / `false` |
+| `auth_method` / `tls_enabled` / `encryption_key_file` | `none` / `false` / `""` |
 | `metrics_enabled` / `interval` / `history` / `histograms` | `true` / 1 s / 300 / `true` |
 
 **Naming rule:** `EnvName = "MIKYU_" + UPPER(key)`, `FlagName = key` with `_→-`, `OptionName = "With" + PascalCase(key)` (with `tls→TLS`, `ca→CA` initialisms).
 
-**Validation** (`validate.go`): positive-byte/duration/uint32 rules; non-negative for retention; `max_payload ≤ max_segment − RecordOverhead (36)`; `max_cache ≥ min(builtinMaxCache, max_segment)`. Session: `max_connections ≥ 1`, `metrics_interval > 0` when enabled, `metrics_history ≥ 1`, `metrics_listen` host:port, `auth_method ∈ {"", none, none-insecure, token, mtls}`, token mode needs ≥16-byte token/file, `mtls` needs TLS.
+**Validation** (`validate.go`): positive-byte/duration/uint32 rules; non-negative for retention; `max_payload ≤ max_segment − RecordOverhead (36)`; `max_cache ≥ min(builtinMaxCache, max_segment)`. Session: `max_connections ≥ 1`, `metrics_interval > 0` when enabled, `metrics_history ≥ 1`, `metrics_listen` host:port, `auth_method ∈ {"", none, none-insecure, token, mtls}`, token mode needs ≥16-byte token/file, `mtls` needs TLS. The spec-layer `encryption` enum accepts `none|os|aes`; the cross-check "a queue wants `aes` but the node holds no master keys" lives at the node boundary (`node.toEngineConfigWithKeys`), like `mtls`-needs-TLS.
 
 **Derived:** `RecordOverhead = 36`; `FlushLinger(s) = max(0, MaxWait/8)`.
 
@@ -587,16 +590,18 @@ type Config struct {
     MaxFlushWait     time.Duration
     FlushLinger      time.Duration
     CompactionPolicy CompactionPolicy
+    MasterKeys       MasterKeySet
     GateCache        bool
 }
-func (c Config) Async() bool            { return c.Durability == spec.DurabilityAsync }
-func (c Config) KeyedCompaction() bool  { return c.Compaction == spec.CompactionKeys }
-func (c Config) EncryptedStorage() bool { return c.Encryption == spec.EncryptionOS }
+func (c Config) Async() bool             { return c.Durability == spec.DurabilityAsync }
+func (c Config) KeyedCompaction() bool   { return c.Compaction == spec.CompactionKeys }
+func (c Config) EncryptedStorage() bool  { return c.Encryption == spec.EncryptionOS }
+func (c Config) EncryptedPayloads() bool { return c.Encryption == spec.EncryptionAES }
 ```
 
 ### 6.3 Sentinels
 
-`ErrQueueExists, ErrQueueNotFound, ErrOffsetNotFound, ErrMessageTooLarge, ErrRecordTooLarge, ErrOffsetTruncated, ErrQueueClosed, ErrNoData, ErrRecordCompacted, ErrDiskFull, ErrCorruptRecord`.
+`ErrQueueExists, ErrQueueNotFound, ErrOffsetNotFound, ErrMessageTooLarge, ErrRecordTooLarge, ErrOffsetTruncated, ErrQueueClosed, ErrNoData, ErrRecordCompacted, ErrDiskFull, ErrCorruptRecord, ErrEncryptionKey`.
 
 ### 6.4 `Manager` (per kind)
 
@@ -649,6 +654,7 @@ type Queue struct {
     closed            bool
     notify            chan struct{}
     keyIndex          map[string]uint64
+    cipher            *queueCipher
     m                 *queueMetrics
     scope             *metrics.Scope
     mu                sync.RWMutex
@@ -663,18 +669,18 @@ type reservation struct {
 }
 ```
 
-`openQueue(parentDir, name, cfg, store, scopes...)` opens the queue directory through `os.Root` scoped to `parentDir`, so a hostile name cannot escape. The initial preallocation is `min(8 MiB, MaxSegment)`.
+`openQueue(parentDir, name, cfg, store, scopes...)` opens the queue directory through `os.Root` scoped to `parentDir`, so a hostile name cannot escape. The initial preallocation is `min(8 MiB, MaxSegment)`. When `EncryptedPayloads()`, `openQueueCipher` loads the queue's `keys.dat` (or mints the first data key for a fresh queue) after `loadSegments`; on failure it stops the WAL and closes the loaded segments, leaving no resource behind — `keys.dat` missing while sealed data exists is unrecoverable and fails closed.
 
 ### 6.6 Append Path
 
 `Append` delegates to `AppendBatch`. It stages per-segment sub-batches so a WAL write never straddles a roll:
 
-1. Validate `len(payload) ≤ MaxPayload`; encode with `newRecordID()`; reject `recLen > MaxSegment` with `ErrRecordTooLarge`.
-2. **Choose encodings**: sync or produce-only path uses pooled buffers (`getBuf(recLen)` and `encodeRecord(bb.b, …)`); async + cacheable path allocates fresh `rec []byte` so the ring cache can hold `rec[offBody+groupLen:]` by reference.
-3. Stage into a per-segment `stagedBatch{w, seg, recs, bufs, positions, recLens, offsets, ids, totalLen, startIdx}`.
+1. Validate the append limit (`MaxPayload`, minus `gcmOverhead` when payloads are sealed); encode with `newRecordID()`; reject `recLen > MaxSegment` with `ErrRecordTooLarge`.
+2. **Choose encodings**: sync or produce-only path uses pooled buffers (`getBuf(recLen)` and `encodeRecord(bb.b, …)`); async + cacheable path allocates fresh `rec []byte` so the ring cache can hold `rec[offBody+groupLen:]` by reference. Sealed queues encode via `frameRecord(dst, id, ts, group, len(payload)+gcmOverhead)` then `cipher.seal` into the payload region (outside `q.mu`) and `stampCRC` — zero new allocations.
+3. Stage into a per-segment `stagedBatch{w, seg, recs, bufs, positions, recLens, offsets, ids, plains, totalLen, startIdx}`.
 4. On roll or flush budget:
    - **Sync commit (`commitSync`)** — `wal.pushBatch`, release the pooled bufs (with a keep limit), then `seg.writeIndexBatchAt(idxPos, positions, lengths)`; the segment's `pos` advances immediately under the queue lock.
-   - **Async commit (`commitAsyncGroup`)** — `q.reserveLocked` grabs contiguous segment space and per-record positions under the lock; `q.mu` is released and `wal.pushAsyncBatch(ctx, entries)` hand the slice to the flusher as one channel slot; cacheable payloads are `Put` into the ring cache by reference; then `q.mu` is retaken and `commitReservationLocked` (or `abortReservationLocked` on error/close) resolves the reservation.
+   - **Async commit (`commitAsyncGroup`)** — `q.reserveLocked` grabs contiguous segment space and per-record positions under the lock; `q.mu` is released and `wal.pushAsyncBatch(ctx, entries)` hand the slice to the flusher as one channel slot; cacheable payloads are `Put` into the ring cache by reference (sealed queues `Put` a plaintext copy, so cache hits stay decrypt-free); then `q.mu` is retaken and `commitReservationLocked` (or `abortReservationLocked` on error/close) resolves the reservation.
 5. Sync path wakes the flusher (`select { case staged.w.wake <- struct{}{}: default: }`) and blocks on `wal.wait(seq)` (byte-based sequencing). The async path returns once the reservation is committed.
 6. Final staged group committed after the loop; `broadcastLocked()` wakes parked readers.
 
@@ -696,7 +702,7 @@ func (q *Queue) hasPendingReservation() bool
 
 1. `q.cache.Get(offset)` — lock-free through `atomic.Pointer[Record]`; returns only if `rec.Offset == offset && !rec.Timestamp.IsZero()`.
 2. `q.locateSegment(offset)` — `slices.BinarySearchFunc` over `q.segments`; `offset < minOffset` → `ErrOffsetTruncated`; `offset ≥ publishedOffset` → `ErrOffsetNotFound`.
-3. `readFromSegment` — reads from `seg.mmapData` when mapped, else `seg.logFile.ReadAt`; `decodeRecord` validates CRC and length. A zeroed slot in a compactable queue returns `ErrRecordCompacted`.
+3. `readFromSegment` — reads from `seg.mmapData` when mapped, else `seg.logFile.ReadAt`; `decodeRecord` validates CRC and length; when the queue seals payloads, `cipher.open` decrypts the payload after decode (failure → `ErrCorruptRecord`). A zeroed slot in a compactable queue returns `ErrRecordCompacted`.
 4. `q.superseded(group, offset)` when compaction is on → `ErrRecordCompacted`.
 
 `ReadBatch` walks segment by segment. For each run it calls `readBatchRun`:
@@ -839,6 +845,8 @@ type segment struct {
 
 The 16-byte raw ID is `[8B random prefix][8B counter]` — process-stable prefix (from `crypto/rand` at init), monotonically increasing counter per process. Not a UUID; `formatRecordID` renders it in the canonical 8-4-4-4-12 hex layout. CRC-32/IEEE covers the body (`rec[8:]`). Fixed offsets in `encode.go`: `offLength=0, offCRC=4, offIDLen=8, offUUID=10, offTS=26, offGroupLen=34, offBody=36`.
 
+When `encryption: aes` seals payloads, the payload region holds `nonce(12) ‖ ciphertext ‖ tag(16)` — 28 B of GCM overhead — and the CRC covers the sealed bytes, so every downstream consumer (WAL, index, mmap, compaction) treats the payload as opaque.
+
 ### 6.16 Ring Cache (updated)
 
 ```go
@@ -900,7 +908,7 @@ func (q *Queue) PayloadSpans(start uint64, count int) ([]PayloadSpan, error)
 func payloadSpan(segs []*segment, off uint64) (PayloadSpan, bool)
 ```
 
-`PayloadSpans` declines (returns `nil, nil`) when the queue has keyed compaction, when the request cannot be fully served from closed segments, when no span reaches `sendfileMinPayload`, or when the requested prefix extends past `publishedOffset`. On a hit it decodes each small record inline (via `readBytes`) and resolves each large one as a `File`/`FileOff`/`SendMu` tuple drawn from `seg.sendFD()`.
+`PayloadSpans` declines (returns `nil, nil`) when the queue has keyed compaction, when payloads are sealed (`encryption: aes`), when the request cannot be fully served from closed segments, when no span reaches `sendfileMinPayload`, or when the requested prefix extends past `publishedOffset`. On a hit it decodes each small record inline (via `readBytes`) and resolves each large one as a `File`/`FileOff`/`SendMu` tuple drawn from `seg.sendFD()`.
 
 ### 6.20 Retention Primitives
 
@@ -910,7 +918,7 @@ func payloadSpan(segs []*segment, off uint64) (PayloadSpan, bool)
 
 ### 6.21 Durability Sites
 
-`SyncDirHook` fires at four sites: new segment file, offset-store compaction rename, `queues.json` rename, active-segment close-time truncation.
+`SyncDirHook` fires at five sites: new segment file, offset-store compaction rename, `queues.json` rename, active-segment close-time truncation, queue key-store rename (encrypted queues only).
 
 ### 6.22 Kernel Directory Encryption
 
@@ -919,6 +927,29 @@ func payloadSpan(segs []*segment, off uint64) (PayloadSpan, bool)
 | Linux | `FS_IOC_SET_ENCRYPTION_POLICY` ioctl; `AES_256_XTS` contents, `AES_256_CTS` filenames; tolerates `ENOTTY`, `EOPNOTSUPP`, `EEXIST`. |
 | Windows | `EncryptFileW` from `advapi32.dll` (NTFS EFS). |
 | Other | Logs a warning and returns `nil`. |
+
+### 6.23 Application-Level Payload Encryption (`keys.go`, `aead.go`)
+
+`encryption: aes` seals every record payload with AES-256-GCM (`cipher.NewGCMWithRandomNonce` — stdlib-managed random nonce prepended by `Seal`, 28 B overhead, no per-record nonce bookkeeping of our own). Envelope encryption, because offset-derived nonces would collide across queues sharing one master key:
+
+```go
+type MasterKey struct { ID [8]byte; Key [32]byte }   // ID = SHA-256(key)[:8], travels with wraps
+type MasterKeySet []MasterKey
+func LoadMasterKeys(path string) (MasterKeySet, error) // one hex key per line; last line wraps new data keys
+func (s MasterKeySet) wrap(aad, data []byte) ([]byte, error)   // newest key; output = id ‖ Seal(random-nonce)
+func (s MasterKeySet) unwrap(aad, wrapped []byte) ([]byte, error) // dispatch by ID prefix
+
+type queueCipher struct { gens []keyGen }   // keyGen{aead cipher.AEAD; wrapped []byte}, age-ordered
+func openQueueCipher(root *os.Root, name string, masters MasterKeySet, hasData bool) (*queueCipher, error)
+func (c *queueCipher) seal(dst, plaintext []byte)              // into dst's free capacity, no alloc
+func (c *queueCipher) open(ciphertext []byte) ([]byte, error)  // tries each generation; failure → ErrCorruptRecord
+func (c *queueCipher) rotate(root *os.Root, name string, masters MasterKeySet) error
+```
+
+- **Data key per queue**: 32 random bytes, wrapped under the newest master with the **queue name as AAD** (copying `keys.dat` between queues fails authentication), stored in `<queue>/keys.dat` as `magic ‖ version ‖ count ‖ {u32 len ‖ wrapped}…`, written atomically before any record exists. `keys.dat` missing while sealed data exists → `ErrEncryptionKey` (fail closed).
+- **Rotation without re-encryption**: appending a master-key line makes new data keys wrap under it; old generations still unwrap. `rotate()` mints a fresh generation in place (not yet wired to an admin verb).
+- **Group/ID/timestamp stay plaintext** — keyed compaction, `formatRecordID`, and metrics depend on them; only the payload is confidential.
+- **Decryption dispatch** tries generations in age order; with a single generation a wrong key is indistinguishable from corruption and surfaces as `ErrCorruptRecord` at read time.
 
 ---
 
@@ -1139,7 +1170,7 @@ func (c *Coordinator) Start(ctx)
 
 ### Error Codes
 
-Blocked by subsystem nibble: `0x01–0x0F` admin, `0x11–0x1F` storage, `0x21–0x2F` task, `0x31–0x3F` dead-letter, `0x41–0x4F` server. Includes `ErrCodeUnknown=0x01`, `QueueNotFound=0x02`, `QueueExists=0x03`, `InvalidConfig=0x04`, `ImmutableField=0x05`, `SpecTooNew=0x06`, `SpecTooLarge=0x07`, `Unauthorized=0x09`, `OffsetNotFound=0x11`, `OffsetTruncated=0x12`, `MessageTooLarge=0x13`, `QueueClosed=0x14`, `NoData=0x15`, `DiskFull=0x16`, `CorruptRecord=0x17`, `RecordTooLarge=0x18`, `RecordCompacted=0x19`, `TaskNotAvailable=0x21`, `TaskNotFound=0x22`, `TaskNotInflight=0x23`, `TaskStale=0x24`, `TaskInvalid=0x25`, `CheckpointCorrupt=0x26`, `QueueFull=0x27`, `DeadLetterNotFound=0x31`, `DeadLetterStale=0x32`, `ArchiveFailed=0x33`, `TooManyConnections=0x41`, `WrongKind=0x42`.
+Blocked by subsystem nibble: `0x01–0x0F` admin, `0x11–0x1F` storage, `0x21–0x2F` task, `0x31–0x3F` dead-letter, `0x41–0x4F` server. Includes `ErrCodeUnknown=0x01`, `QueueNotFound=0x02`, `QueueExists=0x03`, `InvalidConfig=0x04`, `ImmutableField=0x05`, `SpecTooNew=0x06`, `SpecTooLarge=0x07`, `Unauthorized=0x09`, `OffsetNotFound=0x11`, `OffsetTruncated=0x12`, `MessageTooLarge=0x13`, `QueueClosed=0x14`, `NoData=0x15`, `DiskFull=0x16`, `CorruptRecord=0x17`, `RecordTooLarge=0x18`, `RecordCompacted=0x19`, `EncryptionKey=0x1A`, `TaskNotAvailable=0x21`, `TaskNotFound=0x22`, `TaskNotInflight=0x23`, `TaskStale=0x24`, `TaskInvalid=0x25`, `CheckpointCorrupt=0x26`, `QueueFull=0x27`, `DeadLetterNotFound=0x31`, `DeadLetterStale=0x32`, `ArchiveFailed=0x33`, `TooManyConnections=0x41`, `WrongKind=0x42`.
 
 ### Auth Frames
 
@@ -1291,6 +1322,8 @@ type Node struct {
     lock     *dirLock
     openedAt time.Time
     metrics  *metrics.Collector
+    keyFile  string
+    keys     engine.MasterKeySet
 }
 ```
 
@@ -1299,20 +1332,21 @@ type Node struct {
 **Lifecycle** (`openNode`):
 
 1. `MkdirAll` the data directory; acquire the directory lock (`flock`/`LockFileEx`).
-2. `loadRegistry(dir)` + `reconcileRegistry` against the filesystem.
-3. Build per-queue engine configs from the effective spec, keyed by `manager.Key`; set `cfg.GateCache = (kind == KindLog)`.
-4. `manager.Open`.
-5. `List` on-disk queues; reconcile the registry.
-6. Build metrics registry, collector, register runtime source + manager + `configSource{n}`.
-7. `preregisterServerMetrics`.
-8. `installAll(infos)` — one driver per queue.
-9. Start retention loop, checkpoint maintenance loop, collector.
+2. Load master keys from `encryption_key_file` when set (`engine.LoadMasterKeys`).
+3. `loadRegistry(dir)` + `reconcileRegistry` against the filesystem.
+4. Build per-queue engine configs from the effective spec, keyed by `manager.Key`, via `toEngineConfigWithKeys` — fail-closed with `engine.ErrEncryptionKey` when a queue wants `encryption: aes` but no keys are loaded; set `cfg.GateCache = (kind == KindLog)`.
+5. `manager.Open`.
+6. `List` on-disk queues; reconcile the registry.
+7. Build metrics registry, collector, register runtime source + manager + `configSource{n}`.
+8. `preregisterServerMetrics`.
+9. `installAll(infos)` — one driver per queue.
+10. Start retention loop, checkpoint maintenance loop, collector.
 
-`Acquire(dir, defaults, opts...)` in `pool.go` — ref-counted process pool keyed by absolute path. `ErrSessionDefaultsMismatch` for mismatched defaults; release is `sync.Once`-guarded.
+`Acquire(dir, defaults, opts...)` in `pool.go` — ref-counted process pool keyed by absolute path. `ErrSessionDefaultsMismatch` for mismatched defaults **or a different `encryption_key_file`**; release is `sync.Once`-guarded.
 
 **Queue operations:**
 
-- **`CreateLogQueue`** — validate, refuse duplicates, create engine queue under `log/`, persist spec to `queues.json`, cache the driver, register retention target, set policy.
+- **`CreateLogQueue`** — validate, refuse duplicates, create engine queue under `log/`, persist spec to `queues.json`, cache the driver, register retention target, set policy. `toEngineConfigWithKeys` fails closed when the spec wants `encryption: aes` without loaded keys.
 - **`CreateTaskQueue`** — same, under `task/`. Rejects `compaction=keys` with `spec.ErrInvalidConfig`. Wires `archiveLogFor()` and the per-queue metrics scope.
 - **`UpdateQueue`** — validate, merge patch over stored, persist, apply mutable engine config, sync cached driver + retention target, push updated defaults into a live task queue, and launch a bounded immediate reconcile when the policy shrank.
 - **`DescribeQueue`** — returns `{Name, Kind, Spec, Derived, Effective, Defaults}`.
@@ -1332,13 +1366,16 @@ type registry    struct { Version int; Queues map[string]QueueEntry } // keyed "
 
 **Lock** (`lock.go`): `acquireDirLock(dir)` opens `<dir>/mikyu.lock` and tries an exclusive non-blocking flock; contention → `ErrLocked`.
 
-**Metrics config** (`metrics.go`):
+**Metrics config** (`metrics.go` + `pool.go`):
 
 ```go
 type MetricsConfig struct { Enabled bool; Interval time.Duration; History int; Histograms bool }
-type AcquireOption func(*MetricsConfig)
+type acquireOptions struct { metrics MetricsConfig; keyFile string }
+type AcquireOption func(*acquireOptions)
 func WithMetrics(cfg MetricsConfig) AcquireOption
+func WithEncryptionKeyFile(path string) AcquireOption
 func MetricsFromSession(s spec.Session) MetricsConfig
+func EncryptionKeyFileFromSession(s spec.Session) string
 func preregisterServerMetrics(reg *metrics.Registry)
 func newRegistry(mc MetricsConfig) *metrics.Registry
 func newCollector(reg *metrics.Registry, mc MetricsConfig, sources ...metrics.Source) *metrics.Collector
@@ -1369,6 +1406,7 @@ type SessionConfig struct {
     TLSEnabled bool; TLSCert, TLSKey string
     AutoStart  bool
     AuthMethod, AuthToken, AuthTokenFile, TLSClientCA string
+    EncryptionKeyFile string
     MetricsEnabled bool; MetricsInterval time.Duration; MetricsHistory int
     MetricsListen string; MetricsPerQueuePrometheus, MetricsHistograms bool
     testFrameSent func(op byte)
@@ -1610,19 +1648,19 @@ func Run(args []string) error
 func EnsureDaemonRunning(opts SpawnOptions) error
 func IsDaemonAlive(target string) bool
 func SendShutdownSignal(target string, sess spec.Session) error
-type SpawnOptions struct { Target, DataDir string; TLSEnabled bool; TLSCert, TLSKey, AuthMethod, AuthTokenFile, TLSClientCA string; ExtraArgs []string }
+type SpawnOptions struct { Target, DataDir string; TLSEnabled bool; TLSCert, TLSKey, AuthMethod, AuthTokenFile, TLSClientCA, EncryptionKeyFile string; ExtraArgs []string }
 type enumValue struct { param spec.Param; value string; changed bool }   // flag.Value
 ```
 
 `resolveConfig` parses daemon flags and layers them over the config file and env: **CLI flags > `MIKYU_*` env > `mikyu.yaml` > compiled defaults**. Only flags explicitly set on the command line override, via `fs.Visit`. `--help` written to stdout and returned as `flag.ErrHelp`; any other input mistake written to stderr with usage text and wrapped in `ErrUsage`.
 
-**Fail-closed defaults:** on a non-loopback `tcp://` target, `token` requires `--tls-enabled`, `mtls` requires `--tls-enabled` + `--tls-client-ca-file`, and `""`/`none` is refused (opt out with `--auth-method none-insecure`). Loopback, `unix://`, `pipe://` are exempt. `--auth-token` is registered for `--help` but rejects on use (argv leaks via `ps`).
+**Fail-closed defaults:** on a non-loopback `tcp://` target, `token` requires `--tls-enabled`, `mtls` requires `--tls-enabled` + `--tls-client-ca-file`, and `""`/`none` is refused (opt out with `--auth-method none-insecure`). Loopback, `unix://`, `pipe://` are exempt. `--auth-token` is registered for `--help` but rejects on use (argv leaks via `ps`); `--encryption-key` is rejected the same way — key material arrives via `--encryption-key-file`, and node open fails closed when an `encryption: aes` queue has no key file.
 
 `Run`:
 
 1. `resolveConfig`.
 2. `logEffectiveConfig`.
-3. `node.Acquire` with `node.WithMetrics(node.MetricsFromSession(cfg.Server))`.
+3. `node.Acquire` with `node.WithMetrics(node.MetricsFromSession(cfg.Server))` and `node.WithEncryptionKeyFile(node.EncryptionKeyFileFromSession(cfg.Server))`.
 4. Reconcile declared queues.
 5. Optional TLS wrapper, `server.NewAuthMode`, `server.New`.
 6. Optional metrics HTTP server (started before the wire server listens so a bind failure still stops `srv`).
@@ -2263,6 +2301,7 @@ func exitCode(err error) int {
   - `TestEncodeBufferReused`, `TestPooledRecordsRoundTrip`.
   - `TestCacheGatedOnFirstRead`, `TestCachePayloadAliasesEncodedRecord`.
   - `TestStreamRecordSpansMatchesWriteRecordList`, `TestFetchOverTCPPrefersSendfile`.
+  - Encryption: `keys_test.go` (key-file parsing, rotation, wrap/unwrap AAD binding, key-store mint/rotate/reopen, foreign-queue and wrong-master rejection), `encrypt_test.go` (`TestEncryptedQueueRoundTrip` incl. plaintext-absent-from-disk, async cache serves plaintext, `TestEncryptedAppendLimit`, `TestEncryptedQueueDeclinesSpans`, `TestEncryptedQueueWithoutKeys`), and `internal/node/encryption_test.go` (embedded end-to-end for log + task queues across restart, fail-closed without keys, pool key-file mismatch).
 - iow-specific tests:
   - `TestWriterDeliversDoneInSubmissionOrder`, `TestWriterWritesEveryBufferOfABatch`, `TestWriterRejectsWorkAfterClose`, `TestWriterRejectsCancelledContext`, `TestWriterFiresDoneOnceForEveryAcceptedBatch`, `TestParityEveryImplementation` (runs against every implementation the host can run: pool, ring on Linux, IOCP on Windows).
   - `TestOrderedDelivery`, `TestBoundedSubmissionBlocksAndCancels`, `TestFailurePropagation`, `TestWriteErrorEntersFailedState`, `TestCloseDuringFlight`, `TestCloseIsIdempotent`, `TestDataSyncBoundary`, `TestSyncFailsAfterBatchError`, `TestSyncWaitsForInFlightWrites`, `TestDoneMaySubmitAnotherBatch`.
@@ -2323,3 +2362,7 @@ func exitCode(err error) int {
 | **`spawnDetached` uses a separate child env, not a flag** | `MIKYU_BENCH_CHILD=1` is unambiguous in the process table and survives both parent and `os.Executable` re-exec. |
 | **Async append commits in three steps: reserve, push, commit** | A full `asyncChan` must not stall other producers or hold `q.mu`; the reservation FIFO keeps segment end and `publishedOffset` monotonic without blocking writers. |
 | **`node.mu` is an `RWLockObserver`** | Contention is real telemetry; the fast path only pays `TryLock` and only contended acquisitions are timed. |
+| **Sealed payloads use `NewGCMWithRandomNonce`, not offset-derived nonces** | Random-nonce `Seal` runs in the lock-free encode loop; offset-derived nonces would force the seal into the staging loop under `q.mu`, serializing ~1 µs of AES+CRC across all producers. The 12 B nonce rides inside the 28 B overhead instead of a hand-maintained uniqueness invariant. |
+| **Envelope encryption: per-queue data key under a master key** | A master key encrypting records directly would share one key across queues, so nonce spaces would collide; per-queue data keys also make master rotation a re-wrap, never a re-encryption. |
+| **`keys.dat` binds the queue name as AAD** | Copying a key store between queues fails authentication, so a key file cannot silently decrypt a different queue's data. |
+| **`encryption` is create-only** | Flipping it after creation would silently mix plaintext and ciphertext records with no way to tell them apart; master-key rotation is the supported change path. |

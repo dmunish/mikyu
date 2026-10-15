@@ -73,7 +73,7 @@ func validate(s Spec) error {
 		return errInvalid("durability", "one of sync|async", *st.Durability)
 	}
 	if st.Encryption != nil && !st.Encryption.Valid() {
-		return errInvalid("encryption", "one of none|os", *st.Encryption)
+		return errInvalid("encryption", "one of none|os|aes", *st.Encryption)
 	}
 	if st.Compaction != nil && !st.Compaction.Valid() {
 		return errInvalid("compaction", "one of none|keys", *st.Compaction)

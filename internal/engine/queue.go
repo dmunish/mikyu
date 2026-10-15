@@ -57,6 +57,7 @@ type Queue struct {
 	closed            bool
 	notify            chan struct{}
 	keyIndex          map[string]uint64
+	cipher            *queueCipher
 	m                 *queueMetrics
 	scope             *metrics.Scope
 	mu                sync.RWMutex
@@ -107,6 +108,22 @@ func openQueue(parentDir, name string, cfg Config, store *OffsetStore, scopes ..
 	}
 	if err := q.loadSegments(); err != nil {
 		return nil, err
+	}
+	if cfg.EncryptedPayloads() {
+		cipher, err := openQueueCipher(parent, name, cfg.MasterKeys, q.nextOffset > 0)
+		if err != nil {
+			// The WAL from loadSegments is already running; nothing was
+			// appended, so stopping it and closing the segments leaves
+			// no resource behind.
+			if q.w != nil {
+				_ = q.w.stop()
+			}
+			for _, seg := range q.segments {
+				_ = seg.Close()
+			}
+			return nil, err
+		}
+		q.cipher = cipher
 	}
 	if cfg.KeyedCompaction() {
 		if err := q.buildKeyIndex(); err != nil {
@@ -356,11 +373,11 @@ func (q *Queue) roll() error {
 }
 
 func (q *Queue) MaxAppendPayloadBytes() int64 {
-	maxPayload := min(q.cfg.MaxPayload, q.cfg.MaxSegment-int64(minRecordSize))
-	if maxPayload < 0 {
-		return 0
+	limit := min(q.cfg.MaxPayload, q.cfg.MaxSegment-int64(minRecordSize))
+	if q.cipher != nil {
+		limit -= gcmOverhead
 	}
-	return maxPayload
+	return max(0, limit)
 }
 
 // Close flushes the WAL and closes all segment resources.

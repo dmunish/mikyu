@@ -22,6 +22,40 @@ var (
 	poolMap = map[string]*nodeEntry{}
 )
 
+// acquireOptions carries the process-level settings a freshly opened node builds its services from.
+type acquireOptions struct {
+	metrics MetricsConfig
+	keyFile string
+}
+
+// AcquireOption configures how a freshly opened node builds its runtime services.
+type AcquireOption func(*acquireOptions)
+
+// WithMetrics overrides the collector settings for a newly opened node.
+func WithMetrics(cfg MetricsConfig) AcquireOption {
+	return func(dst *acquireOptions) { dst.metrics = cfg }
+}
+
+// WithEncryptionKeyFile names the master-key file that unseals encryption: aes queues.
+func WithEncryptionKeyFile(path string) AcquireOption {
+	return func(dst *acquireOptions) { dst.keyFile = path }
+}
+
+// MetricsFromSession extracts the collector settings from a resolved session.
+func MetricsFromSession(s spec.Session) MetricsConfig {
+	return MetricsConfig{
+		Enabled:    s.Metrics.Enabled,
+		Interval:   s.Metrics.Interval.Duration(),
+		History:    s.Metrics.History,
+		Histograms: s.Metrics.Histograms,
+	}
+}
+
+// EncryptionKeyFileFromSession extracts the at-rest master-key source from a resolved session.
+func EncryptionKeyFileFromSession(s spec.Session) string {
+	return s.Encryption.KeyFile
+}
+
 // Acquire returns a reference-counted Node for dir.
 func Acquire(dir string, defaults spec.Spec, opts ...AcquireOption) (*Node, func() error, error) {
 	abs, err := filepath.Abs(dir)
@@ -32,16 +66,16 @@ func Acquire(dir string, defaults spec.Spec, opts ...AcquireOption) (*Node, func
 		return nil, nil, err
 	}
 
-	mc := MetricsConfig{}
+	ao := acquireOptions{}
 	for _, opt := range opts {
 		if opt != nil {
-			opt(&mc)
+			opt(&ao)
 		}
 	}
 
 	poolMu.Lock()
 	if e, ok := poolMap[abs]; ok {
-		if !spec.Equal(e.node.defaults, defaults) {
+		if !spec.Equal(e.node.defaults, defaults) || e.node.keyFile != ao.keyFile {
 			poolMu.Unlock()
 			return nil, nil, fmt.Errorf("%w (dir %s)", ErrSessionDefaultsMismatch, abs)
 		}
@@ -49,7 +83,7 @@ func Acquire(dir string, defaults spec.Spec, opts ...AcquireOption) (*Node, func
 		poolMu.Unlock()
 		return e.node, releaseFunc(abs), nil
 	}
-	n, err := openNode(abs, defaults, mc)
+	n, err := openNode(abs, defaults, ao)
 	if err != nil {
 		poolMu.Unlock()
 		return nil, nil, err

@@ -18,12 +18,16 @@ var (
 	ErrNoData          = errors.New("no data available")
 	ErrRecordCompacted = errors.New("record has been compacted")
 	ErrDiskFull        = errors.New("disk is full")
+
+	// ErrEncryptionKey reports missing, malformed, or mismatched key material.
+	ErrEncryptionKey = errors.New("encryption key")
 )
 
 // CompactionPolicy decides how a record's compaction group is derived.
 type CompactionPolicy struct {
 	// ExtractGroup derives a record's group from its payload. When nil, the
-	// record's Group field is used.
+	// record's Group field is used. Payload bytes are ciphertext when the
+	// queue seals payloads with AES.
 	ExtractGroup func(payload []byte) []byte
 }
 
@@ -48,6 +52,8 @@ type Config struct {
 	MaxFlushWait     time.Duration
 	FlushLinger      time.Duration
 	CompactionPolicy CompactionPolicy
+	// MasterKeys unwraps a queue's data keys when payloads are sealed with AES.
+	MasterKeys MasterKeySet
 	// GateCache feeds the ring cache only after the first read, saving the
 	// per-append copy on produce-only workloads. Task-style drivers that read
 	// back their own appends leave it off.
@@ -62,3 +68,6 @@ func (c Config) KeyedCompaction() bool { return c.Compaction == spec.CompactionK
 
 // EncryptedStorage reports whether the queue directory uses OS encryption.
 func (c Config) EncryptedStorage() bool { return c.Encryption == spec.EncryptionOS }
+
+// EncryptedPayloads reports whether record payloads are sealed with AES-256-GCM.
+func (c Config) EncryptedPayloads() bool { return c.Encryption == spec.EncryptionAES }

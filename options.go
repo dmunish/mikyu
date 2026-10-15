@@ -55,6 +55,9 @@ func WithAuthToken(tok string) ClientOption { return client.WithAuthToken(tok) }
 // WithAuthTokenFile sets a file containing the bearer token.
 func WithAuthTokenFile(path string) ClientOption { return client.WithAuthTokenFile(path) }
 
+// WithEncryptionKeyFile sets the master-key file an embedded node uses to unseal encrypted queues.
+func WithEncryptionKeyFile(path string) ClientOption { return client.WithEncryptionKeyFile(path) }
+
 // WithTLSClientCA sets the client CA bundle for mTLS servers.
 func WithTLSClientCA(path string) ClientOption { return client.WithTLSClientCA(path) }
 

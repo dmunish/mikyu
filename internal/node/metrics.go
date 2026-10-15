@@ -6,7 +6,6 @@ import (
 
 	"github.com/dmunish/mikyu/internal/manager"
 	"github.com/dmunish/mikyu/internal/metrics"
-	"github.com/dmunish/mikyu/internal/spec"
 )
 
 // MetricsConfig carries the session-level settings that shape the node's collector.
@@ -15,24 +14,6 @@ type MetricsConfig struct {
 	Interval   time.Duration
 	History    int
 	Histograms bool
-}
-
-// AcquireOption configures how a freshly opened node builds its collector.
-type AcquireOption func(*MetricsConfig)
-
-// WithMetrics overrides the collector settings for a newly opened node.
-func WithMetrics(cfg MetricsConfig) AcquireOption {
-	return func(dst *MetricsConfig) { *dst = cfg }
-}
-
-// MetricsFromSession extracts the collector settings from a resolved session.
-func MetricsFromSession(s spec.Session) MetricsConfig {
-	return MetricsConfig{
-		Enabled:    s.Metrics.Enabled,
-		Interval:   s.Metrics.Interval.Duration(),
-		History:    s.Metrics.History,
-		Histograms: s.Metrics.Histograms,
-	}
 }
 
 // preregisterServerMetrics ensures the server scope instruments are created

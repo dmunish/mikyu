@@ -66,14 +66,15 @@ func NewRemote(target string, opts ...Option) (*remoteClient, error) {
 	}
 	if cfg.AutoStart {
 		if err := daemon.EnsureDaemonRunning(daemon.SpawnOptions{
-			Target:        target,
-			DataDir:       cfg.DataDir,
-			TLSEnabled:    cfg.TLSEnabled,
-			TLSCert:       cfg.TLSCert,
-			TLSKey:        cfg.TLSKey,
-			AuthMethod:    cfg.AuthMethod,
-			AuthTokenFile: cfg.AuthTokenFile,
-			TLSClientCA:   cfg.TLSClientCA,
+			Target:            target,
+			DataDir:           cfg.DataDir,
+			TLSEnabled:        cfg.TLSEnabled,
+			TLSCert:           cfg.TLSCert,
+			TLSKey:            cfg.TLSKey,
+			AuthMethod:        cfg.AuthMethod,
+			AuthTokenFile:     cfg.AuthTokenFile,
+			TLSClientCA:       cfg.TLSClientCA,
+			EncryptionKeyFile: cfg.EncryptionKeyFile,
 		}); err != nil {
 			return nil, err
 		}

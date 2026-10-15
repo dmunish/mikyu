@@ -43,7 +43,7 @@ func (q *Queue) PayloadSpans(start uint64, count int) ([]PayloadSpan, error) {
 	if closed {
 		return nil, ErrQueueClosed
 	}
-	if q.cfg.KeyedCompaction() {
+	if q.cfg.KeyedCompaction() || q.cfg.EncryptedPayloads() {
 		return nil, nil
 	}
 	if start < minOff {

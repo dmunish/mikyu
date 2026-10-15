@@ -119,12 +119,13 @@ func (t TaskSpec) merge(o TaskSpec) TaskSpec {
 
 // Session carries the process-level parameters that never reach a queue spec or the wire.
 type Session struct {
-	Target         string        `yaml:"target"`
-	DataDir        string        `yaml:"data_dir"`
-	MaxConnections int           `yaml:"max_connections"`
-	TLS            TLSConfig     `yaml:"tls"`
-	Auth           AuthConfig    `yaml:"auth"`
-	Metrics        MetricsConfig `yaml:"metrics"`
+	Target         string           `yaml:"target"`
+	DataDir        string           `yaml:"data_dir"`
+	MaxConnections int              `yaml:"max_connections"`
+	TLS            TLSConfig        `yaml:"tls"`
+	Auth           AuthConfig       `yaml:"auth"`
+	Encryption     EncryptionConfig `yaml:"encryption"`
+	Metrics        MetricsConfig    `yaml:"metrics"`
 }
 
 // TLSConfig holds the wire encryption material.
@@ -140,6 +141,11 @@ type AuthConfig struct {
 	Method    string `yaml:"method"`
 	Token     string `yaml:"token"`
 	TokenFile string `yaml:"token_file"`
+}
+
+// EncryptionConfig holds the at-rest key material source.
+type EncryptionConfig struct {
+	KeyFile string `yaml:"key_file"`
 }
 
 // MetricsConfig holds the collector settings.

@@ -46,7 +46,10 @@ func Run(args []string) error {
 	}
 	logEffectiveConfig(cfg, resolvedPath)
 
-	n, release, err := node.Acquire(cfg.Server.DataDir, cfg.Defaults, node.WithMetrics(node.MetricsFromSession(cfg.Server)))
+	n, release, err := node.Acquire(cfg.Server.DataDir, cfg.Defaults,
+		node.WithMetrics(node.MetricsFromSession(cfg.Server)),
+		node.WithEncryptionKeyFile(node.EncryptionKeyFileFromSession(cfg.Server)),
+	)
 	if err != nil {
 		return fmt.Errorf("open node at %s: %w", cfg.Server.DataDir, err)
 	}
@@ -186,7 +189,7 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 	encryption := newEnumValue("encryption")
 	compaction := newEnumValue("compaction")
 	fs.Var(durability, "durability", "Append ack policy: sync|async (create-only)")
-	fs.Var(encryption, "encryption", "At-rest protection: none|os (create-only)")
+	fs.Var(encryption, "encryption", "At-rest protection: none|os|aes (create-only)")
 	fs.Var(compaction, "compaction", "Compaction mode: none|keys (create-only)")
 	maxSegment := fs.Int64("max-segment", 0, "Bytes per segment file before rolling (create-only)")
 	maxSegmentAge := fs.Duration("max-segment-age", 0, "Max age before rolling the active segment")
@@ -215,6 +218,11 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 	authTokenFile := fs.String("auth-token-file", "", "File containing the bearer token")
 	fs.String("auth-token", "", "REJECTED on the daemon; use --auth-token-file")
 	tlsClientCA := fs.String("tls-client-ca", "", "Client CA bundle for mtls")
+
+	// At-rest keys. --encryption-key is registered so --help lists it, but
+	// rejected on use: a key on argv leaks via ps.
+	fs.String("encryption-key", "", "REJECTED on the daemon; use --encryption-key-file")
+	encryptionKeyFile := fs.String("encryption-key-file", "", "File of hex AES-256 master keys, one per line")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -287,6 +295,8 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 			cfg.Defaults.Storage.Durability = new(spec.Durability(durability.String()))
 		case "encryption":
 			cfg.Defaults.Storage.Encryption = new(spec.Encryption(encryption.String()))
+		case "encryption-key-file":
+			cfg.Server.Encryption.KeyFile = *encryptionKeyFile
 		case "compaction":
 			cfg.Defaults.Storage.Compaction = new(spec.Compaction(compaction.String()))
 		case "max-segment":
@@ -380,6 +390,9 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 		case "auth-token":
 			flagErr = errors.New("--auth-token is rejected on the daemon: a token on argv leaks via ps; use --auth-token-file")
 			return
+		case "encryption-key":
+			flagErr = errors.New("--encryption-key is rejected on the daemon: a key on argv leaks via ps; use --encryption-key-file")
+			return
 		}
 	})
 	if flagErr != nil {
@@ -443,15 +456,16 @@ func logEffectiveConfig(cfg *config.Config, resolvedPath string) {
 
 // SpawnOptions carries the session settings a spawned daemon must inherit. AuthToken is deliberately absent: the daemon rejects it.
 type SpawnOptions struct {
-	Target        string
-	DataDir       string
-	TLSEnabled    bool
-	TLSCert       string
-	TLSKey        string
-	AuthMethod    string
-	AuthTokenFile string
-	TLSClientCA   string
-	ExtraArgs     []string
+	Target            string
+	DataDir           string
+	TLSEnabled        bool
+	TLSCert           string
+	TLSKey            string
+	AuthMethod        string
+	AuthTokenFile     string
+	TLSClientCA       string
+	EncryptionKeyFile string
+	ExtraArgs         []string
 }
 
 // EnsureDaemonRunning spawns a detached daemon with opts when opts.Target is not already serving.

@@ -24,7 +24,7 @@ server:
 defaults:                        # Session defaults inherited by new queues
   storage:
     durability: sync             # sync fsyncs before the offset returns; async flushes in the background
-    encryption: none             # none, or os for OS directory encryption at rest
+    encryption: none             # none, os for OS directory encryption, or aes for sealed payloads
     compaction: none             # none, or keys to drop superseded keyed records at segment roll
     max_segment: 67108864        # 64 MiB: bytes per segment file before rolling
     max_segment_age: "1h"        # Max time before rolling the active segment

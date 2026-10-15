@@ -37,9 +37,16 @@ var encPool = sync.Pool{
 
 // encodeRecord writes one record frame into dst, allocating when dst is too small.
 func encodeRecord(dst []byte, id [16]byte, ts time.Time, group, payload []byte) []byte {
-	payloadLen := len(payload)
-	groupLen := len(group)
-	bodyLen := uint32(recordCRCSize + recordIDLenSize + recordUUIDSize + recordTSSize + recordGroupLenSize + groupLen + payloadLen)
+	rec := frameRecord(dst, id, ts, group, len(payload))
+	copy(rec[offBody+len(group):], payload)
+	return stampCRC(rec)
+}
+
+// frameRecord writes the header and group into dst, sizing the payload region
+// to payloadLen bytes and leaving it zeroed for the caller to fill — with the
+// plaintext, or with a sealed payload whose region is payloadLen = plaintext+gcmOverhead.
+func frameRecord(dst []byte, id [16]byte, ts time.Time, group []byte, payloadLen int) []byte {
+	bodyLen := uint32(recordCRCSize + recordIDLenSize + recordUUIDSize + recordTSSize + recordGroupLenSize + len(group) + payloadLen)
 	totalLen := int(recordLengthSize) + int(bodyLen)
 	if cap(dst) < totalLen {
 		dst = make([]byte, totalLen)
@@ -50,14 +57,14 @@ func encodeRecord(dst []byte, id [16]byte, ts time.Time, group, payload []byte) 
 	binary.BigEndian.PutUint16(rec[offIDLen:offUUID], recordUUIDSize)
 	copy(rec[offUUID:offTS], id[:])
 	binary.BigEndian.PutUint64(rec[offTS:offGroupLen], uint64(ts.UnixNano()))
-	binary.BigEndian.PutUint16(rec[offGroupLen:offBody], uint16(groupLen))
-	body := rec[offBody:]
-	copy(body, group)
-	copy(body[groupLen:], payload)
+	binary.BigEndian.PutUint16(rec[offGroupLen:offBody], uint16(len(group)))
+	copy(rec[offBody:], group)
+	return rec
+}
 
-	sum := crc32.ChecksumIEEE(rec[offIDLen:])
-	binary.BigEndian.PutUint32(rec[offCRC:offIDLen], sum)
-
+// stampCRC writes the body CRC; the payload region must already hold its final bytes.
+func stampCRC(rec []byte) []byte {
+	binary.BigEndian.PutUint32(rec[offCRC:offIDLen], crc32.ChecksumIEEE(rec[offIDLen:]))
 	return rec
 }
 

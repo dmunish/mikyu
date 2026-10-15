@@ -140,6 +140,7 @@ func TestConfigEnvOverridesFromTable(t *testing.T) {
 		"auth_token_file":              "token.txt",
 		"auth_token":                   "0123456789abcdef",
 		"tls_client_ca":                "ca.pem",
+		"encryption_key_file":          "keys",
 	}
 	for _, p := range spec.Params(spec.LayerSession) {
 		t.Run(p.Key, func(t *testing.T) {
@@ -169,6 +170,8 @@ func TestConfigEnvOverridesFromTable(t *testing.T) {
 				assert.Equal(t, values["auth_token"], cfg.Server.Auth.Token)
 			case "auth_token_file":
 				assert.Equal(t, values["auth_token_file"], cfg.Server.Auth.TokenFile)
+			case "encryption_key_file":
+				assert.Equal(t, values["encryption_key_file"], cfg.Server.Encryption.KeyFile)
 			case "metrics_enabled":
 				assert.True(t, cfg.Server.Metrics.Enabled)
 			case "metrics_interval":

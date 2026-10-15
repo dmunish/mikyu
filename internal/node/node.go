@@ -46,18 +46,28 @@ type Node struct {
 	lock     *dirLock
 	openedAt time.Time
 	metrics  *metrics.Collector
+	keyFile  string
+	keys     engine.MasterKeySet
 }
 
 // openNode acquires the directory lock, reconciles the registry against the
 // filesystem, and starts the retention reconciler. Callers outside this
 // package must go through Acquire.
-func openNode(dir string, defaults spec.Spec, mc MetricsConfig) (*Node, error) {
+func openNode(dir string, defaults spec.Spec, ao acquireOptions) (*Node, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
 	lock, err := acquireDirLock(dir)
 	if err != nil {
 		return nil, err
+	}
+	var masters engine.MasterKeySet
+	if ao.keyFile != "" {
+		masters, err = engine.LoadMasterKeys(ao.keyFile)
+		if err != nil {
+			_ = lock.release()
+			return nil, err
+		}
 	}
 	reg, err := loadRegistry(dir)
 	if err != nil {
@@ -68,13 +78,21 @@ func openNode(dir string, defaults spec.Spec, mc MetricsConfig) (*Node, error) {
 	builtin := spec.Builtin()
 	perQueue := make(map[manager.Key]engine.Config, len(reg.Queues))
 	for _, entry := range reg.Queues {
-		cfg := toEngineConfig(entry.Spec.Effective(defaults, builtin))
+		cfg, err := toEngineConfigWithKeys(entry.Spec.Effective(defaults, builtin), masters, entry.Name)
+		if err != nil {
+			_ = lock.release()
+			return nil, err
+		}
 		cfg.GateCache = entry.Kind == manager.KindLog
 		perQueue[manager.Key{Name: entry.Name, Kind: entry.Kind}] = cfg
 	}
-	defaultEngineCfg := toEngineConfig(defaults.Merge(builtin))
+	defaultEngineCfg, err := toEngineConfigWithKeys(defaults.Merge(builtin), masters, "session defaults")
+	if err != nil {
+		_ = lock.release()
+		return nil, err
+	}
 
-	mreg := newRegistry(mc)
+	mreg := newRegistry(ao.metrics)
 	mgr, err := manager.Open(dir, defaultEngineCfg, perQueue, mreg)
 	if err != nil {
 		_ = lock.release()
@@ -110,8 +128,10 @@ func openNode(dir string, defaults spec.Spec, mc MetricsConfig) (*Node, error) {
 		registry:        reg,
 		lock:            lock,
 		openedAt:        time.Now(),
+		keyFile:         ao.keyFile,
+		keys:            masters,
 	}
-	n.metrics = newCollector(mreg, mc, newRuntimeSource(), mgr, configSource{n})
+	n.metrics = newCollector(mreg, ao.metrics, newRuntimeSource(), mgr, configSource{n})
 	preregisterServerMetrics(mreg)
 	n.installAll(infos)
 	n.retentionWG.Go(func() { n.retention.Start(ctx) })
@@ -177,7 +197,10 @@ func (n *Node) createQueue(ctx context.Context, name string, kind manager.Kind, 
 	if kind == manager.KindTask && deref(eff.Storage.Compaction, spec.CompactionNone) == spec.CompactionKeys {
 		return nil, spec.Spec{}, fmt.Errorf("%w: compaction is a log-queue setting", spec.ErrInvalidConfig)
 	}
-	cfg := toEngineConfig(eff)
+	cfg, err := toEngineConfigWithKeys(eff, n.keys, name)
+	if err != nil {
+		return nil, spec.Spec{}, err
+	}
 	cfg.GateCache = kind == manager.KindLog
 	storage, err := n.mgr.Create(ctx, name, kind, cfg)
 	if err != nil {
@@ -456,6 +479,20 @@ func toEngineConfig(s spec.Spec) engine.Config {
 		MaxFlushWait:  s.Flush.MaxWait.Duration(),
 		FlushLinger:   spec.FlushLinger(s),
 	}
+}
+
+// toEngineConfigWithKeys converts a resolved spec and fails closed when the
+// queue seals payloads but the node holds no master keys.
+func toEngineConfigWithKeys(s spec.Spec, masters engine.MasterKeySet, name string) (engine.Config, error) {
+	cfg := toEngineConfig(s)
+	if !cfg.EncryptedPayloads() {
+		return cfg, nil
+	}
+	if len(masters) == 0 {
+		return engine.Config{}, fmt.Errorf("%w: queue %q wants %q payloads but no encryption_key_file is loaded", engine.ErrEncryptionKey, name, spec.EncryptionAES)
+	}
+	cfg.MasterKeys = masters
+	return cfg, nil
 }
 
 func deref[T any](p *T, fallback T) T {

@@ -30,6 +30,7 @@ const (
 	ErrCodeCorruptRecord    byte = 0x17
 	ErrCodeRecordTooLarge   byte = 0x18
 	ErrCodeRecordCompacted  byte = 0x19
+	ErrCodeEncryptionKey    byte = 0x1A
 
 	// Task block: enqueue/dequeue and lease operations.
 	ErrCodeTaskNotAvailable  byte = 0x21

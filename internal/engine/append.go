@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"time"
@@ -48,8 +49,20 @@ type stagedBatch struct {
 	recLens   []int64
 	offsets   []uint64
 	ids       [][16]byte
+	plains    [][]byte // sealed records' plaintexts, for the ring cache
 	totalLen  int64
 	startIdx  int
+}
+
+// encodeStaged writes one record frame into dst; sealed payloads are encrypted
+// into the frame's payload region before the CRC is stamped.
+func (q *Queue) encodeStaged(dst []byte, id [16]byte, ts time.Time, group, payload []byte, ctLen int) []byte {
+	if q.cipher == nil {
+		return encodeRecord(dst, id, ts, group, payload)
+	}
+	rec := frameRecord(dst, id, ts, group, ctLen)
+	q.cipher.seal(rec[offBody+len(group):], payload)
+	return stampCRC(rec)
 }
 
 // AppendBatch implements Storage.AppendBatch.
@@ -71,19 +84,34 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 	recs := make([][]byte, len(payloads))
 	bufs := make([]*pooledBuf, len(payloads))
 	recLens := make([]int64, len(payloads))
+	var plains [][]byte
+	if q.cipher != nil {
+		plains = make([][]byte, len(payloads))
+	}
 
 	// Validate and encode without touching queue state; only immutable
 	// configuration and the atomic reader gate are read here.
 	ts := time.Now()
 	cacheable := !q.cacheGated || q.hasReader.Load()
 	recyclable := !q.cfg.Async() || !cacheable
+	// Sealed payloads grow by the AEAD overhead, so the append limit shrinks
+	// by it; plaintext queues keep the raw max_payload contract.
+	limit := q.cfg.MaxPayload
+	if q.cipher != nil {
+		limit = q.MaxAppendPayloadBytes()
+	}
 	var totalBytes int64
 	for i, payload := range payloads {
-		if int64(len(payload)) > q.cfg.MaxPayload {
-			return nil, fmt.Errorf("%w: queue %q payload of %d bytes exceeds max_payload %d", ErrMessageTooLarge, q.name, len(payload), q.cfg.MaxPayload)
+		if int64(len(payload)) > limit {
+			return nil, fmt.Errorf("%w: queue %q payload of %d bytes exceeds the %d byte append limit", ErrMessageTooLarge, q.name, len(payload), limit)
 		}
 		totalBytes += int64(len(payload))
-		recLen := int64(minRecordSize + len(group) + len(payload))
+		ctLen := len(payload)
+		if q.cipher != nil {
+			ctLen += gcmOverhead
+			plains[i] = payload
+		}
+		recLen := int64(minRecordSize + len(group) + ctLen)
 		if recLen > q.cfg.MaxSegment {
 			return nil, fmt.Errorf("%w: queue %q record of %d bytes exceeds max_segment %d", ErrRecordTooLarge, q.name, recLen, q.cfg.MaxSegment)
 		}
@@ -94,9 +122,9 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 		if recyclable {
 			bb := getBuf(int(recLen))
 			bufs[i] = bb
-			rec = encodeRecord(bb.b, id, ts, group, payload)
+			rec = q.encodeStaged(bb.b, id, ts, group, payload, ctLen)
 		} else {
-			rec = encodeRecord(nil, id, ts, group, payload)
+			rec = q.encodeStaged(nil, id, ts, group, payload, ctLen)
 		}
 		recs[i] = rec
 	}
@@ -144,14 +172,19 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 		if pushErr == nil && cacheable {
 			// The rec buffers are fresh allocations the flusher only writes and
 			// discards, so the cache can hold their payload slices by reference.
+			// Sealed records carry ciphertext, so the cache gets a plaintext copy.
 			groupLen := len(group)
 			for i, rec := range b.recs {
+				payload := rec[offBody+groupLen:]
+				if q.cipher != nil {
+					payload = bytes.Clone(b.plains[i])
+				}
 				q.cache.Put(Record{
 					Offset:    b.offsets[i],
 					ID:        formatRecordID(b.ids[i]),
 					Timestamp: ts,
 					Group:     group,
-					Payload:   rec[offBody+groupLen:],
+					Payload:   payload,
 				})
 			}
 		}
@@ -238,6 +271,9 @@ func (q *Queue) AppendBatch(ctx context.Context, payloads [][]byte, opts ...Appe
 		staged.positions = append(staged.positions, q.active.pos+staged.totalLen)
 		staged.offsets = append(staged.offsets, q.nextOffset)
 		staged.ids = append(staged.ids, ids[i])
+		if plains != nil {
+			staged.plains = append(staged.plains, plains[i])
+		}
 		staged.totalLen += recLen
 		if group != nil && q.keyIndex != nil {
 			q.keyIndex[string(group)] = q.nextOffset

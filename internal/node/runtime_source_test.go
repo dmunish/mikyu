@@ -120,9 +120,7 @@ func TestRuntimeSourceSchedulerLatency(t *testing.T) {
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 	for range 4 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for {
 				select {
 				case <-stop:
@@ -131,7 +129,7 @@ func TestRuntimeSourceSchedulerLatency(t *testing.T) {
 					runtime.Gosched()
 				}
 			}
-		}()
+		})
 	}
 	time.Sleep(50 * time.Millisecond)
 	close(stop)
@@ -148,12 +146,10 @@ func TestRuntimeSourceGoroutineStates(t *testing.T) {
 	ready := make(chan struct{}, 10)
 	var wg sync.WaitGroup
 	for range 10 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			ready <- struct{}{}
 			<-release
-		}()
+		})
 	}
 	for range 10 {
 		<-ready
@@ -241,9 +237,7 @@ func TestRuntimeSourceConcurrentSnapshot(t *testing.T) {
 	ctx := t.Context()
 	churnStop := make(chan struct{})
 	var churn sync.WaitGroup
-	churn.Add(1)
-	go func() {
-		defer churn.Done()
+	churn.Go(func() {
 		for {
 			select {
 			case <-churnStop:
@@ -252,18 +246,16 @@ func TestRuntimeSourceConcurrentSnapshot(t *testing.T) {
 				runtime.Gosched()
 			}
 		}
-	}()
+	})
 
 	var wg sync.WaitGroup
 	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 50 {
 				var snap metrics.Snapshot
 				src.Collect(ctx, &snap)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(churnStop)

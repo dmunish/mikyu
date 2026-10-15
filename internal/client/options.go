@@ -28,6 +28,8 @@ type SessionConfig struct {
 	AuthTokenFile string
 	TLSClientCA   string
 
+	EncryptionKeyFile string
+
 	Durability spec.Durability
 	Encryption spec.Encryption
 	Compaction spec.Compaction
@@ -118,6 +120,11 @@ func WithAuthTokenFile(path string) Option {
 // WithTLSClientCA sets the client CA bundle for mTLS servers.
 func WithTLSClientCA(path string) Option {
 	return func(c *SessionConfig) { c.TLSClientCA = path }
+}
+
+// WithEncryptionKeyFile sets the master-key file an embedded node uses to unseal encryption: aes queues; a remote client cannot configure the server's keys.
+func WithEncryptionKeyFile(path string) Option {
+	return func(c *SessionConfig) { c.EncryptionKeyFile = path }
 }
 
 // WithMetricsEnabled turns the embedded node's live collector on or off; a remote client cannot configure the server's collector.

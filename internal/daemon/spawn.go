@@ -98,6 +98,7 @@ func daemonArgs(opts SpawnOptions) []string {
 		{"--auth-method", opts.AuthMethod},
 		{"--auth-token-file", opts.AuthTokenFile},
 		{"--tls-client-ca", opts.TLSClientCA},
+		{"--encryption-key-file", opts.EncryptionKeyFile},
 	}
 	for _, f := range flags {
 		if f.value != "" {

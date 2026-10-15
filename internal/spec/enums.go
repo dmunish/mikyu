@@ -26,6 +26,7 @@ type Encryption string
 const (
 	EncryptionNone Encryption = "none"
 	EncryptionOS   Encryption = "os"
+	EncryptionAES  Encryption = "aes"
 )
 
 // String returns the constant text.
@@ -34,7 +35,7 @@ func (e Encryption) String() string { return string(e) }
 // Valid reports whether e is one of the declared constants.
 func (e Encryption) Valid() bool {
 	switch e {
-	case EncryptionNone, EncryptionOS:
+	case EncryptionNone, EncryptionOS, EncryptionAES:
 		return true
 	}
 	return false

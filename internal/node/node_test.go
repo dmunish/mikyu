@@ -315,13 +315,13 @@ func TestNodeSnapshotIncludesQueueInstruments(t *testing.T) {
 // values without the node re-resolving them per scrape.
 func TestNodeSnapshotPublishesQueueConfig(t *testing.T) {
 	dir := t.TempDir()
-	session := spec.Spec{Storage: spec.StorageSpec{MaxCache: ptr(int64(8 << 20))}}
+	session := spec.Spec{Storage: spec.StorageSpec{MaxCache: new(int64(8 << 20))}}
 	n, release, err := Acquire(dir, session, WithMetrics(MetricsConfig{Enabled: true, Interval: time.Hour}))
 	require.NoError(t, err)
 	defer func() { _ = release() }()
 
 	ctx := t.Context()
-	createLog(t, n, "logs", spec.Spec{Storage: spec.StorageSpec{MaxCache: ptr(int64(2 << 20))}})
+	createLog(t, n, "logs", spec.Spec{Storage: spec.StorageSpec{MaxCache: new(int64(2 << 20))}})
 	createTask(t, n, "tasks", spec.Spec{})
 
 	snap, err := n.Metrics(ctx)
@@ -346,7 +346,9 @@ func TestNodeSnapshotPublishesQueueConfig(t *testing.T) {
 }
 
 // ptr returns a pointer to v, for the optional spec fields under test.
-func ptr[T any](v T) *T { return &v }
+//
+//go:fix inline
+func ptr[T any](v T) *T { return new(v) }
 
 func TestNodeCollectorDisabled(t *testing.T) {
 	dir := t.TempDir()

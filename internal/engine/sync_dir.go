@@ -2,9 +2,9 @@ package engine
 
 import "os"
 
-// Directory fsyncs cover four durability sites: a newly created segment file,
-// offset-store compaction's rename, queues.json's rename, and an active
-// segment's close-time truncation.
+// Directory fsyncs cover five durability sites: a newly created segment file,
+// offset-store compaction's rename, queues.json's rename, an active segment's
+// close-time truncation, and a queue key store's rename (encrypted queues only).
 
 // SyncDirHook, when non-nil, runs before every directory sync; tests use it to observe the four durability sites.
 var SyncDirHook func()

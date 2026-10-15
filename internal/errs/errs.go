@@ -40,6 +40,7 @@ var Table = []Entry{
 	{engine.ErrCorruptRecord, protocol.ErrCodeCorruptRecord},
 	{engine.ErrRecordTooLarge, protocol.ErrCodeRecordTooLarge},
 	{engine.ErrRecordCompacted, protocol.ErrCodeRecordCompacted},
+	{engine.ErrEncryptionKey, protocol.ErrCodeEncryptionKey},
 
 	{taskqueue.ErrTaskNotAvailable, protocol.ErrCodeTaskNotAvailable},
 	{taskqueue.ErrTaskNotFound, protocol.ErrCodeTaskNotFound},

@@ -39,7 +39,10 @@ func NewEmbedded(dir string, opts ...Option) (*embeddedClient, error) {
 		return nil, err
 	}
 
-	n, release, err := node.Acquire(dir, cfg.Spec, node.WithMetrics(cfg.metricsConfig()))
+	n, release, err := node.Acquire(dir, cfg.Spec,
+		node.WithMetrics(cfg.metricsConfig()),
+		node.WithEncryptionKeyFile(cfg.EncryptionKeyFile),
+	)
 	if err != nil {
 		return nil, err
 	}

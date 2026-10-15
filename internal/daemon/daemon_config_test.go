@@ -80,6 +80,10 @@ func TestDaemonEnumFlagsReachConfig(t *testing.T) {
 	assert.Equal(t, spec.EncryptionOS, *cfg.Defaults.Storage.Encryption)
 	assert.Equal(t, spec.CompactionKeys, *cfg.Defaults.Storage.Compaction)
 
+	cfg, _, err = resolveConfig([]string{"--config", path, "--encryption", "aes"}, io.Discard, io.Discard)
+	require.NoError(t, err)
+	assert.Equal(t, spec.EncryptionAES, *cfg.Defaults.Storage.Encryption)
+
 	_, _, err = resolveConfig([]string{"--config", path, "--durability", "eventual"}, io.Discard, io.Discard)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUsage)
@@ -159,6 +163,18 @@ func TestDaemonRejectsUnknownFlag(t *testing.T) {
 	assert.Contains(t, err.Error(), "nope")
 }
 
+func TestDaemonEncryptionKeyFile(t *testing.T) {
+	cfg, _, err := resolveConfig([]string{"--encryption-key-file", "keys"}, io.Discard, io.Discard)
+	require.NoError(t, err)
+	assert.Equal(t, "keys", cfg.Server.Encryption.KeyFile)
+
+	var stderr bytes.Buffer
+	_, _, err = resolveConfig([]string{"--encryption-key", "0123456789abcdef"}, io.Discard, &stderr)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUsage)
+	assert.Contains(t, stderr.String(), "--encryption-key-file")
+}
+
 func TestDaemonRejectsPositionalConfigPath(t *testing.T) {
 	// Step 7 moved the config path from a positional argument to --config;
 	// the old invocation must fail loudly with a hint, not silently ignore.
@@ -224,6 +240,7 @@ func TestDaemonHelpListsEveryFlag(t *testing.T) {
 		"metrics-enabled", "metrics-interval", "metrics-history", "metrics-listen",
 		"metrics-per-queue-prometheus", "metrics-histograms",
 		"auth-method", "auth-token-file",
+		"encryption-key-file",
 	} {
 		assert.Contains(t, help, "-"+name, "help should list --%s", name)
 	}

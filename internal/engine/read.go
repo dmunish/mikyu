@@ -31,6 +31,11 @@ func (q *Queue) readFromSegment(seg *segment, offset uint64) (Record, error) {
 	if err != nil {
 		return Record{}, fmt.Errorf("%w: offset %d: %v", ErrCorruptRecord, offset, err)
 	}
+	if q.cipher != nil {
+		if payload, err = q.cipher.open(payload); err != nil {
+			return Record{}, fmt.Errorf("%w: offset %d: %v", ErrCorruptRecord, offset, err)
+		}
+	}
 	return Record{Offset: offset, ID: id, Timestamp: ts, Group: group, Payload: payload}, nil
 }
 
@@ -253,6 +258,11 @@ func (q *Queue) readBatchRun(seg *segment, start, runEnd uint64, msgs []Record) 
 			id, ts, group, payload, err := decodeRecord(data[e.pos-spanStart:][:e.length][recordLengthSize:])
 			if err != nil {
 				return off, msgs, false
+			}
+			if q.cipher != nil {
+				if payload, err = q.cipher.open(payload); err != nil {
+					return off, msgs, false
+				}
 			}
 			if q.superseded(group, off) {
 				off++

@@ -13,7 +13,7 @@
   FLAGS
     STORAGE
       --durability           <enum>      Ack policy: sync fsyncs before the offset returns, async flushes in the background (default sync)
-      --encryption           <enum>      Use the OS directory encryption at rest (default none)
+      --encryption           <enum>      At-rest protection: none, os directories, or aes-sealed payloads (create-only) (default none)
       --compaction           <enum>      Drop superseded keys when a segment closes (default none)
       --max-segment          <bytes>     Bytes per segment file (default 64 MiB)
       --max-segment-age      <duration>  Maximum age before a segment rolls (default 1h0m0s)

@@ -33,6 +33,7 @@ func TestSessionScopeAssignments(t *testing.T) {
 		"auth_method":                  ScopeServer,
 		"auth_token_file":              ScopeBoth,
 		"auth_token":                   ScopeBoth,
+		"encryption_key_file":          ScopeServer,
 	}
 
 	require.Len(t, want, len(Params(LayerSession)), "a session key was added or removed")
@@ -54,6 +55,7 @@ func TestSessionPathsAreNested(t *testing.T) {
 		"auth_method":                  "server.auth.method",
 		"auth_token":                   "server.auth.token",
 		"auth_token_file":              "server.auth.token_file",
+		"encryption_key_file":          "server.encryption.key_file",
 		"metrics_enabled":              "server.metrics.enabled",
 		"metrics_interval":             "server.metrics.interval",
 		"metrics_history":              "server.metrics.history",
@@ -82,7 +84,7 @@ func TestParamsInScope(t *testing.T) {
 	assert.Empty(t, keys(client), "no session parameter is client-only")
 
 	server := ParamsInScope(LayerSession, ScopeServer)
-	assert.Equal(t, []string{"tls_client_ca", "auth_method", "metrics_listen", "metrics_per_queue_prometheus"}, keys(server))
+	assert.Equal(t, []string{"tls_client_ca", "auth_method", "encryption_key_file", "metrics_listen", "metrics_per_queue_prometheus"}, keys(server))
 
 	both := keys(ParamsInScope(LayerSession, ScopeBoth))
 	assert.Contains(t, both, "max_connections", "max_connections configures both the client pool and the server cap")

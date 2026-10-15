@@ -34,6 +34,7 @@ func declaredSentinelValues() map[string]error {
 		"engine.ErrRecordCompacted": engine.ErrRecordCompacted,
 		"engine.ErrDiskFull":        engine.ErrDiskFull,
 		"engine.ErrCorruptRecord":   engine.ErrCorruptRecord,
+		"engine.ErrEncryptionKey":   engine.ErrEncryptionKey,
 
 		"spec.ErrInvalidConfig":  spec.ErrInvalidConfig,
 		"spec.ErrImmutableField": spec.ErrImmutableField,
