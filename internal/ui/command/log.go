@@ -85,7 +85,7 @@ func Append(ctx context.Context, client mikyu.Client, name, input string, key []
 	if err != nil {
 		return 0, 0, err
 	}
-	q, err := client.LogQueue(name)
+	q, err := client.Log(ctx, name)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -102,7 +102,7 @@ func Append(ctx context.Context, client mikyu.Client, name, input string, key []
 
 // Read retrieves the record at one logical offset.
 func Read(ctx context.Context, client mikyu.Client, name string, offset uint64) (mikyu.Record, error) {
-	q, err := client.LogQueue(name)
+	q, err := client.Log(ctx, name)
 	if err != nil {
 		return mikyu.Record{}, err
 	}
@@ -111,7 +111,7 @@ func Read(ctx context.Context, client mikyu.Client, name string, offset uint64) 
 
 // Tail streams records continuously starting from startOffset, calling onMessage for each record.
 func Tail(ctx context.Context, client mikyu.Client, name string, startOffset uint64, onMessage func(msg mikyu.Record) error) error {
-	q, err := client.LogQueue(name)
+	q, err := client.Log(ctx, name)
 	if err != nil {
 		return err
 	}

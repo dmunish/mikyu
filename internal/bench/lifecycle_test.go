@@ -34,7 +34,7 @@ func TestStaleReconcile(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })
 
-	_, err = client.CreateLogQueue(t.Context(), "stale-q")
+	_, err = client.CreateLog(t.Context(), "stale-q")
 	require.NoError(t, err)
 
 	require.NoError(t, writeRuns(dir, benchRuns{Runs: []runEntry{{
@@ -47,7 +47,7 @@ func TestStaleReconcile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, runs.Runs)
 
-	_, err = client.LogQueue("stale-q")
+	_, err = client.Log(t.Context(), "stale-q")
 	require.ErrorIs(t, err, mikyu.ErrQueueNotFound, "the stale queue must be deleted")
 }
 

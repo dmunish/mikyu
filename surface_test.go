@@ -207,11 +207,11 @@ func TestParityEndToEnd(t *testing.T) {
 			name := func(surface string) string { return surface + "-" + p.Key }
 			opt := mikyu.QueueOption(func(s *mikyu.Spec) { *s = specWith(t, p) })
 
-			_, err = emb.CreateLogQueue(ctx, name("emb"), opt)
+			_, err = emb.CreateLog(ctx, name("emb"), opt)
 			require.NoError(t, err)
-			_, err = rem.CreateLogQueue(ctx, name("rem"), opt)
+			_, err = rem.CreateLog(ctx, name("rem"), opt)
 			require.NoError(t, err)
-			_, err = rem.CreateLogQueue(ctx, name("yml"))
+			_, err = rem.CreateLog(ctx, name("yml"))
 			require.NoError(t, err)
 
 			// Bool flags take their value with =, as the flag package requires.
@@ -442,6 +442,7 @@ func TestSentinelUniqueness(t *testing.T) {
 		"ErrRecordTooLarge":          mikyu.ErrRecordTooLarge,
 		"ErrRecordCompacted":         mikyu.ErrRecordCompacted,
 		"ErrDiskFull":                mikyu.ErrDiskFull,
+	"ErrEncryptionKey":           mikyu.ErrEncryptionKey,
 		"ErrWrongKind":               mikyu.ErrWrongKind,
 		"ErrQueueFull":               mikyu.ErrQueueFull,
 		"ErrProtocol":                mikyu.ErrProtocol,

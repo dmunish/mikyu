@@ -24,13 +24,13 @@ func TestMain(m *testing.M) {
 
 func createLog(t *testing.T, c mikyu.Client, name string, opts ...mikyu.QueueOption) {
 	t.Helper()
-	_, err := c.CreateLogQueue(t.Context(), name, opts...)
+	_, err := c.CreateLog(t.Context(), name, opts...)
 	require.NoError(t, err)
 }
 
 func createTask(t *testing.T, c mikyu.Client, name string, opts ...mikyu.QueueOption) {
 	t.Helper()
-	_, err := c.CreateTaskQueue(t.Context(), name, opts...)
+	_, err := c.CreateTask(t.Context(), name, opts...)
 	require.NoError(t, err)
 }
 
@@ -42,7 +42,7 @@ func TestEmbeddedClientLifecycle(t *testing.T) {
 
 	createLog(t, client, "test")
 
-	q, err := client.LogQueue("test")
+	q, err := client.Log(t.Context(), "test")
 	require.NoError(t, err)
 	assert.Equal(t, "test", q.Name())
 
@@ -65,9 +65,9 @@ func TestEmbeddedClientDuplicateQueue(t *testing.T) {
 	client, _ := mikyu.Open(dir)
 	defer client.Close()
 
-	_, err := client.CreateLogQueue(t.Context(), "dup")
+	_, err := client.CreateLog(t.Context(), "dup")
 	require.NoError(t, err)
-	_, err = client.CreateLogQueue(t.Context(), "dup")
+	_, err = client.CreateLog(t.Context(), "dup")
 	assert.Error(t, err)
 }
 
@@ -76,13 +76,13 @@ func TestEmbeddedClientDeleteQueue(t *testing.T) {
 	client, _ := mikyu.Open(dir)
 	defer client.Close()
 
-	_, err := client.CreateLogQueue(t.Context(), "temp")
+	_, err := client.CreateLog(t.Context(), "temp")
 	require.NoError(t, err)
 
 	err = client.DeleteQueue(t.Context(), "temp")
 	require.NoError(t, err)
 
-	_, err = client.LogQueue("temp")
+	_, err = client.Log(t.Context(), "temp")
 	assert.Error(t, err)
 }
 
@@ -102,7 +102,7 @@ func TestEmbeddedClientConcurrentLogQueue(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			lq, err := client.LogQueue("concurrent-q")
+			lq, err := client.Log(t.Context(), "concurrent-q")
 			assert.NoError(t, err)
 			queues[idx] = lq
 		}(i)
@@ -134,10 +134,10 @@ func TestTypedQueue(t *testing.T) {
 	client, _ := mikyu.Open(dir)
 	defer client.Close()
 
-	_, err := client.CreateLogQueue(t.Context(), "typed")
+	_, err := client.CreateLog(t.Context(), "typed")
 	require.NoError(t, err)
 
-	q, err := client.LogQueue("typed")
+	q, err := client.Log(t.Context(), "typed")
 	require.NoError(t, err)
 
 	type Item struct {
@@ -167,7 +167,7 @@ func TestEmbeddedTaskQueueLifecycle(t *testing.T) {
 	defer client.Close()
 	createTask(t, client, "tasks")
 
-	q, err := client.TaskQueue("tasks")
+	q, err := client.Task(t.Context(), "tasks")
 	require.NoError(t, err)
 	task, err := q.Enqueue(t.Context(), []byte("hello"), mikyu.WithTaskMaxAttempts(2), mikyu.WithTaskLease(time.Second))
 	require.NoError(t, err)
@@ -191,7 +191,7 @@ func TestEmbeddedTaskQueueStableHandle(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			q, err := client.TaskQueue("tasks")
+			q, err := client.Task(t.Context(), "tasks")
 			require.NoError(t, err)
 			queues[i] = q
 		}(i)
@@ -424,7 +424,7 @@ func TestNackInheritBackoffEmbedded(t *testing.T) {
 	require.NoError(t, err)
 	defer c.Close()
 	createTask(t, c, "tasks")
-	q, err := c.TaskQueue("tasks")
+	q, err := c.Task(t.Context(), "tasks")
 	require.NoError(t, err)
 
 	_, err = q.Enqueue(t.Context(), []byte("x"), mikyu.WithTaskMaxAttempts(3), mikyu.WithTaskLease(time.Second))
@@ -452,7 +452,7 @@ func TestNackInheritBackoffRemote(t *testing.T) {
 	require.NoError(t, err)
 	defer c.Close()
 	createTask(t, c, "tasks")
-	q, err := c.TaskQueue("tasks")
+	q, err := c.Task(t.Context(), "tasks")
 	require.NoError(t, err)
 
 	_, err = q.Enqueue(t.Context(), []byte("x"), mikyu.WithTaskMaxAttempts(3))

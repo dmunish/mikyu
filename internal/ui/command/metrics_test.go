@@ -25,9 +25,9 @@ func metricsClient(t *testing.T) mikyu.Client {
 	t.Cleanup(func() { _ = c.Close() })
 
 	ctx := t.Context()
-	_, err = c.CreateLogQueue(ctx, "events")
+	_, err = c.CreateLog(ctx, "events")
 	require.NoError(t, err)
-	q, err := c.LogQueue("events")
+	q, err := c.Log(ctx, "events")
 	require.NoError(t, err)
 	_, err = q.Append(ctx, []byte("hello"))
 	require.NoError(t, err)

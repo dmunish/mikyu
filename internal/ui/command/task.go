@@ -23,7 +23,7 @@ func Enqueue(ctx context.Context, client mikyu.Client, queue, input string, opts
 	if err != nil {
 		return mikyu.Task{}, 0, err
 	}
-	tq, err := client.TaskQueue(queue)
+	tq, err := client.Task(ctx, queue)
 	if err != nil {
 		return mikyu.Task{}, 0, err
 	}
@@ -51,7 +51,7 @@ func Enqueue(ctx context.Context, client mikyu.Client, queue, input string, opts
 
 // Dequeue waits up to timeout for a due task; timeout < 0 waits indefinitely, 0 is a single non-blocking attempt.
 func Dequeue(ctx context.Context, client mikyu.Client, queue string, timeout time.Duration) (mikyu.Task, error) {
-	tq, err := client.TaskQueue(queue)
+	tq, err := client.Task(ctx, queue)
 	if err != nil {
 		return mikyu.Task{}, err
 	}
@@ -77,7 +77,7 @@ func Dequeue(ctx context.Context, client mikyu.Client, queue string, timeout tim
 
 // TaskAck acknowledges a leased task.
 func TaskAck(ctx context.Context, client mikyu.Client, queue string, ref mikyu.TaskRef) error {
-	tq, err := client.TaskQueue(queue)
+	tq, err := client.Task(ctx, queue)
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func TaskAck(ctx context.Context, client mikyu.Client, queue string, ref mikyu.T
 
 // TaskNack returns a task for redelivery with either the server-computed backoff or an explicit retry delay.
 func TaskNack(ctx context.Context, client mikyu.Client, queue string, ref mikyu.TaskRef, retryAfter time.Duration, explicitRetry bool) error {
-	tq, err := client.TaskQueue(queue)
+	tq, err := client.Task(ctx, queue)
 	if err != nil {
 		return err
 	}
@@ -98,7 +98,7 @@ func TaskNack(ctx context.Context, client mikyu.Client, queue string, ref mikyu.
 
 // TaskExtend extends a task lease forward.
 func TaskExtend(ctx context.Context, client mikyu.Client, queue string, ref mikyu.TaskRef, timeout time.Duration) error {
-	tq, err := client.TaskQueue(queue)
+	tq, err := client.Task(ctx, queue)
 	if err != nil {
 		return err
 	}
@@ -107,7 +107,7 @@ func TaskExtend(ctx context.Context, client mikyu.Client, queue string, ref miky
 
 // TaskDeadLetters returns a queue's dead-letter tasks.
 func TaskDeadLetters(ctx context.Context, client mikyu.Client, queue string) ([]mikyu.Task, error) {
-	tq, err := client.TaskQueue(queue)
+	tq, err := client.Task(ctx, queue)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +116,7 @@ func TaskDeadLetters(ctx context.Context, client mikyu.Client, queue string) ([]
 
 // TaskAckDeadLetter permanently removes a dead-letter task.
 func TaskAckDeadLetter(ctx context.Context, client mikyu.Client, queue string, ref mikyu.TaskRef) error {
-	tq, err := client.TaskQueue(queue)
+	tq, err := client.Task(ctx, queue)
 	if err != nil {
 		return err
 	}
@@ -125,7 +125,7 @@ func TaskAckDeadLetter(ctx context.Context, client mikyu.Client, queue string, r
 
 // TaskArchive moves a task into its queue's archive log.
 func TaskArchive(ctx context.Context, client mikyu.Client, queue string, ref mikyu.TaskRef) error {
-	tq, err := client.TaskQueue(queue)
+	tq, err := client.Task(ctx, queue)
 	if err != nil {
 		return err
 	}

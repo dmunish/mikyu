@@ -39,7 +39,7 @@ func childProduce(ctx context.Context, client mikyu.Client, kind, queue string, 
 	buf := make([]byte, msgSize)
 	var offset uint64
 	if kind == KindTask {
-		taskQueue, err := client.TaskQueue(queue)
+		taskQueue, err := client.Task(ctx, queue)
 		if err != nil {
 			return err
 		}
@@ -54,7 +54,7 @@ func childProduce(ctx context.Context, client mikyu.Client, kind, queue string, 
 			offset++
 		}
 	}
-	logQueue, err := client.LogQueue(queue)
+	logQueue, err := client.Log(ctx, queue)
 	if err != nil {
 		return err
 	}

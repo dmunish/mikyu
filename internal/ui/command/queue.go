@@ -28,10 +28,10 @@ func KindFromName(name string) (mikyu.QueueKind, error) {
 func Create(ctx context.Context, client mikyu.Client, kind mikyu.QueueKind, name string, opts ...mikyu.QueueOption) error {
 	switch kind {
 	case mikyu.QueueKindTask:
-		_, err := client.CreateTaskQueue(ctx, name, opts...)
+		_, err := client.CreateTask(ctx, name, opts...)
 		return err
 	default:
-		_, err := client.CreateLogQueue(ctx, name, opts...)
+		_, err := client.CreateLog(ctx, name, opts...)
 		return err
 	}
 }

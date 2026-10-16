@@ -68,7 +68,7 @@ func Run(ctx context.Context, opts Options) (result.Result, error) {
 	}
 
 	r := &runner{opts: opts, client: handle.Client, queueNames: names, measure: NewMeasure()}
-	if err := r.openQueues(); err != nil {
+	if err := r.openQueues(ctx); err != nil {
 		return result.Result{}, err
 	}
 	if opts.Verify {
@@ -242,10 +242,10 @@ func (r *runner) dispatch(ctx context.Context) error {
 }
 
 // openQueues resolves a driver handle for every queue the run created.
-func (r *runner) openQueues() error {
+func (r *runner) openQueues(ctx context.Context) error {
 	if r.isLog() {
 		for _, name := range r.queueNames {
-			q, err := r.client.LogQueue(name)
+			q, err := r.client.Log(ctx, name)
 			if err != nil {
 				return err
 			}
@@ -254,7 +254,7 @@ func (r *runner) openQueues() error {
 		return nil
 	}
 	for _, name := range r.queueNames {
-		q, err := r.client.TaskQueue(name)
+		q, err := r.client.Task(ctx, name)
 		if err != nil {
 			return err
 		}
@@ -419,9 +419,9 @@ func createQueues(ctx context.Context, client mikyu.Client, names []string, opts
 	for _, name := range names {
 		var err error
 		if opts.Workload.Kind == KindTask {
-			_, err = client.CreateTaskQueue(ctx, name, opt)
+			_, err = client.CreateTask(ctx, name, opt)
 		} else {
-			_, err = client.CreateLogQueue(ctx, name, opt)
+			_, err = client.CreateLog(ctx, name, opt)
 		}
 		if err != nil {
 			return err

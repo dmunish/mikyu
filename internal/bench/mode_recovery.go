@@ -116,7 +116,7 @@ func (r *runner) recoveryMeasure(ctx context.Context) (*result.RecoveryMetrics, 
 // recoveryFirstRead proves the queue answers its first read after the crash.
 func (r *runner) recoveryFirstRead(ctx context.Context, client mikyu.Client) error {
 	if r.isLog() {
-		q, err := client.LogQueue(r.queueNames[0])
+		q, err := client.Log(ctx, r.queueNames[0])
 		if err != nil {
 			return err
 		}
@@ -127,7 +127,7 @@ func (r *runner) recoveryFirstRead(ctx context.Context, client mikyu.Client) err
 		_, err = q.Read(ctx, minOffset)
 		return err
 	}
-	q, err := client.TaskQueue(r.queueNames[0])
+	q, err := client.Task(ctx, r.queueNames[0])
 	if err != nil {
 		return err
 	}
@@ -140,14 +140,14 @@ func (r *runner) recoveryFirstRead(ctx context.Context, client mikyu.Client) err
 // recoveryFull proves the queue's tail is readable after the crash.
 func (r *runner) recoveryFull(ctx context.Context, client mikyu.Client) error {
 	if r.isLog() {
-		q, err := client.LogQueue(r.queueNames[0])
+		q, err := client.Log(ctx, r.queueNames[0])
 		if err != nil {
 			return err
 		}
 		_, err = q.LastOffset(ctx)
 		return err
 	}
-	q, err := client.TaskQueue(r.queueNames[0])
+	q, err := client.Task(ctx, r.queueNames[0])
 	if err != nil {
 		return err
 	}

@@ -100,9 +100,9 @@ func TestKindInference(t *testing.T) {
 	require.NoError(t, err)
 	defer client.Close()
 	ctx := t.Context()
-	_, err = client.CreateLogQueue(ctx, "events")
+	_, err = client.CreateLog(ctx, "events")
 	require.NoError(t, err)
-	_, err = client.CreateTaskQueue(ctx, "jobs")
+	_, err = client.CreateTask(ctx, "jobs")
 	require.NoError(t, err)
 
 	sess := &replSession{client: client, ctx: ctx}

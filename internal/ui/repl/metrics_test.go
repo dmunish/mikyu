@@ -17,7 +17,7 @@ func metricsSession(t *testing.T) *replSession {
 	t.Cleanup(func() { _ = client.Close() })
 
 	ctx := t.Context()
-	_, err = client.CreateLogQueue(ctx, "events")
+	_, err = client.CreateLog(ctx, "events")
 	require.NoError(t, err)
 	return &replSession{client: client, ctx: ctx}
 }
