@@ -113,6 +113,8 @@ Log queues and task queues sit on the same engine. A queue's kind comes from whe
 
 **Task queues** are at-least-once work queues. Dequeue hands you a task with a visibility lease. Ack it and it's done. Let the lease expire and it comes back, with backoff, until it hits the attempt limit and lands in a per-queue dead-letter queue.
 
+A guided tour of the whole system lives in [ARCHITECTURE.md](.\ARCHITECTURE.md).
+
 ## <img src="https://api.iconify.design/lucide/code-xml.svg?color=%23ffca86" width="20" height="20">&nbsp; Quickstart
 
 ### Install
@@ -299,7 +301,7 @@ None of this is a claim that mikyu beats any of them. Most of those systems solv
 - [x] Benchmark utility
 - [x] Performance improvements, platform-specific optimizations
 - [x] Encryption of data on-disk
-- [ ] Comprehensive documentation
+- [x] Comprehensive documentation
 - [ ] Block-striping experiment
 - [ ] Btop-like TUI dashboard for observability and maintenance
 - [ ] SDKs for Python, JS/TS, Rust and others
