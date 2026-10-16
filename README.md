@@ -153,7 +153,7 @@ func main() {
     defer mq.Close()
 
     // Log queue
-    logQ, _ := mq.CreateLogQueue(ctx, "events")
+    logQ, _ := mq.OpenLog(ctx, "events")
     offset, _ := logQ.Append(ctx, []byte("hello"))
     fmt.Println("appended at", offset)
 
@@ -161,7 +161,7 @@ func main() {
     fmt.Println("read:", string(record.Payload))
 
     // Task queue
-    taskQ, _ := mq.CreateTaskQueue(ctx, "jobs")
+    taskQ, _ := mq.OpenTask(ctx, "jobs")
     task, _ := taskQ.Enqueue(ctx, []byte("send email"))
     delivered, _ := taskQ.Dequeue(ctx)
     fmt.Println("got task:", delivered.ID)
