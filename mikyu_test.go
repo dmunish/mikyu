@@ -242,7 +242,7 @@ func TestRemoteUpdateQueueImmutable(t *testing.T) {
 }
 
 // TestSchemaOverWire: embedded and remote Schema share the same table, field
-// for field — the schema is a property of the build, not of the transport.
+// for field. The schema is a property of the build, not of the transport.
 func TestSchemaOverWire(t *testing.T) {
 	emb, err := mikyu.Open(t.TempDir())
 	require.NoError(t, err)
