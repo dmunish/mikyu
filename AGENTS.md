@@ -27,6 +27,7 @@ A queue's **kind is structural**: it is the name of its parent directory under t
 14. **Reader gate on the ring cache.** Task-style drivers that read back their own appends leave `GateCache` off; log-queue writes only populate the cache after the first read, saving the per-append copy on produce-only workloads.
 15. **One writer goroutine per batch, ordered completion.** A batch is written by exactly one writer — an `iow.Writer` pool worker (`GOMAXPROCS` under `Buffered`, 1 under `DataSync`) or the io_uring ring reaper on hosts that have it — and completions arrive in submission order, which is what lets the WAL advance a byte watermark without a reorder buffer of its own. Producers stage via `push`/`pushBatch` (sync) or `pushAsyncBatch` (async). Test hooks assert the invariant.
 16. **One writer per batch, bounded by `iow.slots`.** The async path's slot channel is the *only* backpressure point producers observe; the writer's internal queue is at least as deep so producers never stall inside the writer.
+17. **The public surface is designed, not re-exported.** The root `mikyu` package owns its contract: interfaces, value types, and the option vocabulary are declared there with consumer-facing godoc, and adapters bridge to the internals. Schema and telemetry data contracts (`Spec`, `Param`, `Session`, `Metrics`) are the deliberate alias exception: they are versioned artifacts shared with the wire format.
 
 ### Guarantees
 
@@ -58,8 +59,14 @@ A queue's **kind is structural**: it is the name of its parent directory under t
 ```
 github.com/dmunish/mikyu/
 ├── .go-arch-lint.yml
-├── mikyu.go / options.go / spec.go / typed.go   # Public SDK facade
-├── cmd/mikyu/main.go                            # Entry: run, exitCode
+├── doc.go / mikyu.go                              # Package narrative; Open and Dial
+├── client.go / logqueue.go / taskqueue.go         # Designed contract: Client, LogQueue, Group, TaskQueue
+├── types.go / spec.go / metrics.go                # Public value types; schema and telemetry data contracts
+├── errors.go / errors_predicates.go               # Error taxonomy and the Is helpers
+├── options.go / options_client.go / options_queue.go / options_task.go
+├── typed.go / typed_task.go                       # Generic layer over the designed interfaces
+├── adapter.go / adapter_log.go / adapter_task.go  # Adapters implementing the contract over internal/client
+├── cmd/mikyu/main.go                              # Entry: run, exitCode
 └── internal/
     ├── audit/                     # Source gates: TestNoLegacyNames, TestInternalCommentStyle
     ├── bench/                     # Benchmark harness (modes, phases, measure, envelope, verify)
@@ -142,7 +149,7 @@ flowchart TB
   end
   subgraph L5["L5 — Process Core & Presentation"]
     DAEMON["daemon"]:::core
-    MIKYU["mikyu (facade)"]:::core
+    MIKYU["mikyu (public SDK)"]:::core
     STYLE["ui/style"]:::leaf
     HUMAN["ui/human"]:::leaf
     MVIEW["ui/metricsview"]:::leaf
@@ -420,42 +427,120 @@ type iocpBatch struct {
 
 ## 4. Public SDK — `mikyu` Package
 
+The root package is a **designed port with adapters**, not a mirror of internals. It owns the public contract — interfaces, value types, option vocabulary, and the error taxonomy — declared there with consumer-facing godoc, and a thin adapter layer implements the contract over `internal/client`. The design line is *behavior is designed, data contracts are aliased*: interfaces and value types crossing the boundary are declared at the root and converted by adapters, while `Spec`, `Param`, `Session`, and `Metrics` are re-exported by alias because they are versioned artifacts shared with the wire, YAML, and storage formats.
+
+### Facade (`doc.go`, `mikyu.go`)
+
 ```go
-type Client interface {
-    io.Closer
-    CreateLogQueue(ctx context.Context, name string, opts ...QueueOption) (LogQueue, error)
-    CreateTaskQueue(ctx context.Context, name string, opts ...QueueOption) (TaskQueue, error)
-    LogQueue(name string) (LogQueue, error)
-    TaskQueue(name string) (TaskQueue, error)
-    UpdateQueue(ctx context.Context, name string, opts ...QueueOption) error
-    DescribeQueue(ctx context.Context, name string) (QueueDescription, error)
-    DeleteQueue(ctx context.Context, name string) error
-    ListQueues(ctx context.Context) ([]QueueInfo, error)
-    Truncate(ctx context.Context, name string, minOffset uint64) (int64, error)
-    Metrics(ctx context.Context) (Metrics, error)
-    Schema(ctx context.Context) ([]Param, error)
-    SubscribeSnapshots() (<-chan Metrics, func())
-}
 func Open(dir string, opts ...ClientOption) (Client, error)
 func Dial(target string, opts ...ClientOption) (Client, error)
 const SpecVersion = spec.CurrentSpecVersion   // 5
 ```
 
-**Type aliases** (`mikyu.go`): `LogQueue = logqueue.Log`, `TaskQueue = client.TaskQueue`, `Record = engine.Record`, `Group = logqueue.Group`, `Task = taskqueue.Task`, `TaskRef = taskqueue.Ref`, `TaskID = taskqueue.ID`, `QueueKind = node.Kind`, `QueueInfo = node.QueueInfo`, `QueueDescription = client.QueueDescription`, `Metrics = metrics.Snapshot`, `Param/Kind/Layer/Scope/Session = spec.*`.
+- `Open` embeds the engine in-process. The data directory is held under an exclusive lock (`ErrLocked`), clients are ref-counted per absolute dir, and a second `Open` must agree on session defaults and the encryption key file (`ErrSessionDefaultsMismatch`).
+- `Dial` is lazy: `tcp://`, `unix://`, `pipe://`, or bare `host:port`; the first operation connects. `WithAutoStart` spawns a daemon when the target is not already serving.
 
-**Typed wrapper** (`typed.go`):
+### Designed contract (`client.go`, `logqueue.go`, `taskqueue.go`)
+
+```go
+type Client interface {
+    io.Closer
+    QueueAccess      // OpenLog/OpenTask get-or-create; Log/Task resolve-only
+    QueueAdmin       // CreateLog/CreateTask strict; Update, Describe, Delete, List, Truncate
+    Telemetry        // Metrics, Schema, SubscribeSnapshots
+}
+
+type LogQueue interface {
+    Name() string
+    Append(ctx, payload, ...AppendOption) (uint64, error)
+    AppendBatch(ctx, payloads, ...AppendOption) ([]uint64, error)
+    Read(ctx, offset) (Record, error)
+    ReadBatch(ctx, start, count) ([]Record, error)
+    Fetch(ctx, offset, maxCount, maxWait) ([]Record, error)
+    Stream(ctx, start) iter.Seq2[Record, error]   // drains history, then stops
+    Tail(ctx, start) iter.Seq2[Record, error]     // drains, then follows until ctx is done
+    LastOffset(ctx) (uint64, error)               // next-append offset; readable range is [MinOffset, LastOffset)
+    MinOffset(ctx) (uint64, error)
+    Group(name string) Group
+}
+
+type Group interface {    // offsets are group state, not queue state
+    io.Closer
+    Name() string
+    Mark(offset uint64)               // high-water advances to offset+1, monotonic
+    Commit(ctx) error                 // persists the high-water
+    Committed(ctx) (uint64, error)
+    Close() error                     // idempotent; commits the final position
+}
+
+type TaskQueue interface {
+    Name() string
+    Enqueue(ctx, payload, ...EnqueueOption) (Task, error)
+    Dequeue(ctx) (Task, error)                 // blocks until a task is due or ctx is done
+    TryDequeue(ctx) (Task, error)              // ErrTaskNotAvailable when nothing is due
+    Ack(ctx, ref Ref) error
+    Nack(ctx, ref Ref, ...NackOption) error    // default backoff 1s doubling to 5m; budget exhausted → DLQ
+    Extend(ctx, ref Ref, timeout) error        // forward-only lease renewal, never a new attempt
+    DeadLetters(ctx) ([]Task, error)
+    AckDeadLetter(ctx, ref Ref) error
+    Archive(ctx, ref Ref) error                // moves the task to the `<queue>-archive` log queue
+}
+```
+
+**Semantics the designed surface pins** (the adapters make these true on both transports):
+
+- **Three queue-access verbs per kind.** `Log`/`Task` resolve an existing queue and never create (`ErrQueueNotFound`, `ErrWrongKind`); `OpenLog`/`OpenTask` get-or-create, with options applying only at creation; `CreateLog`/`CreateTask` are strict creates (`ErrQueueExists`). Separate verbs instead of a create flag because booleans are unreadable at the call site (`os.Open`/`os.Create` precedent).
+- **Honest resolution.** The internal remote client resolves lazily; the adapter verifies through `DescribeQueue` plus a kind check, so `Log`/`Task` are truthful over the wire too. A bare name that exists under both kinds resolves log-first, matching `Update`/`Delete`/`Describe`.
+- **Handle stability.** Adapters memoize handles per name, so repeated resolution returns the identical handle; `DeleteQueue` invalidates the cache, and `Create*` always passes through so the duplicate-create error survives.
+- **`Dequeue` blocks until ctx is done.** The internal drivers already re-arm; the contract surfaces that instead of a hidden poll window. `TryDequeue` is the explicit non-blocking form.
+- **Offsets belong to `Group`.** `CommitOffset`/`Committed` are not on `LogQueue`; `SetDefaults`, `TruncateFloor`, and `MaxAppendPayloadBytes` never surface.
+
+### Value types (`types.go`)
+
+`Record` and `Task` are root-designed structs converted at the boundary, not aliases of `engine.Record`/`taskqueue.Task`. `Ref` is a **sealed union**:
+
+```go
+type Ref interface{ taskRef() }   // implemented only by Task and TaskID
+type Task struct { ID, Payload, Attempts, MaxAttempts, Lease, ScheduledAt, DeliveryID, Offset, Key, Stalled ... }
+type TaskID string
+type TaskRef = Ref                // retained name
+```
+
+`Task` carries the full delivery identity for the strict stale-lease check; `TaskID` skips it for admin flows, with visibility still enforced. `QueueInfo` and `QueueDescription` are designed structs; `QueueKind = node.Kind` with `QueueKindLog`/`QueueKindTask`.
+
+### Errors (`errors.go`, `errors_predicates.go`)
+
+Every wire sentinel is re-exported with a doc, grouped as configuration/node, queue/record/task, and transport. Predicates over `errors.Is`:
+
+```go
+func IsNotFound(err error) bool   // ErrQueueNotFound, ErrTaskNotFound, ErrDeadLetterNotFound (not ErrOffsetNotFound)
+func IsStale(err error) bool      // ErrTaskStale, ErrDeadLetterStale
+func IsFull / IsClosed / IsTooLarge / IsCorrupt
+```
+
+### Options (`options.go`, `options_client.go`, `options_queue.go`, `options_task.go`)
+
+The option types are aliases of the internal func types (`ClientOption = client.Option`, `QueueOption = client.QueueOption`, `AppendOption`/`EnqueueOption`/`NackOption`); every `With*` constructor is designed at the root. The naming rule: no prefix means a queue-level setting, the `Task` prefix a per-task enqueue value, `Key`/`ScheduledAt` the remaining per-task values, the `Record` prefix a per-record append value, and `RetryAfter` the per-nack delay. Where a concept exists at two layers the queue-level option is the default and the per-call option overrides it.
+
+### Typed layer (`typed.go`, `typed_task.go`)
 
 ```go
 type Codec[T any] struct { Marshal func(T) ([]byte, error); Unmarshal func([]byte, *T) error }
-type Typed[T any] struct { queue LogQueue; codec Codec[T] }
+func JSONCodec[T any]() Codec[T]
 func NewTyped[T any](q LogQueue, codec Codec[T]) *Typed[T]
-func (t *Typed[T]) Append(ctx context.Context, val T) (uint64, error)
-func (t *Typed[T]) Read(ctx context.Context, offset uint64) (T, error)
+func NewTypedTask[T any](q TaskQueue, codec Codec[T]) *TypedTask[T]
+type Delivered[T any] struct { Task Task; Value T }
 ```
 
-**Schema surface** (`spec.go`): `Schema() []Param`, `Lookup(key) (Param, bool)`, `EncodeSpec`, `EncodeSpecYAML`, `DecodeSpec`, `DecodeSpecYAML`, `ValidateCreate`, `ValidateUpdate`, `ValidateSession`, `Builtin()`, `BuiltinSession()`.
+`Typed[T]` mirrors the log surface (Append, AppendBatch, Read, ReadBatch, Fetch, Stream, Tail, LastOffset, MinOffset) over plain values; `Queue()` is the escape hatch back to the `LogQueue`. Decode failures surface as the iteration error in `Stream`/`Tail` and as ordinary errors in the batch reads. `TypedTask[T]` pairs `Dequeue`/`TryDequeue` results as `Delivered[T]` so `Ack`/`Nack`/`Extend` take the pair; `DeadLetters` returns raw `Task` values because dead-letter payloads may predate the current codec, and a task that fails to decode still returns its `Task` so the caller can `Nack` it rather than lose it.
 
-**Options** (`options.go`): every `With*` constructor re-exports `client.With*` / `taskqueue.With*` / `logqueue.With*`. Notable ones not derived from `spec.Table`: `WithSessionSpec`, `WithAutoStart`, `WithKey` (task), `WithRecordKey` (log), `WithTaskLease`, `WithTaskMaxAttempts`.
+### Adapters (`adapter.go`, `adapter_log.go`, `adapter_task.go`)
+
+`clientAdapter` wraps `internal/client.Client` — embedded and remote both flow through it — and owns handle memoization, create/delete cache invalidation, and the `DescribeQueue`-based resolution. The `logQueue` and `taskQueue` adapters convert value types at the boundary: `adapter_log.go` owns record conversion, `adapter_task.go` owns task and ref conversion. Satisfaction is pinned at compile time:
+
+```go
+var _ Client = (*clientAdapter)(nil)
+```
 
 ---
 
@@ -2285,6 +2370,8 @@ func exitCode(err error) int {
 - `internal/audit`:
   - `TestNoLegacyNames` scans every non-test Go file for banned identifiers (with whitelisting for the SDK surface and selector/method positions).
   - `TestInternalCommentStyle` enforces at-most-one-line doc comments on internal packages and exported symbols (root `mikyu` is exempt).
+- Root `mikyu` gates (`surface_test.go`): `TestNamingLaw` bans retired vocabulary on the public interfaces, `TestNoIDSiblings` forbids ID-suffixed method pairs, `TestNoCloseOnDrivers` keeps `Close` off the queue handles, `TestSurfaceNoInfo`/`TestMetricsIsOnlyStatsSurface` keep `Metrics` the only observation surface, and `TestSentinelUniqueness` pins the exported error set.
+- `doc_test.go` (`TestEveryExportHasDoc`) requires every exported type, function, interface method, and struct field in the root package to carry godoc; `example_test.go` Examples are output-verified; `api_test.go` covers the designed surface (get-or-create, resolve parity across transports, sealed `Ref`, blocking `Dequeue`, handle stability, the typed layer).
 - `TestParityEveryOp`, `TestParityEveryError`, `TestParityMixedKinds`, `TestSchemaOverWire` require embedded and remote surfaces to agree field for field.
 - `TestErrorTaxonomyTotal` requires every declared sentinel to be mapped or explicitly off-wire; every wire code to have a sentinel.
 - `TestEverySpecParamHasDoc` (`ui/command/help_test.go`) requires every `spec.Table` row to carry a `Doc`.
@@ -2369,3 +2456,9 @@ func exitCode(err error) int {
 | **`keys.dat` binds the queue name as AAD** | Copying a key store between queues fails authentication, so a key file cannot silently decrypt a different queue's data. |
 | **`encryption` is create-only** | Flipping it after creation would silently mix plaintext and ciphertext records with no way to tell them apart; master-key rotation is the supported change path. |
 | **`Snapshot`, not instruments, feeds Prometheus** | The exposition is a projection of `Snapshot`; instruments stay the nil-safe, allocation-cheap recording layer behind the single observation surface. Replacing them with `client_golang` types would invert the dataflow (rebuilding `Snapshot` from `dto` every tick) and drop the `mikyu_runtime_*`/`mikyu_lock_*`/`mikyu_gc_*`/`mikyu_storage_*` families the standard collectors cannot supply. The adapter renders `Snapshot` through `prometheus.Collector`, and `promhttp` owns the wire format. |
+| **The root package is a designed port with adapters** | The public contract is owned, documented, and drift-guarded at the boundary; internals stay internal. Schema and telemetry data contracts stay aliases because they are versioned artifacts shared with the wire format. |
+| **Three queue-access verbs, not a create flag** | `Log`/`OpenLog`/`CreateLog` (and the task trio) carry three different contracts; booleans are unreadable at the call site (`os.Open` vs `os.Create`). |
+| **Offsets belong to `Group`, not `LogQueue`** | Consumer positions are group state; the queue surface stays minimal. |
+| **`Dequeue(ctx)` blocks until ctx is done** | No hidden poll window in the contract; `TryDequeue` is the explicit non-blocking form. |
+| **`Ref` is a sealed union of `Task` and `TaskID`** | Strict stale-lease identity for workers, bare-ID convenience for admin tools, without leaking driver types. |
+| **Adapters memoize queue handles** | Repeated resolution returns the identical handle; `DeleteQueue` invalidates, and `Create*` always passes through so the duplicate-create error survives. |
