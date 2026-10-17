@@ -49,8 +49,8 @@ func run(args []string) error {
 	case "version", "--version":
 		fmt.Printf("mikyu (spec version %d)\n", mikyu.SpecVersion)
 		return nil
-	case "daemon", "server":
-		return daemon.Run(args[1:])
+	case "daemon":
+		return daemon.Run(args[1:], os.Stderr)
 	case "bench-child":
 		return bench.RunChild(args[1:])
 	case "shell", "repl":

@@ -36,8 +36,31 @@ var ErrUsage = errors.New("usage error")
 // spawnReadyTimeout is how long a caller waits for a freshly spawned daemon to accept connections.
 const spawnReadyTimeout = 3 * time.Second
 
-// Run parses args (CLI flags layered over MIKYU_* environment variables and the config file: flags > env > file > defaults), starts the daemon, and blocks until an interrupt signal or a graceful client stop ends it.
-func Run(args []string) error {
+// Run parses the daemon subcommand and dispatches it. The bare form is an
+// alias for run, so `mikyu daemon [flags]` and `mikyu daemon run [flags]`
+// start the same foreground server.
+func Run(args []string, stderr io.Writer) error {
+	sub, rest := splitSubcommand(args)
+	switch sub {
+	case "", "run":
+		return runDaemon(rest)
+	default:
+		fmt.Fprintf(stderr, "mikyu daemon: unknown command %q; usage: mikyu daemon run|status|stop|logs\n", sub)
+		return fmt.Errorf("%w: unknown command %q", ErrUsage, sub)
+	}
+}
+
+// splitSubcommand peels the leading subcommand off args: a leading flag or
+// an empty argument list leaves the bare form, which means run.
+func splitSubcommand(args []string) (string, []string) {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return "", args
+	}
+	return args[0], args[1:]
+}
+
+// runDaemon starts the foreground server (flags layered over MIKYU_* environment variables and the config file: flags > env > file > defaults) and blocks until an interrupt signal or a graceful client stop ends it.
+func runDaemon(args []string) error {
 	cfg, resolvedPath, err := resolveConfig(args, os.Stdout, os.Stderr)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -212,11 +235,11 @@ func defaultsJSON(s spec.Spec) string {
 // with usage text and wrapped in ErrUsage.
 func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, string, error) {
 	var out bytes.Buffer
-	fs := flag.NewFlagSet("mikyu daemon", flag.ContinueOnError)
+	fs := flag.NewFlagSet("mikyu daemon run", flag.ContinueOnError)
 	fs.SetOutput(&out)
 	fs.Usage = func() {
 		w := fs.Output()
-		fmt.Fprint(w, "Usage: mikyu daemon [flags]\n\nStarts the Mikyu server daemon.\n\nFlags:\n")
+		fmt.Fprint(w, "Usage: mikyu daemon run [flags]\n\nStarts the Mikyu server daemon in the foreground.\n\nFlags:\n")
 		fs.PrintDefaults()
 		fmt.Fprint(w, "\nPrecedence: flags > MIKYU_* environment variables > config file > defaults.\nThe config file's \"queues:\" list cannot be set from the command line.\n")
 	}
@@ -282,7 +305,7 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 
 	if rest := fs.Args(); len(rest) > 0 {
 		arg := rest[0]
-		fmt.Fprintf(stderr, "mikyu daemon: unexpected argument %q", arg)
+		fmt.Fprintf(stderr, "mikyu daemon run: unexpected argument %q", arg)
 		if lower := strings.ToLower(arg); strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".yml") {
 			fmt.Fprint(stderr, " (pass a config file with --config)")
 		}

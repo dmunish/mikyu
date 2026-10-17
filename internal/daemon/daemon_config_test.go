@@ -290,3 +290,31 @@ func TestDaemonBootstrapWithoutConfigFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(777), *cfg.Defaults.Flush.MaxBytes)
 }
+
+func TestSplitSubcommand(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		sub  string
+		rest []string
+	}{
+		{args: nil, sub: "", rest: nil},
+		{args: []string{"--help"}, sub: "", rest: []string{"--help"}},
+		{args: []string{"--data-dir", "d"}, sub: "", rest: []string{"--data-dir", "d"}},
+		{args: []string{"run"}, sub: "run", rest: []string{}},
+		{args: []string{"status", "--json"}, sub: "status", rest: []string{"--json"}},
+		{args: []string{"stop", "--yes"}, sub: "stop", rest: []string{"--yes"}},
+	} {
+		sub, rest := splitSubcommand(tc.args)
+		assert.Equal(t, tc.sub, sub, "args: %v", tc.args)
+		assert.Equal(t, tc.rest, rest, "args: %v", tc.args)
+	}
+}
+
+func TestRunRejectsUnknownSubcommand(t *testing.T) {
+	var stderr bytes.Buffer
+	err := Run([]string{"frobnicate"}, &stderr)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUsage)
+	assert.Contains(t, stderr.String(), "unknown command")
+	assert.Contains(t, stderr.String(), "frobnicate")
+}

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"io"
 	"net"
 	"path/filepath"
 	"testing"
@@ -30,7 +31,7 @@ func freeTCPAddr(tb testing.TB) string {
 func startDaemon(tb *testing.T, target string, args ...string) (finish func()) {
 	tb.Helper()
 	exited := make(chan error, 1)
-	go func() { exited <- Run(args) }()
+	go func() { exited <- Run(args, io.Discard) }()
 
 	dead := false // Run returned before ready; its result was already consumed.
 	deadline := time.Now().Add(10 * time.Second)
@@ -100,7 +101,7 @@ func TestDaemonRunBindFailureReturnsError(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- Run([]string{"--config", cfgPath, "--target", "tcp://" + busy.Addr().String(), "--data-dir", filepath.Join(tmp, "data")})
+		done <- Run([]string{"--config", cfgPath, "--target", "tcp://" + busy.Addr().String(), "--data-dir", filepath.Join(tmp, "data")}, io.Discard)
 	}()
 
 	select {
@@ -115,10 +116,10 @@ func TestDaemonRunBindFailureReturnsError(t *testing.T) {
 // TestDaemonRunRejectsUsageErrors keeps the fast paths fast: bad CLI input
 // must fail before any node or listener is touched.
 func TestDaemonRunRejectsUsageErrors(t *testing.T) {
-	err := Run([]string{"--bogus-flag"})
+	err := Run([]string{"--bogus-flag"}, io.Discard)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUsage)
 
-	err = Run([]string{"--help"})
+	err = Run([]string{"--help"}, io.Discard)
 	assert.NoError(t, err, "--help is a successful no-op")
 }

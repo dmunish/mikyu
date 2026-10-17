@@ -235,7 +235,7 @@ func TestMetricsHTTPBindFailureReturnsError(t *testing.T) {
 			"--target", "tcp://" + freeTCPAddr(t),
 			"--data-dir", filepath.Join(tmp, "data"),
 			"--metrics-listen", busy.Addr().String(),
-		})
+		}, io.Discard)
 	}()
 
 	select {

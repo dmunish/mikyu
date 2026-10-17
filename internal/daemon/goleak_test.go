@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"io"
 	"os"
 	"testing"
 
@@ -14,7 +15,7 @@ const daemonHelperEnv = "MIKYU_DAEMON_HELPER"
 func TestMain(m *testing.M) {
 	if os.Getenv(daemonHelperEnv) == "1" {
 		// Spawned as: <test-binary> daemon --target ... [--data-dir ...].
-		if err := Run(os.Args[2:]); err != nil {
+		if err := Run(os.Args[2:], io.Discard); err != nil {
 			os.Exit(1)
 		}
 		return

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"maps"
 	"net"
 	"os"
@@ -130,7 +131,7 @@ func startDaemon(t *testing.T, target, configPath, dataDir string) func() {
 	t.Helper()
 	exited := make(chan error, 1)
 	go func() {
-		exited <- daemon.Run([]string{"--config", configPath, "--target", target, "--data-dir", dataDir})
+		exited <- daemon.Run([]string{"--config", configPath, "--target", target, "--data-dir", dataDir}, io.Discard)
 	}()
 	require.Eventually(t, func() bool { return daemon.IsDaemonAlive(target) }, 10*time.Second, 25*time.Millisecond,
 		"daemon never came online")
