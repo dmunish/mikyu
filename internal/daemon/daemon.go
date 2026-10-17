@@ -39,14 +39,30 @@ func Run(args []string, stderr io.Writer) error {
 	case "", "run":
 		return runDaemon(rest)
 	case "status":
-		return runStatus(rest, os.Stdout, stderr)
+		return runStatus(nil, rest, os.Stdout, stderr)
 	case "stop":
-		return runStop(rest, os.Stdout, stderr)
+		return runStop(nil, rest, os.Stdout, stderr)
 	case "logs":
-		return runLogs(rest, os.Stdout, stderr)
+		return runLogs(nil, rest, os.Stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "mikyu daemon: unknown command %q; usage: mikyu daemon run|status|stop|logs\n", sub)
 		return fmt.Errorf("%w: unknown command %q", ErrUsage, sub)
+	}
+}
+
+// RunClientSub dispatches the client-side daemon subcommands — status, stop, logs — for a caller that already holds a session, such as the REPL; run is refused.
+func RunClientSub(sub string, args []string, sess spec.Session, stdout, stderr io.Writer) error {
+	switch sub {
+	case "status":
+		return runStatus(&sess, args, stdout, stderr)
+	case "stop":
+		return runStop(&sess, args, stdout, stderr)
+	case "logs":
+		return runLogs(&sess, args, stdout, stderr)
+	case "run":
+		return fmt.Errorf("%w: mikyu daemon run blocks the terminal; use 'daemon start --dir <dir>' to launch one in the background", ErrUsage)
+	default:
+		return fmt.Errorf("%w: unknown daemon command %q; usage: daemon start|status|stop|logs", ErrUsage, sub)
 	}
 }
 

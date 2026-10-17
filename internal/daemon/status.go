@@ -9,6 +9,7 @@ import (
 	"io"
 
 	"github.com/dmunish/mikyu/internal/manager"
+	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/dmunish/mikyu/internal/transport/protocol"
 )
 
@@ -28,9 +29,9 @@ type statusView struct {
 // handshake, asks for the queue list, and reports. A live daemon exits 0; a
 // dead one, an unauthorized one, and any other failure exit non-zero with a
 // message on the error path.
-func runStatus(args []string, stdout, stderr io.Writer) error {
+func runStatus(base *spec.Session, args []string, stdout, stderr io.Writer) error {
 	var asJSON bool
-	sess, err := clientSession("mikyu daemon status", args, stdout, stderr, func(fs *flag.FlagSet) {
+	sess, err := clientSession("mikyu daemon status", args, stdout, stderr, base, func(fs *flag.FlagSet) {
 		fs.BoolVar(&asJSON, "json", false, "Emit the machine-readable status")
 	})
 	if err != nil {

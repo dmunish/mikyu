@@ -59,7 +59,7 @@ func TestDispatchHelpOnlyViaFlag(t *testing.T) {
 	require.NoError(t, err)
 	defer client.Close()
 
-	sess := &replSession{client: client, ctx: t.Context()}
+	sess := &replSession{conn: client, ctx: t.Context()}
 
 	out := captureStdout(func() { sess.dispatch("create --help") })
 	assert.Contains(t, out, "--max-flush-bytes")
@@ -105,7 +105,7 @@ func TestKindInference(t *testing.T) {
 	_, err = client.CreateTask(ctx, "jobs")
 	require.NoError(t, err)
 
-	sess := &replSession{client: client, ctx: ctx}
+	sess := &replSession{conn: client, ctx: ctx}
 
 	assert.Contains(t, captureStdout(func() { sess.handleUse([]string{"events"}) }), "Active queue set to")
 	assert.Contains(t, captureStdout(func() { sess.handleUse([]string{"jobs"}) }), "Active queue set to")

@@ -14,14 +14,14 @@ import (
 
 func TestStopDeadTarget(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := runStop([]string{"--target", "tcp://127.0.0.1:1", "--yes"}, &stdout, &stderr)
+	err := runStop(nil, []string{"--target", "tcp://127.0.0.1:1", "--yes"}, &stdout, &stderr)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no daemon serving tcp://127.0.0.1:1")
 }
 
 func TestStopRefusesWithoutYesOnNonTerminal(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := runStop([]string{"--target", "tcp://127.0.0.1:1"}, &stdout, &stderr)
+	err := runStop(nil, []string{"--target", "tcp://127.0.0.1:1"}, &stdout, &stderr)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUsage)
 	assert.Contains(t, err.Error(), "--yes")
@@ -33,7 +33,7 @@ func TestStopCanceledByConfirmation(t *testing.T) {
 	t.Cleanup(func() { confirmStop = restore })
 
 	var stdout, stderr bytes.Buffer
-	err := runStop([]string{"--target", "tcp://127.0.0.1:1"}, &stdout, &stderr)
+	err := runStop(nil, []string{"--target", "tcp://127.0.0.1:1"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "canceled")
 }
@@ -43,7 +43,7 @@ func TestStopStopsTheDaemon(t *testing.T) {
 	finish := startDaemon(t, target, "--target", target, "--data-dir", filepath.Join(t.TempDir(), "data"))
 
 	var stdout, stderr bytes.Buffer
-	require.NoError(t, runStop([]string{"--target", target, "--yes"}, &stdout, &stderr))
+	require.NoError(t, runStop(nil, []string{"--target", target, "--yes"}, &stdout, &stderr))
 	assert.Contains(t, stdout.String(), "stopped "+target)
 	assert.Eventually(t, func() bool { return !IsDaemonAlive(target) }, 10*time.Second, 25*time.Millisecond,
 		"the daemon must stop after mikyu daemon stop")
@@ -65,7 +65,7 @@ func TestStopHonorsStoredCredential(t *testing.T) {
 	t.Cleanup(func() { _ = credentials.Delete(target) })
 
 	var stdout, stderr bytes.Buffer
-	require.NoError(t, runStop([]string{"--target", target, "--yes"}, &stdout, &stderr))
+	require.NoError(t, runStop(nil, []string{"--target", target, "--yes"}, &stdout, &stderr))
 	assert.Contains(t, stdout.String(), "stopped "+target)
 	assert.Eventually(t, func() bool { return !IsDaemonAlive(target) }, 10*time.Second, 25*time.Millisecond,
 		"the stored login credential must authorize the stop")
@@ -74,7 +74,7 @@ func TestStopHonorsStoredCredential(t *testing.T) {
 
 func TestStopHelpPrintsUsage(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := runStop([]string{"--help"}, &stdout, &stderr)
+	err := runStop(nil, []string{"--help"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "Usage: mikyu daemon stop [flags]")
 	assert.Contains(t, stdout.String(), "-yes")

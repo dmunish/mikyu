@@ -20,7 +20,12 @@ func (s *replSession) handleMetrics(args []string) {
 		return
 	}
 	opts.Width = command.GetTerminalWidth()
-	if err := command.RunMetrics(s.ctx, s.client, os.Stdout, opts); err != nil {
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	if err := command.RunMetrics(s.ctx, c, os.Stdout, opts); err != nil {
 		s.fail(err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/dmunish/mikyu/internal/transport/protocol"
 )
 
@@ -16,9 +17,9 @@ import (
 // open: lines arrive until the client interrupts, the daemon stops, or the
 // tap drops this follower for falling behind. Ctrl+C detaches only — the
 // daemon never notices beyond a closed socket.
-func runLogs(args []string, stdout, stderr io.Writer) error {
+func runLogs(base *spec.Session, args []string, stdout, stderr io.Writer) error {
 	var follow bool
-	sess, err := clientSession("mikyu daemon logs", args, stdout, stderr, func(fs *flag.FlagSet) {
+	sess, err := clientSession("mikyu daemon logs", args, stdout, stderr, base, func(fs *flag.FlagSet) {
 		fs.BoolVar(&follow, "follow", false, "Keep the stream open and print new lines until interrupted")
 	})
 	if err != nil {

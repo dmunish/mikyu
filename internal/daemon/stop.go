@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/dmunish/mikyu/internal/spec"
 	"golang.org/x/term"
 )
 
@@ -29,9 +30,9 @@ var confirmStop = func(target string) (bool, error) {
 // runStop asks the daemon at the session's target to drain and exit. The
 // confirmation follows delete and truncate: prompted on a terminal, required
 // as --yes everywhere else. Stopping an already-dead target reports it.
-func runStop(args []string, stdout, stderr io.Writer) error {
+func runStop(base *spec.Session, args []string, stdout, stderr io.Writer) error {
 	var yes bool
-	sess, err := clientSession("mikyu daemon stop", args, stdout, stderr, func(fs *flag.FlagSet) {
+	sess, err := clientSession("mikyu daemon stop", args, stdout, stderr, base, func(fs *flag.FlagSet) {
 		fs.BoolVar(&yes, "yes", false, "Skip the confirmation")
 	})
 	if err != nil {

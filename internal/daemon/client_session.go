@@ -21,13 +21,17 @@ import (
 // to an already-running daemon: built-in defaults, then MIKYU_* environment
 // variables, then explicit flags, then the stored login credential as the
 // token fallback. The config file plays no part — it configures a daemon, not
-// a client. The extra callbacks register a subcommand's presentation flags on
-// the same flag set. A --help request prints usage to stdout and returns
-// flag.ErrHelp; any other parse mistake prints usage to stderr wrapped in
-// ErrUsage.
-func clientSession(name string, args []string, stdout, stderr io.Writer, extra ...func(*flag.FlagSet)) (spec.Session, error) {
+// a client. A non-nil base seeds the session with values a caller such as the
+// REPL already resolved; the base carries its env, so environment variables
+// are skipped in that case. The extra callbacks register a subcommand's
+// presentation flags on the same flag set. A --help request prints usage to
+// stdout and returns flag.ErrHelp; any other parse mistake prints usage to
+// stderr wrapped in ErrUsage.
+func clientSession(name string, args []string, stdout, stderr io.Writer, base *spec.Session, extra ...func(*flag.FlagSet)) (spec.Session, error) {
 	sess := spec.BuiltinSession()
-	if err := spec.ApplyEnvSession(&sess, os.Getenv); err != nil {
+	if base != nil {
+		sess = *base
+	} else if err := spec.ApplyEnvSession(&sess, os.Getenv); err != nil {
 		return spec.Session{}, err
 	}
 

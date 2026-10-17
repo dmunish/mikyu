@@ -65,7 +65,12 @@ func (s *replSession) handleEnqueue(args []string) {
 		s.usage("enqueue [flags] [queue] <payload|@file|->")
 		return
 	}
-	task, n, err := command.Enqueue(s.ctx, s.client, queue, rest[0], opts)
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	task, n, err := command.Enqueue(s.ctx, c, queue, rest[0], opts)
 	if err != nil {
 		s.fail(err)
 		return
@@ -93,7 +98,12 @@ func (s *replSession) handleDequeue(args []string) {
 		fmt.Println(errStyle.Render(fmt.Sprintf("dequeue requires a task queue; %q is a %s queue.", queue, kind)))
 		return
 	}
-	task, err := command.Dequeue(s.ctx, s.client, queue, timeout)
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	task, err := command.Dequeue(s.ctx, c, queue, timeout)
 	if err != nil {
 		if errors.Is(err, mikyu.ErrTaskNotAvailable) {
 			fmt.Println(dimStyle.Render("No task available."))
@@ -114,7 +124,12 @@ func (s *replSession) handleAck(args []string) {
 		return
 	}
 	queue := s.queueFor(args)
-	if err := command.TaskAck(s.ctx, s.client, queue, ref); err != nil {
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	if err := command.TaskAck(s.ctx, c, queue, ref); err != nil {
 		s.fail(err)
 		return
 	}
@@ -136,7 +151,12 @@ func (s *replSession) handleNack(args []string) {
 		return
 	}
 	queue := s.queueFor(rest)
-	if err := command.TaskNack(s.ctx, s.client, queue, ref, retryAfter, explicit); err != nil {
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	if err := command.TaskNack(s.ctx, c, queue, ref, retryAfter, explicit); err != nil {
 		s.fail(err)
 		return
 	}
@@ -159,7 +179,12 @@ func (s *replSession) handleExtend(args []string) {
 		return
 	}
 	queue := s.queueFor(args[:len(args)-1])
-	if err := command.TaskExtend(s.ctx, s.client, queue, ref, timeout); err != nil {
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	if err := command.TaskExtend(s.ctx, c, queue, ref, timeout); err != nil {
 		s.fail(err)
 		return
 	}
@@ -172,7 +197,12 @@ func (s *replSession) handleDLQ(args []string) {
 		s.usage("dlq [queue]")
 		return
 	}
-	tasks, err := command.TaskDeadLetters(s.ctx, s.client, queue)
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	tasks, err := command.TaskDeadLetters(s.ctx, c, queue)
 	if err != nil {
 		s.fail(err)
 		return
@@ -193,7 +223,12 @@ func (s *replSession) handleDLQAck(args []string) {
 		return
 	}
 	queue := s.queueFor(args)
-	if err := command.TaskAckDeadLetter(s.ctx, s.client, queue, ref); err != nil {
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	if err := command.TaskAckDeadLetter(s.ctx, c, queue, ref); err != nil {
 		s.fail(err)
 		return
 	}
@@ -207,7 +242,12 @@ func (s *replSession) handleArchive(args []string) {
 		return
 	}
 	queue := s.queueFor(args)
-	if err := command.TaskArchive(s.ctx, s.client, queue, ref); err != nil {
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	if err := command.TaskArchive(s.ctx, c, queue, ref); err != nil {
 		s.fail(err)
 		return
 	}

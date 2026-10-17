@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/dmunish/mikyu/internal/daemon"
 	"github.com/dmunish/mikyu/internal/ui/style"
 )
 
@@ -47,6 +48,8 @@ func PrintBanner(target, dir string) {
 		{"append", "<queue> <msg>", "Append a record to the log"},
 		{"enqueue", "<queue> <msg>", "Enqueue a task"},
 		{"dequeue", "<queue>", "Lease the next due task"},
+		{"open", "<dir>", "Work in-process on a data dir"},
+		{"daemon", "start --dir <dir>", "Launch a background daemon"},
 		{"help", "", "Show all available commands"},
 	}
 	for _, c := range commands {
@@ -62,11 +65,17 @@ func PrintBanner(target, dir string) {
 	tryCmd := tryCmdStyle.Render(`append events "hello world"`)
 	b.WriteString(fmt.Sprintf("  %s%s\n\n", tryLabel, tryCmd))
 
-	statusText := statusStyle.Render("Connected to daemon at ")
-	where := target
-	if dir != "" {
-		statusText = statusStyle.Render("Running embedded on ")
+	var statusText, where string
+	switch {
+	case dir != "":
+		statusText = statusStyle.Render("Embedded data dir (connects on first command): ")
 		where = dir
+	case daemon.IsDaemonAlive(target):
+		statusText = statusStyle.Render("Daemon serving ")
+		where = target
+	default:
+		statusText = statusStyle.Render("No daemon at " + target + " — commands connect on use; try ")
+		where = "daemon start --dir <dir> or open <dir>"
 	}
 	statusTarget := statusTargetStyle.Render(where) + "\x1b[24m"
 	b.WriteString(fmt.Sprintf("  %s%s\n\n", statusText, statusTarget))

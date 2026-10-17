@@ -26,7 +26,7 @@ func TestLogsReplaysTheRing(t *testing.T) {
 	slog.Info("ring line two")
 
 	var stdout, stderr bytes.Buffer
-	require.NoError(t, runLogs([]string{"--target", target}, &stdout, &stderr))
+	require.NoError(t, runLogs(nil, []string{"--target", target}, &stdout, &stderr))
 	assert.Contains(t, stdout.String(), "ring line one")
 	assert.Contains(t, stdout.String(), "ring line two")
 }
@@ -37,7 +37,7 @@ func TestLogsFollowsUntilTheDaemonStops(t *testing.T) {
 
 	stdout := &syncBuffer{}
 	done := make(chan error, 1)
-	go func() { done <- runLogs([]string{"--target", target, "--follow"}, stdout, io.Discard) }()
+	go func() { done <- runLogs(nil, []string{"--target", target, "--follow"}, stdout, io.Discard) }()
 
 	// Wait for the follower to attach, then log a line the client must see.
 	time.Sleep(200 * time.Millisecond)
@@ -62,14 +62,14 @@ func TestLogsFollowsUntilTheDaemonStops(t *testing.T) {
 
 func TestLogsDeadTarget(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := runLogs([]string{"--target", "tcp://127.0.0.1:1"}, &stdout, &stderr)
+	err := runLogs(nil, []string{"--target", "tcp://127.0.0.1:1"}, &stdout, &stderr)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no daemon serving tcp://127.0.0.1:1")
 }
 
 func TestLogsHelpPrintsUsage(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := runLogs([]string{"--help"}, &stdout, &stderr)
+	err := runLogs(nil, []string{"--help"}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "Usage: mikyu daemon logs [flags]")
 	assert.Contains(t, stdout.String(), "-follow")

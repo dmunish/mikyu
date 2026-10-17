@@ -13,12 +13,13 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/dmunish/mikyu"
+	"github.com/dmunish/mikyu/internal/daemon"
 	"github.com/dmunish/mikyu/internal/spec"
 	"github.com/dmunish/mikyu/internal/ui/command"
 )
 
 type replSession struct {
-	client  mikyu.Client
+	conn    mikyu.Client
 	target  string
 	dir     string
 	session spec.Session
@@ -31,6 +32,28 @@ type replSession struct {
 	lastTaskID    string
 	lastBenchRun  string
 	done          bool
+}
+
+// client returns the session's client, connecting on first use: embedded when
+// a data dir is set, remote otherwise. A failed connection is retried on the
+// next command, so the REPL starts working before any daemon exists.
+func (s *replSession) client() (mikyu.Client, error) {
+	if s.conn != nil {
+		return s.conn, nil
+	}
+	sess := s.session
+	if s.dir != "" {
+		sess.DataDir = s.dir
+	}
+	c, err := command.OpenClient(sess)
+	if err != nil {
+		if s.dir == "" && !daemon.IsDaemonAlive(sess.Target) {
+			return nil, fmt.Errorf("no daemon serving %s — run 'daemon start --dir <dir>' to launch one, or 'open <dir>' to work in-process", sess.Target)
+		}
+		return nil, err
+	}
+	s.conn = c
+	return c, nil
 }
 
 // replHandlers maps every REPL-exposed verb to its implementation.
@@ -62,7 +85,7 @@ var replHandlers = map[string]func(*replSession, []string){
 	"archive": (*replSession).handleArchive,
 }
 
-// RunREPL starts the interactive REPL: embedded with --dir, remote otherwise.
+// RunREPL starts the interactive REPL: the client connects lazily on the first command that needs one, so a fresh install opens into a working prompt.
 func RunREPL(target string, args []string) error {
 	global, _, err := command.ParseGlobal(target, args)
 	if err != nil {
@@ -73,23 +96,21 @@ func RunREPL(target string, args []string) error {
 		return nil
 	}
 
-	client, err := command.OpenClient(global.Session)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
 	fmt.Print("\x1b[2J\x1b[H")
 	PrintBanner(global.Session.Target, global.Session.DataDir)
 
 	sess := &replSession{
-		client:  client,
 		target:  global.Session.Target,
 		dir:     global.Session.DataDir,
 		session: global.Session,
 		ctx:     context.Background(),
 		scanner: bufio.NewScanner(os.Stdin),
 	}
+	defer func() {
+		if sess.conn != nil {
+			_ = sess.conn.Close()
+		}
+	}()
 
 	for {
 		fmt.Print(sess.prompt())
@@ -118,6 +139,20 @@ func (s *replSession) dispatch(line string) bool {
 	}
 	name := strings.ToLower(args[0])
 
+	// Session commands the verb table does not carry: they manage the
+	// session's connection, not the queues behind it.
+	switch name {
+	case "open":
+		s.handleOpen(args[1:])
+		return s.done
+	case "close":
+		s.handleClose(args[1:])
+		return s.done
+	case "daemon":
+		s.handleDaemon(args[1:])
+		return s.done
+	}
+
 	v, path, rest, ok := command.ResolveVerb(name, args[1:])
 	if !ok {
 		fmt.Println(errStyle.Render(fmt.Sprintf("Unknown command %q. Type 'help' for options.", name)))
@@ -142,6 +177,16 @@ func (s *replSession) dispatch(line string) bool {
 // handleHelp prints the index; per-verb detail lives behind --help.
 func (s *replSession) handleHelp(_ []string) {
 	_ = command.WriteIndex(os.Stdout, command.RenderOptions{Mode: command.ModeREPL, Color: true})
+	session := infoStyle.Render("Session commands:")
+	fmt.Println(session)
+	for _, c := range []struct{ cmd, desc string }{
+		{"open <dir>", "Work in-process on a data directory"},
+		{"close", "Detach from the current client"},
+		{"daemon start --dir <dir>", "Launch a background daemon"},
+		{"daemon status|stop|logs", "Manage the running daemon"},
+	} {
+		fmt.Printf("  %s %s\n", command.FormatArgsStyled(c.cmd, true), dimStyle.Render(c.desc))
+	}
 }
 
 // handleExit closes the session cleanly.
@@ -178,7 +223,12 @@ func (s *replSession) handleUse(args []string) {
 		return
 	}
 
-	queues, err := command.List(s.ctx, s.client)
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	queues, err := command.List(s.ctx, c)
 	if err != nil {
 		s.fail(err)
 		return
@@ -199,7 +249,11 @@ func (s *replSession) kindOf(name string) (mikyu.QueueKind, error) {
 	if name == s.activeQueue && s.activeKind != 0 {
 		return s.activeKind, nil
 	}
-	queues, err := command.List(s.ctx, s.client)
+	c, err := s.client()
+	if err != nil {
+		return 0, err
+	}
+	queues, err := command.List(s.ctx, c)
 	if err != nil {
 		return 0, err
 	}
@@ -214,7 +268,12 @@ func (s *replSession) kindOf(name string) (mikyu.QueueKind, error) {
 // ---- queue verbs ----
 
 func (s *replSession) handleList(args []string) {
-	queues, err := command.List(s.ctx, s.client)
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	queues, err := command.List(s.ctx, c)
 	if err != nil {
 		s.fail(err)
 		return
@@ -254,7 +313,12 @@ func (s *replSession) handleCreate(args []string) {
 		s.usage("create [flags] <queue_name> (" + err.Error() + ")")
 		return
 	}
-	if err := command.Create(s.ctx, s.client, kind, name, command.SpecOption(patch)); err != nil {
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	if err := command.Create(s.ctx, c, kind, name, command.SpecOption(patch)); err != nil {
 		s.fail(err)
 		return
 	}
@@ -275,7 +339,12 @@ func (s *replSession) handleUpdate(args []string) {
 	name := rest[0]
 
 	if patch.Retention.MaxAge != nil || patch.Retention.MaxBytes != nil {
-		current, err := command.Describe(s.ctx, s.client, name)
+		c, err := s.client()
+		if err != nil {
+			s.fail(err)
+			return
+		}
+		current, err := command.Describe(s.ctx, c, name)
 		if err != nil {
 			s.fail(err)
 			return
@@ -288,7 +357,12 @@ func (s *replSession) handleUpdate(args []string) {
 			}
 		}
 	}
-	if err := command.Update(s.ctx, s.client, name, command.SpecOption(patch)); err != nil {
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	if err := command.Update(s.ctx, c, name, command.SpecOption(patch)); err != nil {
 		s.fail(err)
 		return
 	}
@@ -308,7 +382,12 @@ func (s *replSession) handleDescribe(args []string) {
 		s.usage("describe <queue> [--json]")
 		return
 	}
-	d, err := command.Describe(s.ctx, s.client, rest[0])
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	d, err := command.Describe(s.ctx, c, rest[0])
 	if err != nil {
 		s.fail(err)
 		return
@@ -341,7 +420,12 @@ func (s *replSession) handleDelete(args []string) {
 		tag := warnTagStyle.Render("[IRREVERSIBLE]")
 		return confirm(fmt.Sprintf("%s Are you sure you want to delete queue %q?", tag, name)), nil
 	}
-	executed, err := command.Delete(s.ctx, s.client, name, confirmFn)
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	executed, err := command.Delete(s.ctx, c, name, confirmFn)
 	if err != nil {
 		s.fail(err)
 		return
@@ -361,7 +445,12 @@ func (s *replSession) handleAppend(args []string) {
 		return
 	}
 	name, input := args[0], args[1]
-	off, payloadLen, err := command.Append(s.ctx, s.client, name, input, nil)
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	off, payloadLen, err := command.Append(s.ctx, c, name, input, nil)
 	if err != nil {
 		s.fail(err)
 		return
@@ -380,7 +469,12 @@ func (s *replSession) handleRead(args []string) {
 		fmt.Println(errStyle.Render("Invalid offset format"))
 		return
 	}
-	msg, err := command.Read(s.ctx, s.client, name, off)
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	msg, err := command.Read(s.ctx, c, name, off)
 	if err != nil {
 		s.fail(err)
 		return
@@ -409,7 +503,12 @@ func (s *replSession) handleTail(args []string) {
 	statusText := dimStyle.Render(fmt.Sprintf("Tailing %q from offset %d (Press Ctrl+C to stop stream)...", name, startOffset))
 	fmt.Print(statusText)
 
-	err := command.Tail(sigCtx, s.client, name, startOffset, func(msg mikyu.Record) error {
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	err = command.Tail(sigCtx, c, name, startOffset, func(msg mikyu.Record) error {
 		fmt.Print("\r\x1b[2K")
 		fmt.Println(formatRecord(msg))
 		fmt.Print(statusText)
@@ -447,7 +546,12 @@ func (s *replSession) handleTruncate(args []string) {
 	}
 	confirmFn := func() (bool, error) { return confirm(prompt), nil }
 
-	reclaimed, executed, err := command.Truncate(s.ctx, s.client, name, minOffset, confirmFn)
+	c, err := s.client()
+	if err != nil {
+		s.fail(err)
+		return
+	}
+	reclaimed, executed, err := command.Truncate(s.ctx, c, name, minOffset, confirmFn)
 	if err != nil {
 		s.fail(err)
 		return

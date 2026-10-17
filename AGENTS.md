@@ -1777,7 +1777,7 @@ type enumValue struct { param spec.Param; value string; changed bool }   // flag
 | `GET /api/history` | `?limit=N` slices the collector's tick history, newest last. |
 | `GET /api/events` | Server-sent events, one `snapshot` event per collector tick. |
 
-**Spawning** (`Spawn`) is bench-owned: the bench harness's daemon access spawns a detached copy of `os.Executable()`, records the PID in `<dir>/.bench-runs`, and reaps it unless `--persist`. `Process` (`spawn.go`) exposes `PID`, `Target`, `Kill()`, `Wait()`, `Alive()`; `daemonArgs(opts)` renders the session flags a spawned daemon inherits, skipping zero values; `freeLoopbackPort()` asks the kernel for a free port when none is given; `WaitForAlive` polls the target. Auto-launch from `Dial` and the CLI is retired — a daemon is started only by the explicit command.
+**Spawning** (`Spawn`) is shared by the bench harness and the REPL's `daemon start`: it spawns a detached copy of `os.Executable()`, records the PID in `<dir>/.bench-runs` when the bench owns the run, and reaps it unless `--persist`. `Process` (`spawn.go`) exposes `PID`, `Target`, `Kill()`, `Wait()`, `Alive()`; `daemonArgs(opts)` renders the session flags a spawned daemon inherits, skipping zero values; `freeLoopbackPort()` asks the kernel for a free port when none is given; `WaitForAlive` polls the target. Auto-launch from `Dial` and the CLI is retired — a daemon is started only by the explicit command.
 ## 17. Config Loader — `internal/config`
 
 ```go
@@ -2271,11 +2271,11 @@ Sentinels: `ErrNotARun`, `ErrEnvelopeVersion`, `ErrCompareMismatch`.
 
 `App{Stdin, Stdout, Stderr, Confirm}`. `Run(target, args)` parses global flags via `command.ParseGlobal`, looks up the verb, optionally prints per-verb help from `command.WriteVerb`, opens the client via `command.OpenClient`, and dispatches through `handlers`. Exit codes from `cmd/mikyu`: `0` success, `1` general error, `2` usage error via `daemon.ErrUsage` or `bench.ErrUsage`, `3` payload verification failure. `emitTask`/`emitTasks` write a card on a terminal and JSON otherwise, so `dequeue --json` feeds `ack`/`nack`/`extend`. Bench verbs (`cli/bench.go`) skip `OpenClient` because `bench` verbs are `Local: true`.
 
-### REPL (`repl/repl.go`, `repl/task.go`, `repl/bench.go`)
+### REPL (`repl/repl.go`, `repl/session.go`, `repl/task.go`, `repl/bench.go`)
 
 ```go
 type replSession struct {
-    client  mikyu.Client
+    conn    mikyu.Client
     target, dir string
     session spec.Session
     ctx     context.Context
@@ -2289,13 +2289,13 @@ type replSession struct {
 }
 ```
 
-`RunREPL(target, args)` parses session flags, opens the client via `command.OpenClient`, prints the banner (`PrintBanner`), and loops on `dispatch(line)`. `dispatch` maps the first token:
+`RunREPL(target, args)` parses session flags, prints the banner (`PrintBanner`), and loops on `dispatch(line)`. The client connects **lazily**: `client()` opens on first use — embedded when a data dir is set, remote otherwise — and a failed connection is retried on the next command, so the bare binary opens into a working prompt with no daemon running (double-click launches a REPL). `dispatch` maps the first token:
 
-- **Session commands:** `use`, `help`, `exit`/`quit`.
+- **Session commands:** `use`, `help`, `exit`/`quit`, plus the connection commands `open <dir>` (attach in-process, the way `mikyu.Open` does — queue verbs then run against the SDK in this process), `close` (detach), and `daemon start --dir <dir> [daemon flags...]` (spawn a detached daemon via `daemon.Spawn`, wait for it to accept connections; extra flags pass through), `daemon status|stop|logs` (delegate to `daemon.RunClientSub` with this session's target and credential; `daemon run` is refused with a `daemon start` hint).
 - **Every verb from `command.Verbs`** (via `replHandlers`).
 - **Retired names** (`produce`, `publish`, `pop`, `stats`, `info`) are explicitly unreachable.
 
-`handleUse` sets `activeQueue` and `activeKind`. `kindOf(name)` consults `activeKind` when the name matches, else lists queues. Handlers that are kind-specific reject the wrong kind up front. `renderTaskCard`/`renderDeadLetterCard` produce bordered output; `formatRecord` uses terminal-width-aware payload formatting. `handleBenchShow` / `Compare` / `Plot` remember `lastBenchRun` so a subsequent call can default to it. `handleBenchRun` installs a `signal.NotifyContext` for Ctrl+C and delegates to `command.RunBench`.
+`handleUse` sets `activeQueue` and `activeKind`. `kindOf(name)` consults `activeKind` when the name matches, else lists queues. Every queue verb goes through `client()`; a dead target renders the REPL's own hint (`daemon start --dir <dir>` or `open <dir>`) instead of the CLI's `mikyu daemon run` hint. Handlers that are kind-specific reject the wrong kind up front. `renderTaskCard`/`renderDeadLetterCard` produce bordered output; `formatRecord` uses terminal-width-aware payload formatting. `handleBenchShow` / `Compare` / `Plot` remember `lastBenchRun` so a subsequent call can default to it. `handleBenchRun` installs a `signal.NotifyContext` for Ctrl+C and delegates to `command.RunBench`. The banner reflects three states — embedded data dir, live daemon, or not connected with the two ways to begin — and the session commands appear under `help`.
 
 ### Entrypoint (`cmd/mikyu/main.go`)
 

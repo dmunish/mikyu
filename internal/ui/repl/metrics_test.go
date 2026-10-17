@@ -19,7 +19,7 @@ func metricsSession(t *testing.T) *replSession {
 	ctx := t.Context()
 	_, err = client.CreateLog(ctx, "events")
 	require.NoError(t, err)
-	return &replSession{client: client, ctx: ctx}
+	return &replSession{conn: client, ctx: ctx}
 }
 
 // TestREPLMetricsJSON parses the REPL's json output back into a snapshot.
