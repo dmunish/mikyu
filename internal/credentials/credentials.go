@@ -1,5 +1,4 @@
-// Package credentials stores per-target bearer tokens in the user's config
-// directory, written atomically at mode 0600.
+// Package credentials stores per-target bearer tokens in the user's config directory at mode 0600.
 package credentials
 
 import (
@@ -14,8 +13,7 @@ const credentialsFileName = "credentials"
 // userConfigDir resolves the user config directory; tests override it.
 var userConfigDir = os.UserConfigDir
 
-// TestUserConfigDir replaces the config-dir resolver for the duration of a
-// test and returns a restore function.
+// TestUserConfigDir replaces the config-dir resolver and returns a restore function.
 func TestUserConfigDir(fn func() (string, error)) func() {
 	old := userConfigDir
 	userConfigDir = fn

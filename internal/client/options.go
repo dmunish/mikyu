@@ -21,7 +21,6 @@ type SessionConfig struct {
 	TLSEnabled     bool
 	TLSCert        string
 	TLSKey         string
-	AutoStart      bool
 
 	AuthMethod    string
 	AuthToken     string
@@ -97,11 +96,6 @@ func WithTLSCert(path string) Option {
 // WithTLSKey sets the private key matching the client certificate.
 func WithTLSKey(path string) Option {
 	return func(c *SessionConfig) { c.TLSKey = path }
-}
-
-// WithAutoStart makes Dial spawn a daemon with the session's settings when the target is not already serving.
-func WithAutoStart(enabled bool) Option {
-	return func(c *SessionConfig) { c.AutoStart = enabled }
 }
 
 // WithAuthMethod sets the auth method the session presents to a server.

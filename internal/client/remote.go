@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dmunish/mikyu/internal/daemon"
 	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/dmunish/mikyu/internal/node"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
@@ -63,21 +62,6 @@ func NewRemote(target string, opts ...Option) (*remoteClient, error) {
 	tlsConfig, err := cfg.TLSConfig()
 	if err != nil {
 		return nil, err
-	}
-	if cfg.AutoStart {
-		if err := daemon.EnsureDaemonRunning(daemon.SpawnOptions{
-			Target:            target,
-			DataDir:           cfg.DataDir,
-			TLSEnabled:        cfg.TLSEnabled,
-			TLSCert:           cfg.TLSCert,
-			TLSKey:            cfg.TLSKey,
-			AuthMethod:        cfg.AuthMethod,
-			AuthTokenFile:     cfg.AuthTokenFile,
-			TLSClientCA:       cfg.TLSClientCA,
-			EncryptionKeyFile: cfg.EncryptionKeyFile,
-		}); err != nil {
-			return nil, err
-		}
 	}
 	c := &remoteClient{
 		target:   target,

@@ -1,6 +1,7 @@
 package bench
 
 import (
+	"io"
 	"os"
 	"testing"
 
@@ -16,7 +17,7 @@ func TestMain(m *testing.M) {
 		return
 	}
 	if len(os.Args) > 1 && os.Args[1] == "daemon" {
-		if err := daemon.Run(os.Args[2:]); err != nil {
+		if err := daemon.Run(os.Args[2:], io.Discard); err != nil {
 			os.Exit(1)
 		}
 		return

@@ -30,9 +30,8 @@ func Open(dir string, opts ...ClientOption) (Client, error) {
 // "host:port" treated as TCP.
 //
 // Dial is lazy. It does not contact the server; the first operation
-// does, and that is where connection problems surface. With AutoStart
-// enabled (WithAutoStart), the first operation also spawns a daemon if
-// nothing is serving the target yet.
+// does, and that is where connection problems surface. Start a daemon
+// explicitly with `mikyu daemon run` before dialing one.
 //
 // Pass credentials with WithAuthMethod, WithAuthToken, and
 // WithAuthTokenFile, and TLS settings with WithTLSEnabled and friends.

@@ -32,12 +32,7 @@ import (
 // ErrUsage marks a command-line mistake: an unknown flag, a stray positional argument, or an invalid flag value.
 var ErrUsage = errors.New("usage error")
 
-// spawnReadyTimeout is how long a caller waits for a freshly spawned daemon to accept connections.
-const spawnReadyTimeout = 3 * time.Second
-
-// Run parses the daemon subcommand and dispatches it. The bare form is an
-// alias for run, so `mikyu daemon [flags]` and `mikyu daemon run [flags]`
-// start the same foreground server.
+// Run parses the daemon subcommand and dispatches it; the bare form aliases run.
 func Run(args []string, stderr io.Writer) error {
 	sub, rest := splitSubcommand(args)
 	switch sub {
@@ -536,25 +531,6 @@ type SpawnOptions struct {
 	TLSClientCA       string
 	EncryptionKeyFile string
 	ExtraArgs         []string
-}
-
-// EnsureDaemonRunning spawns a detached daemon with opts when opts.Target is not already serving.
-func EnsureDaemonRunning(opts SpawnOptions) error {
-	if opts.Target == "" {
-		return errors.New("EnsureDaemonRunning: target is required")
-	}
-	if IsDaemonAlive(opts.Target) {
-		return nil
-	}
-	proc, err := Spawn(opts)
-	if err != nil {
-		return err
-	}
-	if WaitForAlive(opts.Target, spawnReadyTimeout) {
-		return nil
-	}
-	_ = proc.Kill()
-	return fmt.Errorf("daemon did not start within %s", spawnReadyTimeout)
 }
 
 // IsDaemonAlive attempts to connect to the target.

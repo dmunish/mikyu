@@ -9,7 +9,7 @@ import (
 )
 
 // daemonHelperEnv re-executes the test binary as a real daemon, so
-// EnsureDaemonRunning's spawn path can be exercised without the built CLI.
+// Spawn's detached-daemon path can be exercised without the built CLI.
 const daemonHelperEnv = "MIKYU_DAEMON_HELPER"
 
 func TestMain(m *testing.M) {

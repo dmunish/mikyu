@@ -312,7 +312,6 @@ func TestNamingLaw(t *testing.T) {
 	// spec/call lease and max-attempts keys.
 	compositionHelpers := map[string]bool{
 		"WithSessionSpec":     true,
-		"WithAutoStart":       true,
 		"WithKey":             true,
 		"WithRecordKey":       true,
 		"WithTaskLease":       true,

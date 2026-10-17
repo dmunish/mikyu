@@ -47,10 +47,6 @@ func WithTLSClientCA(path string) ClientOption { return client.WithTLSClientCA(p
 // log.
 func WithLogLevel(level string) ClientOption { return client.WithLogLevel(level) }
 
-// WithAutoStart makes Dial spawn a daemon with the session's settings
-// when nothing is serving the target yet.
-func WithAutoStart(enabled bool) ClientOption { return client.WithAutoStart(enabled) }
-
 // WithAuthMethod sets how this client authenticates: "none",
 // "token", or "mtls".
 func WithAuthMethod(method string) ClientOption { return client.WithAuthMethod(method) }

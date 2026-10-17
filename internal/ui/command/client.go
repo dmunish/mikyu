@@ -1,6 +1,7 @@
 package command
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/dmunish/mikyu"
@@ -44,25 +45,17 @@ func OpenClient(sess spec.Session) (mikyu.Client, error) {
 		}
 	}
 
+	// Fail fast with a hint instead of a raw dial error on the first
+	// operation: a daemon is started explicitly with `mikyu daemon run`.
+	if !daemon.IsDaemonAlive(sess.Target) {
+		return nil, fmt.Errorf("no daemon serving %s (start one with: mikyu daemon run --data-dir <dir>)", sess.Target)
+	}
+
 	opts = append(opts,
 		mikyu.WithAuthMethod(sess.Auth.Method),
 		mikyu.WithAuthToken(sess.Auth.Token),
 		mikyu.WithAuthTokenFile(sess.Auth.TokenFile),
 		mikyu.WithTLSClientCA(sess.TLS.ClientCA),
 	)
-
-	if err := daemon.EnsureDaemonRunning(daemon.SpawnOptions{
-		Target:            sess.Target,
-		DataDir:           sess.DataDir,
-		TLSEnabled:        sess.TLS.Enabled,
-		TLSCert:           sess.TLS.Cert,
-		TLSKey:            sess.TLS.Key,
-		AuthMethod:        sess.Auth.Method,
-		AuthTokenFile:     sess.Auth.TokenFile,
-		TLSClientCA:       sess.TLS.ClientCA,
-		EncryptionKeyFile: sess.Encryption.KeyFile,
-	}); err != nil {
-		return nil, err
-	}
 	return mikyu.Dial(sess.Target, opts...)
 }
