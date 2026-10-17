@@ -42,6 +42,8 @@ func Run(args []string, stderr io.Writer) error {
 		return runStatus(rest, os.Stdout, stderr)
 	case "stop":
 		return runStop(rest, os.Stdout, stderr)
+	case "logs":
+		return runLogs(rest, os.Stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "mikyu daemon: unknown command %q; usage: mikyu daemon run|status|stop|logs\n", sub)
 		return fmt.Errorf("%w: unknown command %q", ErrUsage, sub)
