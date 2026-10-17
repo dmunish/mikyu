@@ -61,6 +61,16 @@ func startDaemonWithShutdown(tb *testing.T, target string, shutdownSess spec.Ses
 			return
 		}
 		finished = true
+		if !IsDaemonAlive(target) {
+			// Something else already stopped the daemon; assert its exit was clean.
+			select {
+			case err := <-exited:
+				assert.NoError(tb, err, "graceful shutdown must return nil, letting deferred cleanup run")
+			case <-time.After(10 * time.Second):
+				tb.Fatal("the externally stopped daemon did not return from Run")
+			}
+			return
+		}
 		require.NoError(tb, SendShutdownSignal(target, shutdownSess), "sending shutdown signal")
 		select {
 		case err := <-exited:

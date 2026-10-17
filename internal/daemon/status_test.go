@@ -59,7 +59,7 @@ func TestStatusDeadTarget(t *testing.T) {
 func TestStatusUnauthorizedWithoutCredential(t *testing.T) {
 	target := "tcp://" + freeTCPAddr(t)
 	tok := tokenFile(t, "0123456789abcdef")
-		shutdown := spec.Session{Auth: spec.AuthConfig{Method: "token", Token: "0123456789abcdef"}}
+	shutdown := spec.Session{Auth: spec.AuthConfig{Method: "token", Token: "0123456789abcdef"}}
 	finish := startDaemonWithShutdown(t, target, shutdown, "--target", target, "--data-dir", filepath.Join(t.TempDir(), "data"),
 		"--auth-method", "token", "--auth-token-file", tok)
 	defer finish()
@@ -73,7 +73,7 @@ func TestStatusUnauthorizedWithoutCredential(t *testing.T) {
 func TestStatusWithTokenFile(t *testing.T) {
 	target := "tcp://" + freeTCPAddr(t)
 	tok := tokenFile(t, "0123456789abcdef")
-		shutdown := spec.Session{Auth: spec.AuthConfig{Method: "token", Token: "0123456789abcdef"}}
+	shutdown := spec.Session{Auth: spec.AuthConfig{Method: "token", Token: "0123456789abcdef"}}
 	finish := startDaemonWithShutdown(t, target, shutdown, "--target", target, "--data-dir", filepath.Join(t.TempDir(), "data"),
 		"--auth-method", "token", "--auth-token-file", tok)
 	defer finish()
@@ -90,7 +90,7 @@ func TestStatusUsesStoredCredential(t *testing.T) {
 
 	target := "tcp://" + freeTCPAddr(t)
 	tok := tokenFile(t, "0123456789abcdef")
-		shutdown := spec.Session{Auth: spec.AuthConfig{Method: "token", Token: "0123456789abcdef"}}
+	shutdown := spec.Session{Auth: spec.AuthConfig{Method: "token", Token: "0123456789abcdef"}}
 	finish := startDaemonWithShutdown(t, target, shutdown, "--target", target, "--data-dir", filepath.Join(t.TempDir(), "data"),
 		"--auth-method", "token", "--auth-token-file", tok)
 	defer finish()
