@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dmunish/mikyu/internal/engine"
+	"github.com/dmunish/mikyu/internal/logtap"
 	"github.com/dmunish/mikyu/internal/manager"
 	"github.com/dmunish/mikyu/internal/metrics"
 	"github.com/dmunish/mikyu/internal/queue/logqueue"
@@ -48,6 +49,7 @@ type Node struct {
 	metrics  *metrics.Collector
 	keyFile  string
 	keys     engine.MasterKeySet
+	tap      *logtap.Tap
 }
 
 // openNode acquires the directory lock, reconciles the registry against the
@@ -130,6 +132,7 @@ func openNode(dir string, defaults spec.Spec, ao acquireOptions) (*Node, error) 
 		openedAt:        time.Now(),
 		keyFile:         ao.keyFile,
 		keys:            masters,
+		tap:             logtap.New(logtap.DefaultCapacity),
 	}
 	n.metrics = newCollector(mreg, ao.metrics, newRuntimeSource(), mgr, configSource{n})
 	preregisterServerMetrics(mreg)
@@ -139,6 +142,9 @@ func openNode(dir string, defaults spec.Spec, ao acquireOptions) (*Node, error) 
 	n.metrics.Start(ctx)
 	return n, nil
 }
+
+// LogTap returns the node's log ring: the sink every rendered log line in this process can fan into, and the backlog a wire log follower replays.
+func (n *Node) LogTap() *logtap.Tap { return n.tap }
 
 // closeInternal releases the manager, cached drivers, lock, and reconciler.
 func (n *Node) closeInternal() error {

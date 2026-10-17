@@ -66,16 +66,6 @@ func runDaemon(args []string) error {
 		}
 		return err
 	}
-	setupLogging(cfg.Server)
-	slog.Info("starting",
-		"spec_version", spec.CurrentSpecVersion,
-		"go", runtime.Version(),
-		"os", runtime.GOOS,
-		"arch", runtime.GOARCH,
-	)
-	if resolvedPath != "" {
-		slog.Info("config file", "path", resolvedPath)
-	}
 	openedAt := time.Now()
 
 	n, release, err := node.Acquire(cfg.Server.DataDir, cfg.Defaults,
@@ -90,6 +80,17 @@ func runDaemon(args []string) error {
 			slog.Warn("node release failed", "err", err)
 		}
 	}()
+
+	setupLogging(cfg.Server, n.LogTap())
+	slog.Info("starting",
+		"spec_version", spec.CurrentSpecVersion,
+		"go", runtime.Version(),
+		"os", runtime.GOOS,
+		"arch", runtime.GOARCH,
+	)
+	if resolvedPath != "" {
+		slog.Info("config file", "path", resolvedPath)
+	}
 
 	// Reconcile declared queues.
 	bgCtx := context.Background()

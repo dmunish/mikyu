@@ -28,6 +28,7 @@ components:
   protocol:   { in: internal/transport/protocol }
   ipc:        { in: internal/transport/ipc }
   credentials: { in: internal/credentials }
+  logtap:     { in: internal/logtap }
   group:      { in: internal/queue/group }
   logqueue:   { in: internal/queue/logqueue }
   taskqueue:  { in: internal/queue/taskqueue }
@@ -71,6 +72,8 @@ deps:
     anyVendorDeps: true
   credentials:
     anyVendorDeps: true
+  logtap:
+    anyVendorDeps: true
   enginetest:
     mayDependOn: [engine]          # in-memory Storage for driver tests only
 
@@ -88,7 +91,7 @@ deps:
 
   # ---- node: registry, pool, driver cache, retention wiring ----
   node:
-    mayDependOn: [spec, engine, manager, logqueue, taskqueue, retention, metrics]
+    mayDependOn: [spec, engine, manager, logqueue, taskqueue, retention, metrics, logtap]
 
   # ---- errs: the shared sentinel<->wire-code taxonomy ----
   errs:
@@ -104,7 +107,7 @@ deps:
   config:
     mayDependOn: [spec, manager]
   daemon:
-    mayDependOn: [spec, config, engine, manager, node, server, protocol, metrics, credentials]
+    mayDependOn: [spec, config, engine, manager, node, server, protocol, metrics, credentials, logtap]
 
   # ---- bench: the workload engine and the envelope it streams ----
   result:
