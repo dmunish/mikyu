@@ -38,6 +38,11 @@ func ValidateSession(s Session) error {
 			return fmt.Errorf("%w: metrics_listen must be host:port, got %q", ErrInvalidConfig, s.Metrics.Listen)
 		}
 	}
+	switch s.LogLevel {
+	case "", "debug", "info", "warn", "error":
+	default:
+		return errInvalid("log_level", "one of debug|info|warn|error", s.LogLevel)
+	}
 	switch s.Auth.Method {
 	case "", "none", "none-insecure", "token", "mtls":
 	default:

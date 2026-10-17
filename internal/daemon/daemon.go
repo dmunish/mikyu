@@ -211,6 +211,7 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 	metricsListen := fs.String("metrics-listen", "", "Listen address for the metrics HTTP server (off when empty)")
 	metricsPerQueuePrometheus := fs.Bool("metrics-per-queue-prometheus", false, "Emit per-queue series on the Prometheus endpoint")
 	metricsHistograms := fs.Bool("metrics-histograms", false, "Enable latency histograms in the metrics snapshot")
+	logLevel := fs.String("log-level", "", "Log verbosity: debug|info|warn|error")
 
 	// Auth. --auth-token is registered so --help lists it, but rejected on use:
 	// a token on argv leaks via ps.
@@ -383,6 +384,17 @@ func resolveConfig(args []string, stdout, stderr io.Writer) (*config.Config, str
 			cfg.Server.Metrics.PerQueuePrometheus = *metricsPerQueuePrometheus
 		case "metrics-histograms":
 			cfg.Server.Metrics.Histograms = *metricsHistograms
+		case "log-level":
+			p, ok := spec.Lookup("log_level")
+			if !ok {
+				flagErr = errors.New("--log-level: missing from spec.Table")
+				return
+			}
+			if _, err := p.Parse(*logLevel); err != nil {
+				flagErr = err
+				return
+			}
+			cfg.Server.LogLevel = *logLevel
 		case "auth-method":
 			cfg.Server.Auth.Method = *authMethod
 		case "auth-token-file":

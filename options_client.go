@@ -42,6 +42,11 @@ func WithTLSKey(path string) ClientOption { return client.WithTLSKey(path) }
 // certificates, for mutual TLS. Server side.
 func WithTLSClientCA(path string) ClientOption { return client.WithTLSClientCA(path) }
 
+// WithLogLevel sets the daemon's log verbosity: "debug", "info",
+// "warn", or "error". Server side; embedded and remote clients keep no
+// log.
+func WithLogLevel(level string) ClientOption { return client.WithLogLevel(level) }
+
 // WithAutoStart makes Dial spawn a daemon with the session's settings
 // when nothing is serving the target yet.
 func WithAutoStart(enabled bool) ClientOption { return client.WithAutoStart(enabled) }

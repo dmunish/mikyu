@@ -141,6 +141,7 @@ func TestConfigEnvOverridesFromTable(t *testing.T) {
 		"auth_token":                   "0123456789abcdef",
 		"tls_client_ca":                "ca.pem",
 		"encryption_key_file":          "keys",
+		"log_level":                    "debug",
 	}
 	for _, p := range spec.Params(spec.LayerSession) {
 		t.Run(p.Key, func(t *testing.T) {
@@ -184,6 +185,8 @@ func TestConfigEnvOverridesFromTable(t *testing.T) {
 				assert.True(t, cfg.Server.Metrics.PerQueuePrometheus)
 			case "metrics_histograms":
 				assert.True(t, cfg.Server.Metrics.Histograms)
+			case "log_level":
+				assert.Equal(t, values["log_level"], cfg.Server.LogLevel)
 			default:
 				t.Fatalf("session parameter %q has no assertion", p.Key)
 			}

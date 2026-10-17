@@ -126,6 +126,7 @@ type Session struct {
 	Auth           AuthConfig       `yaml:"auth"`
 	Encryption     EncryptionConfig `yaml:"encryption"`
 	Metrics        MetricsConfig    `yaml:"metrics"`
+	LogLevel       string           `yaml:"log_level"`
 }
 
 // TLSConfig holds the wire encryption material.
@@ -161,12 +162,13 @@ type MetricsConfig struct {
 // Builtin returns the fully-resolved built-in layer.
 func Builtin() Spec { return Resolve(Spec{}) }
 
-// BuiltinSession returns the built-in session layer. TLS is off at this layer; metrics run enabled at a one-second tick.
+// BuiltinSession returns the built-in session layer. TLS is off at this layer; metrics run enabled at a one-second tick, and logs render at info.
 func BuiltinSession() Session {
 	return Session{
 		Target:         "tcp://127.0.0.1:7420",
 		MaxConnections: 10,
 		Auth:           AuthConfig{Method: "none"},
+		LogLevel:       "info",
 		Metrics: MetricsConfig{
 			Enabled:    true,
 			Interval:   Duration(time.Second),

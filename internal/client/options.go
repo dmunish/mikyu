@@ -28,6 +28,8 @@ type SessionConfig struct {
 	AuthTokenFile string
 	TLSClientCA   string
 
+	LogLevel string
+
 	EncryptionKeyFile string
 
 	Durability spec.Durability
@@ -120,6 +122,11 @@ func WithAuthTokenFile(path string) Option {
 // WithTLSClientCA sets the client CA bundle for mTLS servers.
 func WithTLSClientCA(path string) Option {
 	return func(c *SessionConfig) { c.TLSClientCA = path }
+}
+
+// WithLogLevel sets the daemon's log verbosity (debug, info, warn, or error); embedded and remote clients have no log.
+func WithLogLevel(level string) Option {
+	return func(c *SessionConfig) { c.LogLevel = level }
 }
 
 // WithEncryptionKeyFile sets the master-key file an embedded node uses to unseal encryption: aes queues; a remote client cannot configure the server's keys.

@@ -242,11 +242,12 @@ func specParam(path, key string, kind Kind, mut Mutability, allowed []string, do
 }
 
 // sessionParam declares a process-only parameter living in the server block at path.
-func sessionParam(path, key string, kind Kind, scope Scope, doc string) Param {
+func sessionParam(path, key string, kind Kind, scope Scope, allowed []string, doc string) Param {
 	return Param{
 		Key:        key,
 		Path:       path,
 		Kind:       kind,
+		Allowed:    allowed,
 		Layer:      LayerSession,
 		Scope:      scope,
 		Mutability: MutNotApplicable,
@@ -309,6 +310,7 @@ var sessionSetters = map[string]func(*Session, Value){
 	"metrics_listen":               func(s *Session, v Value) { s.Metrics.Listen = v.Text() },
 	"metrics_per_queue_prometheus": func(s *Session, v Value) { s.Metrics.PerQueuePrometheus = v.Bool() },
 	"metrics_histograms":           func(s *Session, v Value) { s.Metrics.Histograms = v.Bool() },
+	"log_level":                    func(s *Session, v Value) { s.LogLevel = v.Enum() },
 }
 
 // getter reads one Spec field so presence lives beside the canonical keys.
@@ -421,40 +423,43 @@ func buildTable() []Param {
 		callParam("retry_after", KindDuration,
 			"Delay before this task becomes available again"),
 
-		sessionParam("server.target", "target", KindString, ScopeBoth,
+		sessionParam("server.target", "target", KindString, ScopeBoth, nil,
 			"Daemon target (tcp://, unix://, pipe://)"),
-		sessionParam("server.data_dir", "data_dir", KindString, ScopeBoth,
+		sessionParam("server.data_dir", "data_dir", KindString, ScopeBoth, nil,
 			"Data directory for embedded mode"),
-		sessionParam("server.max_connections", "max_connections", KindInt, ScopeBoth,
+		sessionParam("server.max_connections", "max_connections", KindInt, ScopeBoth, nil,
 			"Connection pool size"),
-		sessionParam("server.tls.enabled", "tls_enabled", KindBool, ScopeBoth,
+		sessionParam("server.tls.enabled", "tls_enabled", KindBool, ScopeBoth, nil,
 			"Wrap the wire in TLS 1.3"),
-		sessionParam("server.tls.cert", "tls_cert", KindString, ScopeBoth,
+		sessionParam("server.tls.cert", "tls_cert", KindString, ScopeBoth, nil,
 			"TLS server certificate file"),
-		sessionParam("server.tls.key", "tls_key", KindString, ScopeBoth,
+		sessionParam("server.tls.key", "tls_key", KindString, ScopeBoth, nil,
 			"TLS server key file"),
-		sessionParam("server.tls.client_ca", "tls_client_ca", KindString, ScopeServer,
+		sessionParam("server.tls.client_ca", "tls_client_ca", KindString, ScopeServer, nil,
 			"Client CA bundle for mTLS"),
-		sessionParam("server.auth.method", "auth_method", KindString, ScopeServer,
+		sessionParam("server.auth.method", "auth_method", KindString, ScopeServer, nil,
 			"One of none, none-insecure, token, mtls"),
-		sessionParam("server.auth.token", "auth_token", KindString, ScopeBoth,
+		sessionParam("server.auth.token", "auth_token", KindString, ScopeBoth, nil,
 			"Token to present; the token file wins"),
-		sessionParam("server.auth.token_file", "auth_token_file", KindString, ScopeBoth,
+		sessionParam("server.auth.token_file", "auth_token_file", KindString, ScopeBoth, nil,
 			"File to read the token from"),
-		sessionParam("server.encryption.key_file", "encryption_key_file", KindString, ScopeBoth,
+		sessionParam("server.encryption.key_file", "encryption_key_file", KindString, ScopeBoth, nil,
 			"File of hex AES-256 master keys, one per line; the last line wraps new data keys"),
-		sessionParam("server.metrics.enabled", "metrics_enabled", KindBool, ScopeBoth,
+		sessionParam("server.metrics.enabled", "metrics_enabled", KindBool, ScopeBoth, nil,
 			"Enable the collector"),
-		sessionParam("server.metrics.interval", "metrics_interval", KindDuration, ScopeBoth,
+		sessionParam("server.metrics.interval", "metrics_interval", KindDuration, ScopeBoth, nil,
 			"Collector tick interval"),
-		sessionParam("server.metrics.history", "metrics_history", KindInt, ScopeBoth,
+		sessionParam("server.metrics.history", "metrics_history", KindInt, ScopeBoth, nil,
 			"Snapshots kept in the tick ring"),
-		sessionParam("server.metrics.listen", "metrics_listen", KindString, ScopeServer,
+		sessionParam("server.metrics.listen", "metrics_listen", KindString, ScopeServer, nil,
 			"HTTP bind address for /metrics and /api/*"),
-		sessionParam("server.metrics.per_queue_prometheus", "metrics_per_queue_prometheus", KindBool, ScopeServer,
+		sessionParam("server.metrics.per_queue_prometheus", "metrics_per_queue_prometheus", KindBool, ScopeServer, nil,
 			"Emit per-queue labeled Prometheus series"),
-		sessionParam("server.metrics.histograms", "metrics_histograms", KindBool, ScopeBoth,
+		sessionParam("server.metrics.histograms", "metrics_histograms", KindBool, ScopeBoth, nil,
 			"Include histograms in snapshots"),
+		sessionParam("server.log_level", "log_level", KindEnum, ScopeServer,
+			[]string{"debug", "info", "warn", "error"},
+			"Log verbosity: debug, info, warn, or error"),
 	}
 
 	for i := range table {
