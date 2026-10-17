@@ -198,5 +198,5 @@ func TestKeyIndexSizeWarning(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.Equal(t, 3, len(q.keyIndex))
-	assert.Contains(t, buf.String(), "key index holds 3 groups")
+	assert.Contains(t, buf.String(), "key index holds more groups than the warn limit")
 }

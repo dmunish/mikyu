@@ -12,10 +12,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -35,7 +36,7 @@ var ErrUsage = errors.New("usage error")
 // spawnReadyTimeout is how long a caller waits for a freshly spawned daemon to accept connections.
 const spawnReadyTimeout = 3 * time.Second
 
-// Run parses args (CLI flags layered over MIKYU_* environment variables and the config file: flags > env > file > defaults), starts the daemon, and blocks until an interrupt signal or a graceful "mikyu shutdown" ends it.
+// Run parses args (CLI flags layered over MIKYU_* environment variables and the config file: flags > env > file > defaults), starts the daemon, and blocks until an interrupt signal or a graceful client stop ends it.
 func Run(args []string) error {
 	cfg, resolvedPath, err := resolveConfig(args, os.Stdout, os.Stderr)
 	if err != nil {
@@ -44,7 +45,17 @@ func Run(args []string) error {
 		}
 		return err
 	}
-	logEffectiveConfig(cfg, resolvedPath)
+	setupLogging(cfg.Server)
+	slog.Info("starting",
+		"spec_version", spec.CurrentSpecVersion,
+		"go", runtime.Version(),
+		"os", runtime.GOOS,
+		"arch", runtime.GOARCH,
+	)
+	if resolvedPath != "" {
+		slog.Info("config file", "path", resolvedPath)
+	}
+	openedAt := time.Now()
 
 	n, release, err := node.Acquire(cfg.Server.DataDir, cfg.Defaults,
 		node.WithMetrics(node.MetricsFromSession(cfg.Server)),
@@ -55,7 +66,7 @@ func Run(args []string) error {
 	}
 	defer func() {
 		if err := release(); err != nil {
-			log.Printf("mikyu daemon: node release: %v", err)
+			slog.Warn("node release failed", "err", err)
 		}
 	}()
 
@@ -80,10 +91,10 @@ func Run(args []string) error {
 	if cfg.Server.TLS.Enabled {
 		// TLS only wraps tcp:// listeners (see Server.ListenAndServe).
 		if network, _, perr := protocol.ParseTarget(cfg.Server.Target); perr == nil && network != "tcp" {
-			log.Printf("mikyu daemon: warning: TLS is enabled but target %q is not tcp://; TLS will not apply", cfg.Server.Target)
+			slog.Warn("tls enabled but the target is not tcp; tls will not apply", "target", cfg.Server.Target)
 		}
 		if cfg.Server.TLS.Cert == "" || cfg.Server.TLS.Key == "" {
-			log.Printf("mikyu daemon: warning: TLS enabled without both cert and key files; generating an ephemeral self-signed certificate")
+			slog.Warn("tls enabled without both cert and key files; generating an ephemeral self-signed certificate")
 		}
 		tlsCfg, err := server.DefaultTLSConfig(cfg.Server.TLS.Cert, cfg.Server.TLS.Key, cfg.Server.TLS.ClientCA)
 		if err != nil {
@@ -111,6 +122,7 @@ func Run(args []string) error {
 			return fmt.Errorf("metrics http: %w", err)
 		}
 		httpSrv = s
+		slog.Info("metrics listening", "addr", cfg.Server.Metrics.Listen)
 	}
 	// LIFO: this defer runs after the wire server has stopped, so scrapers racing shutdown are still answered.
 	defer func() {
@@ -120,7 +132,7 @@ func Run(args []string) error {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := httpSrv.Stop(stopCtx); err != nil {
-			log.Printf("mikyu daemon: metrics http stop: %v", err)
+			slog.Warn("metrics http stop failed", "err", err)
 		}
 	}()
 
@@ -133,29 +145,63 @@ func Run(args []string) error {
 		serveErr <- srv.ListenAndServe(cfg.Server.Target)
 	}()
 
+	slog.Info("serving",
+		"target", cfg.Server.Target,
+		"data_dir", cfg.Server.DataDir,
+		"tls", cfg.Server.TLS.Enabled,
+		"auth", authModeName(cfg.Server.Auth.Method),
+		"max_connections", cfg.Server.MaxConnections,
+		"queues", len(cfg.Queues),
+	)
+	slog.Debug("defaults", "json", defaultsJSON(cfg.Defaults))
+
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals() // restore default handling: a second Ctrl+C force-kills
 
 	select {
 	case err := <-serveErr:
 		// The server stopped on its own: a bind failure, an accept error,
-		// or the node released by a graceful remote shutdown request.
+		// or the node released by a graceful remote stop request.
 		srv.Stop() // idempotent; releases the node
 		if err != nil {
 			return fmt.Errorf("server: %w", err)
 		}
-		log.Printf("mikyu daemon: stopped")
+		slog.Info("stopped by client", "uptime", uptime(openedAt))
 		return nil
 	case <-ctx.Done():
-		log.Printf("mikyu daemon: shutdown signal received")
+		slog.Info("shutdown signal received")
 	}
 
 	srv.Stop()
 	if err := <-serveErr; err != nil { // join the serve goroutine
 		return fmt.Errorf("server: %w", err)
 	}
-	log.Printf("mikyu daemon: stopped")
+	slog.Info("stopped", "uptime", uptime(openedAt))
 	return nil
+}
+
+// authModeName renders the auth method for the serving line; an unset
+// method means anonymous.
+func authModeName(method string) string {
+	if method == "" {
+		return "none"
+	}
+	return method
+}
+
+// uptime renders the time the daemon ran for the stopping line.
+func uptime(since time.Time) string {
+	return time.Since(since).Round(time.Millisecond).String()
+}
+
+// defaultsJSON renders the session defaults for the debug line; a marshal
+// failure degrades to an empty object rather than skipping the line.
+func defaultsJSON(s spec.Spec) string {
+	data, err := json.Marshal(s)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
 }
 
 // resolveConfig parses daemon flags and layers them over the config file and
@@ -450,20 +496,6 @@ func isLoopback(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
-}
-
-// logEffectiveConfig records the fully-resolved settings so the log of a
-// running daemon always shows what it actually started with, regardless of
-// which layer (flag, env, file, default) each value came from.
-func logEffectiveConfig(cfg *config.Config, resolvedPath string) {
-	log.Printf("mikyu daemon: config file %s", resolvedPath)
-	log.Printf("mikyu daemon: server target=%s data_dir=%s tls_enabled=%t max_connections=%d queues=%d",
-		cfg.Server.Target, cfg.Server.DataDir, cfg.Server.TLS.Enabled, cfg.Server.MaxConnections, len(cfg.Queues))
-	defaults, err := json.Marshal(cfg.Defaults)
-	if err != nil {
-		defaults = []byte("{}")
-	}
-	log.Printf("mikyu daemon: defaults %s", defaults)
 }
 
 // SpawnOptions carries the session settings a spawned daemon must inherit. AuthToken is deliberately absent: the daemon rejects it.

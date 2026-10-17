@@ -2,7 +2,7 @@ package config
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -88,7 +88,7 @@ func Load(flagPath string) (*Config, string, error) {
 	}
 
 	if bootstrapped {
-		log.Printf("No config file found. Bootstrapped default config at %s", resolvedPath)
+		slog.Info("no config file found; bootstrapped the default config", "path", resolvedPath)
 	}
 
 	data, err := os.ReadFile(resolvedPath)

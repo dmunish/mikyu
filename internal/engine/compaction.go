@@ -2,7 +2,7 @@ package engine
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 )
 
 // keyIndexWarnLimit is the documented target size of the key index; exceeding
@@ -26,7 +26,7 @@ func (q *Queue) buildKeyIndex() error {
 			}
 			_, _, group, _, err := decodeRecord(rec[recordLengthSize:])
 			if err != nil {
-				log.Printf("mikyu: queue %q: skipping corrupt record at offset %d during key index build", q.name, off)
+				slog.Warn("key index build skipped a corrupt record", "queue", q.name, "offset", off)
 				continue
 			}
 			if len(group) > 0 {
@@ -42,7 +42,8 @@ func (q *Queue) buildKeyIndex() error {
 func (q *Queue) warnKeyIndexSizeLocked() {
 	q.m.keyIndexSize.Set(int64(len(q.keyIndex)))
 	if len(q.keyIndex) > keyIndexWarnLimit {
-		log.Printf("mikyu: queue %q key index holds %d groups (target %d); consider reducing keyed records", q.name, len(q.keyIndex), keyIndexWarnLimit)
+		slog.Warn("key index holds more groups than the warn limit; consider reducing keyed records",
+			"queue", q.name, "groups", len(q.keyIndex), "limit", keyIndexWarnLimit)
 	}
 }
 

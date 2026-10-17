@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -68,14 +68,14 @@ func warnIfNotLoopback(addr net.Addr) {
 	if host == "127.0.0.1" || strings.Trim(host, "[]") == "::1" {
 		return
 	}
-	log.Printf("mikyu daemon: warning: metrics server at %s is reachable outside the host", addr)
+	slog.Warn("metrics endpoint is reachable outside the host", "addr", addr)
 }
 
 // writeJSON encodes v as an application/json response body.
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(v); err != nil {
-		log.Printf("mikyu daemon: metrics json encode: %v", err)
+		slog.Warn("metrics json encode failed", "err", err)
 	}
 }
 

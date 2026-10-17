@@ -16,14 +16,16 @@ import (
 )
 
 // bannedIdentifiers are the reconcile-plan legacy names; any of them in a
-// non-test source file violates the naming law.
+// non-test source file violates the naming law. "Info" was retired with the
+// metrics redesign but returned as slog's standard level verb, so it is no
+// longer guarded; OpInfo, EngineStats, and the rest still are.
 var bannedIdentifiers = []string{
 	"Produce", "ProduceBatch", "Publish", "Pop", "Stats", "TruncateQueue",
 	"FetchOffset", "TaskOption", "FailOption", "WithScheduleAt", "WithVisibilityTimeout",
 	"MaxSegmentBytes", "OriginalOffset", "DequeueNow",
 	"OpProduce", "OpPublish", "OpPop", "OpStats", "OpTail", "OpFetchOffset",
-	// metrics.md retirements: Metrics replaces Info, nothing invents Stats types.
-	"Info", "EngineStats", "QueueStats", "InfoResult", "MetricsResult", "OpInfo",
+	// metrics.md retirements: Metrics replaces the old telemetry surface.
+	"EngineStats", "QueueStats", "InfoResult", "MetricsResult", "OpInfo",
 	// split-era names: the old concrete types and manager verbs must not leak.
 	"LogQueue", "TaskQueue", "TaskRef", "TaskID", "Message",
 	"MIKYUTQ", "GetQueue", "CreateQueue", "DeleteQueue", "ListQueues",

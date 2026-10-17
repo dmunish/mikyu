@@ -2,10 +2,10 @@
 
 package engine
 
-import "log"
+import "log/slog"
 
 // EnsureDirectoryEncrypted provides a safe fallback for systems without native transparent directory policies (e.g. macOS/Darwin, BSD).
 func EnsureDirectoryEncrypted(dirPath string) error {
-	log.Printf("[WARN] Transparent directory encryption was requested for %s, but is not natively supported by the host OS kernel.", dirPath)
+	slog.Warn("transparent directory encryption was requested but is not supported by this host; continuing without it", "dir", dirPath)
 	return nil
 }
