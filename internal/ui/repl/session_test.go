@@ -2,6 +2,7 @@ package repl
 
 import (
 	"net"
+	"os"
 	"testing"
 
 	"github.com/dmunish/mikyu"
@@ -26,7 +27,7 @@ func TestLazyConnectReportsTheREPLHint(t *testing.T) {
 
 	out := captureStdout(func() { sess.handleList(nil) })
 	assert.Contains(t, out, "no daemon serving tcp://127.0.0.1:1")
-	assert.Contains(t, out, "daemon start --dir")
+	assert.Contains(t, out, "daemon start")
 	assert.Contains(t, out, "open <dir>")
 	assert.Nil(t, sess.conn, "a failed connect must not cache a client")
 
@@ -90,8 +91,8 @@ func TestDispatchRoutesSessionCommands(t *testing.T) {
 	assert.Contains(t, out, "no daemon serving tcp://127.0.0.1:1")
 }
 
-// TestDaemonStartGuards: --dir is required, and a live target is reported
-// instead of spawning a second daemon.
+// TestDaemonStartGuards: a live target is reported instead of spawning a
+// second daemon, and --dir defaults to the directory the REPL runs in.
 func TestDaemonStartGuards(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -102,11 +103,12 @@ func TestDaemonStartGuards(t *testing.T) {
 	sess.session.Target = target
 	sess.target = target
 
-	out := captureStdout(func() { sess.handleDaemon([]string{"start"}) })
-	assert.Contains(t, out, "Usage")
-
-	out = captureStdout(func() { sess.handleDaemonStart([]string{"--dir", t.TempDir()}) })
+	out := captureStdout(func() { sess.handleDaemonStart(nil) })
 	assert.Contains(t, out, "already serving")
+
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+	assert.Equal(t, wd, defaultDaemonDir())
 }
 
 // TestHelpListsSessionCommands: the help index is followed by the session

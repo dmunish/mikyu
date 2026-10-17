@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/dmunish/mikyu/internal/daemon"
@@ -73,32 +74,45 @@ func (s *replSession) handleDaemon(args []string) {
 		}
 		if err := daemon.RunClientSub(sub, args, sess, os.Stdout, os.Stderr); err != nil {
 			if errors.Is(err, daemon.ErrUsage) {
-				s.usage("daemon start --dir <dir> | daemon status | stop | logs")
+				s.usage("daemon start | status | stop | logs")
 				return
 			}
 			s.fail(err)
 		}
 	case "run":
-		s.usage("daemon run blocks the terminal; use: daemon start --dir <dir>")
+		s.usage("daemon run blocks the terminal; use: daemon start")
 	default:
-		s.usage("daemon start --dir <dir> | daemon status | stop | logs")
+		s.usage("daemon start | status | stop | logs")
 	}
 }
 
+// defaultDaemonDir is where `daemon start` stores data when --dir is omitted:
+// the directory the REPL was launched from, falling back to the executable's
+// directory and then the current directory when the OS will not say.
+func defaultDaemonDir() string {
+	if wd, err := os.Getwd(); err == nil {
+		return wd
+	}
+	if exe, err := os.Executable(); err == nil {
+		return filepath.Dir(exe)
+	}
+	return "."
+}
+
 // handleDaemonStart launches a detached daemon for the session's target and
-// waits for it to accept connections. Flags past --dir pass through to the
-// daemon, so 'daemon start --dir d --metrics-listen ...' works.
+// waits for it to accept connections. --dir defaults to the directory the
+// REPL was launched from; other flags pass through to the daemon.
 func (s *replSession) handleDaemonStart(args []string) {
 	var dir string
 	fs := command.NewFlagSet("daemon start")
-	fs.StringVar(&dir, "dir", "", "data directory for the daemon (required)")
+	fs.StringVar(&dir, "dir", defaultDaemonDir(), "data directory for the daemon (default: the current directory)")
 	rest, err := command.ParseAnywhere(fs, args)
 	if err != nil {
-		s.usage("daemon start --dir <data-dir> [daemon flags...] ("+err.Error()+")")
+		s.usage("daemon start [--dir <data-dir>] [daemon flags...] ("+err.Error()+")")
 		return
 	}
 	if dir == "" {
-		s.usage("daemon start --dir <data-dir> [daemon flags...]")
+		s.usage("daemon start [--dir <data-dir>] [daemon flags...]")
 		return
 	}
 	if daemon.IsDaemonAlive(s.target) {

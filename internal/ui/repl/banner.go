@@ -49,7 +49,7 @@ func PrintBanner(target, dir string) {
 		{"enqueue", "<queue> <msg>", "Enqueue a task"},
 		{"dequeue", "<queue>", "Lease the next due task"},
 		{"open", "<dir>", "Work in-process on a data dir"},
-		{"daemon", "start --dir <dir>", "Launch a background daemon"},
+		{"daemon", "start", "Launch a background daemon here"},
 		{"help", "", "Show all available commands"},
 	}
 	for _, c := range commands {
@@ -62,7 +62,10 @@ func PrintBanner(target, dir string) {
 	b.WriteString("\n")
 
 	tryLabel := tryLabelStyle.Render("try: ")
-	tryCmd := tryCmdStyle.Render(`append events "hello world"`)
+	tryCmd := tryCmdStyle.Render(`daemon start`)
+	if dir != "" {
+		tryCmd = tryCmdStyle.Render(`append events "hello world"`)
+	}
 	b.WriteString(fmt.Sprintf("  %s%s\n\n", tryLabel, tryCmd))
 
 	var statusText, where string
@@ -74,8 +77,8 @@ func PrintBanner(target, dir string) {
 		statusText = statusStyle.Render("Daemon serving ")
 		where = target
 	default:
-		statusText = statusStyle.Render("No daemon at " + target + " — commands connect on use; try ")
-		where = "daemon start --dir <dir> or open <dir>"
+		fmt.Print(b.String())
+		return
 	}
 	statusTarget := statusTargetStyle.Render(where) + "\x1b[24m"
 	b.WriteString(fmt.Sprintf("  %s%s\n\n", statusText, statusTarget))

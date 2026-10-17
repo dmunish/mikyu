@@ -60,7 +60,7 @@ func RunClientSub(sub string, args []string, sess spec.Session, stdout, stderr i
 	case "logs":
 		return runLogs(&sess, args, stdout, stderr)
 	case "run":
-		return fmt.Errorf("%w: mikyu daemon run blocks the terminal; use 'daemon start --dir <dir>' to launch one in the background", ErrUsage)
+		return fmt.Errorf("%w: mikyu daemon run blocks the terminal; use 'daemon start' from the REPL to launch one in the background", ErrUsage)
 	default:
 		return fmt.Errorf("%w: unknown daemon command %q; usage: daemon start|status|stop|logs", ErrUsage, sub)
 	}

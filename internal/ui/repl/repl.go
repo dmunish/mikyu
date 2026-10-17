@@ -48,7 +48,7 @@ func (s *replSession) client() (mikyu.Client, error) {
 	c, err := command.OpenClient(sess)
 	if err != nil {
 		if s.dir == "" && !daemon.IsDaemonAlive(sess.Target) {
-			return nil, fmt.Errorf("no daemon serving %s — run 'daemon start --dir <dir>' to launch one, or 'open <dir>' to work in-process", sess.Target)
+			return nil, fmt.Errorf("no daemon serving %s — run 'daemon start' to launch one here, or 'open <dir>' to work in-process", sess.Target)
 		}
 		return nil, err
 	}
@@ -182,7 +182,7 @@ func (s *replSession) handleHelp(_ []string) {
 	for _, c := range []struct{ cmd, desc string }{
 		{"open <dir>", "Work in-process on a data directory"},
 		{"close", "Detach from the current client"},
-		{"daemon start --dir <dir>", "Launch a background daemon"},
+		{"daemon start", "Launch a background daemon in the current directory"},
 		{"daemon status|stop|logs", "Manage the running daemon"},
 	} {
 		fmt.Printf("  %s %s\n", command.FormatArgsStyled(c.cmd, true), dimStyle.Render(c.desc))
