@@ -48,7 +48,7 @@ A queue's **kind is structural**: it is the name of its parent directory under t
 |---|---|---|
 | Embedded engine | `mikyu.Open(dir, opts...)` | In-process `node.Node`, no network, ref-counted per data dir. |
 | Remote client | `mikyu.Dial(target, opts...)` | Pooled TCP / Unix / Named-Pipe wire client. |
-| Daemon | `mikyu daemon` | Long-lived server over TCP, Unix socket, or Windows named pipe. |
+| Daemon | `mikyu daemon run` | Long-lived foreground server over TCP, Unix socket, or Windows named pipe; `mikyu daemon status|stop|logs` manage a running one. |
 | CLI / REPL | `mikyu <cmd>`, `mikyu shell` | Stateless one-shot CLI and styled interactive REPL. |
 | Bench harness | `mikyu bench run` | Spawns its own client, writes a run directory, renders the summary. |
 
@@ -97,7 +97,9 @@ github.com/dmunish/mikyu/
     ├── server/                    # Wire server (server, dispatch, errors, auth, tls, handlers_*,
     │                              # metrics, sendfile_*)
     ├── client/                    # Embedded + remote clients
-    ├── daemon/                    # daemon, enum, detach_*, metrics_http
+    ├── credentials/               # per-target token store (user config dir)
+    ├── logtap/                    # log fan-out: bounded ring + live followers
+    ├── daemon/                    # daemon run|status|stop|logs, enum, detach_*, metrics_http
     └── ui/
         ├── style/                 # Theme, Palette, components (TitledBox, Gauge, ...)
         ├── human/                 # Bytes/Count/Duration/Percent/Rate formatters
@@ -123,15 +125,14 @@ retention      →  engine, metrics
 bench          →  mikyu, daemon, spec, engine, metrics
 bench/result   →  spec
 errs           →  spec, engine, manager, node, logqueue, taskqueue, protocol
-node           →  spec, engine, manager, logqueue, taskqueue, retention, metrics
+node           →  spec, engine, manager, logqueue, taskqueue, retention, metrics, logtap
 config         →  spec, manager
 client, server →  spec, engine, node, logqueue, taskqueue, ipc, protocol, metrics, errs
-                 (client also → group, daemon;  client and server never import each other)
-daemon         →  spec, config, engine, manager, node, server, protocol, metrics
+daemon         →  spec, config, engine, manager, node, server, protocol, metrics, credentials, logtap
 mikyu          →  spec, client, engine, node, logqueue, taskqueue, metrics, protocol
 metricsview    →  metrics, human, style, spec
 benchview      →  bench/result, spec, human, style
-command        →  mikyu, client, daemon, spec, style, human, metricsview, bench, bench/result, benchview
+command        →  mikyu, client, daemon, spec, style, human, metricsview, bench, bench/result, benchview, credentials
 cli, repl      →  mikyu, client, daemon, command, spec, style, metricsview, bench, bench/result
 cmd            →  mikyu, daemon, cli, repl, bench
 audit          →  (source-level; imports only stdlib + testify)
@@ -438,7 +439,7 @@ const SpecVersion = spec.CurrentSpecVersion   // 5
 ```
 
 - `Open` embeds the engine in-process. The data directory is held under an exclusive lock (`ErrLocked`), clients are ref-counted per absolute dir, and a second `Open` must agree on session defaults and the encryption key file (`ErrSessionDefaultsMismatch`).
-- `Dial` is lazy: `tcp://`, `unix://`, `pipe://`, or bare `host:port`; the first operation connects. `WithAutoStart` spawns a daemon when the target is not already serving.
+- `Dial` is lazy: `tcp://`, `unix://`, `pipe://`, or bare `host:port`; the first operation connects. Daemons are started explicitly with `mikyu daemon run`; nothing spawns one implicitly.
 
 ### Designed contract (`client.go`, `logqueue.go`, `taskqueue.go`)
 
@@ -625,10 +626,11 @@ type MetricsConfig struct {
 | `target` / `max_connections` | `tcp://127.0.0.1:7420` / 10 |
 | `auth_method` / `tls_enabled` / `encryption_key_file` | `none` / `false` / `""` |
 | `metrics_enabled` / `interval` / `history` / `histograms` | `true` / 1 s / 300 / `true` |
+| `log_level` | `info` (`debug|info|warn|error`) |
 
 **Naming rule:** `EnvName = "MIKYU_" + UPPER(key)`, `FlagName = key` with `_→-`, `OptionName = "With" + PascalCase(key)` (with `tls→TLS`, `ca→CA` initialisms).
 
-**Validation** (`validate.go`): positive-byte/duration/uint32 rules; non-negative for retention; `max_payload ≤ max_segment − RecordOverhead (36)`; `max_cache ≥ min(builtinMaxCache, max_segment)`. Session: `max_connections ≥ 1`, `metrics_interval > 0` when enabled, `metrics_history ≥ 1`, `metrics_listen` host:port, `auth_method ∈ {"", none, none-insecure, token, mtls}`, token mode needs ≥16-byte token/file, `mtls` needs TLS. The spec-layer `encryption` enum accepts `none|os|aes`; the cross-check "a queue wants `aes` but the node holds no master keys" lives at the node boundary (`node.toEngineConfigWithKeys`), like `mtls`-needs-TLS.
+**Validation** (`validate.go`): positive-byte/duration/uint32 rules; non-negative for retention; `max_payload ≤ max_segment − RecordOverhead (36)`; `max_cache ≥ min(builtinMaxCache, max_segment)`. Session: `max_connections ≥ 1`, `metrics_interval > 0` when enabled, `metrics_history ≥ 1`, `metrics_listen` host:port, `auth_method ∈ {"", none, none-insecure, token, mtls}`, token mode needs ≥16-byte token/file, `mtls` needs TLS, and `log_level` ∈ `debug|info|warn|error`. The spec-layer `encryption` enum accepts `none|os|aes`; the cross-check "a queue wants `aes` but the node holds no master keys" lives at the node boundary (`node.toEngineConfigWithKeys`), like `mtls`-needs-TLS.
 
 **Derived:** `RecordOverhead = 36`; `FlushLinger(s) = max(0, MaxWait/8)`.
 
@@ -1244,7 +1246,7 @@ func (c *Coordinator) Start(ctx)
 
 | Subsystem | Range | Ops |
 |---|---|---|
-| Admin | `0x0X` | Create(0x00), Delete(0x01), List(0x02), Update(0x03), Describe(0x04), Truncate(0x05), Metrics(0x07), Schema(0x08), Shutdown(0x0C) |
+| Admin | `0x0X` | Create(0x00), Delete(0x01), List(0x02), Update(0x03), Describe(0x04), Truncate(0x05), Metrics(0x07), Schema(0x08), Shutdown(0x0C), Logs(0x0D) |
 | Log | `0x1X` | Append(0x10), AppendBatch(0x11), Read(0x12), ReadBatch(0x13), LastOffset(0x14), MinOffset(0x15), Commit(0x16), Committed(0x17), Fetch(0x18) |
 | Task | `0x2X` | Enqueue(0x20), Dequeue(0x21), Ack(0x22), Nack(0x23), Extend(0x24), Archive(0x25) |
 | Dead-letter | `0x3X` | DeadLetters(0x30), DeadLetterAck(0x31) |
@@ -1325,7 +1327,7 @@ Over-limit connections are answered with `OpError(ErrCodeTooManyConnections)` af
 
 ### Dispatch and Handlers
 
-`dispatch` returns `(respOp byte, respBody []byte, shouldShutdown bool, streamed bool)`. When `streamed` is true the handler has already written its own response frame — used by the zero-copy send path in `handleReadBatch` and `handleFetch`. Otherwise the dispatcher writes the frame.
+`dispatch` returns `(respOp byte, respBody []byte, shouldShutdown bool, streamed bool)`. When `streamed` is true the handler has already written its own response frame — used by the zero-copy send path in `handleReadBatch`/`handleFetch` and by the log stream in `handleLogs`. Otherwise the dispatcher writes the frame.
 
 - `handleCreate` reads `u8 kind, bytes(name), u16 specVersion, bytes(json)` and dispatches to `node.CreateLogQueue`/`node.CreateTaskQueue`.
 - `handleFetch` clamps the client's wait at `maxFetchWait = 5 min`. It calls `s.streamSpans(conn, q, protocol.OpFetch, start, count)` first; if the span source resolves, the handler streams the response itself and returns `streamed=true`; otherwise it falls back to `q.Fetch` and returns a `OpFetch` record-list body.
@@ -1489,8 +1491,8 @@ type SessionConfig struct {
     Target, DataDir string
     MaxConnections  int
     TLSEnabled bool; TLSCert, TLSKey string
-    AutoStart  bool
     AuthMethod, AuthToken, AuthTokenFile, TLSClientCA string
+    LogLevel string
     EncryptionKeyFile string
     MetricsEnabled bool; MetricsInterval time.Duration; MetricsHistory int
     MetricsListen string; MetricsPerQueuePrometheus, MetricsHistograms bool
@@ -1729,28 +1731,42 @@ The taxonomy test walks every source file, extracts every `Err*` sentinel declar
 ## 16. Daemon — `internal/daemon`
 
 ```go
-func Run(args []string) error
-func EnsureDaemonRunning(opts SpawnOptions) error
+func Run(args []string, stderr io.Writer) error   // routes run|status|stop|logs; the bare form aliases run
 func IsDaemonAlive(target string) bool
 func SendShutdownSignal(target string, sess spec.Session) error
-type SpawnOptions struct { Target, DataDir string; TLSEnabled bool; TLSCert, TLSKey, AuthMethod, AuthTokenFile, TLSClientCA, EncryptionKeyFile string; ExtraArgs []string }
+type SpawnOptions struct { Target, DataDir string; TLSEnabled bool; TLSCert, TLSKey, AuthMethod, AuthTokenFile, TLSClientCA, EncryptionKeyFile string; ExtraArgs []string }   // bench-owned
 type enumValue struct { param spec.Param; value string; changed bool }   // flag.Value
 ```
 
-`resolveConfig` parses daemon flags and layers them over the config file and env: **CLI flags > `MIKYU_*` env > `mikyu.yaml` > compiled defaults**. Only flags explicitly set on the command line override, via `fs.Visit`. `--help` written to stdout and returned as `flag.ErrHelp`; any other input mistake written to stderr with usage text and wrapped in `ErrUsage`.
+`Run` splits the leading subcommand: `run` (the default for the bare form and any leading flag), `status`, `stop`, `logs`; an unknown word is a usage error naming the four forms. The `server` alias is retired.
+
+**`daemon run`** — the foreground server; Ctrl+C is the shutdown contract (first signal drains and exits, second kills). `resolveConfig` parses daemon flags and layers them over the config file and env: **CLI flags > `MIKYU_*` env > `mikyu.yaml` > compiled defaults**. Only flags explicitly set on the command line override, via `fs.Visit`. `--help` is written to stdout and returned as `flag.ErrHelp`; any other input mistake is written to stderr with usage text and wrapped in `ErrUsage`.
 
 **Fail-closed defaults:** on a non-loopback `tcp://` target, `token` requires `--tls-enabled`, `mtls` requires `--tls-enabled` + `--tls-client-ca-file`, and `""`/`none` is refused (opt out with `--auth-method none-insecure`). Loopback, `unix://`, `pipe://` are exempt. `--auth-token` is registered for `--help` but rejects on use (argv leaks via `ps`); `--encryption-key` is rejected the same way — key material arrives via `--encryption-key-file`, and node open fails closed when an `encryption: aes` queue has no key file.
 
-`Run`:
+`runDaemon`:
 
 1. `resolveConfig`.
-2. `logEffectiveConfig`.
-3. `node.Acquire` with `node.WithMetrics(node.MetricsFromSession(cfg.Server))` and `node.WithEncryptionKeyFile(node.EncryptionKeyFileFromSession(cfg.Server))`.
-4. Reconcile declared queues.
-5. Optional TLS wrapper, `server.NewAuthMode`, `server.New`.
-6. Optional metrics HTTP server (started before the wire server listens so a bind failure still stops `srv`).
-7. `server.ListenAndServe` in a goroutine reporting through a buffered `serveErr` channel.
-8. Block on `SIGINT`/`SIGTERM` or `serveErr`.
+2. `node.Acquire` with `node.WithMetrics(node.MetricsFromSession(cfg.Server))` and `node.WithEncryptionKeyFile(node.EncryptionKeyFileFromSession(cfg.Server))`.
+3. `setupLogging(cfg.Server, n.LogTap())` — installs the log fan-out as the slog default.
+4. `starting` line, then the config-file path when one was read.
+5. Reconcile declared queues.
+6. Optional TLS wrapper, `server.NewAuthMode`, `server.New`.
+7. Optional metrics HTTP server (started before the wire server listens so a bind failure still stops `srv`).
+8. `server.ListenAndServe` in a goroutine reporting through a buffered `serveErr` channel; `serving` line.
+9. Block on `SIGINT`/`SIGTERM` or `serveErr`; `stopped` with the uptime.
+
+**Logging.** `slog` is the only logging API in the module; `charm.land/log/v2` is the presentation, appearing only in `setupLogging`. Two charm loggers share one rendering decision — the daemon's stderr (styled only on a TTY, plain when piped) and the node's `logtap.Tap` (always plain, so wire followers receive clean lines) — wrapped in a `fanoutHandler` that delivers each record to both. The level comes from the `log_level` session parameter (`spec.Table`, enum `debug|info|warn|error`, default `info`). The catalog is lifecycle-only: `starting`, `config file`/`config bootstrapped`, one `serving` line carrying the whole effective config (the defaults JSON is a debug line), warns (ephemeral TLS cert, TLS on a non-tcp target, metrics outside the host, queue adopt/purge/correct/fault), `shutdown signal received`, `stopped by client`, `stopped uptime=…`, and teardown warns. Per-connection, per-op, and per-record events never log — metrics are the observation surface.
+
+**Client subcommands.** `clientSession(name, args, …)` resolves the session a client-side subcommand presents to an already-running daemon: **built-in defaults > `MIKYU_*` env > explicit flags > stored login credential > none**; the config file plays no part — it configures a daemon, not a client. `connect(target, sess)` dials (2 s) and completes the one `OpAuth` handshake, returning the connection for a follow-up op; `replyError` renders `OpError` frames, giving unauthorized its own hint. `internal/credentials` is the shared token store: `mikyu login` writes it, the client subcommands read it as the last layer.
+
+- **`daemon status [--json]`** — `OpAuth` + `OpList`. Alive → `serving <target> — N queues` (or a JSON view with the queue list). Dead → `no daemon serving <target> (start one with: mikyu daemon run --data-dir <dir>)`, exit 1. Unauthorized → its own actionable message.
+- **`daemon stop [--yes]`** — sends `OpShutdown` through `connect`. Confirmation follows delete/truncate: prompted on a terminal, required as `--yes` when stdin is not one; the stored credential authorizes it.
+- **`daemon logs [--follow]`** — sends `OpLogs`. Without follow, replays the ring and exits. With follow, prints live lines until the first Ctrl+C (detach only — the daemon never notices beyond a closed socket), the daemon stops, or the tap drops the follower.
+
+**Log fan-out.** `node.Node` owns a `logtap.Tap` (`logtap.DefaultCapacity` = 4096 plain-text lines, fixed constant, not a spec param). `Tap.Write` tolerates partial-line writes (bytes accumulate to the newline); `Subscribe` returns backlog and channel atomically under the ring lock, so replay and tail never gap or overlap; a follower whose 256-line buffer fills is dropped and its channel closed. The tap never backpressures the daemon.
+
+**Wire (`OpLogs = 0x0D`).** Request `u8 follow` (`protocol.EncodeLogsSubscribe`). The response is streamed frames of one rendered line each; an empty frame ends the stream. `server.handleLogs` subscribes, writes the backlog, then tails the channel until ctx done (client detach), follower drop, or daemon stop; dispatch marks it streamed.
 
 **Metrics HTTP** (`metrics_http.go`): four fixed routes.
 
@@ -1761,10 +1777,7 @@ type enumValue struct { param spec.Param; value string; changed bool }   // flag
 | `GET /api/history` | `?limit=N` slices the collector's tick history, newest last. |
 | `GET /api/events` | Server-sent events, one `snapshot` event per collector tick. |
 
-**Spawning** (`EnsureDaemonRunning`) probes the target; if dead, spawns a detached copy of `os.Executable()` with `daemon` and waits up to 3 s. AuthToken is deliberately not forwardable. `Process` (`spawn.go`) exposes `PID`, `Target`, `Kill()`, `Wait()`, `Alive()`. `daemonArgs(opts)` renders session flags a spawned daemon inherits, skipping zero values; `freeLoopbackPort()` asks the kernel for a free port when none is given.
-
----
-
+**Spawning** (`Spawn`) is bench-owned: the bench harness's daemon access spawns a detached copy of `os.Executable()`, records the PID in `<dir>/.bench-runs`, and reaps it unless `--persist`. `Process` (`spawn.go`) exposes `PID`, `Target`, `Kill()`, `Wait()`, `Alive()`; `daemonArgs(opts)` renders the session flags a spawned daemon inherits, skipping zero values; `freeLoopbackPort()` asks the kernel for a free port when none is given; `WaitForAlive` polls the target. Auto-launch from `Dial` and the CLI is retired — a daemon is started only by the explicit command.
 ## 17. Config Loader — `internal/config`
 
 ```go
@@ -2226,7 +2239,7 @@ Sentinels: `ErrNotARun`, `ErrEnvelopeVersion`, `ErrCompareMismatch`.
 |---|---|
 | Log | `list`, `create`, `update`, `describe`, `delete`, `append`, `read`, `tail`, `truncate` |
 | Task | `enqueue`, `dequeue`, `ack`, `nack`, `extend`, `dlq`, `dlq-ack`, `archive` |
-| Admin | `metrics`, `shutdown`, `login`, `logout` |
+| Admin | `metrics`, `login`, `logout` |
 | Bench | `bench`, `bench run`, `bench show`, `bench compare`, `bench plot` |
 | Session (REPL only) | `help`, `use`, `exit` |
 
@@ -2239,14 +2252,14 @@ Sentinels: `ErrNotARun`, `ErrEnvelopeVersion`, `ErrCompareMismatch`.
 - **Log:** `GetTerminalWidth`, `FormatSingleLinePayload`, `ResolvePayload`, `Append`, `Read`, `Tail`, `Truncate`.
 - **Queue:** `List`, `KindFromName`, `Create`, `Update`, `Describe`, `TightensRetention`, `Delete`.
 - **Task:** `Enqueue`, `Dequeue`, `TaskAck/Nack/Extend/DeadLetters/AckDeadLetter/Archive`, `Record`, `ParseTaskRef`, `FormatTaskRecord(s)`.
-- **Admin:** `Metrics`, `Shutdown`.
+- **Admin:** `Metrics`.
 - **Auth:** `CredentialsPath`, `LoadToken`, `SaveToken`, `DeleteToken`, `Logout`, `Login`, `LoginWithToken`.
 - **Flags:** `Global`, `SessionFlags`, `ParseGlobal`, `SpecOption`, `OpenClient`, `NewFlagSet`, `QueueFlagSet`, `QueuePatchFlagSet`, `EnqueueFlagSet`, `NackFlagSet`, `ParseAnywhere`, `HasHelpFlag`.
 - **Help:** `RenderOptions`, `WriteIndex`, `WriteVerb`, `collectSpecRows`, `writeFlagGroups`, `defaultString`, `humanBytes`, `formatArgsStyled`, `wrapParagraphs`.
 - **Metrics:** `MetricsOptions`, `MetricsFlagSet`, `RunMetrics`, `presentation`, `renderFrame`, `watchMetrics`, `watchInterval`, `watchModeFor`.
 - **Bench:** `runDir`, `BenchArgs`, `BenchFlagSet`, `PlotFlagSet`, `RunBench`, `Present`, `ShowRun`, `CompareRuns`, `PlotRun`, `resolveBench`, `resolveMode`, `applyBenchEnv`, `checkModeScope`, `dirOrDefault`, `scenarioDoc`, `readScenario`, `applyScenario`, `modeScopeDoc`, `workloadValue`, `modeValue`, `accessValue`, `benchPresentation`, `splitCSV`, `benchProgress`. The run's key file layers as the session's `--encryption-key-file` < `MIKYU_ENCRYPTION_KEY_FILE` < `--encryption-key-file` on the run; `openClient` passes it to `mikyu.Open` (embedded) and the spawned daemon (daemon access), and `OpenClient` does the same for embedded CLI sessions.
 
-`command.SpecOption(spec.Spec)` is the single bridge handing a fully-built spec to the SDK. `command.OpenClient(sess)` returns an embedded client if `--dir`, otherwise ensures the daemon is running and dials.
+`command.SpecOption(spec.Spec)` is the single bridge handing a fully-built spec to the SDK. `command.OpenClient(sess)` returns an embedded client if `--dir`, otherwise probes the target and dials a running daemon, failing fast with a `mikyu daemon run` hint when nothing is serving.
 
 `command.RunBench` resolves a run in one place: the mode is `--mode` over the scenario's `mode:` over `bench.DefaultMode`, and every workload value layers as built-in default < `MIKYU_BENCH_*` < `--file` scenario < flags. A workload flag the resolved mode never reads is a usage error rather than a silently ignored argument. A bare `bench run` needs no flags: `dirOrDefault` puts it in `./mikyu-bench` and `Workload.EnsureBound` measures it for `bench.DefaultDuration`.
 
@@ -2366,7 +2379,8 @@ func exitCode(err error) int {
 - `go test ./...` with `goleak.VerifyTestMain` in every package that owns goroutines.
 - `testing/synctest` bubbles for time-dependent behavior (WAL wake tokens, task lease expiry, metrics tickers, retention age floors).
 - `enginetest.MemStorage` provides an in-memory `engine.Storage` for driver tests with a deterministic clock.
-- Test hooks: `engine.SyncDirHook`, `engine.writerHook`, `engine.writeAtHook`, `engine.indexWriteHook`, `engine.batchReadAtHook`, `server.sendfileHook`, `config.executablePath`, `client.SessionConfig.testFrameSent`, `daemon.daemonHelperEnv`, `bench.childEnvName`, `bench.raceEnabled`, `iow`'s `writeAt`/`syncData` stubs.
+- Test hooks: `engine.SyncDirHook`, `engine.writerHook`, `engine.writeAtHook`, `engine.indexWriteHook`, `engine.batchReadAtHook`, `server.sendfileHook`, `config.executablePath`, `client.SessionConfig.testFrameSent`, `daemon.daemonHelperEnv`, `daemon.confirmStop`, `credentials.userConfigDir`, `bench.childEnvName`, `bench.raceEnabled`, `iow`'s `writeAt`/`syncData` stubs.
+- Daemon and log-surface tests: subcommand routing (`TestSplitSubcommand`, `TestRunRejectsUnknownSubcommand`), live `status`/`stop`/`logs` against an in-process daemon (auth precedence, dead targets, `--yes` gating, detach on daemon stop), `clientSession` layering (env, flags, stored credential), logtap (`TestRingReplaysOldestFirstAndEvicts`, `TestSubscribeReplaysWithoutGapOrOverlap`, `TestSlowFollowerIsDropped`), fan-out (`TestSetupLoggingFansOutToTap`, `TestSetupLoggingRespectsLevel`), and the wire handler (`TestHandleLogsReplaysTheRing`, `TestHandleLogsFollowsUntilDetach`, `TestHandleLogsEndsWhenTheFollowerFallsBehind`).
 - `internal/audit`:
   - `TestNoLegacyNames` scans every non-test Go file for banned identifiers (with whitelisting for the SDK surface and selector/method positions).
   - `TestInternalCommentStyle` enforces at-most-one-line doc comments on internal packages and exported symbols (root `mikyu` is exempt).
@@ -2434,6 +2448,11 @@ func exitCode(err error) int {
 | Recovery mode spawns a detached child | The parent can kill mid-write without terminating the harness itself; `MIKYU_BENCH_CHILD` marks the child. |
 | `raceEnabled` build tag | Timing-sensitive tests (verify overhead) are skipped under the race detector. |
 | Bench modes are a `--mode` flag, not verbs | One run page covers all four modes, the mode default stays visible in help, and the retired-vocabulary rule applies to every verb path. |
+| Auto-start is retired; `mikyu daemon run` is the only launcher | A daemon that appears out of nowhere is unobservable; explicit start puts its log in the operator's terminal and makes ownership unambiguous. `Dial` and the CLI only ever attach to a running daemon. |
+| `slog` is the API, charm.land/log is the presentation | Library layers must not bind to a presentation package; the handler swap stays a one-line change at the daemon wiring point. |
+| Lifecycle-only logging | High-frequency observability belongs to the metrics snapshot; a log that duplicates gauges is noise. The catalog is starting/config/serving/warn/stop, nothing per-connection or per-record. |
+| Logs replay through a wire ring, not files | The log must follow the daemon, not its host filesystem; a bounded ring makes reconnect = reattach, and `2>>` redirection keeps persistence a shell concern. |
+| `daemon stop` replaces the `shutdown` verb | Stopping is daemon management, not a queue client verb; one command family owns the daemon lifecycle. |
 | **`iow.Writer` owns ordered completion** | The WAL advances a byte watermark without a reorder buffer; every platform implementation (`pool`, `ring`, `iocp`) delivers through the same `order` layer. |
 | **`iow.New` picks the writer** | The WAL never branches on platform; `New` returns the ring on Linux, the port under `Buffered` on Windows, the pool everywhere. `MIKYU_FORCE_SYSCALL_WAL` overrides both. |
 | **`iow.pool` uses `GOMAXPROCS` workers** | Under `Buffered` concurrency scales; under `DataSync` `iow.New` requests one worker because the kernel serializes fsyncs per file. |
