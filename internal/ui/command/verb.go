@@ -330,16 +330,6 @@ var Verbs = []Verb{
 		},
 	},
 	{
-		Name: "shutdown", Args: "", Kind: KindAdmin, Modes: ModeCLI | ModeREPL,
-		Summary: "Stop the running daemon",
-		Long: "Asks the daemon to drain in-flight requests and exit cleanly. Fails " +
-			"when the session is embedded (`--dir`) and has no daemon to stop.",
-		Usage: []string{"shutdown [--yes]"},
-		ExtraFlags: []FlagDoc{
-			{Name: "yes", Kind: "bool", Doc: "Skip the confirmation"},
-		},
-	},
-	{
 		Name: "login", Args: "", Kind: KindAdmin, Modes: ModeCLI | ModeREPL,
 		Summary: "Store a token for a target",
 		Long: "Prompts for a token on stdin and verifies it against the target before " +

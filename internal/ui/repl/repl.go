@@ -49,7 +49,6 @@ var replHandlers = map[string]func(*replSession, []string){
 	"tail":     (*replSession).handleTail,
 	"truncate": (*replSession).handleTruncate,
 	"metrics":  (*replSession).handleMetrics,
-	"shutdown": (*replSession).handleShutdown,
 	"login":    (*replSession).handleLogin,
 	"logout":   (*replSession).handleLogout,
 
@@ -493,31 +492,6 @@ func (s *replSession) handleLogout(args []string) {
 		return
 	}
 	fmt.Println(successStyle.Render(fmt.Sprintf("● Forgot token for %s.", target)))
-}
-
-func (s *replSession) handleShutdown(args []string) {
-	if s.dir != "" {
-		fmt.Println(errStyle.Render("Shutdown needs a daemon; --dir runs embedded."))
-		return
-	}
-	confirmFn := func() (bool, error) {
-		if confirm("Are you sure you want to shut down the daemon?") {
-			fmt.Println(infoStyle.Render("Sending shutdown command to daemon..."))
-			return true, nil
-		}
-		return false, nil
-	}
-	executed, err := command.Shutdown(s.target, s.session, confirmFn)
-	if err != nil {
-		s.fail(err)
-		return
-	}
-	if !executed {
-		fmt.Println("Cancelled.")
-		return
-	}
-	fmt.Println("Daemon stopped. Exiting shell.")
-	s.done = true
 }
 
 // ---- input & formatting ----

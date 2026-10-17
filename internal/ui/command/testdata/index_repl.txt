@@ -27,7 +27,6 @@
 
   ADMIN
     metrics   [flags]     Show a live telemetry snapshot
-    shutdown              Stop the running daemon
     login                 Store a token for a target
     logout                Forget a stored token
     bench                 Run and inspect benchmarks

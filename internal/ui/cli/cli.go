@@ -61,7 +61,6 @@ var handlers = map[string]func(*invocation, []string) error{
 	"dlq-ack":  (*invocation).handleDLQAck,
 	"archive":  (*invocation).handleArchive,
 	"metrics":  (*invocation).handleMetrics,
-	"shutdown": (*invocation).handleShutdown,
 	"login":    (*invocation).handleLogin,
 	"logout":   (*invocation).handleLogout,
 }
@@ -477,31 +476,3 @@ func (in *invocation) handleLogout(args []string) error {
 	return nil
 }
 
-func (in *invocation) handleShutdown(args []string) error {
-	var yes bool
-	fs := command.NewFlagSet("shutdown")
-	fs.BoolVar(&yes, "y", false, "skip the confirmation")
-	fs.BoolVar(&yes, "yes", false, "skip the confirmation")
-
-	rest, err := command.ParseAnywhere(fs, args)
-	if err != nil {
-		return in.app.usage("shutdown: %v", err)
-	}
-	if len(rest) != 0 {
-		return in.app.usage("usage: mikyu shutdown [-y]")
-	}
-	if in.dir != "" {
-		return in.app.usage("shutdown needs a daemon: --dir runs embedded and has no daemon to stop")
-	}
-
-	executed, err := command.Shutdown(in.target, in.session, in.confirmFn("shutdown daemon? [y/N]: ", yes))
-	if err != nil {
-		return err
-	}
-	if !executed {
-		fmt.Fprintln(in.app.Stdout, "aborted")
-		return nil
-	}
-	fmt.Fprintln(in.app.Stdout, "shutdown signal sent")
-	return nil
-}
