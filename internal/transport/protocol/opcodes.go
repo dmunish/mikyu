@@ -36,6 +36,7 @@ const (
 	OpTruncate byte = 0x05 // bytes(name) + u64 minOffset
 	OpMetrics  byte = 0x07 // -> u16 specVersion + bytes(json snapshot)
 	OpSchema   byte = 0x08 // -> u16 specVersion + bytes(json table)
+	OpLogs     byte = 0x0D // u8 follow -> streamed frames of one rendered log line each; an empty frame ends the stream
 
 	// Log: append/read/tail and consumer-group offsets.
 

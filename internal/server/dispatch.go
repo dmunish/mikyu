@@ -31,6 +31,8 @@ func (s *Server) dispatch(ctx context.Context, conn net.Conn, op byte, body []by
 		respOp, respBody = s.handleMetrics(ctx)
 	case protocol.OpSchema:
 		respOp, respBody = s.handleSchema()
+	case protocol.OpLogs:
+		respOp, respBody, streamed = s.handleLogs(ctx, conn, body)
 
 	case protocol.OpAppend:
 		respOp, respBody = s.handleAppend(ctx, body)
