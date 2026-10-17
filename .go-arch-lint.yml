@@ -27,6 +27,7 @@ components:
   enginetest: { in: internal/enginetest }
   protocol:   { in: internal/transport/protocol }
   ipc:        { in: internal/transport/ipc }
+  credentials: { in: internal/credentials }
   group:      { in: internal/queue/group }
   logqueue:   { in: internal/queue/logqueue }
   taskqueue:  { in: internal/queue/taskqueue }
@@ -68,6 +69,8 @@ deps:
     anyVendorDeps: true
   group:
     anyVendorDeps: true
+  credentials:
+    anyVendorDeps: true
   enginetest:
     mayDependOn: [engine]          # in-memory Storage for driver tests only
 
@@ -101,7 +104,7 @@ deps:
   config:
     mayDependOn: [spec, manager]
   daemon:
-    mayDependOn: [spec, config, engine, manager, node, server, protocol, metrics]
+    mayDependOn: [spec, config, engine, manager, node, server, protocol, metrics, credentials]
 
   # ---- bench: the workload engine and the envelope it streams ----
   result:
@@ -124,7 +127,7 @@ deps:
   metricsview:
     mayDependOn: [metrics, human, style, spec]
   command:
-    mayDependOn: [mikyu, client, daemon, spec, style, human, metricsview, bench, benchview, result]
+    mayDependOn: [mikyu, client, daemon, spec, style, human, metricsview, bench, benchview, result, credentials]
   cli:
     mayDependOn: [mikyu, client, daemon, command, spec, metricsview, bench, benchview]
   repl:

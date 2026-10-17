@@ -29,6 +29,12 @@ func freeTCPAddr(tb testing.TB) string {
 // that sends the OpShutdown frame and asserts a clean Run return. finish is
 // also registered as a cleanup, so a test failure never strands the daemon.
 func startDaemon(tb *testing.T, target string, args ...string) (finish func()) {
+	return startDaemonWithShutdown(tb, target, spec.BuiltinSession(), args...)
+}
+
+// startDaemonWithShutdown is startDaemon for a daemon whose auth mode
+// requires a credential: shutdownSess is what the finish function presents.
+func startDaemonWithShutdown(tb *testing.T, target string, shutdownSess spec.Session, args ...string) (finish func()) {
 	tb.Helper()
 	exited := make(chan error, 1)
 	go func() { exited <- Run(args, io.Discard) }()
@@ -55,7 +61,7 @@ func startDaemon(tb *testing.T, target string, args ...string) (finish func()) {
 			return
 		}
 		finished = true
-		require.NoError(tb, SendShutdownSignal(target, spec.BuiltinSession()), "sending shutdown signal")
+		require.NoError(tb, SendShutdownSignal(target, shutdownSess), "sending shutdown signal")
 		select {
 		case err := <-exited:
 			assert.NoError(tb, err, "graceful shutdown must return nil, letting deferred cleanup run")

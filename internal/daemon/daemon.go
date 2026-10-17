@@ -2,7 +2,6 @@
 package daemon
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -44,6 +43,8 @@ func Run(args []string, stderr io.Writer) error {
 	switch sub {
 	case "", "run":
 		return runDaemon(rest)
+	case "status":
+		return runStatus(rest, os.Stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "mikyu daemon: unknown command %q; usage: mikyu daemon run|status|stop|logs\n", sub)
 		return fmt.Errorf("%w: unknown command %q", ErrUsage, sub)
@@ -570,51 +571,16 @@ func IsDaemonAlive(target string) bool {
 
 // SendShutdownSignal authenticates against the daemon with the session's credential and sends an OpShutdown frame.
 func SendShutdownSignal(target string, sess spec.Session) error {
-	network, addr, err := protocol.ParseTarget(target)
-	if err != nil {
-		return err
-	}
-	dialer := &net.Dialer{Timeout: 2 * time.Second}
-	var conn net.Conn
-	if network == "tcp" && sess.TLS.Enabled {
-		tlsCfg, err := clientTLSConfig(sess)
-		if err != nil {
-			return err
-		}
-		conn, err = (&tls.Dialer{Config: tlsCfg, NetDialer: dialer}).Dial(network, addr)
-	} else {
-		conn, err = dialer.Dial(network, addr)
-	}
+	conn, err := connect(target, sess)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-
-	method, cred, err := resolveShutdownCredential(sess)
-	if err != nil {
-		return err
-	}
-	var ab protocol.Buffer
-	protocol.EncodeAuth(&ab, method, cred)
-	if err := protocol.WriteFrame(conn, protocol.OpAuth, ab.Bytes()); err != nil {
-		return err
-	}
-	respOp, respBody, err := protocol.ReadFrame(bufio.NewReader(conn))
-	if err != nil {
-		return err
-	}
-	if respOp == protocol.OpError {
-		code, msg := protocol.DecodeError(respBody)
-		if code == protocol.ErrCodeUnauthorized {
-			return fmt.Errorf("auth for shutdown: %w: %s", protocol.ErrUnauthorized, msg)
-		}
-		return fmt.Errorf("shutdown handshake failed: %s (code 0x%02x)", msg, code)
-	}
 	return protocol.WriteFrame(conn, protocol.OpShutdown, nil)
 }
 
-// resolveShutdownCredential picks the credential a shutdown signal presents: token file over token over mTLS over anonymous.
-func resolveShutdownCredential(sess spec.Session) (byte, []byte, error) {
+// resolveCredential picks the credential a client presents: token file over token over mTLS over anonymous.
+func resolveCredential(sess spec.Session) (byte, []byte, error) {
 	if sess.Auth.TokenFile != "" {
 		data, err := os.ReadFile(sess.Auth.TokenFile)
 		if err != nil {
