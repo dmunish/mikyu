@@ -64,7 +64,7 @@ github.com/dmunish/mikyu/
 ├── types.go / spec.go / metrics.go                # Public value types; schema and telemetry data contracts
 ├── errors.go / errors_predicates.go               # Error taxonomy and the Is helpers
 ├── options.go                                      # Option aliases and the With constructors
-├── typed.go / typed_task.go                       # Generic layer over the designed interfaces
+├── typed.go                                        # Generic layer over the designed interfaces
 ├── adapter.go                                      # Adapters implementing the contract over internal/client
 ├── cmd/mikyu/main.go                              # Entry: run, exitCode
 └── internal/
@@ -523,7 +523,7 @@ func IsFull / IsClosed / IsTooLarge / IsCorrupt
 
 The option types are aliases of the internal func types (`ClientOption = client.Option`, `QueueOption = client.QueueOption`, `AppendOption`/`EnqueueOption`/`NackOption`); every `With*` constructor is designed at the root. The naming rule: no prefix means a queue-level setting, the `Task` prefix a per-task enqueue value, `Key`/`ScheduledAt` the remaining per-task values, the `Record` prefix a per-record append value, and `RetryAfter` the per-nack delay. Where a concept exists at two layers the queue-level option is the default and the per-call option overrides it.
 
-### Typed layer (`typed.go`, `typed_task.go`)
+### Typed layer (`typed.go`)
 
 ```go
 type Codec[T any] struct { Marshal func(T) ([]byte, error); Unmarshal func([]byte, *T) error }
