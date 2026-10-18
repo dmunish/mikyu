@@ -61,7 +61,7 @@ github.com/dmunish/mikyu/
 ├── .go-arch-lint.yml
 ├── mikyu.go                                        # Package narrative; Open and Dial
 ├── client.go / logqueue.go / taskqueue.go         # Designed contract: Client, LogQueue, Group, TaskQueue
-├── types.go / spec.go / metrics.go                # Public value types; schema and telemetry data contracts
+├── types.go / spec.go                              # Public value types; schema and telemetry data contracts
 ├── errors.go                                       # Error taxonomy and the Is helpers
 ├── options.go                                      # Option aliases and the With constructors
 ├── typed.go                                        # Generic layer over the designed interfaces
