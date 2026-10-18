@@ -57,21 +57,8 @@ What mikyu deliberately does not do matters as much. There is no consensus proto
 ```mermaid
 ---
 config:
-  theme: base
   themeVariables:
-    background: "#170d44"
     fontFamily: "IBM Plex Mono, monospace"
-    quadrant1Fill: "#22134e"
-    quadrant2Fill: "#1c1043"
-    quadrant3Fill: "#170d44"
-    quadrant4Fill: "#1c1043"
-    quadrantPointFill: "#e33f6a"
-    quadrantPointTextFill: "#c9c4dd"
-    quadrantXAxisTextFill: "#a29dbd"
-    quadrantYAxisTextFill: "#a29dbd"
-    quadrantTitleFill: "#f2eefb"
-    quadrantInternalBorderStrokeFill: "#3b2a5e"
-    quadrantExternalBorderStrokeFill: "#6f6a8f"
 ---
 quadrantChart
     title Message queues on two axes
@@ -105,18 +92,7 @@ Both kinds sit on the same engine. The drivers are thin: a log queue adds consum
 ---
 config:
   layout: elk
-  theme: base
   themeVariables:
-    background: "#170d44"
-    primaryColor: "#221350"
-    primaryBorderColor: "#6f6a8f"
-    primaryTextColor: "#f2eefb"
-    lineColor: "#6f6a8f"
-    textColor: "#a29dbd"
-    clusterBkg: "#170d44"
-    clusterBorder: "#3b2a5e"
-    edgeLabelBackground: "#170d44"
-    titleColor: "#f2eefb"
     fontFamily: "IBM Plex Mono, monospace"
 ---
 flowchart LR
@@ -159,17 +135,6 @@ flowchart LR
     CACHE -.-> TASK
     SEG --> DISK
     OFFS --> DISK
-
-    classDef interface fill:#221350,stroke:#6f6a8f,color:#f2eefb,stroke-width:1.5px
-    classDef runtime fill:#170d44,stroke:#e33f6a,color:#f2eefb,stroke-width:1.5px
-    classDef storage fill:transparent,stroke:#ffca86,color:#f2eefb,stroke-width:1.5px
-    class APP interface
-    class OPEN,DIAL,DMN,LOG,TASK runtime
-    class WAL,SEG,OFFS,DISK,CACHE storage
-    style SDK fill:#170d44,stroke:#3b2a5e,color:#f2eefb
-    style DRV fill:#170d44,stroke:#3b2a5e,color:#f2eefb
-    style ENG fill:#170d44,stroke:#3b2a5e,color:#f2eefb
-    linkStyle default stroke:#6f6a8f,stroke-width:1.5px
 ```
 
 > **Why the kind lives on disk.** A spec field can drift out of sync with reality: someone moves a directory, restores from backup, or edits a config by hand. A directory cannot lie. When the node opens, it adopts orphan directories under the kind their path declares, so recovery is a filesystem walk, not a repair script.
@@ -191,25 +156,8 @@ Here is the whole journey in one picture, before any of the machinery is opened 
 ```mermaid
 ---
 config:
-  theme: base
   themeVariables:
-    background: "#170d44"
     fontFamily: "IBM Plex Mono, monospace"
-    primaryTextColor: "#f2eefb"
-    lineColor: "#6f6a8f"
-    actorBkg: "#221350"
-    actorBorder: "#6f6a8f"
-    actorTextColor: "#f2eefb"
-    actorLineColor: "#4a4169"
-    signalColor: "#8a86a3"
-    signalTextColor: "#c9c4dd"
-    noteBkgColor: "#241145"
-    noteBorderColor: "#a12789"
-    noteTextColor: "#c9c4dd"
-    activationBkgColor: "#3b2a5e"
-    activationBorderColor: "#6f6a8f"
-    loopTextColor: "#a29dbd"
-    sequenceNumberColor: "#170d44"
 ---
 sequenceDiagram
     autonumber
@@ -240,18 +188,8 @@ A task queue is a small state machine wearing an API. Enqueue puts a task in the
 ```mermaid
 ---
 config:
-  theme: base
   themeVariables:
-    background: "#170d44"
     fontFamily: "IBM Plex Mono, monospace"
-    primaryColor: "#221350"
-    primaryBorderColor: "#6f6a8f"
-    primaryTextColor: "#f2eefb"
-    lineColor: "#6f6a8f"
-    textColor: "#a29dbd"
-    noteBkgColor: "#241145"
-    noteBorderColor: "#a12789"
-    noteTextColor: "#c9c4dd"
 ---
 stateDiagram-v2
     direction LR
@@ -267,11 +205,6 @@ stateDiagram-v2
     InFlight --> Archived: archive
     Done --> [*]
     Archived --> [*]
-
-    classDef terminal fill:#221350,stroke:#ffca86,color:#f2eefb
-    classDef danger fill:#170d44,stroke:#e33f6a,color:#f2eefb,stroke-width:1.5px
-    class Done,Archived terminal
-    class Dead danger
 
     note right of InFlight
         Extend moves the lease forward only.
@@ -361,18 +294,7 @@ Values resolve through a strict precedence:
 ---
 config:
   layout: elk
-  theme: base
   themeVariables:
-    background: "#170d44"
-    primaryColor: "#221350"
-    primaryBorderColor: "#6f6a8f"
-    primaryTextColor: "#f2eefb"
-    lineColor: "#6f6a8f"
-    textColor: "#a29dbd"
-    clusterBkg: "#170d44"
-    clusterBorder: "#3b2a5e"
-    edgeLabelBackground: "#170d44"
-    titleColor: "#f2eefb"
     fontFamily: "IBM Plex Mono, monospace"
 ---
 flowchart LR
@@ -381,12 +303,6 @@ flowchart LR
     E --> F["command-line flags"]
     F --> C["SDK call options"]
     C --> EFF["the effective spec<br/>stored, merged with session,<br/>then builtins fill the gaps"]
-
-    classDef layer fill:#221350,stroke:#6f6a8f,color:#f2eefb,stroke-width:1.5px
-    classDef eff fill:transparent,stroke:#ffca86,color:#f2eefb,stroke-width:1.5px
-    class B,Y,E,F,C layer
-    class EFF eff
-    linkStyle default stroke:#6f6a8f,stroke-width:1.5px
 ```
 
 A later layer overrides an earlier one, and every value is validated where it is declared: byte sizes must be positive, retention bounds non-negative, `max_payload` must fit inside a segment minus record overhead, and cross-checks that span layers (a queue wants `encryption: aes` but the node holds no master keys, or `mtls` auth without TLS enabled) fail closed at the boundary that knows both sides. Some fields are create-only, `encryption` being the important one: flipping it after creation would silently mix plaintext and ciphertext records with no way to tell them apart, so it cannot be done.
@@ -404,19 +320,13 @@ Every record is a fixed 36-byte header followed by the group and the payload. Th
 ```mermaid
 ---
 config:
-  theme: base
   themeVariables:
-    background: "#170d44"
     fontFamily: "IBM Plex Mono, monospace"
   packet:
     bitsPerRow: 288
     bitWidth: 4
     rowHeight: 40
     showBits: false
-    blockFillColor: "#221350"
-    blockStrokeColor: "#6f6a8f"
-    labelColor: "#f2eefb"
-    titleColor: "#f2eefb"
 ---
 packet
 +32: "body len"
@@ -447,25 +357,8 @@ The WAL tracks two byte counts. `pushedBytes` counts what producers have staged;
 ```mermaid
 ---
 config:
-  theme: base
   themeVariables:
-    background: "#170d44"
     fontFamily: "IBM Plex Mono, monospace"
-    primaryTextColor: "#f2eefb"
-    lineColor: "#6f6a8f"
-    actorBkg: "#221350"
-    actorBorder: "#6f6a8f"
-    actorTextColor: "#f2eefb"
-    actorLineColor: "#4a4169"
-    signalColor: "#8a86a3"
-    signalTextColor: "#c9c4dd"
-    noteBkgColor: "#241145"
-    noteBorderColor: "#a12789"
-    noteTextColor: "#c9c4dd"
-    activationBkgColor: "#3b2a5e"
-    activationBorderColor: "#6f6a8f"
-    loopTextColor: "#a29dbd"
-    sequenceNumberColor: "#170d44"
 ---
 sequenceDiagram
     autonumber
@@ -494,18 +387,8 @@ The flusher's own loop is a small state machine, and reading it as one explains 
 ```mermaid
 ---
 config:
-  theme: base
   themeVariables:
-    background: "#170d44"
     fontFamily: "IBM Plex Mono, monospace"
-    primaryColor: "#221350"
-    primaryBorderColor: "#6f6a8f"
-    primaryTextColor: "#f2eefb"
-    lineColor: "#6f6a8f"
-    textColor: "#a29dbd"
-    noteBkgColor: "#241145"
-    noteBorderColor: "#a12789"
-    noteTextColor: "#c9c4dd"
 ---
 stateDiagram-v2
     direction LR
@@ -536,18 +419,8 @@ Under `async` durability, the append path changes shape. Producers reserve segme
 ```mermaid
 ---
 config:
-  theme: base
   themeVariables:
-    background: "#170d44"
     fontFamily: "IBM Plex Mono, monospace"
-    primaryColor: "#221350"
-    primaryBorderColor: "#6f6a8f"
-    primaryTextColor: "#f2eefb"
-    lineColor: "#6f6a8f"
-    textColor: "#a29dbd"
-    noteBkgColor: "#241145"
-    noteBorderColor: "#a12789"
-    noteTextColor: "#c9c4dd"
 ---
 stateDiagram-v2
     direction LR
@@ -556,9 +429,6 @@ stateDiagram-v2
     Pending --> Aborted: error, close, or cancellation
     Committed --> [*]: positions and publishedOffset advance, FIFO
     Aborted --> [*]: offsets consumed, bytes become a hole
-
-    classDef bad fill:#170d44,stroke:#e33f6a,color:#f2eefb,stroke-width:1.5px
-    class Aborted bad
 ```
 
 Segment positions and `publishedOffset` advance only over the committed prefix, in reservation order, so a segment is never sealed while an in-flight reservation could still land in it. A reservation that fails aborts: the offsets it took were already handed out, so they are consumed, but they contribute no bytes, leaving a small hole in the segment. A hole is cheaper than lying about offsets.
@@ -576,25 +446,8 @@ When there is nothing to read yet, `Fetch` parks instead of polling:
 ```mermaid
 ---
 config:
-  theme: base
   themeVariables:
-    background: "#170d44"
     fontFamily: "IBM Plex Mono, monospace"
-    primaryTextColor: "#f2eefb"
-    lineColor: "#6f6a8f"
-    actorBkg: "#221350"
-    actorBorder: "#6f6a8f"
-    actorTextColor: "#f2eefb"
-    actorLineColor: "#4a4169"
-    signalColor: "#8a86a3"
-    signalTextColor: "#c9c4dd"
-    noteBkgColor: "#241145"
-    noteBorderColor: "#a12789"
-    noteTextColor: "#c9c4dd"
-    activationBkgColor: "#3b2a5e"
-    activationBorderColor: "#6f6a8f"
-    loopTextColor: "#a29dbd"
-    sequenceNumberColor: "#170d44"
 ---
 sequenceDiagram
     autonumber
@@ -627,18 +480,7 @@ Below the WAL sits `iow`, a package with one contract: a batch is written by exa
 ---
 config:
   layout: elk
-  theme: base
   themeVariables:
-    background: "#170d44"
-    primaryColor: "#221350"
-    primaryBorderColor: "#6f6a8f"
-    primaryTextColor: "#f2eefb"
-    lineColor: "#6f6a8f"
-    textColor: "#a29dbd"
-    clusterBkg: "#170d44"
-    clusterBorder: "#3b2a5e"
-    edgeLabelBackground: "#170d44"
-    titleColor: "#f2eefb"
     fontFamily: "IBM Plex Mono, monospace"
 ---
 flowchart TD
@@ -649,14 +491,6 @@ flowchart TD
     Q2 -->|no| POOL["worker pool<br/>GOMAXPROCS workers under Buffered,<br/>one under DataSync"]
 
     FORCE["MIKYU_FORCE_SYSCALL_WAL<br/>forces the pool everywhere"] -.-> POOL
-
-    classDef dec fill:#221350,stroke:#6f6a8f,color:#f2eefb,stroke-width:1.5px
-    classDef pick fill:transparent,stroke:#ffca86,color:#f2eefb,stroke-width:1.5px
-    classDef env fill:transparent,stroke:#6f6a8f,color:#a29dbd,stroke-width:1.5px,stroke-dasharray:4 3
-    class Q1,Q2 dec
-    class RING,IOCP,POOL pick
-    class FORCE env
-    linkStyle default stroke:#6f6a8f,stroke-width:1.5px
 ```
 
 The portable pool runs everywhere: several worker goroutines under `Buffered` durability, exactly one under `DataSync`, because the kernel serializes fsyncs per file anyway and extra workers would only queue behind each other. The io_uring ring and the IOCP port are process-wide, single-reaper designs shared by every queue in the process, and both fall back to the pool the moment the host refuses them.
@@ -681,18 +515,7 @@ Recovery trusts nothing it was not forced to trust. The queue scans backward fro
 ---
 config:
   layout: elk
-  theme: base
   themeVariables:
-    background: "#170d44"
-    primaryColor: "#221350"
-    primaryBorderColor: "#6f6a8f"
-    primaryTextColor: "#f2eefb"
-    lineColor: "#6f6a8f"
-    textColor: "#a29dbd"
-    clusterBkg: "#170d44"
-    clusterBorder: "#3b2a5e"
-    edgeLabelBackground: "#170d44"
-    titleColor: "#f2eefb"
     fontFamily: "IBM Plex Mono, monospace"
 ---
 flowchart TD
@@ -706,10 +529,6 @@ flowchart TD
     E -->|all valid| F["decode the snapshot:<br/>active tasks, leases, DLQ"]
     F --> G["replay the log forward<br/>from the commit, picking up<br/>everything newer"]
     G --> H(["the queue is live again"])
-
-    classDef ok fill:#221350,stroke:#ffca86,color:#f2eefb,stroke-width:1.5px
-    class H ok
-    linkStyle default stroke:#6f6a8f,stroke-width:1.5px
 ```
 
 The design note is that checkpoints are data, not metadata. Because they ride the same WAL as everything else, they inherit the same durability, the same CRC checks, and the same truncation rules, and there is exactly one format to recover. A queue with a hundred million dead letters checkpoints in bounded chunks; a queue killed mid-checkpoint reopens from the previous one and loses nothing but the fold itself.
@@ -742,19 +561,13 @@ The wire is length-prefixed frames, big-endian, with a 256 MiB cap. The first by
 ```mermaid
 ---
 config:
-  theme: base
   themeVariables:
-    background: "#170d44"
     fontFamily: "IBM Plex Mono, monospace"
   packet:
     bitsPerRow: 120
     bitWidth: 8
     rowHeight: 40
     showBits: false
-    blockFillColor: "#221350"
-    blockStrokeColor: "#6f6a8f"
-    labelColor: "#f2eefb"
-    titleColor: "#f2eefb"
 ---
 packet
 +32: "frame length"
@@ -767,25 +580,8 @@ Authentication is one handshake per connection. The first frame must be `OpAuth`
 ```mermaid
 ---
 config:
-  theme: base
   themeVariables:
-    background: "#170d44"
     fontFamily: "IBM Plex Mono, monospace"
-    primaryTextColor: "#f2eefb"
-    lineColor: "#6f6a8f"
-    actorBkg: "#221350"
-    actorBorder: "#6f6a8f"
-    actorTextColor: "#f2eefb"
-    actorLineColor: "#4a4169"
-    signalColor: "#8a86a3"
-    signalTextColor: "#c9c4dd"
-    noteBkgColor: "#241145"
-    noteBorderColor: "#a12789"
-    noteTextColor: "#c9c4dd"
-    activationBkgColor: "#3b2a5e"
-    activationBorderColor: "#6f6a8f"
-    loopTextColor: "#a29dbd"
-    sequenceNumberColor: "#170d44"
 ---
 sequenceDiagram
     autonumber
@@ -812,18 +608,7 @@ A sentinel raised anywhere in the engine or the drivers crosses the wire and arr
 ---
 config:
   layout: elk
-  theme: base
   themeVariables:
-    background: "#170d44"
-    primaryColor: "#221350"
-    primaryBorderColor: "#6f6a8f"
-    primaryTextColor: "#f2eefb"
-    lineColor: "#6f6a8f"
-    textColor: "#a29dbd"
-    clusterBkg: "#170d44"
-    clusterBorder: "#3b2a5e"
-    edgeLabelBackground: "#170d44"
-    titleColor: "#f2eefb"
     fontFamily: "IBM Plex Mono, monospace"
 ---
 flowchart LR
@@ -832,12 +617,6 @@ flowchart LR
     F --> D["the remote client maps<br/>the code back to the sentinel"]
     D --> R["the caller sees the same sentinel;<br/>errors.Is works either way"]
     R -.-> S
-
-    classDef step fill:#221350,stroke:#6f6a8f,color:#f2eefb,stroke-width:1.5px
-    classDef payoff fill:#221350,stroke:#ffca86,color:#f2eefb,stroke-width:1.5px
-    class S,T,F,D step
-    class R payoff
-    linkStyle default stroke:#6f6a8f,stroke-width:1.5px
 ```
 
 The server's detail text survives the trip too: the client appends it after the sentinel's own message, so `errors.Is(err, ErrImmutableField)` matches while the specific reason ("`max_segment` is immutable") is still there to read. Messages are human text and never contracts; the codes are the contract.
