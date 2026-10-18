@@ -65,7 +65,7 @@ github.com/dmunish/mikyu/
 ├── errors.go / errors_predicates.go               # Error taxonomy and the Is helpers
 ├── options.go                                      # Option aliases and the With constructors
 ├── typed.go / typed_task.go                       # Generic layer over the designed interfaces
-├── adapter.go / adapter_log.go / adapter_task.go  # Adapters implementing the contract over internal/client
+├── adapter.go                                      # Adapters implementing the contract over internal/client
 ├── cmd/mikyu/main.go                              # Entry: run, exitCode
 └── internal/
     ├── audit/                     # Source gates: TestNoLegacyNames, TestInternalCommentStyle
@@ -535,9 +535,9 @@ type Delivered[T any] struct { Task Task; Value T }
 
 `Typed[T]` mirrors the log surface (Append, AppendBatch, Read, ReadBatch, Fetch, Stream, Tail, LastOffset, MinOffset) over plain values; `Queue()` is the escape hatch back to the `LogQueue`. Decode failures surface as the iteration error in `Stream`/`Tail` and as ordinary errors in the batch reads. `TypedTask[T]` pairs `Dequeue`/`TryDequeue` results as `Delivered[T]` so `Ack`/`Nack`/`Extend` take the pair; `DeadLetters` returns raw `Task` values because dead-letter payloads may predate the current codec, and a task that fails to decode still returns its `Task` so the caller can `Nack` it rather than lose it.
 
-### Adapters (`adapter.go`, `adapter_log.go`, `adapter_task.go`)
+### Adapters (`adapter.go`)
 
-`clientAdapter` wraps `internal/client.Client` — embedded and remote both flow through it — and owns handle memoization, create/delete cache invalidation, and the `DescribeQueue`-based resolution. The `logQueue` and `taskQueue` adapters convert value types at the boundary: `adapter_log.go` owns record conversion, `adapter_task.go` owns task and ref conversion. Satisfaction is pinned at compile time:
+`clientAdapter` wraps `internal/client.Client` — embedded and remote both flow through it — and owns handle memoization, create/delete cache invalidation, and the `DescribeQueue`-based resolution. The `logQueue` and `taskQueue` adapters convert value types at the boundary: the log side owns record conversion, the task side owns task and ref conversion. Satisfaction is pinned at compile time:
 
 ```go
 var _ Client = (*clientAdapter)(nil)
