@@ -63,7 +63,7 @@ github.com/dmunish/mikyu/
 ├── client.go / logqueue.go / taskqueue.go         # Designed contract: Client, LogQueue, Group, TaskQueue
 ├── types.go / spec.go / metrics.go                # Public value types; schema and telemetry data contracts
 ├── errors.go / errors_predicates.go               # Error taxonomy and the Is helpers
-├── options.go / options_client.go / options_queue.go / options_task.go
+├── options.go                                      # Option aliases and the With constructors
 ├── typed.go / typed_task.go                       # Generic layer over the designed interfaces
 ├── adapter.go / adapter_log.go / adapter_task.go  # Adapters implementing the contract over internal/client
 ├── cmd/mikyu/main.go                              # Entry: run, exitCode
@@ -519,7 +519,7 @@ func IsStale(err error) bool      // ErrTaskStale, ErrDeadLetterStale
 func IsFull / IsClosed / IsTooLarge / IsCorrupt
 ```
 
-### Options (`options.go`, `options_client.go`, `options_queue.go`, `options_task.go`)
+### Options (`options.go`)
 
 The option types are aliases of the internal func types (`ClientOption = client.Option`, `QueueOption = client.QueueOption`, `AppendOption`/`EnqueueOption`/`NackOption`); every `With*` constructor is designed at the root. The naming rule: no prefix means a queue-level setting, the `Task` prefix a per-task enqueue value, `Key`/`ScheduledAt` the remaining per-task values, the `Record` prefix a per-record append value, and `RetryAfter` the per-nack delay. Where a concept exists at two layers the queue-level option is the default and the per-call option overrides it.
 
