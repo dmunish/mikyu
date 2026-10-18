@@ -59,7 +59,7 @@ A queue's **kind is structural**: it is the name of its parent directory under t
 ```
 github.com/dmunish/mikyu/
 ├── .go-arch-lint.yml
-├── doc.go / mikyu.go                              # Package narrative; Open and Dial
+├── mikyu.go                                        # Package narrative; Open and Dial
 ├── client.go / logqueue.go / taskqueue.go         # Designed contract: Client, LogQueue, Group, TaskQueue
 ├── types.go / spec.go / metrics.go                # Public value types; schema and telemetry data contracts
 ├── errors.go                                       # Error taxonomy and the Is helpers
@@ -430,7 +430,7 @@ type iocpBatch struct {
 
 The root package is a **designed port with adapters**, not a mirror of internals. It owns the public contract — interfaces, value types, option vocabulary, and the error taxonomy — declared there with consumer-facing godoc, and a thin adapter layer implements the contract over `internal/client`. The design line is *behavior is designed, data contracts are aliased*: interfaces and value types crossing the boundary are declared at the root and converted by adapters, while `Spec`, `Param`, `Session`, and `Metrics` are re-exported by alias because they are versioned artifacts shared with the wire, YAML, and storage formats.
 
-### Facade (`doc.go`, `mikyu.go`)
+### Facade (`mikyu.go`)
 
 ```go
 func Open(dir string, opts ...ClientOption) (Client, error)
