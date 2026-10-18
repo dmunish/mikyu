@@ -483,7 +483,7 @@ config:
   themeVariables:
     fontFamily: "IBM Plex Mono, monospace"
 ---
-flowchart TD
+flowchart LR
     START(["iow.New"]) --> Q1{"Linux, kernel 5.13 or newer,<br/>MIKYU_DISABLE_URING unset?"}
     Q1 -->|yes| RING["io_uring ring<br/>one reaper per process, serves every mode"]
     Q1 -->|no| Q2{"Windows, durability is Buffered,<br/>MIKYU_DISABLE_IOCP unset?"}
@@ -518,7 +518,7 @@ config:
   themeVariables:
     fontFamily: "IBM Plex Mono, monospace"
 ---
-flowchart TD
+flowchart LR
     A(["open the task queue"]) --> B["scan backward from the last offset"]
     B --> C{"commit record?"}
     C -->|no, keep scanning| B
