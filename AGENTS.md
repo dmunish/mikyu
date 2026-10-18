@@ -62,7 +62,7 @@ github.com/dmunish/mikyu/
 ├── doc.go / mikyu.go                              # Package narrative; Open and Dial
 ├── client.go / logqueue.go / taskqueue.go         # Designed contract: Client, LogQueue, Group, TaskQueue
 ├── types.go / spec.go / metrics.go                # Public value types; schema and telemetry data contracts
-├── errors.go / errors_predicates.go               # Error taxonomy and the Is helpers
+├── errors.go                                       # Error taxonomy and the Is helpers
 ├── options.go                                      # Option aliases and the With constructors
 ├── typed.go                                        # Generic layer over the designed interfaces
 ├── adapter.go                                      # Adapters implementing the contract over internal/client
@@ -509,7 +509,7 @@ type TaskRef = Ref                // retained name
 
 `Task` carries the full delivery identity for the strict stale-lease check; `TaskID` skips it for admin flows, with visibility still enforced. `QueueInfo` and `QueueDescription` are designed structs; `QueueKind = node.Kind` with `QueueKindLog`/`QueueKindTask`.
 
-### Errors (`errors.go`, `errors_predicates.go`)
+### Errors (`errors.go`)
 
 Every wire sentinel is re-exported with a doc, grouped as configuration/node, queue/record/task, and transport. Predicates over `errors.Is`:
 
