@@ -320,11 +320,11 @@ func TestExpositionCoversSnapshot(t *testing.T) {
 // TestExpositionBuildInfo: build identity is one labeled series.
 func TestExpositionBuildInfo(t *testing.T) {
 	snap := goldenSnapshot()
-	snap.Build = BuildView{SpecVersion: 5, GoVersion: "go1.27", OS: "linux", Arch: "amd64"}
+	snap.Build = BuildView{SpecVersion: 1, GoVersion: "go1.27", OS: "linux", Arch: "amd64"}
 	out := renderCollector(t, snap, CollectOptions{})
 
 	assert.Contains(t, out,
-		`mikyu_build_info{arch="amd64",go_version="go1.27",os="linux",spec_version="5"} 1`)
+		`mikyu_build_info{arch="amd64",go_version="go1.27",os="linux",spec_version="1"} 1`)
 }
 
 // TestExpositionStorageAndProcess: storage aggregates and process detail are exported.
@@ -607,7 +607,7 @@ func fullSurfaceSnapshot() Snapshot {
 
 	return Snapshot{
 		Timestamp: time.Unix(0, 0).UTC(),
-		Build:     BuildView{SpecVersion: 5, GoVersion: "go1.27", OS: "linux", Arch: "amd64"},
+		Build:     BuildView{SpecVersion: 1, GoVersion: "go1.27", OS: "linux", Arch: "amd64"},
 		Runtime: RuntimeView{
 			Goroutines: 7, GOMAXPROCS: 4, UptimeSec: 12.5,
 			GoroutineStates: GoroutineStates{Running: 1, Runnable: 2, Waiting: 4},

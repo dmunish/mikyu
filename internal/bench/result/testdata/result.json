@@ -26,7 +26,7 @@
     "os": "linux",
     "arch": "amd64",
     "go_version": "go1.27.0",
-    "spec_version": 5,
+    "spec_version": 1,
     "bench_version": 1,
     "client_cpu": 8,
     "cache_state": "warm",

@@ -1,7 +1,7 @@
 {
   "timestamp": "2023-11-14T22:13:20Z",
   "build": {
-    "spec_version": 5,
+    "spec_version": 1,
     "go_version": "go1.27",
     "os": "linux",
     "arch": "amd64"

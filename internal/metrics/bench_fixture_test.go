@@ -12,7 +12,7 @@ var benchHist = HistogramView{
 func benchSnapshot() Snapshot {
 	return Snapshot{
 		Timestamp: time.Unix(0, 0).UTC(),
-		Build:     BuildView{SpecVersion: 5, GoVersion: "go1.27", OS: "linux", Arch: "amd64"},
+		Build:     BuildView{SpecVersion: 1, GoVersion: "go1.27", OS: "linux", Arch: "amd64"},
 		Runtime: RuntimeView{
 			Goroutines: 7, GOMAXPROCS: 4, UptimeSec: 12.5,
 			GoroutineStates: GoroutineStates{Running: 1, Runnable: 2, Waiting: 4},

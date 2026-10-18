@@ -85,7 +85,7 @@ func stale() metrics.QueueView {
 func fixtureSnapshot() metrics.Snapshot {
 	return metrics.Snapshot{
 		Timestamp: time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC),
-		Build:     metrics.BuildView{SpecVersion: 5, GoVersion: "go1.27", OS: "linux", Arch: "amd64"},
+		Build:     metrics.BuildView{SpecVersion: 1, GoVersion: "go1.27", OS: "linux", Arch: "amd64"},
 		Runtime:   metrics.RuntimeView{UptimeSec: 4980},
 		Storage: metrics.StorageView{
 			DataDir: "./data", Queues: 4, Segments: 11, SizeBytes: 4097 << 20, CacheLimit: 32 << 20,
@@ -160,7 +160,7 @@ func TestSummaryColumnContract(t *testing.T) {
 func TestSummaryGolden(t *testing.T) {
 	assert.Equal(t, []string{
 		"○ mikyu",
-		"go1.27 · linux/amd64 · spec v5 · up 1h 23m",
+		"go1.27 · linux/amd64 · spec v1 · up 1h 23m",
 		"./data · 11 segments · 2026-09-26 12:00:00Z",
 		"   4      1.2M    4.0 GiB   ▲ 1.5 MiB/s ",
 		"QUEUES  MESSAGES  ON DISK  THROUGHPUT IN",

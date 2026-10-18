@@ -18,7 +18,7 @@ func fullSnapshot() Snapshot {
 	builtin := spec.Builtin()
 	return Snapshot{
 		Timestamp: time.Unix(1_700_000_000, 0).UTC(),
-		Build:     BuildView{SpecVersion: 5, GoVersion: "go1.27", OS: "linux", Arch: "amd64"},
+		Build:     BuildView{SpecVersion: 1, GoVersion: "go1.27", OS: "linux", Arch: "amd64"},
 		Runtime: RuntimeView{
 			Goroutines:      21,
 			GOMAXPROCS:      8,

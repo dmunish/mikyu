@@ -435,7 +435,7 @@ The root package is a **designed port with adapters**, not a mirror of internals
 ```go
 func Open(dir string, opts ...ClientOption) (Client, error)
 func Dial(target string, opts ...ClientOption) (Client, error)
-const SpecVersion = spec.CurrentSpecVersion   // 5
+const SpecVersion = spec.CurrentSpecVersion   // 1
 ```
 
 - `Open` embeds the engine in-process. The data directory is held under an exclusive lock (`ErrLocked`), clients are ref-counted per absolute dir, and a second `Open` must agree on session defaults and the encryption key file (`ErrSessionDefaultsMismatch`).
@@ -610,7 +610,7 @@ type MetricsConfig struct {
 
 **Effective spec:** `effective = stored.Merge(session).Merge(spec.Builtin())` then `Resolve` fills every nil field.
 
-**Codec:** `CurrentSpecVersion = 5`, `MaxSpecPayload = 1<<20`. `Duration` accepts Go duration strings or int64 nanos. `DecodeSpec` uses `DisallowUnknownFields` + trailing-data rejection. `CheckSpecVersion(version) error` returns `ErrSpecTooNew`.
+**Codec:** `CurrentSpecVersion = 1`, `MaxSpecPayload = 1<<20`. `Duration` accepts Go duration strings or int64 nanos. `DecodeSpec` uses `DisallowUnknownFields` + trailing-data rejection. `CheckSpecVersion(version) error` returns `ErrSpecTooNew`.
 
 **Byte units** (`codec.go`): every suffix is a binary step, so `1G`, `1GB`, and `1GiB` all mean `1<<30`. A space or `_` between digits and suffix is optional, and parsing is case-insensitive. This matches the rendering side, where `human.Bytes` only ever emits binary units.
 
@@ -1177,7 +1177,7 @@ func (q *queue) resolveLeaseLocked(ref Ref) (*taskState, error)
 
 **Scheduler** (`scheduler.go`): binary min-heap ordered by `(due, seq)`. `pushScheduleLocked` bumps `q.sequence`; `pruneScheduleLocked` rebuilds when `len(schedule) > len(active)*3 + 1024`.
 
-**Checkpointing** (`checkpoint.go`): record kinds `recordTask=1`, `recordCPStart=2`, `recordCPChunk=3`, `recordCPCommit=4`, `recordDLQ=5`, `recordDLQAck=6`. `checkpointVersion=3`, `maxCheckpointChunks=1<<20`, `maxCheckpointBytes=512<<20`.
+**Checkpointing** (`checkpoint.go`): record kinds `recordTask=1`, `recordCPStart=2`, `recordCPChunk=3`, `recordCPCommit=4`, `recordDLQ=5`, `recordDLQAck=6`. `checkpointVersion=1`, `maxCheckpointChunks=1<<20`, `maxCheckpointBytes=512<<20`.
 
 `checkpointLocked`:
 

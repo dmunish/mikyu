@@ -17,7 +17,7 @@ import (
 const (
 	registryFileName = "queues.json"
 	registryTmpName  = "queues.json.tmp"
-	registryVersion  = 2
+	registryVersion  = 1
 )
 
 // ErrRegistryCorrupt reports a queues.json that could not be decoded.

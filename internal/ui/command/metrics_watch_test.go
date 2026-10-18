@@ -61,7 +61,7 @@ func (f *fakeTicker) Stop() {}
 func testFrame(n int) mikyu.Metrics {
 	return mikyu.Metrics{
 		Timestamp: time.Date(2026, 9, 27, 12, 0, n, 0, time.UTC),
-		Build:     metrics.BuildView{SpecVersion: 5, GoVersion: "go1.27", OS: "linux", Arch: "amd64"},
+		Build:     metrics.BuildView{SpecVersion: 1, GoVersion: "go1.27", OS: "linux", Arch: "amd64"},
 		Queues:    []metrics.QueueView{{Name: "events", Kind: "log"}},
 		Totals:    metrics.TotalsView{Queues: 1},
 	}

@@ -20,7 +20,7 @@ const (
 	recordCPCommit             byte  = 4
 	recordDLQ                  byte  = 5
 	recordDLQAck               byte  = 6
-	checkpointVersion                = 3
+	checkpointVersion                = 1
 	maxCheckpointChunks              = 1 << 20
 	maxCheckpointBytes               = 512 << 20
 	checkpointChunkHeaderBytes int64 = 1 + 4 + 4

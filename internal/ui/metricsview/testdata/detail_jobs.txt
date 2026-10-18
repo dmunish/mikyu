@@ -1,5 +1,5 @@
 ○ mikyu
-go1.27 · linux/amd64 · spec v5 · up 1h 23m
+go1.27 · linux/amd64 · spec v1 · up 1h 23m
 ./data · 11 segments · 2026-09-26 12:00:00Z
 ◐ jobs · task · degraded
 THROUGHPUT

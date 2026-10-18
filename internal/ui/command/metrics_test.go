@@ -39,7 +39,7 @@ func fixedMetricsSnapshot() mikyu.Metrics {
 	maxSegment := int64(64 << 20)
 	return mikyu.Metrics{
 		Timestamp: time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC),
-		Build:     metrics.BuildView{SpecVersion: 5, GoVersion: "go1.27", OS: "linux", Arch: "amd64"},
+		Build:     metrics.BuildView{SpecVersion: 1, GoVersion: "go1.27", OS: "linux", Arch: "amd64"},
 		Runtime:   metrics.RuntimeView{UptimeSec: 60},
 		Storage:   metrics.StorageView{DataDir: "./data", Queues: 1, Segments: 1, SizeBytes: 1024},
 		Queues: []metrics.QueueView{{
