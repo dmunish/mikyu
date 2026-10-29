@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
@@ -82,4 +83,24 @@ func TestIOCPDispatchWakePacketHonoursStop(t *testing.T) {
 	abandoned := &iocpPort{}
 	require.False(t, abandoned.dispatch(windows.ERROR_ABANDONED_WAIT_0, 0, nil))
 	require.True(t, abandoned.dispatch(errors.New("transient"), 0, nil))
+}
+
+// close posts a wake packet with a nil overlapped; the reaper must observe the
+// stop signal instead of parking in GetQueuedCompletionStatus forever.
+func TestIOCPPortCloseStopsTheReaper(t *testing.T) {
+	p := newPort()
+	if p == nil {
+		t.Skip("host has no usable completion port")
+	}
+	closed := make(chan struct{})
+	go func() {
+		p.close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("iocpPort.close did not stop its reaper")
+	}
+	p.close() // idempotent
 }
