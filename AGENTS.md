@@ -370,8 +370,8 @@ type ringHandle struct {
 - One ring per process (`sharedRing = sync.OnceValue(newRing)`), one reaper goroutine (`r.loop`).
 - `newRing` opens the ring via `SYS_IO_URING_SETUP`, maps the SQ ring/CQ ring/SQE array at their protocol offsets, and returns nil on any failure — callers fall back to the pool.
 - Kernel support is checked by reading `/proc/sys/kernel/osrelease` and comparing major/minor against 5.13. (An earlier `uname`-based parser split only on the first `.` and silently declined every 3-component release like `5.15.0-generic`.)
-- `submit` writes SQEs under `submitMu` (concurrent producers never interleave their SQE writes), issuing one `io_uring_enter` per chunk when the ring is full.
-- `loop` reaps CQEs and dispatches them by `Sink` to the registered `ringHandle`. A completion whose sink id is no longer registered is dropped — no one is listening.
+- `submit` publishes SQEs through a sticky gate (concurrent producers never interleave their SQE writes), issuing one `io_uring_enter` per chunk when the ring is full. A failed enter retires the gate (`ErrRingBroken`): nothing is published afterwards, so the orphaned SQEs die in the ring instead of being submitted later with recycled buffers or fds.
+- `loop` drains the shared CQ ring without syscalls and dispatches CQEs by `Sink` to the registered `ringHandle`; it only enters when idle and healthy, and a retired ring switches to a timed poll so in-flight completions still fire. A completion whose sink id is no longer registered is dropped — no one is listening.
 - A `ringHandle` tracks per-tag outstanding count, per-tag first error, and a completion callback. A tag submitted with a nil callback is waited on through the cond var; a tag submitted with a callback is driven by the reaper.
 - `wakeReaper` submits an `opNop` with `uringSinkIDNone` so a reaper parked in `enter` returns and observes the stop signal.
 - `close` stops the reaper, closes the fd, unmaps the rings.
@@ -2458,6 +2458,7 @@ func exitCode(err error) int {
 | **`iow.pool` uses `GOMAXPROCS` workers** | Under `Buffered` concurrency scales; under `DataSync` `iow.New` requests one worker because the kernel serializes fsyncs per file. |
 | **`iow.ring` gates on kernel version from `/proc/sys/kernel/osrelease`** | Splitting on `.` and comparing major/minor handles 3-component releases like `5.15.0-generic`; an earlier `uname`-based parser declined them silently. |
 | **`iow.ring` serves both modes; `iocp` serves `Buffered` only** | A Windows `DataSync` batch serializes on its own fsync, so overlapped submission costs more than it saves. |
+| **A failed `io_uring_enter` retires the ring** | The ABI cannot report how many published SQEs the kernel consumed: retrying risks double submission, and rolling the tail back risks a late write through recycled buffers or fds. Fail-stop plus a drain-only reaper is the only contract that cannot lie; recovery is reopen and rebuild. |
 | **WAL `slots` are the only async backpressure** | The writer's queue is at least as deep so producers never block inside the writer where the dirty-page throttle would stall them invisibly. |
 | **WAL flusher parks between batches** | `waitFlushSlot` prevents the select from spending a wake token on a batch it cannot write yet; producers are released by the previous completion, which is what makes the next group a group commit. |
 | **`flushWrites` coalesces contiguous entries** | When a batch's staged entries tile the segment, one `iow.Write` is submitted instead of one per record. |

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -20,6 +21,7 @@ const (
 	uringSqeSize = 64
 	uringCqeSize = 16
 	uringCqBatch = 256 // CQEs drained per reaper pass
+	uringBrokenPoll = time.Millisecond // idle wait once the ring can no longer be entered
 
 	uringOffSQRing = 0
 	uringOffCQRing = 0x8000000
@@ -369,6 +371,9 @@ func (r *ring) wakeReaper() {
 	_ = r.submit([]op{{Kind: opNop, Sink: uringSinkIDNone}})
 }
 
+// loop reaps completions for the life of the ring. It reads the shared CQ ring
+// without syscalls and only enters when idle and healthy, so a ring that can no
+// longer be entered still delivers everything already in flight.
 func (r *ring) loop() {
 	defer close(r.done)
 	cqes := make([]rawCQE, uringCqBatch)
@@ -378,32 +383,62 @@ func (r *ring) loop() {
 			return
 		default:
 		}
-		n, err := r.waitCQEs(cqes)
-		if err != nil {
-			return
+		if n := r.drain(cqes); n > 0 {
+			for i := range n {
+				r.dispatch(cqes[i])
+			}
+			continue
 		}
-		for i := range n {
-			r.dispatch(cqes[i])
+		if r.gate.isBroken() {
+			if !sleepOrStop(r.stop, uringBrokenPoll) {
+				return
+			}
+			continue
+		}
+		if err := r.enter(0, 1, uringEnterGetEvents); err != nil {
+			if r.stopping() {
+				return
+			}
+			r.gate.fail(err)
 		}
 	}
 }
 
-// waitCQEs blocks until at least one CQE is available, copies out up to one batch, and advances the consumer head.
-func (r *ring) waitCQEs(dst []rawCQE) (int, error) {
-	for {
-		ready := atomic.LoadUint32(r.cqTail) - atomic.LoadUint32(r.cqHead)
-		if ready > 0 {
-			n := min(int(ready), len(dst), int(r.entries))
-			head := atomic.LoadUint32(r.cqHead)
-			for i := range n {
-				dst[i] = *(*rawCQE)(unsafe.Add(r.cqBase, uintptr((head+uint32(i))&r.cqMask)*uringCqeSize))
-			}
-			atomic.StoreUint32(r.cqHead, head+uint32(n))
-			return n, nil
-		}
-		if err := r.enter(0, 1, uringEnterGetEvents); err != nil {
-			return 0, err
-		}
+// drain copies up to one batch of ready CQEs out of the shared ring and advances
+// the consumer head. It never blocks and needs no syscall.
+func (r *ring) drain(dst []rawCQE) int {
+	ready := atomic.LoadUint32(r.cqTail) - atomic.LoadUint32(r.cqHead)
+	if ready == 0 {
+		return 0
+	}
+	n := min(int(ready), len(dst), int(r.entries))
+	head := atomic.LoadUint32(r.cqHead)
+	for i := range n {
+		dst[i] = *(*rawCQE)(unsafe.Add(r.cqBase, uintptr((head+uint32(i))&r.cqMask)*uringCqeSize))
+	}
+	atomic.StoreUint32(r.cqHead, head+uint32(n))
+	return n
+}
+
+// sleepOrStop parks for d and reports whether the ring is still running.
+func sleepOrStop(stop <-chan struct{}, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-stop:
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// stopping reports whether close has signalled the reaper.
+func (r *ring) stopping() bool {
+	select {
+	case <-r.stop:
+		return true
+	default:
+		return false
 	}
 }
 
