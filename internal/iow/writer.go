@@ -63,6 +63,9 @@ type Writer interface {
 // ErrClosed reports a Write after Close or after a fatal batch error.
 var ErrClosed = errors.New("iow: writer is closed")
 
+// ErrRingBroken reports a retired io_uring ring: a submission failed and no batch may ever be published again.
+var ErrRingBroken = errors.New("iow: io_uring ring is broken")
+
 // New returns the best Writer the platform offers: the ring, else the port under Buffered, else the pool.
 func New(files []*os.File, opts Options) (Writer, error) {
 	if os.Getenv("MIKYU_FORCE_SYSCALL_WAL") == "" {

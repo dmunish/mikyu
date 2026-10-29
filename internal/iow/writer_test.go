@@ -3,6 +3,7 @@ package iow
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +18,7 @@ import (
 func TestMain(m *testing.M) {
 	// The process-wide ring and completion port are singletons that production
 	// never closes, so their reapers outlive the test binary by design.
+	slog.SetDefault(slog.New(slog.DiscardHandler))
 	goleak.VerifyTestMain(m,
 		goleak.IgnoreAnyFunction("github.com/dmunish/mikyu/internal/iow.(*iocpPort).loop"),
 		goleak.IgnoreAnyFunction("github.com/dmunish/mikyu/internal/iow.(*ring).loop"),

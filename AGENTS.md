@@ -244,7 +244,7 @@ var ErrClosed = errors.New("iow: writer is closed")
 func New(files []*os.File, opts Options) (Writer, error)
 ```
 
-**Contract.** Every accepted submission gets a sequence number and its `done` callback fires exactly once, in submission order. A submission that returns an error (closed, failed, or cancelled) still has its `done` called with that error. `Close` is idempotent.
+**Contract.** Every accepted submission gets a sequence number and its `done` callback fires exactly once, in submission order. A submission that returns an error (closed, failed, or cancelled) still has its `done` called with that error. `Close` is idempotent. A failed submission retires the platform engine (`ErrRingBroken`): no SQE is published afterwards, so bytes from a batch the caller was told failed can never be handed to the kernel later.
 
 **`New` picks the best writer the host offers**, in this order:
 

@@ -127,7 +127,7 @@ type ring struct {
 	cqMask  uint32
 	cqBase  unsafe.Pointer
 
-	submitMu sync.Mutex
+	gate ringGate
 
 	mu      sync.Mutex
 	handles []*ringHandle
@@ -246,13 +246,19 @@ func uringKernelSupported() bool {
 	return major > uringMinKernelMajor || (major == uringMinKernelMajor && minor >= uringMinKernelMinor)
 }
 
-// submit writes the SQEs and issues one io_uring_enter per chunk, holding submitMu so concurrent producers never interleave their SQE writes.
+// submit publishes ops to the ring. A failed enter retires the ring for good:
+// published SQEs may still be unconsumed, and nothing may ever submit them again.
 func (r *ring) submit(ops []op) error {
 	if len(ops) == 0 {
 		return nil
 	}
-	r.submitMu.Lock()
-	defer r.submitMu.Unlock()
+	return r.gate.run(func() error { return r.publish(ops) })
+}
+
+// publish writes the SQEs and hands them to the kernel. The gate guarantees a
+// single publisher, so a failed enter retires the ring before anyone else
+// publishes.
+func (r *ring) publish(ops []op) error {
 	for i := 0; i < len(ops); {
 		tail := atomic.LoadUint32(r.sqTail)
 		head := atomic.LoadUint32(r.sqHead)
