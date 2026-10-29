@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	uringEntries = 4096 // power of two; bounds outstanding SQEs
-	uringSqeSize = 64
-	uringCqeSize = 16
-	uringCqBatch = 256 // CQEs drained per reaper pass
+	uringEntries    = 4096 // power of two; bounds outstanding SQEs
+	uringSqeSize    = 64
+	uringCqeSize    = 16
+	uringCqBatch    = 256              // CQEs drained per reaper pass
 	uringBrokenPoll = time.Millisecond // idle wait once the ring can no longer be entered
 
 	uringOffSQRing = 0
