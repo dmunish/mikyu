@@ -105,25 +105,36 @@ func (p *iocpPort) loop() {
 		var key uintptr
 		var ov *windows.Overlapped
 		err := windows.GetQueuedCompletionStatus(p.handle, &qty, &key, &ov, iocpPollTimeout)
-		if err != nil {
-			if errors.Is(err, windows.ERROR_ABANDONED_WAIT_0) {
-				return
-			}
-			select {
-			case <-p.stop:
-				return
-			default:
-			}
-			continue
+		if !p.dispatch(err, qty, ov) {
+			return
 		}
-		if ov == nil {
-			continue
-		}
-		op := (*iocpOp)(unsafe.Pointer(ov))
-		batch := op.batch
-		p.release(op)
-		batch.opDone(overlappedError(uintptr(op.overlapped.Internal), 0, -1))
 	}
+}
+
+// dispatch hands one dequeued packet to its batch and reports whether the reaper
+// should keep running. A failed overlapped operation arrives with a non-nil ov and
+// the failure in err, so its packet must settle the batch rather than be skipped:
+// dropping it would strand the operation, leak the batch's slot, and stall the
+// ordered frontier behind a done that never fires.
+func (p *iocpPort) dispatch(err error, transferred uint32, ov *windows.Overlapped) bool {
+	if errors.Is(err, windows.ERROR_ABANDONED_WAIT_0) {
+		return false
+	}
+	if ov == nil {
+		// No packet was dequeued: either the nil-overlapped wake packet close
+		// posts or a transient failure. Both leave the port usable.
+		select {
+		case <-p.stop:
+			return false
+		default:
+			return true
+		}
+	}
+	op := (*iocpOp)(unsafe.Pointer(ov))
+	batch := op.batch
+	p.release(op)
+	batch.opDone(overlappedError(uintptr(op.overlapped.Internal), transferred, op.length))
+	return true
 }
 
 // close stops the reaper and closes the port; the process-wide port is never closed in production.
@@ -161,10 +172,11 @@ type iocpBatch struct {
 	syncs  []*os.File
 	done   func(error)
 
-	mu      sync.Mutex
-	writes  int
-	err     error
-	settled bool
+	mu       sync.Mutex
+	writes   int
+	err      error
+	finished bool
+	settled  bool
 }
 
 // opDone records one completed operation.
@@ -173,9 +185,16 @@ func (b *iocpBatch) opDone(err error) { b.advance(err, 1) }
 // skip records n operations the batch will never submit.
 func (b *iocpBatch) skip(err error, n int) { b.advance(err, n) }
 
-// advance moves the batch toward completion and settles it once nothing is outstanding.
+// advance moves the batch toward completion and settles it once nothing is
+// outstanding. A packet arriving after the batch finished is ignored, because a
+// synchronously failed write already charged its operation before the kernel's
+// failure packet is reaped.
 func (b *iocpBatch) advance(err error, skipped int) {
 	b.mu.Lock()
+	if b.finished {
+		b.mu.Unlock()
+		return
+	}
 	if err != nil && b.err == nil {
 		b.err = err
 	}
@@ -184,6 +203,7 @@ func (b *iocpBatch) advance(err error, skipped int) {
 		b.mu.Unlock()
 		return
 	}
+	b.finished = true
 	outcome, syncs := b.err, b.syncs
 	b.mu.Unlock()
 
