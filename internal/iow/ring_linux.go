@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -333,8 +332,7 @@ func (r *ring) register() *ringHandle {
 		id = uint32(len(r.handles))
 		r.handles = append(r.handles, nil)
 	}
-	h := &ringHandle{ring: r, id: id, pend: make(map[uint32]int32), res: make(map[uint32]int64), dones: make(map[uint32]func(error))}
-	h.cond = sync.NewCond(&h.mu)
+	h := &ringHandle{ring: r, id: id, tags: newOutcomes()}
 	r.handles[id] = h
 	return h
 }
@@ -421,18 +419,12 @@ func (r *ring) dispatch(cqe rawCQE) {
 	}
 }
 
-// ringHandle tracks one Writer's outstanding tags. A tag submitted with a nil callback is waited on through cond; a tag submitted with a callback is driven by the reaper.
+// ringHandle tracks one Writer's outstanding tags. A tag submitted with a nil callback is waited on through wait; a tag submitted with a callback is driven by the reaper.
 type ringHandle struct {
 	ring *ring
 	id   uint32
 	next atomic.Uint32
-
-	mu     sync.Mutex
-	cond   *sync.Cond
-	pend   map[uint32]int32
-	res    map[uint32]int64
-	dones  map[uint32]func(error)
-	closed bool
+	tags *outcomes
 }
 
 // nextTag returns a fresh tag for the next submission.
@@ -440,90 +432,31 @@ func (h *ringHandle) nextTag() uint32 { return h.next.Add(1) - 1 }
 
 // submit registers the tag and its completion callback before the ring takes the ops, rolls the registration back if submission fails, and never calls done itself: the caller owns completion exactly once.
 func (h *ringHandle) submit(ops []op, done func(error)) error {
-	h.mu.Lock()
-	if h.closed {
-		h.mu.Unlock()
-		return ErrClosed
-	}
 	if len(ops) == 0 {
-		h.mu.Unlock()
+		if h.tags.isClosed() {
+			return ErrClosed
+		}
 		return nil
 	}
 	for i := range ops {
 		ops[i].Sink = h.id
 	}
 	tag := ops[0].Tag
-	h.pend[tag] += int32(len(ops))
-	if done != nil {
-		h.dones[tag] = done
+	if err := h.tags.register(tag, int32(len(ops)), done); err != nil {
+		return err
 	}
-	h.mu.Unlock()
 	if err := h.ring.submit(ops); err != nil {
-		h.mu.Lock()
-		h.pend[tag] -= int32(len(ops))
-		if h.pend[tag] <= 0 {
-			delete(h.pend, tag)
-			delete(h.res, tag)
-			delete(h.dones, tag)
-		}
-		h.mu.Unlock()
+		h.tags.rollback(tag, int32(len(ops)))
 		return err
 	}
 	return nil
 }
 
-// wait blocks until every completion for tag has arrived, then reports the first error recorded for it, if any.
-func (h *ringHandle) wait(tag uint32) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for h.pend[tag] > 0 && !h.closed {
-		h.cond.Wait()
-	}
-	if h.closed {
-		return ErrClosed
-	}
-	e := h.res[tag]
-	delete(h.pend, tag)
-	delete(h.res, tag)
-	if e != 0 {
-		return syscall.Errno(-e)
-	}
-	return nil
-}
+// wait blocks until every completion for tag has arrived, then reports the first error recorded for it.
+func (h *ringHandle) wait(tag uint32) error { return h.tags.wait(tag) }
 
-// complete is called by the reaper once per CQE; the first error for a tag wins.
-func (h *ringHandle) complete(tag uint32, res int64) {
-	h.mu.Lock()
-	n, ok := h.pend[tag]
-	if !ok {
-		h.mu.Unlock()
-		return
-	}
-	if n > 0 {
-		h.pend[tag] = n - 1
-	}
-	if res < 0 && h.res[tag] == 0 {
-		h.res[tag] = res
-	}
-	if h.pend[tag] != 0 {
-		h.mu.Unlock()
-		return
-	}
-	var err error
-	if e := h.res[tag]; e != 0 {
-		err = syscall.Errno(-e)
-	}
-	delete(h.pend, tag)
-	delete(h.res, tag)
-	done := h.dones[tag]
-	delete(h.dones, tag)
-	h.mu.Unlock()
-	if done != nil {
-		done(err)
-		return
-	}
-	h.cond.Broadcast()
-}
+// complete is called by the reaper once per CQE; the tag's last completion fires its callback or wakes its waiter.
+func (h *ringHandle) complete(tag uint32, res int64) { h.tags.complete(tag, res) }
 
 // fsync submits a data-sync-only fsync and waits for it.
 func (h *ringHandle) fsync(f *os.File) error {
@@ -536,15 +469,9 @@ func (h *ringHandle) fsync(f *os.File) error {
 
 // close marks the handle closed, wakes every waiter with ErrClosed, and deregisters it from the ring.
 func (h *ringHandle) close() error {
-	h.mu.Lock()
-	if h.closed {
-		h.mu.Unlock()
-		return nil
+	if h.tags.close() {
+		h.ring.unregister(h)
 	}
-	h.closed = true
-	h.cond.Broadcast()
-	h.mu.Unlock()
-	h.ring.unregister(h)
 	return nil
 }
 
