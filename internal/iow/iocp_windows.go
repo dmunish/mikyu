@@ -253,20 +253,13 @@ type iocpWriter struct {
 
 // newWriter registers one writer with the shared port.
 func (p *iocpPort) newWriter(files []*os.File, opts Options) *iocpWriter {
-	outstanding := opts.Outstanding
-	if outstanding <= 0 {
-		outstanding = opts.Workers * 4
-	}
-	if outstanding <= 0 {
-		outstanding = 1
-	}
 	w := &iocpWriter{
 		port:     p,
 		files:    files,
 		syncSet:  opts.SyncFiles,
 		durable:  opts.Durability == DataSync,
 		order:    newOrder(),
-		slots:    make(chan struct{}, outstanding),
+		slots:    make(chan struct{}, outstandingDepth(opts)),
 		attached: make(map[windows.Handle]bool),
 	}
 	w.key = p.register(w)

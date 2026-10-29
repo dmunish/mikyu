@@ -30,12 +30,11 @@ type pool struct {
 	jobs    chan *job
 	workers int
 
-	mu        sync.Mutex
-	cond      *sync.Cond
-	closed    bool
-	submitted uint64
-	order     *order
-	err       error
+	mu     sync.Mutex
+	cond   *sync.Cond
+	closed bool
+	order  *order
+	err    error
 
 	closeOnce sync.Once
 	closing   chan struct{}
@@ -49,15 +48,11 @@ func newPool(files []*os.File, opts Options) *pool {
 	if workers <= 0 {
 		workers = runtime.GOMAXPROCS(0)
 	}
-	outstanding := opts.Outstanding
-	if outstanding <= 0 {
-		outstanding = workers * 4
-	}
 	p := &pool{
 		files:     files,
 		syncFiles: opts.SyncFiles,
 		durable:   opts.Durability == DataSync,
-		jobs:      make(chan *job, outstanding),
+		jobs:      make(chan *job, outstandingDepth(opts)),
 		workers:   workers,
 		order:     newOrder(),
 		closing:   make(chan struct{}),
@@ -81,7 +76,6 @@ func (p *pool) Write(ctx context.Context, batch []Write, done func(error)) error
 		err = ctx.Err()
 	}
 	seq := p.order.reserve()
-	p.submitted = seq + 1
 	if err != nil {
 		p.mu.Unlock()
 		p.order.settle(seq, err, done)

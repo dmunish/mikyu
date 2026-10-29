@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -187,6 +188,14 @@ func TestWriterSyncOnIdleWriterIsANoop(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, w.Sync())
 	require.NoError(t, w.Close())
+}
+
+// Every implementation must derive the same backpressure depth so the same
+// Options produce the same producer blocking point on every host.
+func TestOutstandingDepth(t *testing.T) {
+	require.Equal(t, 9, outstandingDepth(Options{Outstanding: 9, Workers: 2}))
+	require.Equal(t, 12, outstandingDepth(Options{Workers: 3}))
+	require.Equal(t, runtime.GOMAXPROCS(0)*4, outstandingDepth(Options{}))
 }
 
 func TestWriterFiresDoneOnceForEveryAcceptedBatch(t *testing.T) {

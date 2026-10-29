@@ -152,17 +152,13 @@ func newRingWriter(files []*os.File, opts Options) (Writer, bool) {
 
 // newRingWriterOn binds one Writer to an existing ring, which the caller owns.
 func newRingWriterOn(r *ring, files []*os.File, opts Options) *ringWriter {
-	outstanding := opts.Outstanding
-	if outstanding <= 0 {
-		outstanding = opts.Workers * 4
-	}
 	return &ringWriter{
 		files:   files,
 		syncSet: opts.SyncFiles,
 		durable: opts.Durability == DataSync,
 		order:   newOrder(),
 		handle:  r.register(),
-		slots:   make(chan struct{}, max(outstanding, 1)),
+		slots:   make(chan struct{}, outstandingDepth(opts)),
 	}
 }
 
@@ -543,13 +539,13 @@ func (w *ringWriter) Write(ctx context.Context, batch []Write, done func(error))
 	return nil
 }
 
-// Sync waits for outstanding batches, then submits a data-sync fsync over the sync targets.
+// Sync waits for outstanding batches, then fsyncs every file the writer owns.
 func (w *ringWriter) Sync() error {
 	if err := w.currentError(); err != nil {
 		return err
 	}
 	w.order.waitDrained()
-	for _, f := range w.syncTargets(nil) {
+	for _, f := range w.files {
 		if err := w.handle.fsync(f); err != nil {
 			w.setError(err)
 			return err
